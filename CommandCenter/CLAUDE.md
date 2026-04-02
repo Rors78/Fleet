@@ -1,0 +1,216 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## What This Is
+Unified mission control for a 16-bot crypto trading fleet. Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), and self-evolution analysis (Ultron).
+
+## Run
+```bash
+# Just Command Center (bots must be started separately)
+cd D:\CommandCenter && python command_center.py
+
+# Launch entire fleet + Command Center in one terminal
+cd D:\CommandCenter && python launch_fleet.py
+
+# AI inference server (requires Ollama running)
+python inference_server.py
+
+# Self-evolution analysis
+python ultron.py --days 7
+
+# Weekly AI-powered fleet report
+python weekly_analysis.py --days 7
+```
+Dashboard: http://localhost:9000
+
+## Analyze Fleet Logs
+```bash
+python analyze.py bot nexusbrain --last 7d --trades
+python analyze.py trades --pair BTC/USD --last 7d
+python analyze.py equity --last 7d
+python analyze.py leaderboard --last 30d
+python analyze.py regimes --last 7d
+python analyze.py pairs --sort pnl --last 7d
+python analyze.py correlation whale_alerts trades --last 30d
+python analyze.py uptime trinity --last 7d
+
+# Evolution engine — self-improvement analysis
+python evolution.py --days 7
+```
+
+## Architecture
+
+### Core Files
+- `command_center.py` — Single-file backend (~2000 lines): bot polling, 14 normalizers (11 named functions + 3 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration.
+- `command_center.html` — Single-file dashboard (all CSS/JS inline). Served at `/`.
+- `command_center_v3.html` — v3 dashboard (226KB, full-featured).
+
+### Event Bus System
+Real-time pub/sub replacing 4-second polling for inter-bot communication:
+- `event_bus.py` — In-process `EventBus` class with SSE broadcast and reaction rules. Supports filtered subscriptions, configurable reactions with condition evaluation (e.g., `count(REGIME_CHANGE, last_5min) >= 3`).
+- `event_publisher.py` — Lightweight fire-and-forget client for bots to push events. Stdlib only (urllib), non-blocking via daemon threads.
+- `bus_listener.py` — Client for bots to consume fleet intelligence. Polls `/api/events/recent` with configurable interval (default 10s) and exponential backoff on failure. Constructor accepts `cc_url` and `poll_interval` overrides. Provides typed accessors: `whale_alerts()`, `phitex_status()`, `aegis_regime()`, `convergent_signals()`, `emergency_active()`, `newton_force()`, `euclid_levels()`, `chronos_alerts()`, etc.
+- `reactions.json` — Declarative reaction rules (whale amplifier, regime shift storm, convergent signal detection, cascade stop warning, portfolio overweight alert).
+
+### Data Collection & Analysis
+- `collector.py` — Brainiac: 5 background threads collecting order book depth, recent trades, global metrics (CoinGecko), correlation matrix, and funding rates. Stores to `brainiac/` as JSONL. Also registers `/api/brainiac/*` endpoints on the HTTP handler.
+- `fleet_logger.py` — Writes snapshots (60s), events (trade opens/closes, regime changes), daily summaries, and AI trade journals to `logs/`. Imported by command_center.py.
+- `analyze.py` — CLI tool: 8 subcommands for fleet diagnostics reading `logs/` JSONL.
+- `ultron.py` — Self-evolution engine: analyzes gate effectiveness, signal quality, regime stability, portfolio efficiency, bot utilization, timing patterns, bus effectiveness, and shadow trades. Configurable TrekBot log paths via constructor or `TREKBOT_DIR` env var. Feeds findings to AI for synthesis.
+- `weekly_analysis.py` — Aggregates events + journals + Brainiac data + Ultron analysis into an AI-powered weekly report.
+- `evolution.py` — Evolution engine: 5-step cycle (measure→analyze→propose→simulate→recommend). Reads event logs, queries live bots, identifies profitable/losing patterns, generates ranked parameter change proposals. Saves reports to `logs/evolution/`.
+
+### Shared Libraries
+- `standards.py` — Canonical regime labels (`BULL`, `BEAR`, `RANGING`, `VOLATILE`, `TRANSITIONING`), `REGIME_MAP` for normalizing any bot's regime label, `normalize_pair()` for Kraken pair formats.
+- `portfolio_client.py` — Thin stdlib-only client for bots to reserve/release capital from the central pool.
+- `design_system.css` — Unified fleet design language: color system, typography, spacing, cards, tables, status indicators, animations. The single source of truth for all dashboard styling.
+
+### Infrastructure
+- `launch_fleet.py` — Two-phase launcher. Phase 1: core bots. Phase 2 (after CC is up): CC-dependent bots (PHITEX, AEGIS, Inference, NEXUS, Rubberband, Contrarian, Arbitrageur, Chronos). Ctrl+C shuts down everything.
+- `inference_server.py` — Port 9001. Proxies to Ollama (Tesla P4). Endpoints: `/api/ai/trade-journal`, `/api/ai/post-mortem`, `/api/ai/fleet-assessment`.
+- `fleet_config.json` — Bot registry with ports/dirs/cmds/phases (read by `_health_monitor` for auto-restart). Also documents fleet-wide settings (portfolio limits, event bus, Brainiac intervals, market data) but these sections are **not loaded by code** — the corresponding constants are hardcoded in `command_center.py` and `collector.py`. Keep in sync manually.
+- `universe.json` — Config for auto-discovering top 50 Kraken USD pairs by volume.
+- `portfolio.json` — Persisted portfolio state (created at runtime, atomic writes).
+
+### Data Flow
+1. `_poll_loop()` polls all 16 bots every 4s via HTTP
+2. Per-bot normalizer standardizes responses into common schema: `{pnl, positions, win_rate, regime, signals, ...}`
+3. `_compute_aggregate()` builds fleet-wide stats
+4. `_extract_feed()` merges signal/alert feeds, dedupes
+5. `EventBus` provides real-time pub/sub — bots publish via POST, consume via SSE or `BusListener`
+6. `FleetLogger` diffs state every 60s, emits events for trade opens/closes/regime changes
+7. `BrainiacCollector` runs 5 threads collecting market data to `brainiac/`
+8. `CommandCenterHandler` (stdlib HTTPServer) serves HTML + JSON APIs
+9. `_universe_worker()` refreshes tradeable pairs from Kraken every 6 hours
+
+### Thread Model
+- Main thread: HTTP server
+- Daemon thread 1: `_poll_loop()` (4s interval)
+- Daemon thread 2: `FleetLogger._run()` (60s interval)
+- Daemon thread 3: `_universe_worker()` (6h interval)
+- Daemon threads 4-8: Brainiac collectors (depth 30s, trades 60s, global 5min, correlations 15min, funding 5min)
+- Per-event daemon threads: `EventBus._check_reactions()` (spawned per published event)
+- All shared state protected by `_lock` (bots/aggregate/feed), `PortfolioManager._lock` (instance-level), `_universe_lock`
+
+## Fleet
+| Bot | Port | API Route | Role |
+|---|---|---|---|
+| TurtleSue | 8070 | /api/snapshot | Trader (pool) |
+| Sentinel | 8071 | /api/snapshot | Forecast |
+| Trinity | 8072 | /api/snapshot | Scanner (intel only) |
+| HiveMind | 8073 | /api/snapshot | Optimizer (intel only, slow start ~30s) |
+| NexusBrain | 8074 | /api/snapshot | Trader (pool) |
+| TrekBot | 8080 | /health + /positions + /analytics | Trader (pool) |
+| Oracle | 8075 | /api/snapshot | Intel only |
+| Deep Blue | 8076 | /api/snapshot | Intel only (whale detection) |
+| Gridzilla | 8077 | /api/snapshot | Trader (pool) |
+| PHITEX | 8078 | /api/snapshot | Novel (thermodynamic, Phase 2) |
+| AEGIS | 8079 | /api/snapshot | Meta (self-assessment, Phase 2) |
+| NEXUS | 8082 | /api/snapshot | Novel (Phase 2) |
+| Rubberband | 8083 | /api/snapshot | Trader |
+| Contrarian | 8084 | /api/snapshot | Trader |
+| Arbitrageur | 8085 | /api/snapshot | Trader |
+| Chronos | 8086 | /api/snapshot | Temporal |
+| **Inference** | **9001** | /api/ai/* | **AI (Ollama, Phase 2)** |
+| **Command Center** | **9000** | serves all APIs below | **Aggregator** |
+
+## HTTP API (Port 9000)
+
+**GET endpoints:**
+- `/` — HTML dashboard
+- `/api/master` — aggregated fleet state (bots + aggregate + feed + portfolio)
+- `/api/universe` — current tradeable pairs list
+- `/api/portfolio` — full portfolio state
+- `/api/portfolio/available` — free capital
+- `/api/portfolio/exposure` — breakdown by bot/pair/direction
+- `/api/fleet/daily` — today's daily stats from FleetLogger
+- `/api/bot/<id>` — raw passthrough to individual bot
+- `/api/market/ohlc?pair=BTC/USD&interval=60&limit=100` — OHLC proxy
+- `/api/market/ohlc/bulk?pairs=BTC/USD,ETH/USD&interval=60` — bulk OHLC
+- `/api/market/ticker` — latest prices for all universe pairs
+- `/api/events/stream` — SSE real-time event stream
+- `/api/events/recent?n=50&type=TRADE_OPEN` — recent events (catch-up)
+- `/api/events/stats` — bus statistics
+- `/api/brainiac/{depth|trades|correlations|funding|metrics}` — Brainiac data
+
+**POST endpoints:**
+- `/api/portfolio/reserve` — bot requests capital `{bot_id, pair, direction, amount}`
+- `/api/portfolio/release` — bot returns capital `{reservation_id, pnl}`
+- `/api/events/publish` — bot pushes event `{source, type, data}`
+
+**Inference API (Port 9001):**
+- `POST /api/ai/trade-journal` — AI journal entry for a trade
+- `POST /api/ai/post-mortem` — AI analysis of trade batch
+- `POST /api/ai/fleet-assessment` — AI fleet state assessment
+- `GET /health` — inference server status + model info
+
+## Central Portfolio
+4 trading bots (TurtleSue, NexusBrain, Gridzilla, TrekBot) share one $10,000 pool.
+
+### Risk Limits
+- Max total deployed: 80% (always keep 20% cash)
+- Max per bot: 30%
+- Max per pair: 20%
+- Max per trade: 5%
+- Max directional: 60% (long or short)
+
+### Bot Integration
+Bots opt in via config flags `use_central_portfolio: True` + `command_center_url`. They call `/api/portfolio/reserve` before opening and `/api/portfolio/release` after closing. Use `PortfolioClient` from `portfolio_client.py` (stdlib only). Fallback to local balance when Command Center is unreachable.
+
+## Event Bus Integration
+Bots publish events via `EventPublisher` (from `event_publisher.py`) and consume via `BusListener` (from `bus_listener.py`). Event types: `TRADE_OPEN`, `TRADE_CLOSE`, `SIGNAL`, `REGIME_CHANGE`, `WHALE_ALERT`, `PORTFOLIO_RESERVE`, `PORTFOLIO_DENIAL`, `BOT_STATUS`, `PRICE_ALERT`, `ATTENTION`, `FLEET_ALERT`, `HIGH_CONVICTION`, `EMERGENCY_REDUCE`, `PHITEX_UPDATE`, `AEGIS_UPDATE`, `NEWTON_FORCE`, `NEWTON_REACTION`, `EUCLID_LEVEL`, `SENTIMENT_EXTREME`, `CHRONOS_ALERT`.
+
+Reaction rules in `reactions.json` trigger automatic fleet-wide alerts (e.g., 3+ stops in 5 min triggers `EMERGENCY_REDUCE`).
+
+## Logs Structure
+```
+logs/
+  snapshots/YYYY-MM-DD.jsonl  — full fleet state every 60s
+  events/YYYY-MM-DD.jsonl     — trade opens/closes, regime changes, whale alerts, status changes
+  daily/YYYY-MM-DD.json       — midnight summary (fleet PnL, per-bot stats, uptime)
+  journals/YYYY-MM-DD.jsonl   — AI trade journal entries
+  weekly/YYYY-MM-DD.json      — weekly analysis reports
+  ultron/YYYY-MM-DD.json      — self-evolution analysis
+brainiac/
+  depth/YYYY-MM-DD.jsonl      — order book snapshots
+  trades/YYYY-MM-DD.jsonl     — recent trade flow
+  metrics/YYYY-MM-DD.jsonl    — global market metrics (CoinGecko)
+  correlations/YYYY-MM-DD.jsonl — pair correlation matrices
+  funding/YYYY-MM-DD.jsonl    — funding rates (Kraken Futures)
+```
+Retention: snapshots 90d, events 365d, daily 365d. Rotated on startup.
+
+## Dependencies
+- `requests` (only external dependency — all bot-side clients use stdlib urllib)
+
+## Testing
+No test suite exists. Validation is done via runtime error handling and log inspection. When making changes, verify by running `command_center.py` and checking the dashboard + logs.
+
+## Key Patterns & Gotchas
+
+### Normalizers
+Each bot gets a normalizer function (in `command_center.py` ~line 753-1057) that translates its raw API response into a standard schema: `{equity, pnl, pnl_pct, win_rate, drawdown_pct, sharpe, open_positions, total_trades, regime, signals_count, uptime, ...}`. Win rates arrive in different scales (0-1 vs 0-100) — normalizers handle this. TrekBot is special: it uses 3 endpoints (`/health`, `/positions`, `/analytics`) instead of the single `/api/snapshot` the others use. NEXUS reports `market_character` instead of `regime`.
+
+### Thread Safety
+All shared state is protected by simple `threading.Lock()` (no RLock). Three locks: `_lock` (bots/aggregate/feed), `PortfolioManager._lock` (instance-level), and `_universe_lock`. Bot polling is serial within the poll loop, so aggregate state represents a ~1s window, not an atomic moment.
+
+### Portfolio Persistence
+Portfolio state is saved via atomic writes (temp file + `os.replace()`). History is capped at 200 entries — use `logs/events/` for full audit trail. Failed validations return a reason string but are not logged to history.
+
+### Phase 2 Dependencies
+Bots marked `"phase": 2` in `fleet_config.json` require Command Center to be running. Note: `launch_fleet.py` hardcodes its own `FLEET` list and does not read `fleet_config.json` — the `phase` field there is for documentation/health-monitor reference only. `launch_fleet.py` waits 15s for CC to bind port 9000 before launching Phase 2. If inference server fails, Phase 2 features degrade silently.
+
+### Inference Model Chain
+`inference_server.py` searches for models in order: `gemma2:2b` → `phi4-mini` → `mistral-nemo` → `qwen3.5:4b` → `deepseek-r1:7b` → first available. All prompts instruct JSON-only responses (no markdown).
+
+### Event Bus Reactions
+Reaction rules from `reactions.json` spawn in separate daemon threads to avoid blocking publish. Condition expressions use a regex parser: `count(EVENT_TYPE, last_Xmin) >= N`.
+
+### Brainiac Collection
+Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
+
+## Working Rules
+- NEVER overwrite working code based on assumptions
+- ALWAYS read existing code before modifying
+- No fake stats — ever

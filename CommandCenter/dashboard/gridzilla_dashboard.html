@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GRIDZILLA — Grid Trading Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,300;0,400;0,600;1,400&family=IBM+Plex+Mono:wght@400;500&family=Share+Tech+Mono&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+:root{
+  --bg:#07070c;
+  --surface:#0d0d14;
+  --card:rgba(15,15,22,0.8);
+  --border:rgba(201,162,39,0.1);
+  --border-dim:rgba(201,162,39,0.05);
+  --gold:#c9a227;
+  --gold-dim:rgba(201,162,39,0.4);
+  --gold-faint:rgba(201,162,39,0.08);
+  --text:#e8e4db;
+  --text-secondary:#8a8578;
+  --text-muted:#4a463d;
+  --green:#4ade80;
+  --red:#f87171;
+  --font-serif:'Cormorant Garamond',Georgia,serif;
+  --font-mono:'IBM Plex Mono','Courier New',monospace;
+  --font-monster:'Share Tech Mono','Courier New',monospace;
+  /* Gridzilla additions */
+  --grid-green:#00ff41;
+  --price-cyan:#00c8ff;
+  --warn-amber:#ff6600;
+  --kill-red:#ff2222;
+  --muted-grid:#556655;
+}
+
+html{scroll-behavior:smooth}
+body{
+  background:var(--bg);
+  color:var(--text);
+  font-family:var(--font-serif);
+  font-weight:400;
+  line-height:1.6;
+  overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+  height:100vh;
+  display:flex;
+  flex-direction:column;
+}
+
+::-webkit-scrollbar{width:4px;height:4px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:rgba(201,162,39,0.2);border-radius:2px}
+
+/* ── KEYFRAMES ── */
+@keyframes v3-pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+@keyframes stateFlash{
+  0%{opacity:1}
+  100%{opacity:0;pointer-events:none}
+}
+@keyframes gridBreathe{
+  0%,100%{opacity:0.88}
+  50%{opacity:1}
+}
+@keyframes levelHit{
+  0%{box-shadow:0 0 0 0 rgba(0,255,65,0.8)}
+  70%{box-shadow:0 0 0 6px rgba(0,255,65,0)}
+  100%{box-shadow:none}
+}
+@keyframes drawdownPulse{
+  0%,100%{background:rgba(255,34,34,0.25)}
+  50%{background:rgba(255,34,34,0.55)}
+}
+@keyframes lockSwing{
+  0%{transform:rotate(-8deg)}
+  50%{transform:rotate(8deg)}
+  100%{transform:rotate(0deg)}
+}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
+
+/* ── FLASH OVERLAY ── */
+#stateFlashOverlay{
+  position:fixed;inset:0;pointer-events:none;z-index:9999;
+  opacity:0;
+}
+#stateFlashOverlay.flash-sleeping{background:rgba(0,120,255,0.18)}
+#stateFlashOverlay.flash-hunting{background:rgba(201,162,39,0.18)}
+#stateFlashOverlay.flash-feeding{background:rgba(0,255,65,0.18)}
+#stateFlashOverlay.active{animation:stateFlash 0.5s ease-out forwards}
+
+/* ── HEADER ── */
+.v3-header{
+  flex-shrink:0;height:56px;
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 32px;
+  border-bottom:1px solid var(--border-dim);
+  background:rgba(7,7,12,0.95);
+  backdrop-filter:blur(20px);
+  position:relative;z-index:100;
+}
+.v3-header::after{
+  content:'';position:absolute;bottom:0;left:0;right:0;height:1px;
+  background:linear-gradient(90deg,transparent,var(--gold-dim),transparent);
+}
+.header-wordmark{
+  font-family:var(--font-monster);font-size:1.1rem;font-weight:400;
+  letter-spacing:0.35em;text-transform:uppercase;color:var(--grid-green);
+  text-shadow:0 0 12px rgba(0,255,65,0.4);
+}
+.header-center{
+  display:flex;align-items:center;gap:28px;
+  font-family:var(--font-mono);font-size:0.7rem;color:var(--text-secondary);
+}
+.header-chip .label{color:var(--text-muted);margin-right:5px}
+.header-chip .val{color:var(--text);font-weight:500}
+.header-right{display:flex;align-items:center;gap:14px}
+.header-clock{
+  font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary);
+  font-variant-numeric:tabular-nums;
+}
+.sse-dot{width:5px;height:5px;border-radius:50%;background:var(--text-muted);flex-shrink:0;transition:background 0.3s}
+.sse-dot.connected{background:var(--green);animation:v3-pulse 2s ease-in-out infinite}
+.sse-dot.error{background:var(--red)}
+
+/* ── MONSTER STATE BANNER ── */
+#monsterBanner{
+  flex-shrink:0;
+  display:flex;flex-direction:column;align-items:center;justify-content:center;
+  padding:14px 32px 10px;
+  position:relative;overflow:hidden;
+  border-bottom:1px solid var(--border-dim);
+  background:linear-gradient(180deg,rgba(7,7,12,0.98),var(--bg));
+  min-height:90px;
+}
+.monster-state-text{
+  font-family:var(--font-monster);
+  font-size:3.2rem;
+  letter-spacing:0.5em;
+  text-transform:uppercase;
+  line-height:1;
+  transition:color 0.4s, text-shadow 0.4s;
+}
+.state-sleeping .monster-state-text{
+  color:#4488ff;
+  text-shadow:0 0 30px rgba(68,136,255,0.5),0 0 60px rgba(68,136,255,0.15);
+}
+.state-hunting .monster-state-text{
+  color:var(--gold);
+  text-shadow:0 0 30px rgba(201,162,39,0.5),0 0 60px rgba(201,162,39,0.15);
+}
+.state-feeding .monster-state-text{
+  color:var(--grid-green);
+  text-shadow:0 0 30px rgba(0,255,65,0.6),0 0 60px rgba(0,255,65,0.2);
+}
+.monster-lock-reason{
+  font-family:var(--font-mono);font-size:0.65rem;letter-spacing:0.2em;
+  text-transform:uppercase;color:var(--text-muted);margin-top:6px;
+  min-height:16px;
+}
+.monster-meta{
+  display:flex;gap:28px;margin-top:4px;
+  font-family:var(--font-mono);font-size:0.62rem;color:var(--text-secondary);
+}
+.monster-meta span{letter-spacing:0.1em}
+.monster-meta .hi{color:var(--text)}
+
+/* ── MAIN BODY: three zones ── */
+.body-row{
+  display:flex;flex:1;overflow:hidden;
+  min-height:0;
+}
+
+/* ── ZONE 1: REGIME GATE (left) ── */
+.zone-regime{
+  width:30%;flex-shrink:0;
+  border-right:1px solid var(--border-dim);
+  background:var(--surface);
+  display:flex;flex-direction:column;
+  overflow-y:auto;
+  padding:16px 20px;
+  gap:16px;
+}
+.zone-title{
+  font-family:var(--font-mono);font-size:0.55rem;letter-spacing:0.3em;
+  text-transform:uppercase;color:var(--gold);
+  padding-bottom:8px;
+  border-bottom:1px solid var(--border-dim);
+}
+
+/* pair selector */
+.pair-tabs{
+  display:flex;flex-wrap:wrap;gap:4px;margin-bottom:4px;
+}
+.pair-tab{
+  font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.08em;
+  padding:2px 8px;border:1px solid var(--border-dim);
+  color:var(--text-muted);cursor:pointer;background:none;
+  transition:all 0.15s;
+}
+.pair-tab:hover{color:var(--text-secondary);border-color:var(--border)}
+.pair-tab.active{color:var(--grid-green);border-color:var(--grid-green);background:rgba(0,255,65,0.05)}
+.pair-tab.suitable{border-color:rgba(0,255,65,0.3)}
+.pair-tab.unsuitable{border-color:rgba(255,34,34,0.3);color:rgba(255,113,113,0.6)}
+
+/* gauge wrapper */
+.gauge-pair{
+  display:flex;flex-direction:column;gap:14px;
+}
+.gauge-card{
+  background:var(--card);border:1px solid var(--border-dim);
+  padding:14px 16px;
+  display:flex;flex-direction:column;align-items:center;gap:8px;
+}
+.gauge-label{
+  font-family:var(--font-mono);font-size:0.55rem;letter-spacing:0.25em;
+  text-transform:uppercase;color:var(--text-secondary);
+}
+.gauge-svg-wrap{position:relative;width:120px;height:120px}
+.gauge-svg-wrap svg{width:120px;height:120px}
+.gauge-center{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+}
+.gauge-value{
+  font-family:var(--font-monster);font-size:1.4rem;color:var(--text);
+  line-height:1;
+}
+.gauge-verdict{
+  font-family:var(--font-mono);font-size:0.5rem;letter-spacing:0.15em;
+  text-transform:uppercase;margin-top:2px;
+}
+.verdict-open{color:var(--grid-green)}
+.verdict-locked{color:var(--warn-amber)}
+.verdict-danger{color:var(--kill-red)}
+
+/* lock icon */
+.gate-lock-wrap{
+  display:flex;flex-direction:column;align-items:center;gap:6px;
+  padding:12px;border:1px solid var(--border-dim);background:var(--card);
+}
+.gate-lock-icon{transition:all 0.4s}
+.gate-lock-icon.locked{animation:lockSwing 0.5s ease-out}
+.gate-status-text{
+  font-family:var(--font-mono);font-size:0.6rem;letter-spacing:0.2em;
+  text-transform:uppercase;
+}
+.gate-open .gate-status-text{color:var(--grid-green)}
+.gate-locked .gate-status-text{color:var(--warn-amber)}
+
+/* pair analysis table */
+.analysis-table{
+  width:100%;border-collapse:collapse;
+  font-family:var(--font-mono);font-size:0.62rem;
+}
+.analysis-table th{
+  text-align:left;padding:4px 6px;
+  color:var(--text-muted);font-weight:400;letter-spacing:0.1em;
+  border-bottom:1px solid var(--border-dim);font-size:0.55rem;
+}
+.analysis-table td{
+  padding:4px 6px;border-bottom:1px solid rgba(201,162,39,0.04);
+  color:var(--text-secondary);
+}
+.analysis-table td.suitable{color:var(--grid-green)}
+.analysis-table td.unsuitable{color:var(--red)}
+.analysis-table td.pair-name{color:var(--text);font-family:var(--font-serif);font-style:italic}
+
+/* ── ZONE 2: THE GRID (center) ── */
+.zone-grid{
+  flex:1;
+  border-right:1px solid var(--border-dim);
+  background:var(--bg);
+  display:flex;flex-direction:column;
+  overflow:hidden;
+  position:relative;
+}
+.grid-header{
+  flex-shrink:0;padding:12px 20px 8px;
+  border-bottom:1px solid var(--border-dim);
+  display:flex;align-items:center;gap:16px;
+}
+.grid-pair-name{
+  font-family:var(--font-monster);font-size:1.1rem;letter-spacing:0.15em;
+  color:var(--price-cyan);
+  text-shadow:0 0 10px rgba(0,200,255,0.3);
+}
+.grid-range-label{
+  font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);
+  margin-left:auto;
+}
+.grid-price-tag{
+  font-family:var(--font-monster);font-size:1.3rem;
+  color:var(--warn-amber);
+  text-shadow:0 0 8px rgba(255,102,0,0.4);
+}
+
+/* grid canvas area */
+.grid-canvas-wrap{
+  flex:1;position:relative;overflow:hidden;
+}
+#gridCanvas{
+  width:100%;height:100%;display:block;
+}
+.grid-feeding #gridCanvas{
+  animation:gridBreathe 3s ease-in-out infinite;
+}
+
+/* no-grid message */
+.grid-no-data{
+  position:absolute;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  font-family:var(--font-serif);font-size:1.2rem;font-weight:300;
+  letter-spacing:0.2em;color:var(--text-muted);text-transform:uppercase;
+  gap:8px;
+}
+.grid-no-data .sub{font-size:0.7rem;letter-spacing:0.3em;color:var(--text-muted)}
+
+/* ── ZONE 3: STATS (right) ── */
+.zone-stats{
+  width:28%;flex-shrink:0;
+  background:var(--surface);
+  display:flex;flex-direction:column;
+  overflow-y:auto;
+  padding:16px 20px;
+  gap:12px;
+}
+
+/* stat card */
+.stat-card{
+  background:var(--card);border:1px solid var(--border-dim);
+  padding:14px 16px;
+}
+.stat-card-label{
+  font-family:var(--font-mono);font-size:0.55rem;letter-spacing:0.25em;
+  text-transform:uppercase;color:var(--text-secondary);margin-bottom:4px;
+}
+.stat-card-value{
+  font-family:var(--font-monster);font-size:1.8rem;color:var(--text);
+  line-height:1;
+}
+.stat-card-sub{
+  font-family:var(--font-mono);font-size:0.6rem;color:var(--text-muted);
+  margin-top:4px;
+}
+.pnl-pos{color:var(--green)}
+.pnl-neg{color:var(--red)}
+.pnl-neutral{color:var(--text-muted)}
+
+/* win rate bar */
+.winrate-track{
+  width:100%;height:6px;background:rgba(255,255,255,0.05);
+  border-radius:2px;overflow:hidden;margin:6px 0 2px;
+  position:relative;
+}
+.winrate-fill{
+  height:100%;border-radius:2px;
+  background:linear-gradient(90deg,var(--green),var(--grid-green));
+  transition:width 0.6s ease;
+}
+.winrate-labels{
+  display:flex;justify-content:space-between;
+  font-family:var(--font-mono);font-size:0.55rem;color:var(--text-muted);
+}
+
+/* drawdown meter */
+.dd-track{
+  width:100%;height:10px;background:rgba(255,255,255,0.04);
+  border-radius:2px;overflow:hidden;margin:6px 0 2px;
+  position:relative;
+}
+.dd-fill{
+  height:100%;border-radius:2px;
+  background:linear-gradient(90deg,rgba(255,102,0,0.6),var(--kill-red));
+  transition:width 0.6s ease;
+}
+.dd-fill.danger{animation:drawdownPulse 1s ease-in-out infinite}
+.dd-markers{
+  position:absolute;inset:0;pointer-events:none;
+}
+.dd-marker{
+  position:absolute;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.15);
+}
+.dd-labels{
+  display:flex;justify-content:space-between;
+  font-family:var(--font-mono);font-size:0.55rem;color:var(--text-muted);
+}
+
+/* fee breakdown */
+.fee-row{
+  display:flex;justify-content:space-between;align-items:center;
+  font-family:var(--font-mono);font-size:0.65rem;
+  padding:3px 0;border-bottom:1px solid rgba(201,162,39,0.04);
+}
+.fee-row .label{color:var(--text-muted)}
+.fee-row .value{color:var(--text)}
+.fee-row.warn .value{color:var(--warn-amber)}
+.fee-row.danger .value{color:var(--kill-red)}
+
+/* active levels gauge */
+.levels-row{
+  display:flex;align-items:baseline;gap:4px;
+  font-family:var(--font-monster);
+}
+.levels-active{font-size:2rem;color:var(--grid-green)}
+.levels-sep{font-size:0.9rem;color:var(--text-muted)}
+.levels-total{font-size:0.9rem;color:var(--text-muted)}
+
+/* trade history mini */
+.history-entry{
+  display:flex;align-items:center;gap:8px;padding:4px 0;
+  border-bottom:1px solid rgba(201,162,39,0.04);
+  font-family:var(--font-mono);font-size:0.6rem;
+}
+.history-pair{color:var(--text);width:64px;flex-shrink:0}
+.history-status{flex:1}
+.history-status.range-broken{color:var(--warn-amber)}
+.history-status.completed{color:var(--green)}
+.history-pnl{text-align:right;width:48px}
+
+/* expectancy section */
+.exp-grid{
+  display:grid;grid-template-columns:1fr 1fr;gap:6px;
+}
+.exp-cell{
+  background:rgba(255,255,255,0.02);
+  padding:8px 10px;
+}
+.exp-cell-label{
+  font-family:var(--font-mono);font-size:0.5rem;letter-spacing:0.15em;
+  text-transform:uppercase;color:var(--text-muted);margin-bottom:3px;
+}
+.exp-cell-val{
+  font-family:var(--font-monster);font-size:0.95rem;color:var(--text);
+}
+
+/* ── BOTTOM NAV BAR ── */
+.bottom-nav{
+  flex-shrink:0;
+  background:var(--surface);
+  border-top:1px solid var(--border-dim);
+  display:flex;flex-direction:column;
+}
+.bot-nav-row{
+  display:flex;align-items:stretch;
+  height:34px;overflow-x:auto;
+  border-bottom:1px solid var(--border-dim);
+}
+.bot-nav-tab{
+  display:flex;align-items:center;gap:5px;padding:0 12px;
+  font-family:var(--font-mono);font-size:0.58rem;letter-spacing:0.1em;text-transform:uppercase;
+  cursor:pointer;color:var(--text-muted);border-bottom:2px solid transparent;
+  white-space:nowrap;flex-shrink:0;text-decoration:none;
+  transition:all 0.15s;background:none;border-top:none;border-left:none;border-right:none;
+}
+.bot-nav-tab:hover{color:var(--text-secondary)}
+.bot-nav-tab.active{color:var(--grid-green);border-bottom-color:var(--grid-green)}
+.bot-nav-dot{width:4px;height:4px;border-radius:50%;background:currentColor;opacity:0.6}
+
+/* intel strip */
+.intel-strip{
+  display:flex;align-items:center;gap:20px;padding:4px 20px;
+  font-family:var(--font-mono);font-size:0.58rem;
+  min-height:26px;
+  overflow-x:auto;
+}
+.intel-chip{
+  display:flex;align-items:center;gap:5px;
+  white-space:nowrap;flex-shrink:0;
+}
+.intel-chip .i-label{color:var(--text-muted);letter-spacing:0.08em}
+.intel-chip .i-val{color:var(--text)}
+.intel-chip .i-val.warn{color:var(--warn-amber)}
+.intel-chip .i-val.ok{color:var(--green)}
+.intel-chip .i-val.danger{color:var(--kill-red)}
+.intel-divider{width:1px;height:14px;background:var(--border-dim);flex-shrink:0}
+
+/* ── OFFLINE STATE ── */
+.offline-overlay{
+  display:none;position:fixed;inset:0;z-index:5000;
+  background:rgba(7,7,12,0.96);
+  flex-direction:column;align-items:center;justify-content:center;gap:16px;
+}
+.offline-overlay.show{display:flex}
+.offline-title{
+  font-family:var(--font-monster);font-size:2rem;letter-spacing:0.4em;
+  color:var(--text-muted);text-transform:uppercase;
+}
+.offline-sub{
+  font-family:var(--font-mono);font-size:0.65rem;letter-spacing:0.2em;
+  color:var(--text-muted);
+}
+.offline-spinner{
+  width:24px;height:24px;border:2px solid var(--border-dim);
+  border-top-color:var(--gold);border-radius:50%;
+  animation:spin 1s linear infinite;
+}
+</style>
+</head>
+<body>
+
+<!-- Flash overlay for state transitions -->
+<div id="stateFlashOverlay"></div>
+
+<!-- Offline overlay -->
+<div class="offline-overlay" id="offlineOverlay">
+  <div class="offline-spinner"></div>
+  <div class="offline-title">OFFLINE</div>
+  <div class="offline-sub" id="offlineSub">connecting to port 8077…</div>
+</div>
+
+<!-- ── HEADER ── -->
+<header class="v3-header">
+  <div class="header-wordmark">GRIDZILLA</div>
+  <div class="header-center">
+    <div class="header-chip"><span class="label">REGIME</span><span class="val" id="hRegime">--</span></div>
+    <div class="header-chip"><span class="label">GRIDS</span><span class="val" id="hGrids">--</span></div>
+    <div class="header-chip"><span class="label">NET P&amp;L</span><span class="val" id="hNetPnl">--</span></div>
+    <div class="header-chip"><span class="label">CYCLES</span><span class="val" id="hCycles">--</span></div>
+    <div class="header-chip"><span class="label">AEGIS</span><span class="val" id="hAegis">--</span></div>
+  </div>
+  <div class="header-right">
+    <div class="header-clock" id="headerClock">--:--:--</div>
+    <div class="sse-dot" id="sseDot"></div>
+  </div>
+</header>
+
+<!-- ── MONSTER STATE BANNER ── -->
+<div id="monsterBanner" class="state-sleeping">
+  <div class="monster-state-text" id="monsterStateText">SLEEPING</div>
+  <div class="monster-lock-reason" id="monsterLockReason">&nbsp;</div>
+  <div class="monster-meta">
+    <span>UPTIME <span class="hi" id="metaUptime">--</span>h</span>
+    <span>SCANS <span class="hi" id="metaScans">--</span></span>
+    <span>VERSION <span class="hi" id="metaVersion">--</span></span>
+    <span>STATUS <span class="hi" id="metaStatus">--</span></span>
+  </div>
+</div>
+
+<!-- ── BODY ── -->
+<div class="body-row">
+
+  <!-- ZONE 1: REGIME GATE -->
+  <div class="zone-regime">
+    <div class="zone-title">Regime Gate</div>
+
+    <!-- Pair selector tabs -->
+    <div class="pair-tabs" id="pairTabs"></div>
+
+    <!-- ADX Gauge -->
+    <div class="gauge-pair">
+      <div class="gauge-card">
+        <div class="gauge-label">ADX — Trend Strength</div>
+        <div class="gauge-svg-wrap">
+          <svg viewBox="0 0 120 120" id="adxSvg">
+            <!-- background arc -->
+            <path d="M 15 90 A 52 52 0 0 1 105 90" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="8" stroke-linecap="round"/>
+            <!-- threshold marker at ~25/60 of arc = ~42% -->
+            <line x1="60" y1="8" x2="60" y2="18" stroke="rgba(201,162,39,0.4)" stroke-width="1.5"/>
+            <!-- value arc -->
+            <path d="M 15 90 A 52 52 0 0 1 105 90" fill="none" id="adxArc" stroke="var(--grid-green)" stroke-width="8" stroke-linecap="round"
+              stroke-dasharray="163" stroke-dashoffset="163"/>
+          </svg>
+          <div class="gauge-center">
+            <div class="gauge-value" id="adxValue">--</div>
+            <div class="gauge-verdict" id="adxVerdict">---</div>
+          </div>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:0.55rem;color:var(--text-muted);text-align:center">
+          THRESHOLD: &lt;25 RANGING
+        </div>
+      </div>
+
+      <!-- Hurst Gauge -->
+      <div class="gauge-card">
+        <div class="gauge-label">HURST EXPONENT</div>
+        <div class="gauge-svg-wrap">
+          <svg viewBox="0 0 120 120" id="hurstSvg">
+            <path d="M 15 90 A 52 52 0 0 1 105 90" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="8" stroke-linecap="round"/>
+            <!-- 0.5 midpoint marker -->
+            <line x1="60" y1="8" x2="60" y2="18" stroke="rgba(201,162,39,0.4)" stroke-width="1.5"/>
+            <path d="M 15 90 A 52 52 0 0 1 105 90" fill="none" id="hurstArc" stroke="var(--grid-green)" stroke-width="8" stroke-linecap="round"
+              stroke-dasharray="163" stroke-dashoffset="163"/>
+          </svg>
+          <div class="gauge-center">
+            <div class="gauge-value" id="hurstValue">--</div>
+            <div class="gauge-verdict" id="hurstVerdict">---</div>
+          </div>
+        </div>
+        <div style="font-family:var(--font-mono);font-size:0.55rem;color:var(--text-muted);text-align:center">
+          &gt;0.5 = MEAN-REVERTING
+        </div>
+      </div>
+    </div>
+
+    <!-- Gate Lock -->
+    <div class="gate-lock-wrap" id="gateLockWrap">
+      <svg class="gate-lock-icon" id="gateLockIcon" width="36" height="36" viewBox="0 0 36 36">
+        <!-- open lock shackle -->
+        <path id="lockShackle" d="M 11 16 L 11 11 A 7 7 0 0 1 25 11 L 25 16" fill="none" stroke="var(--text-muted)" stroke-width="2.5" stroke-linecap="round"/>
+        <rect id="lockBody" x="8" y="16" width="20" height="14" rx="3" fill="none" stroke="var(--text-muted)" stroke-width="2.5"/>
+        <circle id="lockDot" cx="18" cy="22" r="2.5" fill="var(--text-muted)"/>
+      </svg>
+      <div class="gate-status-text" id="gateStatusText">GATE OPEN</div>
+    </div>
+
+    <!-- Pair Analysis Table -->
+    <div>
+      <div class="zone-title" style="margin-bottom:8px">Pair Analysis</div>
+      <table class="analysis-table">
+        <thead>
+          <tr>
+            <th>Pair</th>
+            <th>ADX</th>
+            <th>Hurst</th>
+            <th>Score</th>
+            <th>OK</th>
+          </tr>
+        </thead>
+        <tbody id="pairAnalysisBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ZONE 2: THE GRID -->
+  <div class="zone-grid" id="zoneGrid">
+    <div class="grid-header">
+      <div class="grid-pair-name" id="gridPairName">SELECT PAIR</div>
+      <div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-secondary)" id="gridRangeLabel">range: --</div>
+      <div class="grid-price-tag" id="gridPriceTag">--</div>
+      <div class="grid-range-label" id="gridStatusLabel"></div>
+    </div>
+    <div class="grid-canvas-wrap">
+      <canvas id="gridCanvas"></canvas>
+      <div class="grid-no-data" id="gridNoData">
+        <span>NO GRID DATA</span>
+        <span class="sub">waiting for active levels</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ZONE 3: STATS -->
+  <div class="zone-stats">
+    <div class="zone-title">Fleet Stats</div>
+
+    <!-- Cycle Counter -->
+    <div class="stat-card">
+      <div class="stat-card-label">Total Cycles</div>
+      <div class="stat-card-value" id="statCycles">--</div>
+      <div class="stat-card-sub" id="statGridCount">-- active grids</div>
+    </div>
+
+    <!-- Net P&L -->
+    <div class="stat-card">
+      <div class="stat-card-label">Net P&amp;L (all grids)</div>
+      <div class="stat-card-value pnl-neutral" id="statNetPnl">$--</div>
+      <div>
+        <div class="fee-row">
+          <span class="label">Gross P&amp;L</span>
+          <span class="value" id="statGrossPnl">--</span>
+        </div>
+        <div class="fee-row warn">
+          <span class="label">Total Fees</span>
+          <span class="value" id="statFees">--</span>
+        </div>
+        <div class="fee-row" id="feesPctRow">
+          <span class="label">Fees % of Gross</span>
+          <span class="value" id="statFeesPct">--</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Win Rate -->
+    <div class="stat-card">
+      <div class="stat-card-label">Win Rate</div>
+      <div class="stat-card-value" id="statWinRate">--%</div>
+      <div class="winrate-track">
+        <div class="winrate-fill" id="winrateBar" style="width:0%"></div>
+      </div>
+      <div class="winrate-labels">
+        <span id="winrateWins">0W</span>
+        <span id="winrateLosses">0L</span>
+        <span id="winrateTrades">0 total</span>
+      </div>
+    </div>
+
+    <!-- Drawdown Meter -->
+    <div class="stat-card">
+      <div class="stat-card-label">Max Drawdown — Kill at 5%</div>
+      <div class="stat-card-value" id="statDrawdown">--%</div>
+      <div class="dd-track">
+        <div class="dd-fill" id="drawdownBar" style="width:0%">
+          <div class="dd-markers">
+            <div class="dd-marker" style="left:60%"></div><!-- 3% warning -->
+          </div>
+        </div>
+      </div>
+      <div class="dd-labels">
+        <span>0%</span><span>3%</span><span>5%</span>
+      </div>
+    </div>
+
+    <!-- Expectancy Stats -->
+    <div class="stat-card">
+      <div class="stat-card-label">Expectancy Engine</div>
+      <div class="exp-grid" id="expectancyGrid">
+        <div class="exp-cell"><div class="exp-cell-label">Exp/Trade</div><div class="exp-cell-val" id="expPerTrade">--</div></div>
+        <div class="exp-cell"><div class="exp-cell-label">Profit Factor</div><div class="exp-cell-val" id="expProfitFactor">--</div></div>
+        <div class="exp-cell"><div class="exp-cell-label">Avg Win</div><div class="exp-cell-val pnl-pos" id="expAvgWin">--</div></div>
+        <div class="exp-cell"><div class="exp-cell-label">Avg Loss</div><div class="exp-cell-val pnl-neg" id="expAvgLoss">--</div></div>
+        <div class="exp-cell"><div class="exp-cell-label">Best</div><div class="exp-cell-val pnl-pos" id="expBest">--</div></div>
+        <div class="exp-cell"><div class="exp-cell-label">Worst</div><div class="exp-cell-val pnl-neg" id="expWorst">--</div></div>
+      </div>
+      <div class="fee-row" style="margin-top:6px">
+        <span class="label">Consec. Losses</span>
+        <span class="value" id="expConsecLoss">--</span>
+      </div>
+    </div>
+
+    <!-- Intel -->
+    <div class="stat-card">
+      <div class="stat-card-label">Bus Intel</div>
+      <div class="fee-row">
+        <span class="label">AEGIS Regime</span>
+        <span class="value" id="intelAegis">--</span>
+      </div>
+      <div class="fee-row">
+        <span class="label">Whale Alert</span>
+        <span class="value" id="intelWhale">--</span>
+      </div>
+      <div class="fee-row">
+        <span class="label">PHITEX Critical</span>
+        <span class="value" id="intelPhitex">--</span>
+      </div>
+      <div class="fee-row">
+        <span class="label">Paused</span>
+        <span class="value" id="intelPaused">--</span>
+      </div>
+    </div>
+
+    <!-- Trade History -->
+    <div class="stat-card">
+      <div class="stat-card-label">Recent Trade History</div>
+      <div id="tradeHistoryList"></div>
+    </div>
+  </div>
+
+</div><!-- /body-row -->
+
+<!-- ── BOTTOM NAV ── -->
+<div class="bottom-nav">
+  <div class="bot-nav-row" id="botNavRow">
+    <button class="bot-nav-tab active" onclick="window.location.href='http://localhost:9000'">
+      <div class="bot-nav-dot"></div>CC
+    </button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8070')"><div class="bot-nav-dot"></div>TurtleSue</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8071')"><div class="bot-nav-dot"></div>Sentinel</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8072')"><div class="bot-nav-dot"></div>Trinity</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8073')"><div class="bot-nav-dot"></div>HiveMind</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8074')"><div class="bot-nav-dot"></div>NexusBrain</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8080')"><div class="bot-nav-dot"></div>TrekBot</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8075')"><div class="bot-nav-dot"></div>Oracle</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8076')"><div class="bot-nav-dot"></div>Deep Blue</button>
+    <button class="bot-nav-tab active" style="border-bottom-color:var(--grid-green);color:var(--grid-green)">
+      <div class="bot-nav-dot"></div>GRIDZILLA
+    </button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8078')"><div class="bot-nav-dot"></div>PHITEX</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8079')"><div class="bot-nav-dot"></div>AEGIS</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8082')"><div class="bot-nav-dot"></div>NEXUS</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8083')"><div class="bot-nav-dot"></div>Rubberband</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8084')"><div class="bot-nav-dot"></div>Contrarian</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8085')"><div class="bot-nav-dot"></div>Arbitrageur</button>
+    <button class="bot-nav-tab" onclick="window.open('http://localhost:8086')"><div class="bot-nav-dot"></div>Chronos</button>
+  </div>
+  <div class="intel-strip" id="intelStrip">
+    <div class="intel-chip"><span class="i-label">WHALE</span>&nbsp;<span class="i-val" id="stripWhale">--</span></div>
+    <div class="intel-divider"></div>
+    <div class="intel-chip"><span class="i-label">AEGIS</span>&nbsp;<span class="i-val" id="stripAegis">--</span></div>
+    <div class="intel-divider"></div>
+    <div class="intel-chip"><span class="i-label">AEGIS SCORE</span>&nbsp;<span class="i-val" id="stripAegisScore">--</span></div>
+    <div class="intel-divider"></div>
+    <div class="intel-chip"><span class="i-label">PAUSED</span>&nbsp;<span class="i-val" id="stripPaused">--</span></div>
+    <div class="intel-divider"></div>
+    <div class="intel-chip"><span class="i-label">SUITABLE PAIRS</span>&nbsp;<span class="i-val" id="stripSuitable">--</span></div>
+    <div class="intel-divider"></div>
+    <div class="intel-chip"><span class="i-label">UPTIME</span>&nbsp;<span class="i-val" id="stripUptime">--</span>h</div>
+    <div class="intel-divider"></div>
+    <div class="intel-chip"><span class="i-label">SCANS</span>&nbsp;<span class="i-val" id="stripScans">--</span></div>
+  </div>
+</div>
+
+<script>
+(function(){
+"use strict";
+
+var API_URL = 'http://localhost:8077/api/snapshot';
+var POLL_INTERVAL = 2000;
+
+/* ── STATE ── */
+var lastData = null;
+var lastMonsterState = null;
+var activePair = null;
+var failCount = 0;
+var pollTimer = null;
+
+/* ── DOM REFS ── */
+var $sseDot         = document.getElementById('sseDot');
+var $offlineOverlay = document.getElementById('offlineOverlay');
+var $offlineSub     = document.getElementById('offlineSub');
+var $monsterBanner  = document.getElementById('monsterBanner');
+var $monsterState   = document.getElementById('monsterStateText');
+var $monsterReason  = document.getElementById('monsterLockReason');
+var $flashOverlay   = document.getElementById('stateFlashOverlay');
+var $gridCanvas     = document.getElementById('gridCanvas');
+var $gridNoData     = document.getElementById('gridNoData');
+var $zoneGrid       = document.getElementById('zoneGrid');
+var $pairTabs       = document.getElementById('pairTabs');
+
+/* ── CLOCK ── */
+function tickClock() {
+  var now = new Date();
+  var h = ('0'+now.getHours()).slice(-2);
+  var m = ('0'+now.getMinutes()).slice(-2);
+  var s = ('0'+now.getSeconds()).slice(-2);
+  document.getElementById('headerClock').textContent = h+':'+m+':'+s;
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+/* ── HELPERS ── */
+function fmt(v, decimals, prefix) {
+  if (v === null || v === undefined || v !== v) return '--';
+  var d = decimals !== undefined ? decimals : 2;
+  var p = prefix || '';
+  return p + Number(v).toFixed(d);
+}
+function fmtPnl(v) {
+  if (v === null || v === undefined || v !== v) return '--';
+  var s = Number(v).toFixed(4);
+  return (v >= 0 ? '+' : '') + s;
+}
+function fmtClass(v) {
+  if (v === null || v === undefined) return '';
+  return v > 0 ? 'pnl-pos' : v < 0 ? 'pnl-neg' : 'pnl-neutral';
+}
+function setText(id, val) {
+  var el = document.getElementById(id);
+  if (el) el.textContent = val;
+}
+function setClass(id, cls) {
+  var el = document.getElementById(id);
+  if (el) el.className = cls;
+}
+
+/* ── GAUGE ARC MATH ── */
+// Arc from bottom-left (15,90) to bottom-right (105,90), half circle top
+// Total arc length ~163px for r=52
+function setArcFill(arcId, ratio) {
+  var el = document.getElementById(arcId);
+  if (!el) return;
+  var total = 163;
+  var offset = total - Math.max(0, Math.min(1, ratio)) * total;
+  el.setAttribute('stroke-dashoffset', offset.toFixed(1));
+}
+function setArcColor(arcId, color) {
+  var el = document.getElementById(arcId);
+  if (el) el.setAttribute('stroke', color);
+}
+
+/* ── MONSTER STATE LOGIC ── */
+function computeMonsterState(data) {
+  // SLEEPING: DEFENSIVE regime, or explicitly paused, or intel paused
+  if (data.regime === 'DEFENSIVE' || (data.intel && data.intel.paused)) {
+    return 'SLEEPING';
+  }
+  // Check any active grid has filled levels
+  var grids = data.active_grids || {};
+  var keys = Object.keys(grids);
+  for (var i = 0; i < keys.length; i++) {
+    var g = grids[keys[i]];
+    if (g.filled && g.filled > 0) return 'FEEDING';
+    if (g.cycles && g.cycles > 0) return 'FEEDING';
+  }
+  // Gate open but no fills
+  return 'HUNTING';
+}
+
+function getMonsterReason(data, state) {
+  if (state === 'SLEEPING') {
+    if (data.intel && data.intel.paused) return 'manually paused';
+    return 'regime: ' + (data.regime || 'DEFENSIVE') + (data.intel && data.intel.aegis_regime ? ' / AEGIS: ' + data.intel.aegis_regime : '');
+  }
+  if (state === 'HUNTING') {
+    return 'regime gate open — scanning ' + (data.n_active_grids || 0) + ' pairs';
+  }
+  // FEEDING
+  var fills = 0;
+  var grids = data.active_grids || {};
+  Object.keys(grids).forEach(function(k) { fills += grids[k].filled || 0; });
+  return fills + ' filled levels across ' + (data.n_active_grids || 0) + ' grids';
+}
+
+function applyMonsterState(state, reason) {
+  if (state === lastMonsterState) {
+    // just update reason
+    $monsterReason.textContent = reason || '\u00a0';
+    return;
+  }
+  // Flash
+  $flashOverlay.className = 'flash-' + state.toLowerCase();
+  // Force reflow
+  void $flashOverlay.offsetWidth;
+  $flashOverlay.classList.add('active');
+  setTimeout(function() { $flashOverlay.className = ''; }, 600);
+
+  $monsterBanner.className = 'state-' + state.toLowerCase();
+  $monsterState.textContent = state;
+  $monsterReason.textContent = reason || '\u00a0';
+  lastMonsterState = state;
+
+  // Grid breathing
+  if (state === 'FEEDING') {
+    $zoneGrid.classList.add('grid-feeding');
+  } else {
+    $zoneGrid.classList.remove('grid-feeding');
+  }
+}
+
+/* ── GAUGE UPDATE ── */
+function updateGauges(pairData) {
+  if (!pairData) {
+    setArcFill('adxArc', 0);
+    setArcFill('hurstArc', 0);
+    setText('adxValue', '--');
+    setText('hurstValue', '--');
+    document.getElementById('adxVerdict').textContent = '---';
+    document.getElementById('adxVerdict').className = 'gauge-verdict';
+    document.getElementById('hurstVerdict').textContent = '---';
+    document.getElementById('hurstVerdict').className = 'gauge-verdict';
+    return;
+  }
+
+  // ADX: 0-60 scale, threshold 25
+  var adx = pairData.adx;
+  var adxRatio = Math.min(1, (adx || 0) / 60);
+  setArcFill('adxArc', adxRatio);
+  setText('adxValue', adx !== undefined ? adx.toFixed(1) : '--');
+
+  var adxVerdictEl = document.getElementById('adxVerdict');
+  if (adx < 20) {
+    adxVerdictEl.textContent = 'RANGING';
+    adxVerdictEl.className = 'gauge-verdict verdict-open';
+    setArcColor('adxArc', 'var(--grid-green)');
+  } else if (adx < 25) {
+    adxVerdictEl.textContent = 'BORDERLINE';
+    adxVerdictEl.className = 'gauge-verdict verdict-locked';
+    setArcColor('adxArc', 'var(--warn-amber)');
+  } else {
+    adxVerdictEl.textContent = 'TRENDING';
+    adxVerdictEl.className = 'gauge-verdict verdict-danger';
+    setArcColor('adxArc', 'var(--kill-red)');
+  }
+
+  // Hurst: display 0.3-0.8 range, ideal > 0.5
+  var hurst = pairData.hurst;
+  var hurstRatio = hurst ? Math.min(1, Math.max(0, (hurst - 0.3) / 0.5)) : 0;
+  setArcFill('hurstArc', hurstRatio);
+  setText('hurstValue', hurst !== undefined ? hurst.toFixed(3) : '--');
+
+  var hurstVerdictEl = document.getElementById('hurstVerdict');
+  if (hurst > 0.55) {
+    hurstVerdictEl.textContent = 'MEAN-REVERTING';
+    hurstVerdictEl.className = 'gauge-verdict verdict-open';
+    setArcColor('hurstArc', 'var(--grid-green)');
+  } else if (hurst >= 0.5) {
+    hurstVerdictEl.textContent = 'MILD REVERT';
+    hurstVerdictEl.className = 'gauge-verdict verdict-locked';
+    setArcColor('hurstArc', 'var(--warn-amber)');
+  } else {
+    hurstVerdictEl.textContent = 'RANDOM WALK';
+    hurstVerdictEl.className = 'gauge-verdict verdict-danger';
+    setArcColor('hurstArc', 'var(--kill-red)');
+  }
+}
+
+/* ── GATE LOCK ── */
+function updateGateLock(pairData) {
+  var suitable = pairData && pairData.suitable;
+  var wrap = document.getElementById('gateLockWrap');
+  var icon = document.getElementById('gateLockIcon');
+  var shackle = document.getElementById('lockShackle');
+  var lockBody = document.getElementById('lockBody');
+  var lockDot = document.getElementById('lockDot');
+
+  if (suitable) {
+    wrap.className = 'gate-lock-wrap gate-open';
+    // Open lock: shackle raised and offset
+    shackle.setAttribute('d', 'M 11 16 L 11 8 A 7 7 0 0 1 25 8 L 25 16');
+    shackle.setAttribute('stroke', 'var(--grid-green)');
+    lockBody.setAttribute('stroke', 'var(--grid-green)');
+    lockDot.setAttribute('fill', 'var(--grid-green)');
+    document.getElementById('gateStatusText').textContent = 'GATE OPEN';
+  } else {
+    wrap.className = 'gate-lock-wrap gate-locked';
+    shackle.setAttribute('d', 'M 11 16 L 11 11 A 7 7 0 0 1 25 11 L 25 16');
+    shackle.setAttribute('stroke', 'var(--warn-amber)');
+    lockBody.setAttribute('stroke', 'var(--warn-amber)');
+    lockDot.setAttribute('fill', 'var(--warn-amber)');
+    var reason = '';
+    if (pairData) reason = pairData.regime || 'UNSUITABLE';
+    document.getElementById('gateStatusText').textContent = reason ? ('LOCKED: ' + reason) : 'GATE LOCKED';
+    icon.classList.add('locked');
+    setTimeout(function(){ icon.classList.remove('locked'); }, 600);
+  }
+}
+
+/* ── PAIR TABS ── */
+function buildPairTabs(pairAnalysis, activeGrids) {
+  var pairs = Object.keys(pairAnalysis || {});
+  if (!activePair && pairs.length > 0) activePair = pairs[0];
+
+  $pairTabs.innerHTML = '';
+  pairs.forEach(function(pair) {
+    var pa = pairAnalysis[pair];
+    var btn = document.createElement('button');
+    btn.className = 'pair-tab' + (pa.suitable ? ' suitable' : ' unsuitable') + (pair === activePair ? ' active' : '');
+    // Abbreviate: BTC/USD -> BTC
+    btn.textContent = pair.split('/')[0];
+    btn.title = pair + ' | ADX:' + (pa.adx||'?') + ' H:' + (pa.hurst||'?') + ' Score:' + (pa.grid_score||0);
+    btn.onclick = (function(p){ return function(){ activePair = p; if(lastData) renderPair(lastData); }; })(pair);
+    $pairTabs.appendChild(btn);
+  });
+}
+
+/* ── PAIR ANALYSIS TABLE ── */
+function buildAnalysisTable(pairAnalysis) {
+  var tbody = document.getElementById('pairAnalysisBody');
+  if (!tbody) return;
+  var pairs = Object.keys(pairAnalysis || {});
+  var rows = '';
+  pairs.forEach(function(pair) {
+    var pa = pairAnalysis[pair];
+    rows += '<tr>';
+    rows += '<td class="pair-name">' + pair.split('/')[0] + '</td>';
+    rows += '<td>' + (pa.adx ? pa.adx.toFixed(1) : '--') + '</td>';
+    rows += '<td>' + (pa.hurst ? pa.hurst.toFixed(3) : '--') + '</td>';
+    rows += '<td>' + (pa.grid_score !== undefined ? pa.grid_score : '--') + '</td>';
+    rows += '<td class="' + (pa.suitable ? 'suitable' : 'unsuitable') + '">' + (pa.suitable ? 'Y' : 'N') + '</td>';
+    rows += '</tr>';
+  });
+  tbody.innerHTML = rows;
+}
+
+/* ── GRID CANVAS DRAW ── */
+function drawGrid(gridData, currentPrice) {
+  var canvas = $gridCanvas;
+  if (!canvas) return;
+
+  var W = canvas.offsetWidth;
+  var H = canvas.offsetHeight;
+  if (!W || !H) return;
+
+  // DPI-aware
+  var dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== W * dpr || canvas.height !== H * dpr) {
+    canvas.width = W * dpr;
+    canvas.height = H * dpr;
+  }
+
+  var ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, W, H);
+
+  // Parse range — use regex to handle formats like "65950.00-67046.49"
+  var rangeStr = gridData.range || '';
+  var priceMin, priceMax;
+  var rangeMatch = rangeStr.match(/^(-?[\d.]+)-(-?[\d.]+)$/);
+  if (rangeMatch) {
+    priceMin = parseFloat(rangeMatch[1]);
+    priceMax = parseFloat(rangeMatch[2]);
+  } else if (currentPrice) {
+    priceMin = currentPrice * 0.98;
+    priceMax = currentPrice * 1.02;
+  } else {
+    priceMin = 0; priceMax = 1;
+  }
+
+  if (!priceMin || !priceMax || priceMin >= priceMax) {
+    $gridNoData.style.display = 'flex';
+    return;
+  }
+
+  // Price-to-Y mapping: top = priceMax, bottom = priceMin
+  var PAD_TOP = 30;
+  var PAD_BOT = 30;
+  var drawH = H - PAD_TOP - PAD_BOT;
+
+  function priceToY(p) {
+    return PAD_TOP + (1 - (p - priceMin) / (priceMax - priceMin)) * drawH;
+  }
+
+  // Background
+  ctx.fillStyle = '#07070c';
+  ctx.fillRect(0, 0, W, H);
+
+  // Range boundaries — soft glow
+  ctx.save();
+  ctx.strokeStyle = 'rgba(0,200,255,0.15)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 6]);
+  var yMax = priceToY(priceMax);
+  var yMin = priceToY(priceMin);
+  ctx.beginPath(); ctx.moveTo(0, yMax); ctx.lineTo(W, yMax); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, yMin); ctx.lineTo(W, yMin); ctx.stroke();
+  ctx.restore();
+
+  // Range fill zone
+  ctx.save();
+  ctx.fillStyle = 'rgba(0,255,65,0.02)';
+  ctx.fillRect(0, yMax, W, yMin - yMax);
+  ctx.restore();
+
+  // Range boundary labels
+  ctx.save();
+  ctx.font = '10px "IBM Plex Mono", monospace';
+  ctx.fillStyle = 'rgba(0,200,255,0.4)';
+  ctx.textAlign = 'right';
+  ctx.fillText(priceMax.toFixed(4), W - 6, yMax - 4);
+  ctx.fillText(priceMin.toFixed(4), W - 6, yMin + 12);
+  ctx.restore();
+
+  // Uptime annotation
+  ctx.save();
+  ctx.font = '9px "IBM Plex Mono", monospace';
+  ctx.fillStyle = 'rgba(74,70,61,0.7)';
+  ctx.textAlign = 'left';
+  ctx.fillText('UPTIME: ' + (gridData.uptime_min ? gridData.uptime_min.toFixed(1) + 'min' : '--'), 8, H - 8);
+  ctx.restore();
+
+  // Fee threshold line (approx: 0.26% of range = min fee)
+  var feeThreshPct = 0.0026;
+  var feeThreshPrice = priceMin + (priceMax - priceMin) * feeThreshPct;
+  ctx.save();
+  ctx.strokeStyle = 'rgba(255,102,0,0.3)';
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2,8]);
+  var yFee = priceToY(feeThreshPrice);
+  ctx.beginPath(); ctx.moveTo(0, yFee); ctx.lineTo(W, yFee); ctx.stroke();
+  ctx.fillStyle = 'rgba(255,102,0,0.4)';
+  ctx.font = '9px "IBM Plex Mono", monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText('FEE MIN', 6, yFee - 3);
+  ctx.restore();
+
+  // Grid levels (from active grid data — levels count only, no array from API)
+  // We synthesize evenly-spaced levels from the range since API gives count, not array
+  var levelCount = gridData.levels || 8;
+  var filledCount = gridData.filled || 0;
+  if (levelCount > 0) {
+    var spacing = (priceMax - priceMin) / (levelCount + 1);
+    for (var i = 1; i <= levelCount; i++) {
+      var lvlPrice = priceMin + spacing * i;
+      var yLvl = priceToY(lvlPrice);
+      var isFilled = i <= filledCount;
+
+      ctx.save();
+      if (isFilled) {
+        ctx.strokeStyle = 'rgba(0,255,65,0.85)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([]);
+        ctx.shadowColor = 'rgba(0,255,65,0.4)';
+        ctx.shadowBlur = 4;
+      } else {
+        ctx.strokeStyle = 'rgba(0,255,65,0.22)';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 6]);
+      }
+      ctx.beginPath();
+      ctx.moveTo(40, yLvl);
+      ctx.lineTo(W - 60, yLvl);
+      ctx.stroke();
+
+      // Level price label
+      ctx.setLineDash([]);
+      ctx.shadowBlur = 0;
+      ctx.font = '9px "Share Tech Mono", monospace';
+      ctx.fillStyle = isFilled ? 'rgba(0,255,65,0.7)' : 'rgba(85,102,85,0.6)';
+      ctx.textAlign = 'left';
+      ctx.fillText(lvlPrice.toFixed(4), 4, yLvl + 3);
+
+      // Filled indicator square
+      if (isFilled) {
+        ctx.fillStyle = 'rgba(0,255,65,0.8)';
+        ctx.fillRect(W - 56, yLvl - 4, 8, 8);
+        ctx.fillStyle = 'rgba(0,200,255,0.6)';
+        ctx.font = '8px monospace';
+        ctx.textAlign = 'left';
+        ctx.fillText('BUY', W - 45, yLvl + 3);
+      }
+
+      ctx.restore();
+    }
+  } else {
+    // Range is known but no levels deployed yet — draw a waiting message
+    ctx.save();
+    ctx.font = '11px "Share Tech Mono", monospace';
+    ctx.fillStyle = 'rgba(85,102,85,0.5)';
+    ctx.textAlign = 'center';
+    ctx.fillText('NO LEVELS DEPLOYED', W / 2, H / 2 - 8);
+    ctx.font = '9px "IBM Plex Mono", monospace';
+    ctx.fillStyle = 'rgba(74,70,61,0.4)';
+    ctx.fillText('regime scan in progress', W / 2, H / 2 + 10);
+    ctx.restore();
+  }
+
+  $gridNoData.style.display = 'none';
+
+  // Current price line
+  if (currentPrice && currentPrice > priceMin && currentPrice < priceMax) {
+    var yPrice = priceToY(currentPrice);
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,102,0,0.9)';
+    ctx.lineWidth = 2;
+    ctx.shadowColor = 'rgba(255,102,0,0.5)';
+    ctx.shadowBlur = 6;
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    ctx.moveTo(40, yPrice);
+    ctx.lineTo(W - 60, yPrice);
+    ctx.stroke();
+
+    // Price label box
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = 'rgba(255,102,0,0.9)';
+    var priceStr = currentPrice.toFixed(4);
+    ctx.font = 'bold 10px "Share Tech Mono", monospace';
+    var tw = ctx.measureText(priceStr).width + 8;
+    ctx.fillRect(W - 58, yPrice - 9, tw, 17);
+    ctx.fillStyle = '#07070c';
+    ctx.textAlign = 'left';
+    ctx.fillText(priceStr, W - 54, yPrice + 3);
+    ctx.restore();
+  }
+
+  // Cycle count watermark
+  if (gridData.cycles > 0) {
+    ctx.save();
+    ctx.font = '48px "Share Tech Mono", monospace';
+    ctx.fillStyle = 'rgba(0,255,65,0.04)';
+    ctx.textAlign = 'center';
+    ctx.fillText(gridData.cycles + 'x', W/2, H/2 + 20);
+    ctx.restore();
+  }
+}
+
+/* ── RENDER A SPECIFIC PAIR ── */
+function renderPair(data) {
+  var pairAnalysis = data.pair_analysis || {};
+  var activeGrids  = data.active_grids  || {};
+
+  // Update pair tab highlights
+  var tabs = $pairTabs.querySelectorAll('.pair-tab');
+  tabs.forEach(function(t) {
+    t.classList.remove('active');
+    if (t.textContent === (activePair || '').split('/')[0]) t.classList.add('active');
+  });
+
+  // Get pair data
+  var pa = pairAnalysis[activePair] || null;
+  var grid = activeGrids[activePair] || null;
+
+  // Gauges
+  updateGauges(pa);
+  updateGateLock(pa);
+
+  // Grid header
+  setText('gridPairName', activePair || '--');
+  if (grid) {
+    setText('gridRangeLabel', 'range: ' + (grid.range || '--'));
+    setText('gridStatusLabel', grid.status || '');
+  } else {
+    setText('gridRangeLabel', pa ? ('regime: ' + (pa.regime||'--')) : '');
+    setText('gridStatusLabel', '');
+  }
+
+  // Current price — derive from range midpoint (API has no explicit current_price per-pair)
+  var currentPrice = null;
+  if (grid && grid.range) {
+    var rpMatch = grid.range.match(/^(-?[\d.]+)-(-?[\d.]+)$/);
+    if (rpMatch) {
+      currentPrice = (parseFloat(rpMatch[1]) + parseFloat(rpMatch[2])) / 2;
+    }
+  }
+  setText('gridPriceTag', currentPrice ? currentPrice.toFixed(4) : '--');
+
+  // Draw grid canvas
+  if (grid) {
+    drawGrid(grid, currentPrice);
+  } else {
+    // Show blank grid with pair analysis range hint
+    $gridNoData.style.display = 'flex';
+    var ctx = $gridCanvas.getContext('2d');
+    if (ctx) ctx.clearRect(0, 0, $gridCanvas.width, $gridCanvas.height);
+  }
+}
+
+/* ── MAIN UPDATE ── */
+function updateDashboard(data) {
+  lastData = data;
+  failCount = 0;
+  $sseDot.className = 'sse-dot connected';
+  $offlineOverlay.classList.remove('show');
+
+  // Header chips
+  setText('hRegime', data.regime || '--');
+  var netPnlEl = document.getElementById('hNetPnl');
+  if (netPnlEl) {
+    var np = data.net_pnl;
+    netPnlEl.textContent = (np !== undefined && np !== null) ? fmtPnl(np) : '--';
+    netPnlEl.className = 'val ' + fmtClass(np);
+  }
+  setText('hGrids',  data.n_active_grids !== undefined ? data.n_active_grids : '--');
+  setText('hCycles', data.total_cycles !== undefined ? data.total_cycles : '--');
+  setText('hAegis',  data.aegis_score !== undefined ? data.aegis_score.toFixed(2) : '--');
+
+  // Monster banner
+  var monsterState = computeMonsterState(data);
+  var monsterReason = getMonsterReason(data, monsterState);
+  applyMonsterState(monsterState, monsterReason);
+
+  // Meta row
+  setText('metaUptime',  data.uptime_hours !== undefined ? data.uptime_hours.toFixed(1) : '--');
+  setText('metaScans',   data.scan_count !== undefined ? data.scan_count : '--');
+  setText('metaVersion', data.version || '--');
+  setText('metaStatus',  data.status || '--');
+
+  // Pair tabs and analysis
+  var pairAnalysis = data.pair_analysis || {};
+  if (!activePair) {
+    var pairs = Object.keys(pairAnalysis);
+    if (pairs.length) activePair = pairs[0];
+  }
+  buildPairTabs(pairAnalysis, data.active_grids || {});
+  buildAnalysisTable(pairAnalysis);
+
+  // Render selected pair's gate and grid
+  renderPair(data);
+
+  // ── STATS ZONE ──
+  var exp = data.expectancy || {};
+
+  // Cycles & grids
+  setText('statCycles',    data.total_cycles !== undefined ? data.total_cycles : '--');
+  setText('statGridCount', (data.n_active_grids || 0) + ' active grids');
+
+  // PnL cards
+  var netPnlStat = document.getElementById('statNetPnl');
+  if (netPnlStat) {
+    netPnlStat.textContent = data.net_pnl !== undefined ? fmtPnl(data.net_pnl) : '--';
+    netPnlStat.className = 'stat-card-value ' + fmtClass(data.net_pnl);
+  }
+
+  // Gross/fees from expectancy
+  var gross = exp.total_gross_pnl;
+  var fees  = exp.total_fees;
+  var feesPct = exp.fees_pct_of_gross;
+  setText('statGrossPnl', gross !== undefined ? ('$' + fmtPnl(gross)) : '--');
+  setText('statFees',     fees  !== undefined ? ('$' + fees.toFixed(4)) : '--');
+  setText('statFeesPct',  feesPct !== undefined ? (feesPct.toFixed(1) + '%') : '--');
+  // Flag crazy fee ratio
+  var fpRow = document.getElementById('feesPctRow');
+  if (fpRow) fpRow.className = 'fee-row' + (feesPct > 100 ? ' danger' : feesPct > 50 ? ' warn' : '');
+
+  // Win rate
+  var wr = exp.win_rate;
+  setText('statWinRate', wr !== undefined ? (wr.toFixed(1) + '%') : '--%');
+  var wrBar = document.getElementById('winrateBar');
+  if (wrBar) wrBar.style.width = (wr ? Math.min(100, wr) : 0) + '%';
+  setText('winrateWins',   (exp.wins  || 0) + 'W');
+  setText('winrateLosses', (exp.losses|| 0) + 'L');
+  setText('winrateTrades', (exp.total_trades || 0) + ' total');
+
+  // Drawdown — use worst trade as proxy for max drawdown since no drawdown_pct in API
+  var worstTrade = exp.worst_trade;
+  var ddPct = 0;
+  if (worstTrade !== undefined && worstTrade !== null) {
+    // worst_trade is in $ absolute; use fees as % of gross as proxy
+    // Since there's no drawdown_pct key, use max_dd from individual grids
+    var grids = data.active_grids || {};
+    Object.keys(grids).forEach(function(k) {
+      if (grids[k].max_dd > ddPct) ddPct = grids[k].max_dd;
+    });
+  }
+  setText('statDrawdown', ddPct > 0 ? (ddPct.toFixed(2) + '%') : '0%');
+  var ddBar = document.getElementById('drawdownBar');
+  if (ddBar) {
+    var ddFill = Math.min(100, (ddPct / 5) * 100);
+    ddBar.style.width = ddFill + '%';
+    if (ddPct > 3) {
+      ddBar.classList.add('danger');
+    } else {
+      ddBar.classList.remove('danger');
+    }
+  }
+
+  // Expectancy cells
+  setText('expPerTrade',    exp.expectancy_per_trade !== undefined ? fmtPnl(exp.expectancy_per_trade) : '--');
+  setText('expProfitFactor',exp.profit_factor !== undefined ? exp.profit_factor.toFixed(2) : '--');
+  setText('expAvgWin',      exp.avg_win !== undefined ? fmtPnl(exp.avg_win) : '--');
+  setText('expAvgLoss',     exp.avg_loss !== undefined ? fmtPnl(exp.avg_loss) : '--');
+  setText('expBest',        exp.best_trade !== undefined ? fmtPnl(exp.best_trade) : '--');
+  setText('expWorst',       exp.worst_trade !== undefined ? fmtPnl(exp.worst_trade) : '--');
+  setText('expConsecLoss',  exp.max_consecutive_losses !== undefined ? exp.max_consecutive_losses : '--');
+
+  // Intel
+  var intel = data.intel || {};
+  setText('intelAegis',  intel.aegis_regime || '--');
+  var whaleEl = document.getElementById('intelWhale');
+  if (whaleEl) {
+    whaleEl.textContent = intel.whale_alert ? 'ACTIVE' : 'none';
+    whaleEl.className = 'value' + (intel.whale_alert ? ' warn' : '');
+  }
+  var phitexEl = document.getElementById('intelPhitex');
+  if (phitexEl) {
+    phitexEl.textContent = intel.phitex_critical ? 'CRITICAL' : 'no';
+    phitexEl.className = 'value' + (intel.phitex_critical ? ' danger' : '');
+  }
+  var pausedEl = document.getElementById('intelPaused');
+  if (pausedEl) {
+    pausedEl.textContent = intel.paused ? 'YES' : 'no';
+    pausedEl.className = 'value' + (intel.paused ? ' warn' : '');
+  }
+
+  // Trade history
+  var hist = data.trade_history || [];
+  var histHtml = '';
+  hist.slice(-6).reverse().forEach(function(h) {
+    var statusCls = h.status === 'RANGE_BROKEN' ? 'range-broken' : 'completed';
+    histHtml += '<div class="history-entry">';
+    histHtml += '<span class="history-pair">' + (h.pair||'--').split('/')[0] + '</span>';
+    histHtml += '<span class="history-status ' + statusCls + '">' + (h.status||'--') + '</span>';
+    histHtml += '<span class="history-pnl ' + fmtClass(h.pnl) + '">' + (h.pnl !== undefined ? fmtPnl(h.pnl) : '--') + '</span>';
+    histHtml += '</div>';
+  });
+  var histEl = document.getElementById('tradeHistoryList');
+  if (histEl) histEl.innerHTML = histHtml || '<div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--text-muted);padding:4px 0">no history</div>';
+
+  // Intel strip (bottom bar)
+  setText('stripWhale',     intel.whale_alert ? 'ACTIVE' : 'none');
+  setText('stripAegis',     intel.aegis_regime || '--');
+  setText('stripAegisScore',data.aegis_score !== undefined ? data.aegis_score.toFixed(2) : '--');
+  setText('stripPaused',    intel.paused ? 'YES' : 'no');
+
+  var suitableCount = Object.keys(pairAnalysis).filter(function(p) { return pairAnalysis[p].suitable; }).length;
+  setText('stripSuitable',  suitableCount + '/' + Object.keys(pairAnalysis).length);
+  setText('stripUptime',    data.uptime_hours !== undefined ? data.uptime_hours.toFixed(1) : '--');
+  setText('stripScans',     data.scan_count !== undefined ? data.scan_count : '--');
+}
+
+/* ── OFFLINE ── */
+function showOffline() {
+  failCount++;
+  $sseDot.className = 'sse-dot error';
+  if (failCount >= 2) {
+    $offlineOverlay.classList.add('show');
+    $offlineSub.textContent = 'reconnecting… (' + failCount + ' attempts)';
+  }
+}
+
+/* ── POLL LOOP ── */
+function poll() {
+  fetch(API_URL, {signal: AbortSignal.timeout ? AbortSignal.timeout(5000) : undefined})
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) { updateDashboard(data); })
+    .catch(function(e) { showOffline(); });
+  pollTimer = setTimeout(poll, POLL_INTERVAL);
+}
+
+/* ── CANVAS RESIZE HANDLER ── */
+function onResize() {
+  if (lastData && activePair) {
+    var grids = lastData.active_grids || {};
+    var grid = grids[activePair];
+    var currentPrice = null;
+    if (grid && grid.range) {
+      var rp = grid.range.split('-');
+      if (rp.length >= 2) {
+        currentPrice = (parseFloat(rp[0]) + parseFloat(rp[rp.length-1])) / 2;
+      }
+    }
+    if (grid) drawGrid(grid, currentPrice);
+  }
+}
+window.addEventListener('resize', onResize);
+
+/* ── BOOT ── */
+poll();
+
+})();
+</script>
+</body>
+</html>

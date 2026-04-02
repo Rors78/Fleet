@@ -1,0 +1,10 @@
+{
+    "version": 1,
+    "exchange": "kraken",
+    "mode": "top_by_volume",
+    "count": 50,
+    "quote": "USD",
+    "minimum_volume_usd": 50000,
+    "exclude": ["USDT/USD", "USDC/USD", "DAI/USD", "PYUSD/USD", "PAXG/USD"],
+    "pin": ["BTC/USD", "ETH/USD", "SOL/USD"]
+}

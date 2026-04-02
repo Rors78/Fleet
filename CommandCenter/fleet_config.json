@@ -1,0 +1,65 @@
+{
+    "_meta": {
+        "note": "Only the 'bots' section is loaded at runtime (by _health_monitor for auto-restart). The 'fleet' section documents intended values but is NOT read by command_center.py, collector.py, or launch_fleet.py — those use hardcoded constants. Keep this in sync manually when changing code constants.",
+        "consumers": {
+            "bots.*.dir": "_health_monitor auto-restart (command_center.py)",
+            "bots.*.cmd": "_health_monitor auto-restart (command_center.py)",
+            "bots.*.phase": "Documentation only — launch_fleet.py hardcodes its own FLEET list",
+            "fleet.*": "Documentation / reference only — not loaded by any code"
+        }
+    },
+    "fleet": {
+        "universe_size": 50,
+        "quote_currency": "USD",
+        "exchange": "kraken",
+        "portfolio": {
+            "starting_capital": 10000,
+            "max_deployed_pct": 80,
+            "max_per_bot_pct": 30,
+            "max_per_pair_pct": 20,
+            "max_per_trade_pct": 5,
+            "max_directional_pct": 60
+        },
+        "event_bus": {
+            "reaction_rules": "reactions.json",
+            "max_events": 1000,
+            "sse_enabled": true
+        },
+        "market_data": {
+            "intervals": [5, 15, 60, 240, 1440],
+            "poll_spacing_s": 0.3
+        },
+        "brainiac": {
+            "depth_pairs": 10,
+            "depth_interval_s": 30,
+            "trades_interval_s": 60,
+            "correlation_pairs": 20,
+            "correlation_interval_s": 900,
+            "funding_interval_s": 300
+        },
+        "inference": {
+            "model": "gemma2:2b",
+            "auto_journal": true,
+            "weekly_analysis": true
+        }
+    },
+    "bots": {
+        "turtlesue":  {"port": 8070, "dir": "D:\\TurtleSue",  "cmd": ["turtlebot.py"],  "type": "trader",  "pairs": 10, "phase": 1},
+        "sentinel":   {"port": 8071, "dir": "D:\\Sentinel",   "cmd": ["sentinel.py"],   "type": "forecast", "pairs": 20, "phase": 1},
+        "trinity":    {"port": 8072, "dir": "D:\\Trinity",     "cmd": ["overwatch.py"],  "type": "scanner", "pairs": 50, "phase": 1},
+        "hivemind":   {"port": 8073, "dir": "D:\\HiveMind",   "cmd": ["cli.py"],        "type": "optimizer", "phase": 1},
+        "nexusbrain": {"port": 8074, "dir": "D:\\NexusBrain", "cmd": ["nexus_brain.py"],"type": "trader",  "pairs": 10, "phase": 1},
+        "oracle":     {"port": 8075, "dir": "D:\\Oracle",     "cmd": ["server.py"],     "type": "intel",   "pairs": 93, "phase": 1},
+        "deepblue":   {"port": 8076, "dir": "D:\\Whale Watcher\\apex_whale_finder.dir", "cmd": ["main.py"], "type": "intel", "pairs": 50, "phase": 1},
+        "gridzilla":  {"port": 8077, "dir": "D:\\Gridzilla",  "cmd": ["gridzilla.py"],  "type": "trader",  "pairs": 12, "phase": 1},
+        "trekbot":    {"port": 8080, "dir": "D:\\TrekBot",    "cmd": ["trekbot.py"],    "type": "trader",  "pairs": 20, "phase": 1},
+        "phitex":     {"port": 8078, "dir": "D:\\PhiTex",     "cmd": ["phitex.py"],     "type": "novel",   "pairs": 50, "phase": 2},
+        "aegis":      {"port": 8079, "dir": "D:\\Aegis",      "cmd": ["aegis.py"],      "type": "meta",    "phase": 2},
+        "nexus":      {"port": 8082, "dir": "D:\\Nexus",      "cmd": ["nexus.py"],      "type": "novel",   "pairs": 50, "phase": 2},
+        "rubberband": {"port": 8083, "dir": "D:\\Rubberband", "cmd": ["rubberband.py"], "type": "trader",  "pairs": 15, "phase": 2},
+        "contrarian": {"port": 8084, "dir": "D:\\Contrarian", "cmd": ["contrarian.py"], "type": "intel",   "phase": 2},
+        "arbitrageur":{"port": 8085, "dir": "D:\\Arbitrageur","cmd": ["arbitrageur.py"],"type": "trader",  "pairs": 5,  "phase": 2},
+        "chronos":    {"port": 8086, "dir": "D:\\Chronos",    "cmd": ["chronos.py"],    "type": "intel",   "phase": 2},
+        "inference":  {"port": 9001, "dir": "D:\\CommandCenter","cmd": ["inference_server.py"], "type": "ai", "phase": 2}
+    }
+}

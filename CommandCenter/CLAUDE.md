@@ -43,8 +43,8 @@ python evolution.py --days 7
 
 ### Core Files
 - `command_center.py` — Single-file backend (~2000 lines): bot polling, 14 normalizers (11 named functions + 3 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration.
-- `command_center.html` — Single-file dashboard (all CSS/JS inline). Served at `/`.
-- `command_center_v3.html` — v3 dashboard (226KB, full-featured).
+- `command_center_v4.html` — Current active dashboard (single-file, all CSS/JS inline). Served at `/`.
+- `backups/` — Archived older dashboard versions (v3, etc.).
 
 ### Event Bus System
 Real-time pub/sub replacing 4-second polling for inter-bot communication:
@@ -65,6 +65,34 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 - `standards.py` — Canonical regime labels (`BULL`, `BEAR`, `RANGING`, `VOLATILE`, `TRANSITIONING`), `REGIME_MAP` for normalizing any bot's regime label, `normalize_pair()` for Kraken pair formats.
 - `portfolio_client.py` — Thin stdlib-only client for bots to reserve/release capital from the central pool.
 - `design_system.css` — Unified fleet design language: color system, typography, spacing, cards, tables, status indicators, animations. The single source of truth for all dashboard styling.
+- `resilient_http.py` — Retry-aware GET/POST helper for fleet communication. Import instead of raw `requests`.
+- `fleet_config.py` — Python module single-source-of-truth for bot ports/paths (distinct from `fleet_config.json`). Bots import this instead of hardcoding.
+- `port_guard.py` — Call `ensure_port(port, bot_name)` on startup; kills zombie processes occupying the port before the HTTP server binds.
+- `bot_bootstrap.py` — `BotBase` class providing standardized startup lifecycle for every bot.
+
+### Advanced Analytics Engines
+Standalone modules that read event logs / live bot data and return structured insights. None are imported by `command_center.py` — they run independently or are called by `evolution.py` / `weekly_analysis.py`.
+
+**Signal quality:**
+- `expectancy.py` — Tracks per-bot and fleet-wide E[V] = (WinRate × AvgWin) − (LossRate × AvgLoss) net of fees. The primary profitability signal.
+- `signal_aggregator.py` — Ensemble engine: collects proposals from all bots, weights by historical accuracy, outputs a single BUY/SELL/HOLD score per pair.
+- `signal_decomposition.py` — Attributes unique P/L contribution to each signal source (marginal value, accuracy, cost-adjusted expectancy).
+- `signal_decay.py` — Applies empirical half-life decay to signals before consumption; tracks per-type half-lives.
+- `fleet_intel_score.py` — Synthesizes all engine outputs into per-pair intelligence scores by polling NEXUS snapshot + event bus.
+- `causal_flow.py` — Granger causality graph between bots, pairs, and events; answers "does X actually precede Y?"
+- `shannon.py` — Information theory: mutual information between signals, channel capacity per bot-to-bot link, entropy of the event stream. **NOT YET WIRED into Nexus.**
+
+**Market geometry / physics:**
+- `info_geometry.py` — Fisher Information Metric: measures how fast the market's return distribution is changing shape (low = stable regime, high = transition). Wired; emits `MANIFOLD_WARNING`.
+- `topology.py` — Persistent homology on price point clouds: detects structural market features that survive across time scales. Wired; emits `CYCLE_DETECTED`.
+- `quantum_state.py` — Superposition model: market holds multiple regime states simultaneously with amplitudes; collapses on measurement. Wired; emits `QUANTUM_COLLAPSE` (currently silent — threshold not met).
+- `lorenz.py` — Strange attractor mapping in phase space; Lyapunov exponent estimates predictability horizon. **NOT YET WIRED into Nexus.**
+- `boltzmann.py` — Statistical mechanics of the order book: temperature (spread × volume), pressure (bid/ask imbalance), entropy (disorder). **NOT YET WIRED into Nexus.**
+- `prigogine.py` — Dissipative structures: detects when the market is far-from-equilibrium and spontaneously self-organizing (regime birth). **NOT YET WIRED into Nexus.**
+- `thom.py` — Catastrophe theory: classifies imminent regime transitions as fold, cusp, or swallowtail catastrophes. **NOT YET WIRED into Nexus.**
+
+**Diagnostics:**
+- `fleet_audit.py` — 6-phase full-system diagnostic; outputs JSON + human-readable report. Run ad-hoc: `python fleet_audit.py`.
 
 ### Infrastructure
 - `launch_fleet.py` — Two-phase launcher. Phase 1: core bots. Phase 2 (after CC is up): CC-dependent bots (PHITEX, AEGIS, Inference, NEXUS, Rubberband, Contrarian, Arbitrageur, Chronos). Ctrl+C shuts down everything.
@@ -146,7 +174,7 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 - `GET /health` — inference server status + model info
 
 ## Central Portfolio
-4 trading bots (TurtleSue, NexusBrain, Gridzilla, TrekBot) share one $10,000 pool.
+6 trading bots (TurtleSue, NexusBrain, Gridzilla, TrekBot, Rubberband, Contrarian) share one $10,000 pool.
 
 ### Risk Limits
 - Max total deployed: 80% (always keep 20% cash)
@@ -185,7 +213,13 @@ Retention: snapshots 90d, events 365d, daily 365d. Rotated on startup.
 - `requests` (only external dependency — all bot-side clients use stdlib urllib)
 
 ## Testing
-No test suite exists. Validation is done via runtime error handling and log inspection. When making changes, verify by running `command_center.py` and checking the dashboard + logs.
+No test suite. Validation is runtime only:
+1. After wiring any module: `grep -n "from module_name" target_bot.py` must show the import in the actual bot file
+2. Test the API endpoint: `curl -s http://localhost:9000/api/endpoint`
+3. Check the event bus: `curl -s http://localhost:9000/api/events/recent?n=500` — the expected event type must appear
+4. A file existing in `D:\CommandCenter\` is NOT done. An import line in a bot file is NOT done. Events in the bus = done.
+
+**Never report a module as complete without all three of the above.**
 
 ## Key Patterns & Gotchas
 
@@ -210,7 +244,14 @@ Reaction rules from `reactions.json` spawn in separate daemon threads to avoid b
 ### Brainiac Collection
 Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
 
+## Key Metrics to Watch
+- **Expectancy** (the primary health signal): Fleet at -$1.45/trade, TrekBot at -$0.21/trade (closest to positive). Fee ratio was 650% of gross profit — fees are the #1 problem, not signal quality. Bots have alpha but fees erase it.
+- **Fee floor:** $5 minimum trade size enforced in portfolio manager. NexusBrain min_confluence raised to 0.65.
+- **AEGIS score:** Controls deployment limit. Score ~0.04 → DEFENSIVE → 30% max deployment.
+- **Concentration limit:** Max 40% of deployed capital in any single pair.
+
 ## Working Rules
 - NEVER overwrite working code based on assumptions
 - ALWAYS read existing code before modifying
 - No fake stats — ever
+- A module is only "done" when: (1) import appears in the running bot file, (2) API endpoint responds, (3) event bus shows expected event type

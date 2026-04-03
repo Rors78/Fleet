@@ -14,6 +14,7 @@ Usage:
 
 import json
 import urllib.request as urlreq
+import urllib.error
 
 
 class PortfolioClient:
@@ -30,6 +31,11 @@ class PortfolioClient:
         try:
             resp = urlreq.urlopen(req, timeout=3)
             return json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            try:
+                return json.loads(e.read().decode("utf-8"))
+            except Exception:
+                return None
         except Exception:
             return None
 

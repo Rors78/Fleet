@@ -1,6 +1,6 @@
 {
     "_meta": {
-        "note": "Only the 'bots' section is loaded at runtime (by _health_monitor for auto-restart). The 'fleet' section documents intended values but is NOT read by command_center.py, collector.py, or launch_fleet.py — those use hardcoded constants. Keep this in sync manually when changing code constants.",
+        "note": "Only the 'bots' section is loaded at runtime (by _health_monitor for auto-restart cmd/dir). The 'fleet' section is documentation only. Code constants now live in fleet_config.py (single source of truth), not here.",
         "consumers": {
             "bots.*.dir": "_health_monitor auto-restart (command_center.py)",
             "bots.*.cmd": "_health_monitor auto-restart (command_center.py)",
@@ -44,19 +44,19 @@
         }
     },
     "bots": {
-        "turtlesue":  {"port": 8070, "dir": "D:\\TurtleSue",  "cmd": ["turtlebot.py"],  "type": "trader",  "pairs": 10, "phase": 1},
+        "turtlesue":  {"port": 8070, "dir": "D:\\TurtleSue",  "cmd": ["turtlebot.py", "--auto"],  "type": "trader",  "pairs": 10, "phase": 1},
         "sentinel":   {"port": 8071, "dir": "D:\\Sentinel",   "cmd": ["sentinel.py"],   "type": "forecast", "pairs": 20, "phase": 1},
-        "trinity":    {"port": 8072, "dir": "D:\\Trinity",     "cmd": ["overwatch.py"],  "type": "scanner", "pairs": 50, "phase": 1},
-        "hivemind":   {"port": 8073, "dir": "D:\\HiveMind",   "cmd": ["cli.py"],        "type": "optimizer", "phase": 1},
-        "nexusbrain": {"port": 8074, "dir": "D:\\NexusBrain", "cmd": ["nexus_brain.py"],"type": "trader",  "pairs": 10, "phase": 1},
+        "trinity":    {"port": 8072, "dir": "D:\\Trinity",     "cmd": ["overwatch.py", "--auto"],  "type": "scanner", "pairs": 50, "phase": 1},
+        "hivemind":   {"port": 8073, "dir": "D:\\HiveMind",   "cmd": ["cli.py", "dashboard", "--synthetic"],  "type": "optimizer", "phase": 1},
+        "nexusbrain": {"port": 8074, "dir": "D:\\NexusBrain", "cmd": ["nexus_brain.py", "dashboard", "--auto"],"type": "trader",  "pairs": 10, "phase": 1},
         "oracle":     {"port": 8075, "dir": "D:\\Oracle",     "cmd": ["server.py"],     "type": "intel",   "pairs": 93, "phase": 1},
         "deepblue":   {"port": 8076, "dir": "D:\\Whale Watcher\\apex_whale_finder.dir", "cmd": ["main.py"], "type": "intel", "pairs": 50, "phase": 1},
-        "gridzilla":  {"port": 8077, "dir": "D:\\Gridzilla",  "cmd": ["gridzilla.py"],  "type": "trader",  "pairs": 12, "phase": 1},
+        "gridzilla":  {"port": 8077, "dir": "D:\\Gridzilla",  "cmd": ["gridzilla.py", "--auto"],  "type": "trader",  "pairs": 12, "phase": 1},
         "trekbot":    {"port": 8080, "dir": "D:\\TrekBot",    "cmd": ["trekbot.py"],    "type": "trader",  "pairs": 20, "phase": 1},
         "phitex":     {"port": 8078, "dir": "D:\\PhiTex",     "cmd": ["phitex.py"],     "type": "novel",   "pairs": 50, "phase": 2},
         "aegis":      {"port": 8079, "dir": "D:\\Aegis",      "cmd": ["aegis.py"],      "type": "meta",    "phase": 2},
         "nexus":      {"port": 8082, "dir": "D:\\Nexus",      "cmd": ["nexus.py"],      "type": "novel",   "pairs": 50, "phase": 2},
-        "rubberband": {"port": 8083, "dir": "D:\\Rubberband", "cmd": ["rubberband.py"], "type": "trader",  "pairs": 15, "phase": 2},
+        "rubberband": {"port": 8083, "dir": "D:\\Rubberband", "cmd": ["rubberband.py", "--auto"], "type": "trader",  "pairs": 15, "phase": 2},
         "contrarian": {"port": 8084, "dir": "D:\\Contrarian", "cmd": ["contrarian.py"], "type": "intel",   "phase": 2},
         "arbitrageur":{"port": 8085, "dir": "D:\\Arbitrageur","cmd": ["arbitrageur.py"],"type": "trader",  "pairs": 5,  "phase": 2},
         "chronos":    {"port": 8086, "dir": "D:\\Chronos",    "cmd": ["chronos.py"],    "type": "intel",   "phase": 2},

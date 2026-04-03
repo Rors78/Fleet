@@ -139,7 +139,7 @@ FLEET = [
     },
 ]
 
-COMMAND_CENTER_PORT = 9000
+from fleet_config import CC_PORT as COMMAND_CENTER_PORT
 
 # ── Helpers ─────────────────────────────────────────────────────
 
@@ -152,6 +152,33 @@ def check_port(port, timeout=1.0):
             return True
     except (ConnectionRefusedError, socket.timeout, OSError):
         return False
+
+
+def kill_zombies_on_port(port):
+    """Kill any zombie processes holding a port before launching a new bot."""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=10
+        )
+        killed = []
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.strip().split()
+                try:
+                    pid = int(parts[-1])
+                    if pid > 0:
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", str(pid)],
+                            capture_output=True, timeout=5,
+                        )
+                        killed.append(pid)
+                except (ValueError, IndexError):
+                    pass
+        if killed:
+            time.sleep(1)  # let OS release port
+            print(f"  [port_guard] Killed zombie PID(s) {killed} on :{port}")
+    except Exception as e:
+        print(f"  [port_guard] Warning: zombie kill failed for :{port}: {e}")
 
 
 # ── Main ────────────────────────────────────────────────────────
@@ -188,6 +215,9 @@ def main():
             print(f"  * {name:<12s} :{port}  already running")
             launched += 1
             return
+
+        # Clear any zombie processes on this port before binding
+        kill_zombies_on_port(port)
 
         try:
             proc = subprocess.Popen(

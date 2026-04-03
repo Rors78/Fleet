@@ -43,34 +43,27 @@ from fleet_intel_score import FleetIntelScore
 
 import urllib.request as _urlreq  # UPGRADE: Fleet Intelligence — for LLM briefing
 
+from fleet_config import (
+    BOTS, CC_PORT, CC_URL, INFERENCE_URL as _FC_INFERENCE_URL,
+    POLL_INTERVAL as _FC_POLL_INTERVAL, REQUEST_TIMEOUT as _FC_REQUEST_TIMEOUT,
+    UNIVERSE_REFRESH_HOURS as _FC_UNIVERSE_REFRESH_HOURS,
+    KRAKEN_REST as _FC_KRAKEN_REST, PORTFOLIO_TOTAL as _FC_PORTFOLIO_TOTAL,
+    PORTFOLIO_LIMITS as _FC_PORTFOLIO_LIMITS, TRADING_BOTS as _FC_TRADING_BOTS,
+    PORTFOLIO_FILE as _FC_PORTFOLIO_FILE, WATCHDOG_COOLDOWN as _FC_WATCHDOG_COOLDOWN,
+    bot_registry_list,
+)
+
 # ---------------------------------------------------------------------------
-# Bot Registry
+# Bot Registry — sourced from fleet_config.py (single source of truth)
 # ---------------------------------------------------------------------------
 
-BOT_REGISTRY = [
-    {"id": "turtlesue",  "name": "TurtleSue",  "port": 8070, "color": "#00e676", "endpoints": ["/api/snapshot"]},
-    {"id": "sentinel",   "name": "Sentinel",    "port": 8071, "color": "#00bfa5", "endpoints": ["/api/snapshot"]},
-    {"id": "trinity",    "name": "Trinity",     "port": 8072, "color": "#00b0ff", "endpoints": ["/api/snapshot"]},
-    {"id": "hivemind",   "name": "HiveMind",    "port": 8073, "color": "#ffab00", "endpoints": ["/api/snapshot"]},
-    {"id": "nexusbrain", "name": "NexusBrain",  "port": 8074, "color": "#d500f9", "endpoints": ["/api/snapshot"]},
-    {"id": "trekbot",    "name": "TrekBot",     "port": 8080, "color": "#ff6d00", "endpoints": ["/health", "/positions", "/analytics"]},
-    {"id": "oracle",     "name": "Oracle",      "port": 8075, "color": "#76ff03", "endpoints": ["/api/snapshot"]},
-    {"id": "deepblue",  "name": "Deep Blue",   "port": 8076, "color": "#18ffff", "endpoints": ["/api/snapshot"]},
-    {"id": "gridzilla", "name": "Gridzilla",   "port": 8077, "color": "#ffd600", "endpoints": ["/api/snapshot"]},
-    {"id": "phitex",   "name": "PHITEX",      "port": 8078, "color": "#e040fb", "endpoints": ["/api/snapshot"]},
-    {"id": "aegis",    "name": "AEGIS",       "port": 8079, "color": "#e0e0e0", "endpoints": ["/api/snapshot"]},
-    {"id": "nexus",      "name": "NEXUS",       "port": 8082, "color": "#26c6da", "endpoints": ["/api/snapshot"]},
-    {"id": "rubberband", "name": "Rubberband",  "port": 8083, "color": "#00e5ff", "endpoints": ["/api/snapshot"]},
-    {"id": "contrarian", "name": "Contrarian",  "port": 8084, "color": "#ff1744", "endpoints": ["/api/snapshot"]},
-    {"id": "arbitrageur","name": "Arbitrageur", "port": 8085, "color": "#7c4dff", "endpoints": ["/api/snapshot"]},
-    {"id": "chronos",    "name": "Chronos",     "port": 8086, "color": "#ff9100", "endpoints": ["/api/snapshot"]},
-]
+BOT_REGISTRY = bot_registry_list()
 
-POLL_INTERVAL = 4       # seconds
-REQUEST_TIMEOUT = 3     # seconds per HTTP call
+POLL_INTERVAL = _FC_POLL_INTERVAL
+REQUEST_TIMEOUT = _FC_REQUEST_TIMEOUT
 MAX_FEED_SIZE = 50
-UNIVERSE_REFRESH_HOURS = 6  # refresh universe every 6 hours
-KRAKEN_REST = "https://api.kraken.com/0/public"
+UNIVERSE_REFRESH_HOURS = _FC_UNIVERSE_REFRESH_HOURS
+KRAKEN_REST = _FC_KRAKEN_REST
 
 # ---------------------------------------------------------------------------
 # Thread-safe state
@@ -124,26 +117,17 @@ _perf_attribution_lock = threading.Lock()
 _fleet_briefing: dict = {"text": "Briefing not yet generated.", "generated_at": 0, "status": "pending"}
 _fleet_briefing_lock = threading.Lock()
 BRIEFING_INTERVAL = 300  # 5 minutes
-INFERENCE_URL = "http://localhost:9001"
+INFERENCE_URL = _FC_INFERENCE_URL
 
 
 # ---------------------------------------------------------------------------
 # Portfolio Manager — Central Capital Pool
 # ---------------------------------------------------------------------------
 
-PORTFOLIO_TOTAL = 10000.00  # Single shared pool
-
-PORTFOLIO_LIMITS = {
-    "max_deployed_pct": 80,      # Max 80% of pool deployed at once
-    "max_per_bot_pct": 30,       # Max 30% to any single bot
-    "max_per_pair_pct": 20,      # Max 20% on any single pair
-    "max_directional_pct": 60,   # Max 60% long or 60% short
-    "max_per_trade_pct": 5,      # Max 5% risked on a single trade
-}
-
-TRADING_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "trekbot", "rubberband"}
-
-PORTFOLIO_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "portfolio.json")
+PORTFOLIO_TOTAL = _FC_PORTFOLIO_TOTAL
+PORTFOLIO_LIMITS = _FC_PORTFOLIO_LIMITS
+TRADING_BOTS = _FC_TRADING_BOTS
+PORTFOLIO_FILE = _FC_PORTFOLIO_FILE
 
 
 class PortfolioManager:
@@ -233,8 +217,13 @@ class PortfolioManager:
     def reserve(self, bot_id: str, pair: str, direction: str, amount: float,
                 stop_loss_pct: Optional[float] = None) -> dict:
         """Validate risk limits and reserve capital. Returns dict with ok/reason."""
+        from fleet_config import is_blacklisted
         pair = normalize_pair(pair) or pair  # canonical format for per-pair limits
         with self._lock:
+            # Blacklist check — fleet-wide protection
+            if is_blacklisted(pair):
+                return {"ok": False, "reason": f"Pair {pair} is blacklisted (0% WR across fleet)"}
+
             # Validate bot is a trading bot
             if bot_id not in TRADING_BOTS:
                 return {"ok": False, "reason": f"Bot '{bot_id}' is not a trading bot"}
@@ -306,8 +295,15 @@ class PortfolioManager:
                 intel = _fleet_intel.get_score(pair)
                 risk_mult = intel.get("risk_multiplier", 1.0)
                 warnings = intel.get("active_warnings", [])
-                if risk_mult < 0.3 and warnings:
-                    return {"ok": False, "reason": f"Fleet intelligence block: risk={risk_mult:.2f}, warnings={warnings[:2]}"}
+                if risk_mult < 0.10:
+                    return {"ok": False, "reason": f"Fleet intel BLOCK: risk={risk_mult:.2f} < 0.10, warnings={warnings[:2]}"}
+                if risk_mult < 1.0:
+                    # Scale position down proportionally to risk
+                    original = amount
+                    amount = round(amount * risk_mult, 2)
+                    if amount < min_profitable_amount:
+                        return {"ok": False, "reason": f"Fleet intel scaled ${original:.2f} -> ${amount:.2f} (risk={risk_mult:.2f}), below fee floor"}
+                    log.info("Intel scaled %s %s: $%.2f -> $%.2f (risk=%.2f)", bot_id, pair, original, amount, risk_mult)
             except Exception:
                 pass  # don't let intel failure block trading
 
@@ -1098,13 +1094,14 @@ _NORMALIZERS = {
         "uptime": None,
     },
     "arbitrageur": lambda raw: {
-        "equity": raw.get("equity"), "pnl": raw.get("pnl"), "pnl_pct": None,
+        "equity": raw.get("equity"), "pnl": raw.get("pnl"),
+        "pnl_pct": raw.get("pnl_pct"),
         "win_rate": raw.get("win_rate"), "drawdown_pct": None, "sharpe": None,
         "open_positions": raw.get("open_spreads", 0),
         "total_trades": raw.get("total_trades", 0),
         "regime": raw.get("regime", "SCANNING"),
         "signals_count": raw.get("tracked_pairs", 0),
-        "uptime": None,
+        "uptime": raw.get("uptime_s"),
     },
     "chronos": lambda raw: {
         "equity": None, "pnl": None, "pnl_pct": None,
@@ -2040,6 +2037,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/fleet/attribution":   "_serve_fleet_attribution",
         "/api/fleet/briefing":      "_serve_fleet_briefing",
         "/api/fleet/intel_score":   "_serve_fleet_intel_score",
+        "/api/watchdog":            "_serve_watchdog",
     }
 
     # -- Prefix-match GET routes (checked after exact miss) -------------------
@@ -2080,7 +2078,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     def _send_json(self, obj: Any, code: int = 200) -> None:
         self._set_json_headers(code)
-        self.wfile.write(_safe_json(obj).encode("utf-8"))
+        try:
+            self.wfile.write(_safe_json(obj).encode("utf-8"))
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+            pass
 
     # -- Routing dispatch -----------------------------------------------------
 
@@ -2146,7 +2147,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             with open(html_path, "r", encoding="utf-8") as f:
                 content = f.read()
             self._set_html_headers(200)
-            self.wfile.write(content.encode("utf-8"))
+            try:
+                self.wfile.write(content.encode("utf-8"))
+            except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                pass
         except FileNotFoundError:
             self._set_html_headers(200)
             placeholder = (
@@ -2157,7 +2161,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 "<p>API available at <a href='/api/master' style='color:#00e676'>/api/master</a></p>"
                 "</body></html>"
             )
-            self.wfile.write(placeholder.encode("utf-8"))
+            try:
+                self.wfile.write(placeholder.encode("utf-8"))
+            except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                pass
 
     def _serve_master(self, parsed) -> None:
         """Return full aggregated state."""
@@ -2308,7 +2315,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             for chunk in _event_bus.sse_generator(sub):
                 self.wfile.write(chunk.encode("utf-8"))
                 self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError, OSError):
+        except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError, OSError):
             pass
         finally:
             _event_bus.unsubscribe(sub)
@@ -2455,6 +2462,23 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 "scores": _fleet_intel.get_all_scores(),
                 "summary": _fleet_intel.summary(),
             })
+
+    def _serve_watchdog(self, parsed) -> None:
+        """GET /api/watchdog — fleet health from watchdog's perspective."""
+        now = time.time()
+        snapshot = dict(_watchdog_state)
+        online = sum(1 for s in snapshot.values() if s.get("alive"))
+        dead = sum(1 for s in snapshot.values() if s.get("state") == "dead")
+        self._send_json({
+            "timestamp": now,
+            "summary": {
+                "total": len(snapshot),
+                "online": online,
+                "dead": dead,
+                "failing": sum(1 for s in snapshot.values() if s.get("state") == "failing"),
+            },
+            "bots": snapshot,
+        })
 
     # -- POST route handler methods -------------------------------------------
 
@@ -2629,9 +2653,38 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
+_watchdog_state: dict = {}  # shared state for /api/watchdog endpoint
+_restart_cooldowns: dict[str, float] = {}  # bot_id -> last restart timestamp
+_RESTART_COOLDOWN_S = _FC_WATCHDOG_COOLDOWN
+
+
+def _kill_zombies_on_port(port: int) -> None:
+    """Kill any processes listening on a port before restarting a bot."""
+    try:
+        result = subprocess.run(
+            ["netstat", "-ano"], capture_output=True, text=True, timeout=10
+        )
+        for line in result.stdout.splitlines():
+            if f":{port}" in line and "LISTENING" in line:
+                parts = line.strip().split()
+                try:
+                    pid = int(parts[-1])
+                    if pid > 0:
+                        subprocess.run(
+                            ["taskkill", "/F", "/PID", str(pid)],
+                            capture_output=True, timeout=5,
+                        )
+                except (ValueError, IndexError):
+                    pass
+    except Exception:
+        pass
+
+
 def _health_monitor() -> None:
     """Background thread: detect crashed bots, auto-restart, publish events."""
+    global _watchdog_state
     fails: dict[str, int] = {b["id"]: 0 for b in BOT_REGISTRY}
+    last_seen: dict[str, float] = {b["id"]: 0.0 for b in BOT_REGISTRY}
     fleet_cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_config.json")
     bot_cmds: dict[str, dict] = {}
     try:
@@ -2643,41 +2696,82 @@ def _health_monitor() -> None:
         log.warning("Could not load fleet_config.json for health monitor", exc_info=True)
 
     while True:
+        watchdog_snapshot: dict = {}
         for bot in BOT_REGISTRY:
             bid = bot["id"]
-            try:
-                resp = requests.get(f"http://127.0.0.1:{bot['port']}/health", timeout=3)
-                if resp.status_code == 200:
-                    if fails[bid] >= 3:
-                        _event_bus.publish({"source": "health_monitor", "type": "BOT_RECOVERED",
-                                            "data": {"bot": bid, "port": bot["port"]}})
-                    fails[bid] = 0
-                else:
-                    fails[bid] += 1
-            except Exception:
+            port = bot["port"]
+            alive = False
+            # Try /api/snapshot first (most bots), fall back to /health
+            for endpoint in ["/api/snapshot", "/health"]:
+                try:
+                    resp = requests.get(f"http://127.0.0.1:{port}{endpoint}", timeout=3)
+                    if resp.status_code == 200:
+                        alive = True
+                        break
+                except Exception:
+                    pass
+
+            if alive:
+                if fails[bid] >= 3:
+                    _event_bus.publish({"source": "health_monitor", "type": "BOT_RECOVERED",
+                                        "data": {"bot": bid, "port": port}})
+                    log.info("Bot recovered: %s on :%s", bid, port)
+                fails[bid] = 0
+                last_seen[bid] = time.time()
+            else:
                 fails[bid] += 1
+
+            state = "online" if alive else ("dead" if fails[bid] >= 3 else "failing")
+            cooldown_remaining = max(0, int(_RESTART_COOLDOWN_S - (time.time() - _restart_cooldowns.get(bid, 0))))
+            watchdog_snapshot[bid] = {
+                "alive": alive,
+                "port": port,
+                "state": state,
+                "consecutive_failures": fails[bid],
+                "last_seen": last_seen[bid],
+                "cooldown_remaining_s": cooldown_remaining,
+            }
 
             if fails[bid] == 3:
                 _event_bus.publish({"source": "health_monitor", "type": "BOT_DOWN",
-                                    "data": {"bot": bid, "port": bot["port"],
-                                             "consecutive_fails": 3}})
-                # Auto-restart if we have the command
+                                    "data": {"bot": bid, "port": port, "consecutive_fails": 3}})
+                log.warning("Bot down: %s on :%s — attempting auto-restart", bid, port)
+
+                # Check cooldown
+                last_restart = _restart_cooldowns.get(bid, 0)
+                if time.time() - last_restart < _RESTART_COOLDOWN_S:
+                    log.warning("Skipping restart of %s — cooldown (%ds remaining)",
+                                bid, int(_RESTART_COOLDOWN_S - (time.time() - last_restart)))
+                    continue
+
                 bcfg = bot_cmds.get(bid)
                 if bcfg and bcfg.get("dir"):
                     try:
-                        cmd_val = bcfg.get("cmd", ["sentinel.py"])
+                        # Kill any zombie processes on this port first
+                        _kill_zombies_on_port(port)
+                        time.sleep(2)
+
+                        cmd_val = bcfg.get("cmd", [])
                         if isinstance(cmd_val, str):
                             cmd_val = [cmd_val]
-                        script = os.path.basename(cmd_val[-1])
+                        if not cmd_val:
+                            continue
+                        # cmd_val is e.g. ["turtlebot.py", "--auto"]
                         subprocess.Popen(
-                            ["python", script],
+                            ["python"] + cmd_val,
                             cwd=bcfg["dir"],
                             stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL,
                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
                         )
+                        _restart_cooldowns[bid] = time.time()
+                        log.info("Auto-restarted %s (port %s)", bid, port)
+                        _event_bus.publish({"source": "health_monitor", "type": "BOT_RESTARTED",
+                                            "data": {"bot": bid, "port": port}})
                     except Exception:
                         log.error("Auto-restart failed for %s", bid, exc_info=True)
+
+        _watchdog_state = watchdog_snapshot
         time.sleep(30)
 
 
@@ -2790,7 +2884,7 @@ def main():
     print(f"    API:      /api/fleet/{{exposure|correlations|attribution|briefing}}")
 
     # Start HTTP server — threaded so SSE streams don't block other requests
-    server = ThreadedHTTPServer(("0.0.0.0", 9000), CommandCenterHandler)
+    server = ThreadedHTTPServer(("0.0.0.0", CC_PORT), CommandCenterHandler)
     print(f"  Dashboard:  http://localhost:9000")
     print(f"  Universe:   http://localhost:9000/api/universe")
     print(f"  Portfolio:  http://localhost:9000/api/portfolio")

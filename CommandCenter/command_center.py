@@ -260,15 +260,12 @@ class PortfolioManager:
             if amount > max_trade:
                 return {"ok": False, "reason": f"Trade limit: {amount:.2f} > {max_trade:.2f} max ({lim['max_per_trade_pct']}%)"}
 
-            # 6. Concentration check — no single pair > 40% of deployed capital
-            # Bootstrap exception: waive when deployed=$0 (cold start), otherwise first
-            # reservation is always 100% of deployed and can never pass.
-            projected_deployed = deployed + amount
-            if deployed > 0 and projected_deployed > 0:
-                projected_pair = pair_exp + amount
-                pair_concentration = projected_pair / projected_deployed
-                if pair_concentration > 0.40:
-                    return {"ok": False, "reason": f"Concentration limit: {pair} would be {pair_concentration:.0%} of deployed (max 40%)"}
+            # 6. Concentration check — no single pair > 40% of total pool
+            # (comparing against pool, not deployed, so small deployed totals don't
+            # block new positions — e.g. $500 reserve when $12 deployed is fine)
+            pair_concentration_of_pool = (pair_exp + amount) / self.total
+            if pair_concentration_of_pool > 0.40:
+                return {"ok": False, "reason": f"Concentration limit: {pair} would be {pair_concentration_of_pool:.0%} of pool (max 40%)"}
 
             # 7. Direction balance — no more than 70% in one direction
             # Bootstrap exception: waive when deployed=$0 (cold start), first trade

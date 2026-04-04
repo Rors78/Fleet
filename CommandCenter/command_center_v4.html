@@ -1120,12 +1120,12 @@ function OrbNode(id,cfg,def,angle,cw,ch){
     /* CC moons — 4 bodies, 90° apart, offset 45° from star axes */
     aegis:Math.PI/4, sentinel:Math.PI*3/4, chronos:Math.PI*5/4, hivemind:Math.PI*7/4,
     /* Star-orbiting moons — placed away from their planet siblings */
-    trinity:Math.PI*1.5, contrarian:Math.PI, phitex:Math.PI*0.5,
+    trinity:Math.PI*1.5, contrarian:Math.PI, phitex:-Math.PI/2,
     /* Planets — initial angles spread to avoid overlap within each system */
     /* Oracle system: trekbot upper, gridzilla lower, turtlesue right */
     trekbot:-Math.PI/2, gridzilla:Math.PI*2/3, turtlesue:Math.PI/6,
-    /* Nexus system: nexusbrain left, rubberband right */
-    nexusbrain:Math.PI, rubberband:0,
+    /* Nexus system: nexusbrain upper-left (150°), rubberband lower-right (330°) — 180° apart, clear of PHITEX below */
+    nexusbrain:Math.PI*(5/6), rubberband:-Math.PI/6,
     /* DeepBlue system: arbitrageur below */
     arbitrageur:Math.PI/2
   };
@@ -1225,9 +1225,9 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
     return;
   }
 
-  /* === DEAD BODIES — drift outward from parent === */
+  /* === DEAD BODIES — show as dormant, not invisible === */
   if(!this.alive){
-    this.energyTarget=0.05;this.sizeMultiplier=0.6;this.statusLabel="offline";
+    this.energyTarget=0.05;this.sizeMultiplier=0.6;this.statusLabel="dormant";
     var parent=_orbNodes[this.currentParent];
     var px=parent?parent.x:cx,py=parent?parent.y:cy;
     /* Drift away from parent */
@@ -1476,7 +1476,7 @@ function _orbScaleOrbits(){
     }
     /* Planets orbit at 33% of star distance — enough spread to avoid overlap */
     var planetScale=starScale*0.33;
-    var planetRatios={trekbot:0.85,nexusbrain:1.0,gridzilla:0.85,turtlesue:0.90,rubberband:1.1,arbitrageur:0.90};
+    var planetRatios={trekbot:1.10,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.30,rubberband:1.1,arbitrageur:0.90};
     for(var pid in planetRatios){
       if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
     }
@@ -1486,8 +1486,8 @@ function _orbScaleOrbits(){
     for(var cmid in ccMoonRatios){
       if(_orbNodes[cmid]) _orbNodes[cmid].orbitRadius=ccMoonScale*ccMoonRatios[cmid];
     }
-    /* Star-orbiting moons — 28% of star orbit distance */
-    var moonScale=starScale*0.28;
+    /* Star-orbiting moons — 22% of star orbit distance (inside planet orbits) */
+    var moonScale=starScale*0.22;
     var moonRatios={phitex:0.9,contrarian:0.8,trinity:0.75};
     for(var mid in moonRatios){
       if(_orbNodes[mid]) _orbNodes[mid].orbitRadius=moonScale*moonRatios[mid];
@@ -1762,6 +1762,14 @@ function _orbHandleEvent(ev){
   /* Trade comets */
   if(/TRADE_OPEN/.test(type)&&src) _orbComet(src,(ev.data||{}).direction||"LONG",(ev.data||{}).pair||"");
   if(/TRADE_CLOSE/.test(type)) _orbCometResolve((ev.data||{}).pair||"",(ev.data||{}).pnl||0);
+  /* Trade flash — ring pulse on open, glow on close */
+  if(/TRADE_OPEN/.test(type)&&src&&_orbNodes[src]){
+    _orbNodes[src].tradeFlash={type:"open",direction:(ev.data||{}).direction||"LONG",startTime:Date.now()};
+  }
+  if(/TRADE_CLOSE/.test(type)&&src&&_orbNodes[src]){
+    var _pnl=(ev.data||{}).pnl||0;
+    _orbNodes[src].tradeFlash={type:"close",won:_pnl>=0,startTime:Date.now()};
+  }
   /* Newton wormholes */
   if(/NEWTON_REACTION/.test(type)){
     var d=ev.data||{};var trig=d.trigger_pair,react=d.reactor_pair;
@@ -2807,6 +2815,22 @@ CosmicCanvas.prototype._generate = function() {
             type: ['spiral','elliptical','irregular'][Math.floor(Math.random()*3)],
         });
     }
+    /* Extra right-edge galaxies and cluster — fill the empty right quadrant */
+    var _rightGalaxies=[
+      {x:w*0.82,y:h*0.18,size:14,angle:0.6,ecc:0.55,bright:0.10,type:'spiral'},
+      {x:w*0.91,y:h*0.44,size:9,angle:1.1,ecc:0.35,bright:0.08,type:'elliptical'},
+      {x:w*0.78,y:h*0.68,size:11,angle:0.3,ecc:0.5,bright:0.09,type:'spiral'},
+    ];
+    for(var rgi=0;rgi<_rightGalaxies.length;rgi++) this.galaxies.push(_rightGalaxies[rgi]);
+    /* Dense star cluster — upper-right corner */
+    var _rcx=w*0.87,_rcy=h*0.22,_rClStars=[];
+    for(var rci=0;rci<40;rci++){
+      var rca=Math.random()*Math.PI*2,rcd=Math.abs(this._gauss())*55;
+      _rClStars.push({x:_rcx+Math.cos(rca)*rcd,y:_rcy+Math.sin(rca)*rcd,
+        size:0.4+Math.random()*0.8,brightness:0.14+Math.random()*0.28,
+        twinkle:2000+Math.random()*6000,phase:Math.random()*Math.PI*2});
+    }
+    this.clusters.push({stars:_rClStars});
 };
 CosmicCanvas.prototype.draw = function(ctx, now, regime) {
     var hShift = regime === 'DEFENSIVE' ? -20 : regime === 'DEPLOY' ? 25 : 0;
@@ -3004,10 +3028,15 @@ function _drawNode(ctx,nd){
   var x=nd.x,y=nd.y,sz=nd.currentSize;
   _drawTrail(ctx,nd);
   if(!nd.alive){
-    /* Dead: ghost circle */
-    ctx.strokeStyle="rgba("+nd.rgb+",0.15)";ctx.lineWidth=0.5;
-    ctx.beginPath();ctx.arc(x,y,sz,0,Math.PI*2);ctx.stroke();
-    ctx.fillStyle="rgba("+nd.rgb+",0.04)";ctx.beginPath();ctx.arc(x,y,sz*0.3,0,Math.PI*2);ctx.fill();
+    /* Dormant: slow breathing glow + dim orbital ring — intentionally sleeping */
+    var _breathe=0.28+Math.sin(Date.now()/3500+nd.pulsePhase)*0.10;
+    var _dg=ctx.createRadialGradient(x,y,0,x,y,sz*1.4);
+    _dg.addColorStop(0,"rgba("+nd.rgb+","+(_breathe*0.55)+")");
+    _dg.addColorStop(0.5,"rgba("+nd.rgb+","+(_breathe*0.18)+")");
+    _dg.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=_dg;ctx.beginPath();ctx.arc(x,y,sz*1.4,0,Math.PI*2);ctx.fill();
+    ctx.strokeStyle="rgba("+nd.rgb+","+(0.12+Math.sin(Date.now()/6000)*0.04)+")";ctx.lineWidth=0.5;
+    ctx.beginPath();ctx.ellipse(x,y,sz*1.6,sz*0.45,Date.now()/9000,0,Math.PI*2);ctx.stroke();
   } else {
     /* Draw illuminated planet */
     var ccNode = _orbNodes.cc;
@@ -3018,10 +3047,33 @@ function _drawNode(ctx,nd){
     _lightning(ctx,nd,x,y,sz);
     /* Position rings */
     _posRings(ctx,nd,x,y,sz);
+    /* Trade flash — ring pulse on open, glow on close */
+    if(nd.tradeFlash){
+      var _tf=nd.tradeFlash;
+      var _elapsed=Date.now()-_tf.startTime;
+      if(_elapsed>2000){nd.tradeFlash=null;}
+      else{
+        var _prog=_elapsed/2000;
+        var _tfA=(1-_prog)*0.35;
+        if(_tf.type==="open"){
+          var _col=_tf.direction==="LONG"?"74,222,128":"248,113,113";
+          ctx.strokeStyle="rgba("+_col+","+_tfA+")";
+          ctx.lineWidth=1.5;
+          ctx.beginPath();ctx.arc(x,y,sz+4+_prog*18,0,Math.PI*2);ctx.stroke();
+        } else {
+          var _col2=_tf.won?"201,162,39":"90,70,55";
+          var _gR=sz*(1.2+_prog*0.5);
+          var _gGlow=ctx.createRadialGradient(x,y,sz*0.8,x,y,_gR);
+          _gGlow.addColorStop(0,"rgba("+_col2+","+_tfA+")");
+          _gGlow.addColorStop(1,"rgba(0,0,0,0)");
+          ctx.fillStyle=_gGlow;ctx.beginPath();ctx.arc(x,y,_gR,0,Math.PI*2);ctx.fill();
+        }
+      }
+    }
   }
   /* Label — ALWAYS visible (name), status on hover or always in non-FS */
   {
-    var labelAlpha=nd.alive?(0.55+nd.energy*0.25):0.15;
+    var labelAlpha=nd.alive?(0.55+nd.energy*0.25):0.28;
     ctx.fillStyle="rgba("+nd.rgb+","+labelAlpha+")";
     ctx.font=(nd.celestialType==="star"?'bold 10':'9')+'px "IBM Plex Mono",monospace';
     ctx.textAlign="center";
@@ -3677,6 +3729,29 @@ function _orbRender(timestamp){
   /* L4b: Gravitational field lines — CC to star systems (always draw) */
   _drawGravField(ctx,_drawNow);
 
+  /* L4c: PHITEX → Nexus tether — purple particles flowing along the bond */
+  if(_orbIsFS){
+    var _pft=_orbNodes.phitex,_nxt=_orbNodes.nexus;
+    if(_pft&&_nxt&&_pft.alive&&_nxt.alive){
+      var _pnNow=_drawNow;
+      /* Static spine */
+      ctx.strokeStyle="rgba(200,80,255,0.07)";ctx.lineWidth=0.6;
+      ctx.beginPath();ctx.moveTo(_pft.x,_pft.y);ctx.lineTo(_nxt.x,_nxt.y);ctx.stroke();
+      /* 4 flowing particles */
+      for(var _pi=0;_pi<4;_pi++){
+        var _pt=((_pnNow/3500+_pi/4)%1);
+        var _pfx=(1-_pt)*_pft.x+_pt*_nxt.x;
+        var _pfy=(1-_pt)*_pft.y+_pt*_nxt.y;
+        var _pfa=Math.sin(_pt*Math.PI)*0.18;
+        var _pg=ctx.createRadialGradient(_pfx,_pfy,0,_pfx,_pfy,3);
+        _pg.addColorStop(0,"rgba(200,80,255,"+_pfa+")");_pg.addColorStop(1,"rgba(0,0,0,0)");
+        ctx.fillStyle=_pg;ctx.beginPath();ctx.arc(_pfx,_pfy,3,0,Math.PI*2);ctx.fill();
+        ctx.fillStyle="rgba(220,120,255,"+(  _pfa*0.8)+")";
+        ctx.beginPath();ctx.arc(_pfx,_pfy,0.8,0,Math.PI*2);ctx.fill();
+      }
+    }
+  }
+
   /* L5: Orbit trails */
   if(!_orbFrameBudgetOver){
     for(var i=0;i<allArr.length;i++) _drawOrbitTrail(ctx,allArr[i]);
@@ -3747,6 +3822,25 @@ function _orbRender(timestamp){
           ctx.fillStyle=hexAlpha(planet.color,0.32);
           ctx.font='8px "IBM Plex Mono",monospace';
           ctx.fillText(planet.statusLabel,planet.x,planet.y+_plbOff+11);
+        }
+        /* Trade flash in cinema mode */
+        if(planet.tradeFlash){
+          var _tf2=planet.tradeFlash,_el2=Date.now()-_tf2.startTime;
+          if(_el2>2000){planet.tradeFlash=null;}
+          else{
+            var _pr2=_el2/2000,_fa2=(1-_pr2)*0.35;
+            if(_tf2.type==="open"){
+              var _c2=_tf2.direction==="LONG"?"74,222,128":"248,113,113";
+              ctx.strokeStyle="rgba("+_c2+","+_fa2+")";ctx.lineWidth=2;
+              ctx.beginPath();ctx.arc(planet.x,planet.y,planet.currentSize+4+_pr2*20,0,Math.PI*2);ctx.stroke();
+            } else {
+              var _c3=_tf2.won?"201,162,39":"90,70,55";
+              var _gR2=planet.currentSize*(1.3+_pr2*0.5);
+              var _gg2=ctx.createRadialGradient(planet.x,planet.y,planet.currentSize*0.8,planet.x,planet.y,_gR2);
+              _gg2.addColorStop(0,"rgba("+_c3+","+_fa2+")");_gg2.addColorStop(1,"rgba(0,0,0,0)");
+              ctx.fillStyle=_gg2;ctx.beginPath();ctx.arc(planet.x,planet.y,_gR2,0,Math.PI*2);ctx.fill();
+            }
+          }
         }
       }
     } else {
@@ -12752,19 +12846,19 @@ function _drawMoonChronos(ctx,x,y,r,now){
   var beamAngle=(now/1000)*Math.PI*2; /* 1 revolution per second */
   for(var pole=-1;pole<=1;pole+=2){
     var bA=beamAngle+pole*Math.PI;
-    var bLen=s*4;
+    var bLen=s*2.5;
     var bWidth=0.06; /* narrow beam cone */
-    /* Beam glow — tapered */
+    /* Beam glow — tapered, 30% dimmer than before */
     var bG=ctx.createLinearGradient(x,y,x+Math.cos(bA)*bLen,y+Math.sin(bA)*bLen);
-    bG.addColorStop(0,"rgba(200,220,255,0.3)");
-    bG.addColorStop(0.3,"rgba(160,190,240,0.12)");
-    bG.addColorStop(0.7,"rgba(120,150,220,0.03)");
+    bG.addColorStop(0,"rgba(200,220,255,0.21)");
+    bG.addColorStop(0.3,"rgba(160,190,240,0.08)");
+    bG.addColorStop(0.7,"rgba(120,150,220,0.02)");
     bG.addColorStop(1,"rgba(0,0,0,0)");
     ctx.fillStyle=bG;
     ctx.beginPath();ctx.moveTo(x,y);
     ctx.arc(x,y,bLen,bA-bWidth,bA+bWidth);ctx.closePath();ctx.fill();
     /* Bright core beam — thin inner line */
-    ctx.strokeStyle="rgba(220,235,255,0.2)";ctx.lineWidth=1;
+    ctx.strokeStyle="rgba(220,235,255,0.14)";ctx.lineWidth=1;
     ctx.beginPath();ctx.moveTo(x+Math.cos(bA)*s*0.5,y+Math.sin(bA)*s*0.5);
     ctx.lineTo(x+Math.cos(bA)*bLen*0.7,y+Math.sin(bA)*bLen*0.7);ctx.stroke();
   }
@@ -12792,7 +12886,7 @@ function _drawMoonAegis(ctx,x,y,r,now,score){
   ctx.fillStyle=coreG;ctx.beginPath();ctx.arc(x,y,s*0.5,0,Math.PI*2);ctx.fill();
   /* Magnetic field lines — dipole arcs from pole to pole */
   var fieldExtent=s*(1.8+score*2.5); /* weak score = tight lines, strong = extended */
-  var fieldAlpha=0.09+score*0.22; /* floor raised — faint lines always visible even at 0.05 */
+  var fieldAlpha=0.18+score*0.28; /* floor: visible at any score; strong at high scores */
   var nLines=6;
   var slowRot=now/15000;
   ctx.save();ctx.translate(x,y);ctx.rotate(slowRot);

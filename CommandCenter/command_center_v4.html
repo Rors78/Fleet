@@ -1048,7 +1048,7 @@ var CELESTIAL_HIERARCHY={
   rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.007,  mass:10, sz:25, grp:"trader", pt:"elastic",     pers:"bouncy"},
   arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.004,  mass:10, sz:25, grp:"trader", pt:"binary_pair", pers:"paired"},
   /* MOONS — Small support bots ×1.2, orbital radii ×1.3 */
-  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.00057, mass:14, sz:17, grp:"novel",    pt:"magnetar",   pers:"guardian"},
+  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.00057, mass:14, sz:24, grp:"novel",    pt:"magnetar",   pers:"guardian"},
   phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.00085, mass:12, sz:16, grp:"novel",    pt:"variable",   pers:"pulsing"},
   sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.00043, mass:10, sz:14, grp:"intel",    pt:"nebula",     pers:"watchful"},
   contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.00115, mass:10, sz:14, grp:"intel",    pt:"dark_nebula",pers:"contrarian"},
@@ -1114,17 +1114,20 @@ function OrbNode(id,cfg,def,angle,cw,ch){
   /* Stars spaced 120° apart: Oracle upper-right, Deep Blue lower-left, Nexus upper-left */
   /* CC-orbiting moons spaced evenly around the sun so they don't cluster */
   var _fixedAngles={
-    /* Stars — 120° apart, filling all quadrants
-       oracle=upper-right, nexus=bottom (slightly right), deepblue=left */
-    oracle:-Math.PI*0.25, nexus:Math.PI*0.417, deepblue:Math.PI*1.083,
+    /* Stars — 120° apart in equilateral triangle
+       oracle=right (0°), deepblue=upper-left (240°=−120°), nexus=lower-left (120°) */
+    oracle:0, nexus:Math.PI*(2/3), deepblue:-Math.PI*(2/3),
     /* CC moons — 4 bodies, 90° apart, offset 45° from star axes */
     aegis:Math.PI/4, sentinel:Math.PI*3/4, chronos:Math.PI*5/4, hivemind:Math.PI*7/4,
-    /* Star-orbiting moons — spread around their parents */
-    trinity:Math.PI*0.3, contrarian:Math.PI*1.2, phitex:Math.PI*0.8,
-    /* Planets — spread evenly around their parent stars */
-    trekbot:-Math.PI/4, turtlesue:Math.PI*3/4, gridzilla:Math.PI*5/4,
-    nexusbrain:Math.PI/6, rubberband:Math.PI*7/6,
-    arbitrageur:-Math.PI/3
+    /* Star-orbiting moons — placed away from their planet siblings */
+    trinity:Math.PI*1.5, contrarian:Math.PI, phitex:Math.PI*0.5,
+    /* Planets — initial angles spread to avoid overlap within each system */
+    /* Oracle system: trekbot upper, gridzilla lower, turtlesue right */
+    trekbot:-Math.PI/2, gridzilla:Math.PI*2/3, turtlesue:Math.PI/6,
+    /* Nexus system: nexusbrain left, rubberband right */
+    nexusbrain:Math.PI, rubberband:0,
+    /* DeepBlue system: arbitrageur below */
+    arbitrageur:Math.PI/2
   };
   this.orbitAngle=_fixedAngles[id]!=null?_fixedAngles[id]:(Math.random()*Math.PI*2);
   this.orbitRadius=hier.orbitRadius||100;
@@ -1313,7 +1316,7 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
   this.orbitAngle+=this.orbitSpeed*speedMod*dt*60;
 
   /* Calculate target position relative to parent */
-  var tiltY=0.85; /* slight tilt for perspective */
+  var tiltY=_orbIsFS?1.0:0.85; /* perspective in widget, full vertical in cinema */
   var targetX=parentX+Math.cos(this.orbitAngle)*r;
   var targetY=parentY+Math.sin(this.orbitAngle)*r*tiltY;
 
@@ -1333,7 +1336,7 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
       var newP2=_orbNodes[this.migrationTarget];
       if(newP2){
         var newTargetX=newP2.x+Math.cos(this.orbitAngle)*this.orbitRadius;
-        var newTargetY=newP2.y+Math.sin(this.orbitAngle)*this.orbitRadius*tiltY;
+        var newTargetY=newP2.y+Math.sin(this.orbitAngle)*this.orbitRadius*(_orbIsFS?1.0:0.85);
         var t=this.migrationProgress;
         var ease=t*t*(3-2*t); /* smoothstep */
         targetX=targetX+(newTargetX-targetX)*ease;
@@ -1356,10 +1359,14 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
   }
 
   /* === SIZE + ENERGY === */
-  this.eventBurst*=0.94;if(this.eventBurst<0.005) this.eventBurst=0;
+  this.eventBurst*=0.995;if(this.eventBurst<0.005) this.eventBurst=0;
   var breathe=1+Math.sin(now/2000+this.pulsePhase)*0.06;
   var burstSz=1+this.eventBurst*0.6;
-  this.currentSize=Math.max(1,this.size*this.sizeMultiplier*breathe*burstSz);
+  var rawSize=Math.max(1,this.size*this.sizeMultiplier*breathe*burstSz);
+  /* Hard cap: planets can't exceed 85% of starSz; moons can't exceed 80% of planetSz */
+  if(this.celestialType==="planet") rawSize=Math.min(rawSize,this.size*1.25);
+  else if(this.celestialType==="moon") rawSize=Math.min(rawSize,this.size*1.20);
+  this.currentSize=rawSize;
   this.energy+=(this.energyTarget-this.energy)*0.02;
   this.energy=Math.max(0.1,Math.min(1.0,this.energy));
 
@@ -1369,7 +1376,7 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
 };
 
 OrbNode.prototype.onEvent=function(){
-  this.eventBurst=Math.min(1.0,this.eventBurst+0.4);
+  this.eventBurst=Math.min(0.6,this.eventBurst+0.02);
   this.lastEventTime=Date.now();
 };
 
@@ -1378,16 +1385,18 @@ function OrbSynapse(a,b){
   this.a=a;this.b=b;this.activity=0;this.particles=[];
 }
 OrbSynapse.prototype.fire=function(fromId){
-  this.activity=Math.min(1.0,this.activity+0.4);
+  this.activity=Math.min(1.0,this.activity+0.35);
   var fn=(fromId===this.a.id)?this.a:this.b;
   var tn=(fromId===this.a.id)?this.b:this.a;
-  var ct=3+Math.floor(Math.random()*3);
+  /* 1-2 particles per fire — not a storm */
+  var ct=1+Math.floor(Math.random()*2);
   for(var i=0;i<ct;i++){
-    this.particles.push({prog:0,spd:0.8+Math.random()*0.8,sz:1.5+Math.random()*2,off:(Math.random()-0.5)*6,from:fn,to:tn});
+    this.particles.push({prog:0,spd:0.6+Math.random()*0.5,sz:1.2+Math.random()*1,off:(Math.random()-0.5)*4,from:fn,to:tn});
   }
 };
 OrbSynapse.prototype.update=function(dt){
-  this.activity*=0.97;if(this.activity<0.005)this.activity=0;
+  /* Fast decay — ~1 second fade */
+  this.activity*=0.96;if(this.activity<0.005)this.activity=0;
   var a=[];for(var i=0;i<this.particles.length;i++){this.particles[i].prog+=this.particles[i].spd*dt;if(this.particles[i].prog<1)a.push(this.particles[i]);}
   this.particles=a;
 };
@@ -1396,10 +1405,12 @@ OrbSynapse.prototype.draw=function(ctx){
   var dx=bx-ax,dy=by-ay,len=Math.sqrt(dx*dx+dy*dy)||1;
   var perpX=-dy/len*15,perpY=dx/len*15;
   var mx=(ax+bx)/2,my=(ay+by)/2;
-  /* In cinema mode: suppress base line, only show traveling particles */
-  if(this.activity>0.02&&!_orbIsFS){
-    ctx.strokeStyle="rgba(201,162,39,"+this.activity*0.15+")";
-    ctx.lineWidth=0.5;ctx.beginPath();ctx.moveTo(ax,ay);
+  /* No resting skeleton — only draw when active */
+  if(this.activity>0.04){
+    var lAlpha=Math.min(0.22,this.activity*0.22);
+    ctx.strokeStyle="rgba(201,162,39,"+lAlpha+")";
+    ctx.lineWidth=0.5+this.activity*0.8;
+    ctx.beginPath();ctx.moveTo(ax,ay);
     ctx.quadraticCurveTo(mx+perpX,my+perpY,bx,by);ctx.stroke();
   }
   for(var i=0;i<this.particles.length;i++){
@@ -1412,14 +1423,13 @@ OrbSynapse.prototype.draw=function(ctx){
     var px=(1-t)*(1-t)*fx+2*(1-t)*t*(pmx+ppX)+t*t*tx;
     var py=(1-t)*(1-t)*fy+2*(1-t)*t*(pmy+ppY)+t*t*ty;
     var nX=-pdy/plen*p.off,nY=pdx/plen*p.off;
-    var alpha=Math.sin(t*Math.PI);var rgb=p.from.rgb;
-    var g=ctx.createRadialGradient(px+nX,py+nY,0,px+nX,py+nY,p.sz*3);
-    g.addColorStop(0,"rgba("+rgb+","+alpha*0.8+")");
-    g.addColorStop(0.5,"rgba("+rgb+","+alpha*0.2+")");
+    var alpha=Math.sin(t*Math.PI)*0.7;var rgb=p.from.rgb;
+    var g=ctx.createRadialGradient(px+nX,py+nY,0,px+nX,py+nY,p.sz*2.5);
+    g.addColorStop(0,"rgba("+rgb+","+alpha+")");
     g.addColorStop(1,"rgba(0,0,0,0)");
-    ctx.fillStyle=g;ctx.beginPath();ctx.arc(px+nX,py+nY,p.sz*3,0,Math.PI*2);ctx.fill();
-    ctx.fillStyle="rgba(255,255,255,"+alpha*0.6+")";
-    ctx.beginPath();ctx.arc(px+nX,py+nY,p.sz*0.5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle=g;ctx.beginPath();ctx.arc(px+nX,py+nY,p.sz*2.5,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle="rgba(255,255,255,"+(alpha*0.5)+")";
+    ctx.beginPath();ctx.arc(px+nX,py+nY,p.sz*0.4,0,Math.PI*2);ctx.fill();
   }
 };
 
@@ -1457,27 +1467,27 @@ function _orbScaleOrbits(){
   var minDim=Math.min(_orbLW,_orbLH);
 
   if(_orbIsFS){
-    /* ═══ FULLSCREEN: Use minDim so nothing clips. Generous spacing. ═══ */
-    /* Stars orbit at 38% of minDim — the 3 star systems are well separated */
-    var starScale=minDim*0.38;
-    var starRatios={oracle:1.1,deepblue:0.92,nexus:1.0};
+    /* ═══ FULLSCREEN: stars at 42% minDim — triangle fills canvas ═══ */
+    var starScale=minDim*0.42;
+    /* Oracle pushed right (+15%), DeepBlue/Nexus equal */
+    var starRatios={oracle:1.15,deepblue:1.0,nexus:1.0};
     for(var sid in starRatios){
       if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=starScale*starRatios[sid];
     }
-    /* Planets orbit at 40% of star distance — generous spacing from parent */
-    var planetScale=starScale*0.40;
-    var planetRatios={trekbot:1.0,nexusbrain:0.9,gridzilla:0.95,turtlesue:1.25,rubberband:1.1,arbitrageur:1.0};
+    /* Planets orbit at 33% of star distance — enough spread to avoid overlap */
+    var planetScale=starScale*0.33;
+    var planetRatios={trekbot:0.85,nexusbrain:1.0,gridzilla:0.85,turtlesue:0.90,rubberband:1.1,arbitrageur:0.90};
     for(var pid in planetRatios){
       if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
     }
-    /* CC-orbiting moons — layered rings between sun and stars, well clear of sun */
-    var ccMoonScale=starScale*0.55;
-    var ccMoonRatios={hivemind:0.45,aegis:0.58,sentinel:0.72,chronos:0.88};
+    /* CC-orbiting moons — layered rings between sun and stars */
+    var ccMoonScale=starScale*0.50;
+    var ccMoonRatios={hivemind:0.38,aegis:0.52,sentinel:0.66,chronos:0.80};
     for(var cmid in ccMoonRatios){
       if(_orbNodes[cmid]) _orbNodes[cmid].orbitRadius=ccMoonScale*ccMoonRatios[cmid];
     }
-    /* Star-orbiting moons — 30% of star orbit distance */
-    var moonScale=starScale*0.30;
+    /* Star-orbiting moons — 28% of star orbit distance */
+    var moonScale=starScale*0.28;
     var moonRatios={phitex:0.9,contrarian:0.8,trinity:0.75};
     for(var mid in moonRatios){
       if(_orbNodes[mid]) _orbNodes[mid].orbitRadius=moonScale*moonRatios[mid];
@@ -1485,12 +1495,14 @@ function _orbScaleOrbits(){
   } else {
     /* ═══ NORMAL (in-page widget): Use maxDim ═══ */
     var starScale=maxDim*0.38;
-    var starRatios={oracle:1.12,deepblue:0.95,nexus:1.0};
+    /* Cap orbit so no star's apogee exceeds 46% of minDim — prevents clipping */
+    var maxOrbit=minDim*0.46;
+    var starRatios={oracle:1.05,deepblue:0.92,nexus:0.98};
     for(var sid in starRatios){
-      if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=starScale*starRatios[sid];
+      if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=Math.min(starScale*starRatios[sid],maxOrbit);
     }
     var planetScale=starScale*0.28;
-    var planetRatios={trekbot:1.15,nexusbrain:1.05,gridzilla:0.85,turtlesue:1.4,rubberband:1.25,arbitrageur:1.1};
+    var planetRatios={trekbot:1.1,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.35,rubberband:1.2,arbitrageur:1.05};
     for(var pid in planetRatios){
       if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
     }
@@ -1506,11 +1518,12 @@ function _orbScaleOrbits(){
     }
   }
 
-  /* --- Responsive body sizes — scale to canvas, enforce minimums --- */
-  var sunSz=Math.max(40,minDim*0.05);
-  var starSz=Math.max(28,minDim*0.035);
-  var planetSz=Math.max(18,minDim*0.022);
-  var moonSz=Math.max(14,minDim*0.017);
+  /* --- Responsive body sizes — strict hierarchy enforced --- */
+  /* On 1080p: sun=54, star=45, planet=17, moon=11 → ratios 3.2x / 2.6x / 1.5x */
+  var sunSz=Math.max(44,minDim*0.05);
+  var starSz=Math.max(30,minDim*0.042);
+  var planetSz=Math.max(12,minDim*0.016);
+  var moonSz=Math.max(9,minDim*0.011);
   for(var nid in _orbNodes){
     var nd=_orbNodes[nid],hier=CELESTIAL_HIERARCHY[nid];
     if(!hier) continue;
@@ -1675,6 +1688,23 @@ function _orbFireSynapses(fromId,toIds){
   }
 }
 
+/* --- Synapse heartbeat — fires ambient network pulses every ~8s so the
+       network looks alive even when the event bus is quiet --- */
+var _synapseHeartbeatLast=0;
+function _orbSynapseHeartbeat(now){
+  /* Slow ambient pulse — 5s interval, 2-3 connections only */
+  if(now-_synapseHeartbeatLast<5000) return;
+  _synapseHeartbeatLast=now;
+  var alive=_orbSynapses.filter(function(s){return s.a.alive&&s.b.alive;});
+  if(alive.length===0) return;
+  var count=2+Math.floor(Math.random()*2);
+  for(var i=0;i<count;i++){
+    var s=alive[Math.floor(Math.random()*alive.length)];
+    s.activity=Math.min(1.0,s.activity+0.2);
+    s.particles.push({prog:0,spd:0.5+Math.random()*0.4,sz:1.0+Math.random()*0.8,off:(Math.random()-0.5)*4,from:s.a,to:s.b});
+  }
+}
+
 /* --- SSE handler --- */
 function _orbHandleEvent(ev){
   var type=ev.type||"",src=ev.bot_id||ev.source||"";
@@ -1697,36 +1727,25 @@ function _orbHandleEvent(ev){
     if(_orbNodes.trekbot) _orbNodes.trekbot.migrateTo("deepblue","whale intelligence dominant");
     if(tier==="EXTREME"&&_orbNodes.turtlesue) _orbNodes.turtlesue.migrateTo("deepblue","whale may trigger breakout");
   }
-  if(/AEGIS_UPDATE/.test(type)) _orbFireSynapses("aegis",traders);
+  /* PHITEX_UPDATE: migrate only, no synapses (fires constantly) */
   if(/PHITEX_UPDATE/.test(type)){
-    _orbFireSynapses("phitex",["aegis","nexus"]);
-    /* Migration: phase transition pushes Rubberband away from Nexus */
     var fsc2=(ev.data||{}).fleet_score||0;
     if(fsc2>0.5&&_orbNodes.rubberband) _orbNodes.rubberband.migrateTo("oracle","monitoring phase transition");
   }
+  /* PHASE_TRANSITION: shockwave + migration only */
   if(/PHASE_TRANSITION/.test(type)){
     var pn=_orbNodes.phitex;
     if(pn){pn.eventBurst=1.0;_orbShockwaves.push({x:pn.x,y:pn.y,r:0,op:0.6,color:pn.color,rgb:pn.rgb});}
-    /* TrekBot migrates toward Nexus on phase transition */
     if(_orbNodes.trekbot) _orbNodes.trekbot.migrateTo("nexus","phase transition — watching math signals");
   }
-  if(/^NEWTON|^EUCLID/.test(type)){
-    _orbFireSynapses("nexus",traders);
-    /* Nexus-driven events pull traders toward Nexus */
-    if(_orbNodes.trekbot&&!_orbNodes.trekbot.migrating) _orbNodes.trekbot.migrateTo("nexus","math framework dominant");
+  /* MANIFOLD_WARNING / QUANTUM_COLLAPSE: significant math events — fire one synapse */
+  if(/MANIFOLD_WARNING|QUANTUM_COLLAPSE/.test(type)){
+    _orbFireSynapses("nexus",[traders[Math.floor(Math.random()*traders.length)]]);
   }
-  if(/NEXUS_UPDATE/.test(type)) _orbFireSynapses("nexus",traders);
-  if(/REGIME_CHANGE|SCAN_COMPLETE/.test(type)){
-    /* Scanner/regime events pull traders toward Oracle */
-    if(src==="oracle"||src==="trinity"){
-      _orbFireSynapses(src==="trinity"?"trinity":"oracle",["trekbot","nexusbrain"]);
-      if(_orbNodes.trekbot&&!_orbNodes.trekbot.migrating) _orbNodes.trekbot.migrateTo("oracle","scanner intelligence dominant");
-      /* Ranging regime: grid & rubberband migrate to Oracle */
-      var regData=((ev.data||{}).regime||"").toLowerCase();
-      if(regData.indexOf("rang")>=0||regData.indexOf("chop")>=0){
-        if(_orbNodes.gridzilla) _orbNodes.gridzilla.migrateTo("oracle","ranging regime confirmed");
-        if(_orbNodes.rubberband) _orbNodes.rubberband.migrateTo("oracle","ranging — hunting reversions");
-      }
+  /* REGIME_CHANGE: migration only, no synapses */
+  if(/REGIME_CHANGE/.test(type)){
+    if((src==="oracle"||src==="trinity")&&_orbNodes.trekbot&&!_orbNodes.trekbot.migrating){
+      _orbNodes.trekbot.migrateTo("oracle","scanner intelligence dominant");
     }
   }
   if(/EMERGENCY_REDUCE/.test(type)){
@@ -1862,11 +1881,11 @@ function drawSun(ctx, x, y, baseRadius, now, eventRate) {
 
     /* ═══ CORONA — 5 layered halos, each larger and fainter ═══ */
     var coronaLayers = [
-        { scale: 8, alpha: 0.006, color: [255, 180, 60] },
-        { scale: 5, alpha: 0.012, color: [255, 170, 50] },
-        { scale: 3, alpha: 0.025, color: [255, 160, 40] },
-        { scale: 2, alpha: 0.04,  color: [255, 150, 30] },
-        { scale: 1.5, alpha: 0.06, color: [255, 140, 20] },
+        { scale: 8, alpha: 0.025, color: [255, 180, 60] },
+        { scale: 5, alpha: 0.045, color: [255, 170, 50] },
+        { scale: 3, alpha: 0.08,  color: [255, 160, 40] },
+        { scale: 2, alpha: 0.13,  color: [255, 150, 30] },
+        { scale: 1.5, alpha: 0.20, color: [255, 140, 20] },
     ];
 
     for (var li = 0; li < coronaLayers.length; li++) {
@@ -1920,10 +1939,10 @@ function drawSun(ctx, x, y, baseRadius, now, eventRate) {
     ctx.restore();
 
     /* ═══ PROMINENCES — plasma arcs off the surface ═══ */
-    var promCount = 3 + Math.min(4, Math.floor(eventRate / 5));
+    var promCount = 5 + Math.min(3, Math.floor(eventRate / 5));
     for (var i = 0; i < promCount; i++) {
         var angle = (i / promCount) * Math.PI * 2 + now / 15000;
-        var height = sz * (0.3 + Math.sin(now / 4000 + i * 2.5) * 0.25);
+        var height = sz * (0.55 + Math.sin(now / 4000 + i * 2.5) * 0.35);
         var safeHeight = Math.max(2, height);
 
         var sx = x + Math.cos(angle) * sz;
@@ -1934,16 +1953,16 @@ function drawSun(ctx, x, y, baseRadius, now, eventRate) {
         var cpy = y + Math.sin(angle + 0.12) * (sz + safeHeight);
 
         /* Outer glow */
-        ctx.strokeStyle = 'rgba(255, 100, 20, 0.06)';
-        ctx.lineWidth = 5;
+        ctx.strokeStyle = 'rgba(255, 100, 20, 0.22)';
+        ctx.lineWidth = 6;
         ctx.beginPath();
         ctx.moveTo(sx, sy);
         ctx.quadraticCurveTo(cpx, cpy, ex, ey);
         ctx.stroke();
 
         /* Inner bright */
-        ctx.strokeStyle = 'rgba(255, 180, 60, ' + (0.12 + Math.sin(now / 1500 + i) * 0.04) + ')';
-        ctx.lineWidth = 1.5;
+        ctx.strokeStyle = 'rgba(255, 200, 80, ' + (0.45 + Math.sin(now / 1500 + i) * 0.1) + ')';
+        ctx.lineWidth = 2;
         ctx.beginPath();
         ctx.moveTo(sx, sy);
         ctx.quadraticCurveTo(cpx, cpy, ex, ey);
@@ -3000,11 +3019,19 @@ function _drawNode(ctx,nd){
     /* Position rings */
     _posRings(ctx,nd,x,y,sz);
   }
-  /* Label — hover-only in cinema mode */
-  if(!_orbIsFS||_orbHover===nd.id){
-    ctx.fillStyle="rgba("+nd.rgb+","+(nd.alive?(0.5+nd.energy*0.3):0.15)+")";
+  /* Label — ALWAYS visible (name), status on hover or always in non-FS */
+  {
+    var labelAlpha=nd.alive?(0.55+nd.energy*0.25):0.15;
+    ctx.fillStyle="rgba("+nd.rgb+","+labelAlpha+")";
     ctx.font=(nd.celestialType==="star"?'bold 10':'9')+'px "IBM Plex Mono",monospace';
-    ctx.textAlign="center";ctx.fillText(nd.label,x,y+sz+12);
+    ctx.textAlign="center";
+    ctx.fillText(nd.label,x,y+sz+13);
+    /* Status line — always show, slightly dimmer */
+    if(nd.statusLabel){
+      ctx.fillStyle="rgba("+nd.rgb+","+(nd.alive?0.32:0.1)+")";
+      ctx.font='8px "IBM Plex Mono",monospace';
+      ctx.fillText(nd.statusLabel,x,y+sz+24);
+    }
   }
 }
 
@@ -3030,14 +3057,6 @@ function _drawGravityZone(ctx,star){
   zoneGrad.addColorStop(0.5,"rgba("+star.rgb+",0.005)");
   zoneGrad.addColorStop(1,"rgba(0,0,0,0)");
   ctx.fillStyle=zoneGrad;ctx.beginPath();ctx.arc(star.x,star.y,r,0,Math.PI*2);ctx.fill();
-  if(!_orbIsFS){
-    var systemNames={oracle:"SIGNAL SYSTEM",deepblue:"FLOW SYSTEM",nexus:"MATH SYSTEM"};
-    if(systemNames[star.id]){
-      ctx.fillStyle="rgba("+star.rgb+",0.15)";
-      ctx.font='8px "IBM Plex Mono",monospace';ctx.textAlign="center";
-      ctx.fillText(systemNames[star.id],star.x,star.y-r-5);
-    }
-  }
 }
 
 /* --- Star emission glow (kept) --- */
@@ -3223,6 +3242,103 @@ function _drawMigrationTrail(ctx,body){
   }
 }
 
+/* ═══ GRAVITATIONAL FIELD LINES — CC to star systems ═══ */
+function _drawGravField(ctx,now){
+  var cc=_orbNodes.cc;
+  if(!cc) return;
+  /* Scale up in fullscreen — stars are further apart, need more particles */
+  var ptCount=_orbIsFS?12:8;
+  var ptSzBase=_orbIsFS?1.8:1.2;
+  var alphaScale=_orbIsFS?0.38:0.32;
+  var gravTargets=[
+    {id:"oracle", offset:0},
+    {id:"deepblue", offset:2.1},
+    {id:"nexus", offset:4.2}
+  ];
+  for(var si=0;si<gravTargets.length;si++){
+    var star=_orbNodes[gravTargets[si].id];
+    if(!star) continue;
+    var off=gravTargets[si].offset;
+    var midX=(cc.x+star.x)/2+Math.sin(now/5000+off)*22;
+    var midY=(cc.y+star.y)/2+Math.cos(now/6000+off)*16;
+    /* Static bezier spine */
+    ctx.strokeStyle=_orbIsFS?"rgba(201,162,39,0.10)":"rgba(201,162,39,0.06)";
+    ctx.lineWidth=_orbIsFS?0.8:0.6;
+    ctx.beginPath();ctx.moveTo(cc.x,cc.y);
+    ctx.quadraticCurveTo(midX,midY,star.x,star.y);ctx.stroke();
+    /* Flowing particles */
+    for(var i=0;i<ptCount;i++){
+      var t=((now/5500+i/ptCount+off*0.1)%1);
+      var it=1-t;
+      var px=it*it*cc.x+2*it*t*midX+t*t*star.x;
+      var py=it*it*cc.y+2*it*t*midY+t*t*star.y;
+      var alpha=Math.sin(t*Math.PI)*alphaScale;
+      var sz=Math.max(0.8,ptSzBase+Math.sin(t*Math.PI)*2.0);
+      var g=ctx.createRadialGradient(px,py,0,px,py,sz*2.5);
+      g.addColorStop(0,"rgba(201,162,39,"+alpha+")");
+      g.addColorStop(1,"rgba(201,162,39,0)");
+      ctx.fillStyle=g;ctx.beginPath();ctx.arc(px,py,sz*2.5,0,Math.PI*2);ctx.fill();
+      ctx.fillStyle="rgba(255,225,130,"+(alpha*0.85)+")";
+      ctx.beginPath();ctx.arc(px,py,sz*0.55,0,Math.PI*2);ctx.fill();
+    }
+  }
+}
+
+/* ═══ METRICS OVERLAY BAR — fleet status always visible ═══ */
+function _drawMetricsBar(ctx,W){
+  var agg=state.aggregate||{};
+  var port=state.portfolio||{};
+  var aliveCount=0,totalCount=0;
+  for(var id in _orbNodes){var nd=_orbNodes[id];if(nd.id!=="cc"){totalCount++;if(nd.alive)aliveCount++;}}
+  /* Pool: use portfolio.total (real pool), fallback to aggregate equity */
+  var pool=port.total!=null?port.total:(agg.total_equity||0);
+  /* WR: use avg_win_rate (0-100 scale), normalize to fraction */
+  var wr=(agg.avg_win_rate!=null&&agg.total_trades>0)?agg.avg_win_rate:0;
+  if(wr>1) wr=wr/100;
+  var pnl=(agg.total_pnl||0);
+  var aegisScr=null;
+  for(var bid=0;bid<(state.bots||[]).length;bid++){
+    var b=state.bots[bid];if(b&&b.id==="aegis"&&b.raw){aegisScr=b.raw.overall_score!=null?b.raw.overall_score:b.raw.score;break;}
+  }
+  /* Semi-transparent bar */
+  ctx.fillStyle="rgba(7,7,12,0.65)";ctx.fillRect(0,0,W,28);
+  ctx.strokeStyle="rgba(201,162,39,0.1)";ctx.lineWidth=0.5;
+  ctx.beginPath();ctx.moveTo(0,28);ctx.lineTo(W,28);ctx.stroke();
+  ctx.font='10px "IBM Plex Mono",monospace';ctx.textAlign="left";
+  var xp=14,y=18;
+  /* Title */
+  ctx.fillStyle="rgba(201,162,39,0.7)";ctx.fillText("COMMAND CENTER",xp,y);xp+=130;
+  /* Separator */
+  ctx.fillStyle="rgba(201,162,39,0.2)";ctx.fillText("|",xp,y);xp+=14;
+  /* Fleet alive */
+  var fleetOk=aliveCount===totalCount;
+  ctx.fillStyle=fleetOk?"rgba(0,191,165,0.7)":"rgba(255,80,80,0.7)";
+  ctx.fillText("Fleet: "+aliveCount+"/"+totalCount,xp,y);xp+=ctx.measureText("Fleet: "+aliveCount+"/"+totalCount).width+18;
+  /* Pool */
+  ctx.fillStyle="rgba(201,162,39,0.55)";
+  ctx.fillText("Pool: $"+pool.toFixed(0),xp,y);xp+=ctx.measureText("Pool: $"+pool.toFixed(0)).width+18;
+  /* WR */
+  var wrStr="WR: "+(wr*100).toFixed(1)+"%";
+  ctx.fillStyle=wr>=0.45?"rgba(0,191,165,0.7)":"rgba(201,162,39,0.55)";
+  ctx.fillText(wrStr,xp,y);xp+=ctx.measureText(wrStr).width+18;
+  /* PnL */
+  var pnlStr="PnL: "+(pnl>=0?"+":"")+pnl.toFixed(2);
+  ctx.fillStyle=pnl>=0?"rgba(0,191,165,0.7)":"rgba(255,100,100,0.65)";
+  ctx.fillText(pnlStr,xp,y);xp+=ctx.measureText(pnlStr).width+18;
+  /* AEGIS score */
+  if(aegisScr!=null){
+    var aegisStr="AEGIS: "+aegisScr.toFixed(2);
+    ctx.fillStyle="rgba(201,162,39,0.45)";
+    ctx.fillText(aegisStr,xp,y);xp+=ctx.measureText(aegisStr).width+18;
+  }
+  /* Clock — right-aligned */
+  var now=new Date();
+  var timeStr=now.getUTCHours().toString().padStart(2,"0")+":"+now.getUTCMinutes().toString().padStart(2,"0")+" UTC";
+  ctx.textAlign="right";ctx.fillStyle="rgba(201,162,39,0.4)";
+  ctx.fillText(timeStr,W-14,y);
+  ctx.textAlign="left";
+}
+
 /* ═══ SPECTACULAR SYSTEMS (kept from v4) ═══ */
 
 /* --- 1. TRADE COMETS --- */
@@ -3274,7 +3390,7 @@ function _drawComets(ctx,dt){
       var hg=ctx.createRadialGradient(c.x,c.y,0,c.x,c.y,6);
       hg.addColorStop(0,"rgba(255,255,255,0.9)");hg.addColorStop(0.3,"rgba("+c.rgb+",0.6)");hg.addColorStop(1,"rgba(0,0,0,0)");
       ctx.fillStyle=hg;ctx.beginPath();ctx.arc(c.x,c.y,6,0,Math.PI*2);ctx.fill();
-      if(c.phase==="cruise"&&c.pair&&!_orbIsFS){ctx.fillStyle="rgba(201,162,39,0.4)";ctx.font='7px "IBM Plex Mono",monospace';
+      if(c.phase==="cruise"&&c.pair){ctx.fillStyle="rgba(201,162,39,0.4)";ctx.font='7px "IBM Plex Mono",monospace';
         ctx.textAlign="center";ctx.fillText(c.pair,c.x,c.y-10);}
     }
     if(c.phase==="resolve"){
@@ -3466,7 +3582,7 @@ function _orbRender(timestamp){
   var dt=(timestamp-_orbLastFrame)/1000;
   if(dt>0.1) dt=0.016;
   _orbLastFrame=timestamp;
-  var W=_orbLW,H=_orbLH,cx=W/2,cy=H/2;
+  var W=_orbLW,H=_orbLH,cx=W/2,cy=_orbIsFS?H*0.48:H/2;
   var ctx=_orbCtx;
   var _dpr=window.devicePixelRatio||1;
 
@@ -3558,6 +3674,9 @@ function _orbRender(timestamp){
     for(var i=0;i<allArr.length;i++) _drawOrbitPath(ctx,allArr[i]);
   }
 
+  /* L4b: Gravitational field lines — CC to star systems (always draw) */
+  _drawGravField(ctx,_drawNow);
+
   /* L5: Orbit trails */
   if(!_orbFrameBudgetOver){
     for(var i=0;i<allArr.length;i++) _drawOrbitTrail(ctx,allArr[i]);
@@ -3566,26 +3685,19 @@ function _orbRender(timestamp){
   /* L6: Migration trails */
   for(var i=0;i<allArr.length;i++) _drawMigrationTrail(ctx,allArr[i]);
 
-  /* L7: Constellation pattern — suppress in cinema mode (too many lines) */
-  if(!_orbFrameBudgetOver&&!_orbIsFS){
-    _updateConstellation();
-    _drawConstellation(ctx);
-  }
+  /* L7: Constellation pattern — always draw, never skip */
+  _updateConstellation();
+  _drawConstellation(ctx);
 
-  /* L8: Wormholes — suppress in cinema (blue lines = clutter) */
-  if(!_orbIsFS) _drawWormholes(ctx,dt);
+  /* L8: Wormholes — draw in both modes */
+  _drawWormholes(ctx,dt);
 
   /* L9: Gravitational lensing */
   if(!_orbFrameBudgetOver) _drawLensing(ctx);
 
-  /* L10: Synapses — hidden in cinema mode (too many lines = visual clutter) */
-  if(!_orbIsFS){
-    if(!_orbFrameBudgetOver){
-      for(var i=0;i<_orbSynapses.length;i++){_orbSynapses[i].update(dt);_orbSynapses[i].draw(ctx);}
-    } else {
-      for(var i=0;i<_orbSynapses.length;i++) _orbSynapses[i].update(dt);
-    }
-  }
+  /* L10: Synapses — always draw, never skip (lines+particles are cheap) */
+  _orbSynapseHeartbeat(_drawNow);
+  for(var i=0;i<_orbSynapses.length;i++){_orbSynapses[i].update(dt);_orbSynapses[i].draw(ctx);}
 
   /* L11: Trade comets */
   _drawComets(ctx,dt);
@@ -3600,6 +3712,22 @@ function _orbRender(timestamp){
     if(!_orbFrameBudgetOver) _drawStarGlow(ctx,star);
     _drawNode(ctx,star);
   }
+  /* L13b: System labels — drawn AFTER all star glows, using star coords only */
+  var _sysLabels=[
+    {id:"oracle",lbl:"SIGNAL SYSTEM"},
+    {id:"deepblue",lbl:"FLOW SYSTEM"},
+    {id:"nexus",lbl:"MATH SYSTEM"}
+  ];
+  ctx.font='bold 9px "IBM Plex Mono",monospace';
+  ctx.textAlign="center";
+  for(var sli=0;sli<_sysLabels.length;sli++){
+    var slStar=_orbNodes[_sysLabels[sli].id];
+    if(!slStar) continue;
+    /* Label floats above the star glow ring — use gravitational radius if available */
+    var slOffset=slStar.currentSize+(slStar.gravitationalRadius?slStar.gravitationalRadius*0.25:30)+8;
+    ctx.fillStyle="rgba("+slStar.rgb+",0.28)";
+    ctx.fillText(_sysLabels[sli].lbl,slStar.x,slStar.y-slOffset);
+  }
 
   /* L14: Planets — new identities in fullscreen, normal otherwise */
   var planetIds=["trekbot","nexusbrain","gridzilla","turtlesue","rubberband","arbitrageur"];
@@ -3607,12 +3735,19 @@ function _orbRender(timestamp){
     var planet=_orbNodes[planetIds[pi]];
     if(!planet) continue;
     if(_orbIsFS&&_drawFullscreenEntity(ctx,planet,_drawNow)){
-      /* Label — hover-only in cinema mode */
-      if(planet.alive&&_orbHover===planet.id){
-        ctx.fillStyle=hexAlpha(planet.color,0.85);
-        ctx.font='bold 11px "JetBrains Mono",monospace';
+      /* Name + status always visible in cinema mode */
+      if(planet.alive){
+        /* Ships extend further — use larger offset */
+        var _plbOff=planet.id==="trekbot"?planet.currentSize*2.2+14:planet.currentSize*1.8+14;
+        ctx.fillStyle=hexAlpha(planet.color,0.55);
+        ctx.font='9px "IBM Plex Mono",monospace';
         ctx.textAlign="center";
-        ctx.fillText(planet.label,planet.x,planet.y+planet.currentSize*1.8+14);
+        ctx.fillText(planet.label,planet.x,planet.y+_plbOff);
+        if(planet.statusLabel){
+          ctx.fillStyle=hexAlpha(planet.color,0.32);
+          ctx.font='8px "IBM Plex Mono",monospace';
+          ctx.fillText(planet.statusLabel,planet.x,planet.y+_plbOff+11);
+        }
       }
     } else {
       _drawNode(ctx,planet);
@@ -3635,6 +3770,16 @@ function _orbRender(timestamp){
       else if(moon.id==="contrarian") _drawMoonContrarian(ctx,moon.x,moon.y,moon.currentSize,_drawNow,(_mr.sentiment_state||"").toUpperCase());
       else if(moon.id==="trinity") _drawMoonTrinity(ctx,moon.x,moon.y,moon.currentSize,_drawNow);
       else _drawNode(ctx,moon);
+      /* Name + status always drawn after cinema renderer */
+      var _msz=moon.currentSize;
+      ctx.fillStyle="rgba("+moon.rgb+",0.52)";
+      ctx.font='9px "IBM Plex Mono",monospace';ctx.textAlign="center";
+      ctx.fillText(moon.label,moon.x,moon.y+_msz+13);
+      if(moon.statusLabel){
+        ctx.fillStyle="rgba("+moon.rgb+",0.30)";
+        ctx.font='8px "IBM Plex Mono",monospace';
+        ctx.fillText(moon.statusLabel,moon.x,moon.y+_msz+24);
+      }
     } else {
       _drawNode(ctx,moon);
     }
@@ -3655,6 +3800,9 @@ function _orbRender(timestamp){
 
   /* Reset transform for HUD — drawn in screen space, not world space */
   ctx.setTransform(_dpr,0,0,_dpr,0,0);
+
+  /* Metrics bar — always visible, top of screen */
+  _drawMetricsBar(ctx,W);
 
   /* HUD — outside transform */
   if(Math.abs(_orbZoom-1)>0.02){
@@ -10589,11 +10737,19 @@ function fetchData(){
   }).then(function(data){
     failCount=0;
     $connLost.classList.remove("show");
+    var firstLoad=!state.bots.length;
     state.bots=data.bots||[];
     state.aggregate=data.aggregate||null;
     state.feed=data.feed||[];
     state.portfolio=data.portfolio||null;
     state.daily_24h=data.daily_24h||null;
+    /* First data load: fire all synapses so network wakes up visually */
+    if(firstLoad&&_orbSynapses.length>0){
+      var allSynIds=["deepblue","oracle","nexus","aegis","sentinel","contrarian","chronos"];
+      for(var _si=0;_si<allSynIds.length;_si++){
+        _orbFireSynapses(allSynIds[_si],["trekbot","gridzilla","nexusbrain","turtlesue"]);
+      }
+    }
     /* Update AEGIS from bot data */
     var aegisBot=findBot(state.bots,"aegis");
     if(aegisBot&&aegisBot.alive){
@@ -11993,13 +12149,13 @@ var _solarFlares=[];
 
 function _drawSunCinematic(ctx,x,y,baseR,now,eventRate){
   var score=(typeof aegisState!=="undefined"&&aegisState.score!=null)?aegisState.score:0.02;
-  var coronaMult=1.0+score*3.0;
+  var coronaMult=1.5+score*2.0;
   var coronaR=baseR*coronaMult;
 
   /* Corona glow layers */
   for(var i=3;i>=0;i--){
     var layerR=coronaR*(0.5+i*0.2);
-    var alpha=(0.03+score*0.06)*(1-i*0.2);
+    var alpha=(0.10+score*0.12)*(1-i*0.2);
     var grad=ctx.createRadialGradient(x,y,baseR*0.5,x,y,layerR);
     grad.addColorStop(0,"rgba(255,200,50,"+alpha.toFixed(4)+")");
     grad.addColorStop(0.5,"rgba(255,150,30,"+(alpha*0.5).toFixed(4)+")");
@@ -12190,7 +12346,7 @@ function _drawShip(ctx,x,y,size,color,heading,deployed,sensors,sunX,sunY,now){
 
 /* Civilized Planet — NexusBrain: Atmosphere, continents, city lights, terminator */
 function _drawCivPlanet(ctx,x,y,size,color,phase,brightness,sunX,sunY,now){
-  var s=size*1.5;
+  var s=size*1.0;
   var sunA=Math.atan2((sunY||0)-y,(sunX||0)-x);
   now=now||Date.now();
 
@@ -12283,7 +12439,7 @@ function _drawCivPlanet(ctx,x,y,size,color,phase,brightness,sunX,sunY,now){
 
 /* Station — Gridzilla: Industrial octagonal hull, internal lattice, docking lights, core */
 function _drawStation(ctx,x,y,size,color,state2,sectionsLit,sunX,sunY,now){
-  var s=size*2.2;
+  var s=size*1.0;
   var sides=8;
   var sunA=Math.atan2((sunY||0)-y,(sunX||0)-x);
   now=now||Date.now();
@@ -12421,7 +12577,7 @@ function _drawStation(ctx,x,y,size,color,state2,sectionsLit,sunX,sunY,now){
 
 /* Armored Moon — TurtleSue: Textured surface, craters with shadow, charge gauge */
 function _drawArmoredMoon(ctx,x,y,size,color,charge,erupting,sunX,sunY,now){
-  var s=size*1.5;
+  var s=size*1.0;
   var sunA=Math.atan2((sunY||0)-y,(sunX||0)-x);
   now=now||Date.now();
   var lx=Math.cos(sunA),ly=Math.sin(sunA);
@@ -12501,12 +12657,12 @@ function _drawArmoredMoon(ctx,x,y,size,color,charge,erupting,sunX,sunY,now){
 
 /* Comet — Rubberband: Bright nucleus, coma, streaming tail, tail particles */
 function _drawComet(ctx,x,y,size,color,sunX,sunY,extension,pnlColor,now){
-  var s=size*1.5;
+  var s=size*1.0;
   now=now||Date.now();
   var dx=x-(sunX||0),dy=y-(sunY||0);
   var dist=Math.sqrt(dx*dx+dy*dy)||1;
   var nx=dx/dist,ny=dy/dist;
-  var tailLen=s*(4+extension*8);
+  var tailLen=s*(1.8+extension*3);
 
   /* L1: Tail — 20 layered circles decreasing in size, increasing spread */
   for(var t=0;t<20;t++){
@@ -12918,7 +13074,7 @@ function _drawMoonTrinity(ctx,x,y,r,now){
 
 /* Wormhole Gate — Arbitrageur: Two glowing portal rings connected by energy filaments */
 function _drawWormholeGate(ctx,x,y,size,color,spread,gatePhase,sunX,sunY,now){
-  var s=size*1.6;
+  var s=size*1.0;
   now=now||Date.now();
 
   /* Gate geometry — two rings separated by the spread */
@@ -13098,15 +13254,16 @@ function _drawFullscreenEntity(ctx,node,now){
     _drawArmoredMoon(ctx,x,y,s,c,vis.charge,vis.erupting,sunX,sunY,now);
   }
   else if(type==="comet"){
-    vis.extension=Math.random()*0.1;
+    /* Smooth extension — don't re-randomize every frame */
+    if(vis.extension===undefined) vis.extension=0;
+    vis.extension+=(0.05-vis.extension)*0.02;
     var pnlC=n.pnl>0?hexAlpha("#00e676",0.3):n.pnl<0?hexAlpha("#ff5252",0.3):"rgba(255,255,255,0.2)";
     _drawComet(ctx,x,y,s,c,sunX,sunY,vis.extension,pnlC,now);
   }
   else if(type==="wormhole_gate"){
     /* Spread: 0 = tight (no opportunity), 0.3 = normal, 0.8+ = wide (opportunity) */
-    var rawArb=(b&&b.raw)||{};
     var openPos=n.open_positions||0;
-    vis.spread=openPos>0?0.1:0.35; /* tighter when trading */
+    vis.spread=openPos>0?0.1:0.35;
     _drawWormholeGate(ctx,x,y,s,c,vis.spread,vis.gatePhase,sunX,sunY,now);
   }
   return true;

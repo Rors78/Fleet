@@ -261,27 +261,32 @@ class PortfolioManager:
                 return {"ok": False, "reason": f"Trade limit: {amount:.2f} > {max_trade:.2f} max ({lim['max_per_trade_pct']}%)"}
 
             # 6. Concentration check — no single pair > 40% of deployed capital
+            # Bootstrap exception: waive when deployed=$0 (cold start), otherwise first
+            # reservation is always 100% of deployed and can never pass.
             projected_deployed = deployed + amount
-            if projected_deployed > 0:
+            if deployed > 0 and projected_deployed > 0:
                 projected_pair = pair_exp + amount
                 pair_concentration = projected_pair / projected_deployed
                 if pair_concentration > 0.40:
                     return {"ok": False, "reason": f"Concentration limit: {pair} would be {pair_concentration:.0%} of deployed (max 40%)"}
 
             # 7. Direction balance — no more than 70% in one direction
+            # Bootstrap exception: waive when deployed=$0 (cold start), first trade
+            # is always 100% in one direction and can never pass otherwise.
             dir_totals = self.exposure_by_direction()
             long_total = dir_totals.get("LONG", 0)
             short_total = dir_totals.get("SHORT", 0)
-            if direction == "LONG":
-                long_total += amount
-            else:
-                short_total += amount
-            total_directional = long_total + short_total
-            if total_directional > 0:
-                dominant_pct = max(long_total, short_total) / total_directional
-                if dominant_pct > 0.70:
-                    dominant_dir = "LONG" if long_total > short_total else "SHORT"
-                    return {"ok": False, "reason": f"Direction balance: {dominant_dir} would be {dominant_pct:.0%} (max 70%)"}
+            if deployed > 0:
+                if direction == "LONG":
+                    long_total += amount
+                else:
+                    short_total += amount
+                total_directional = long_total + short_total
+                if total_directional > 0:
+                    dominant_pct = max(long_total, short_total) / total_directional
+                    if dominant_pct > 0.70:
+                        dominant_dir = "LONG" if long_total > short_total else "SHORT"
+                        return {"ok": False, "reason": f"Direction balance: {dominant_dir} would be {dominant_pct:.0%} (max 70%)"}
 
             # 8. Fee floor — reject tiny trades where fees dominate
             # Kraken taker fee ~0.26%, round trip = ~0.52%

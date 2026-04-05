@@ -467,6 +467,17 @@ body {
   text-transform: uppercase; color: var(--cyan); margin-bottom: 12px;
   padding-bottom: 6px; border-bottom: 1px solid rgba(0,229,255,0.08);
 }
+/* ── BOT DIAGNOSTIC SIDEBAR ── */
+.sb-dsec { margin-bottom: 8px; background: #0d1117; border: 1px solid #1e293b; border-radius: 6px; padding: 8px; }
+.sb-hdr  { font-family: 'Orbitron', monospace; font-size: 8px; color: var(--cyan); text-transform: uppercase; letter-spacing: 1.5px; margin-bottom: 4px; }
+.sb-row  { display: flex; justify-content: space-between; font-size: 11px; padding: 1px 0; font-family: monospace; }
+.sb-key  { color: #64748b; }
+.sb-val  { color: #e2e8f0; }
+.sb-val.green  { color: #16a085; }
+.sb-val.red    { color: #ef4444; }
+.sb-val.amber  { color: #f59e0b; }
+#sbBotContent  { padding: 8px; flex-shrink: 0; }
+#sbFleetContext{ padding: 8px; border-top: 1px solid #1e293b; flex-shrink: 0; }
 
 /* ── AEGIS GAUGE ── */
 .aegis-gauge-wrap { display: flex; flex-direction: column; align-items: center; gap: 12px; }
@@ -1470,19 +1481,20 @@ body {
     </div><!-- /contentArea -->
     <div class="focus-frame" id="focusFrame"></div>
     <div class="sidebar" id="sidebar">
-      <div class="sb-section" id="aegisSection">
-        <div class="sb-title">AEGIS Score</div>
-        <div class="aegis-gauge-wrap">
-          <div class="aegis-svg-wrap">
-            <svg viewBox="0 0 120 120" id="aegisSvg">
-              <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="6"/>
-              <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(0,229,255,0.3)" stroke-width="6" stroke-dasharray="0 276" stroke-dashoffset="69" stroke-linecap="round" id="aegisArc"/>
-            </svg>
-            <div class="aegis-center">
-              <span class="aegis-score" id="aegisScoreVal">--</span>
-              <span class="aegis-regime-label" id="aegisRegimeVal">--</span>
-            </div>
-          </div>
+      <!-- Hidden holders for existing render functions that target these by ID -->
+      <div style="display:none">
+        <div class="fleet-health" id="fleetHealth"></div>
+        <div class="agg-stats" id="aggStats"></div>
+        <div class="freshness" id="freshness"></div>
+        <div class="feed-wrap" id="feedWrap"></div>
+        <!-- AEGIS gauge elements (still updated by updateAegisGauge) -->
+        <div id="aegisSection">
+          <svg viewBox="0 0 120 120" id="aegisSvg">
+            <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="6"/>
+            <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(0,229,255,0.3)" stroke-width="6" stroke-dasharray="0 276" stroke-dashoffset="69" stroke-linecap="round" id="aegisArc"/>
+          </svg>
+          <span class="aegis-score" id="aegisScoreVal">--</span>
+          <span class="aegis-regime-label" id="aegisRegimeVal">--</span>
           <div class="aegis-components" id="aegisComponents">
             <div class="aegis-comp-row"><span class="aegis-comp-label">Consensus</span><div class="aegis-comp-bar"><div class="aegis-comp-fill" style="width:0%;background:rgba(0,176,255,0.7)"></div></div><span class="aegis-comp-val">--</span></div>
             <div class="aegis-comp-row"><span class="aegis-comp-label">Coherence</span><div class="aegis-comp-bar"><div class="aegis-comp-fill" style="width:0%;background:rgba(0,230,118,0.7)"></div></div><span class="aegis-comp-val">--</span></div>
@@ -1492,14 +1504,15 @@ body {
           </div>
         </div>
       </div>
-      <div class="sb-section"><div class="sb-title">Fleet Health</div><div class="fleet-health" id="fleetHealth"></div></div>
-      <div class="sb-section"><div class="sb-title">Portfolio</div><div class="agg-stats" id="aggStats"></div></div>
-      <div class="sb-section"><div class="sb-title">Data Freshness</div><div class="freshness" id="freshness"></div></div>
-      <div class="sb-section" style="flex:1;min-height:0;display:flex;flex-direction:column;border-bottom:none">
+      <!-- Bot-specific diagnostic content -->
+      <div id="sbBotContent"></div>
+      <!-- Fleet context (compact, always shown on bot tabs) -->
+      <div id="sbFleetContext"></div>
+      <!-- Event stream (always shown, takes remaining space) -->
+      <div class="sb-section" style="flex:1;min-height:0;display:flex;flex-direction:column;border-bottom:none;padding:8px var(--pad)">
         <div class="sb-title">Event Stream <span id="sseLabel" style="font-size:0.72rem;color:var(--text-dim);letter-spacing:0.8px;font-weight:400;margin-left:6px">(polling)</span></div>
         <div class="event-stream" id="eventStream"><span style="font-size:0.72rem;color:var(--text-dim)">Connecting...</span></div>
       </div>
-      <div style="display:none"><div class="feed-wrap" id="feedWrap"></div></div>
     </div>
     <button class="sb-toggle" id="sbToggle" title="Toggle sidebar (S)">&#x25C0;</button>
   </div>
@@ -5482,6 +5495,8 @@ function fetchBotData(botId,port){
         if(def.id==="deepblue") drawDeepBluePanel();
         /* Planet hero — all panels */
         renderPlanetHero(def.id,def.color,fb&&fb.alive,'ph-'+def.id+'-canvas');
+        /* Refresh sidebar with newly cached raw data */
+        renderSidebar(botId);
       }
     }
   }).catch(function(){});
@@ -11329,6 +11344,7 @@ function setTab(idx){
     } else {
       $focusFrame.innerHTML='<div class="focus-offline" style="color:'+hexAlpha(def.color,0.3)+'">'+def.name+' Offline</div>';
     }
+    renderSidebar(def.id);
   }
 }
 window._setTab=setTab;
@@ -11435,7 +11451,8 @@ function handleSSEEvent(rawData){
       phitexData.last_update=ts;
       if(activeTab===0) renderHeatmap(phitexData);
     }
-    if(/PHASE_TRANSITION/.test(type)){showAlert("phase","PHASE TRANSITION: "+(d.pair||"")+" PHI="+Number(d.phi_tex||0).toFixed(3)+" "+(d.direction||""));}
+    /* PHASE_TRANSITION: events appear in the event stream — no banner needed */
+    // if(/PHASE_TRANSITION/.test(type)){showAlert(...)}
     if(/EMERGENCY_REDUCE/.test(type)){showAlert("emergency","CASCADE STOPS: "+(d.reason||"reduce exposure"));}
     /* HIGH_CONVICTION events appear in the event stream — no banner needed */
     if(/TRADE_OPEN|TRADE_CLOSE|REGIME_CHANGE|PORTFOLIO_/.test(type)){fetchData();fetchOverviewData();}
@@ -11468,6 +11485,215 @@ if(k==="+"||k==="="){_orbZoom=Math.min(4,_orbZoom*1.2);return}
   if(k==="-"){_orbZoom=Math.max(0.5,_orbZoom/1.2);return}
   if(k==="0"&&!e.ctrlKey){_orbZoomTo(_orbLW/2,_orbLH/2,1);return}
 });
+
+/* ===== BOT DIAGNOSTIC SIDEBAR ===== */
+function renderSidebar(botId){
+  var $bc = document.getElementById("sbBotContent");
+  var $fc = document.getElementById("sbFleetContext");
+  if(!$bc||!$fc) return;
+
+  var def = botDef(botId);
+  if(!def){ $bc.innerHTML=""; $fc.innerHTML=""; return; }
+
+  var b     = findBot(state.bots, botId) || {alive:false, last_seen:0, normalized:{}, raw:{}};
+  var norm  = b.normalized || {};
+  var raw   = _botDataCache[botId] || {};
+  /* TrekBot raw is {health:{}, positions:[], analytics:{}} */
+  var rawH  = (botId==="trekbot") ? (raw.health||{}) : raw;
+  var rawA  = (botId==="trekbot") ? (raw.analytics||{}) : raw;
+
+  /* ── helpers ── */
+  function sbRow(k, vHtml){ return '<div class="sb-row"><span class="sb-key">'+k+'</span><span class="sb-val">'+vHtml+'</span></div>'; }
+  function sbVal(v, cls){ return '<span class="sb-val'+(cls?' '+cls:'')+'">'+v+'</span>'; }
+  function orDash(v){ return (v!=null&&v!=="")? v : "--"; }
+  function pct1(v){ return (v!=null&&!isNaN(v))? Number(v).toFixed(1)+"%" : "--"; }
+  function pnlColor(v){ return v>0?"green":v<0?"red":""; }
+
+  /* ── Section 1: BOT HEALTH ── */
+  var alive   = b.alive || false;
+  var statusDot = alive ? '<span style="color:#16a085">&#9679;</span> healthy' : '<span style="color:#ef4444">&#9679;</span> offline';
+
+  /* Uptime */
+  var uptimeStr = norm.uptime || (rawH.uptime ? rawH.uptime : null);
+  if(!uptimeStr && rawH.uptime_s != null) uptimeStr = fmtUptime(rawH.uptime_s);
+  if(!uptimeStr && rawH.uptime_seconds != null) uptimeStr = fmtUptime(rawH.uptime_seconds);
+  if(!uptimeStr) uptimeStr = "--";
+
+  /* CPU / Mem / Threads — bots vary in field layout */
+  var sys    = rawH.system || rawH;
+  var cpu    = sys.cpu_pct != null ? sys.cpu_pct : (sys.cpu != null ? sys.cpu : null);
+  var mem    = sys.mem_pct != null ? sys.mem_pct : (sys.memory_percent != null ? sys.memory_percent : (sys.mem != null ? sys.mem : null));
+  var thrH   = sys.threads_healthy != null ? sys.threads_healthy : (sys.threads != null ? sys.threads : null);
+  var thrT   = sys.total_threads != null ? sys.total_threads : null;
+  var thrStr = thrH!=null ? (thrH + (thrT!=null ? "/"+thrT : "")) : "--";
+  var lastSeen = b.last_seen ? ago(b.last_seen) : "--";
+
+  var h1 = '<div class="sb-dsec">';
+  h1 += '<div class="sb-hdr">Bot Health</div>';
+  h1 += sbRow("Status", statusDot);
+  h1 += sbRow("Uptime", orDash(uptimeStr));
+  h1 += sbRow("Port", def.port);
+  h1 += sbRow("CPU", cpu!=null ? pct1(cpu) : "--");
+  h1 += sbRow("Memory", mem!=null ? pct1(mem) : "--");
+  h1 += sbRow("Threads", thrStr);
+  h1 += sbRow("Last seen", lastSeen);
+  h1 += '</div>';
+
+  /* ── Section 2: STATE (varies by bot type) ── */
+  /* Classify: trading / intel / engine */
+  var TRADING_BOTS = {turtlesue:1, nexusbrain:1, gridzilla:1, trekbot:1, rubberband:1, arbitrageur:1};
+  var ENGINE_BOTS  = {aegis:1, nexus:1, phitex:1};
+  var INTEL_BOTS   = {sentinel:1, trinity:1, hivemind:1, oracle:1, deepblue:1, chronos:1, contrarian:1};
+
+  var h2 = '<div class="sb-dsec">';
+  if(TRADING_BOTS[botId]){
+    h2 += '<div class="sb-hdr">Trading State</div>';
+
+    /* Open positions */
+    var openPos  = norm.open_positions != null ? norm.open_positions : (rawH.open_positions != null ? rawH.open_positions : null);
+    var maxPos   = rawH.max_positions != null ? rawH.max_positions : (rawH.config && rawH.config.max_positions != null ? rawH.config.max_positions : null);
+    var posStr   = openPos!=null ? (openPos + (maxPos!=null ? " / "+maxPos : "")) : "--";
+
+    /* Reservations from portfolio */
+    var allRes   = (ovData.portfolio && ovData.portfolio.reservations) ? ovData.portfolio.reservations : [];
+    var myRes    = allRes.filter(function(r){ return r.bot_id===botId; });
+    var deployed = myRes.reduce(function(s,r){ return s+(r.amount||0); }, 0);
+
+    /* Cooldowns for this bot */
+    var cooldowns = ovData.portfolio && ovData.portfolio.pair_cooldowns ? ovData.portfolio.pair_cooldowns : {};
+    var myCools   = [];
+    for(var cp in cooldowns){
+      var cd = cooldowns[cp];
+      if(cd && cd.last_bot===botId){
+        var remaining = cd.expires_at ? Math.max(0, Math.round(cd.expires_at - Date.now()/1000)) : null;
+        if(remaining==null&&cd.cooldown_until) remaining=Math.max(0,Math.round(cd.cooldown_until-Date.now()/1000));
+        if(remaining!=null&&remaining>0) myCools.push(cp+": "+Math.floor(remaining/60)+"m "+remaining%60+"s");
+      }
+    }
+    var coolStr = myCools.length ? myCools[0]+(myCools.length>1?" +"+(myCools.length-1):"") : "none";
+
+    /* Direction from positions */
+    var positions = (botId==="trekbot") ? (raw.positions||[]) : (rawH.positions||[]);
+    var dirs = {};
+    for(var pi=0;pi<positions.length;pi++){ var pd=(positions[pi].direction||"").toUpperCase(); if(pd) dirs[pd]=(dirs[pd]||0)+1; }
+    var dirKeys = Object.keys(dirs);
+    var dirStr  = dirKeys.length ? dirKeys.join("/") : "neutral";
+
+    h2 += sbRow("Positions", posStr);
+    h2 += sbRow("Deployed", deployed>0 ? '<span class="sb-val amber">'+fmt$(deployed)+'</span>' : "--");
+    h2 += sbRow("Reservations", myRes.length || "0");
+    h2 += sbRow("Cooldowns", escHtml(coolStr));
+    h2 += sbRow("Direction", dirStr);
+  } else if(ENGINE_BOTS[botId]){
+    h2 += '<div class="sb-hdr">Engine State</div>';
+    var scoreVal = "--";
+    if(botId==="aegis"){
+      scoreVal = aegisState.score!=null ? Number(aegisState.score).toFixed(3) : "--";
+      var compCount = aegisState.components ? Object.keys(aegisState.components).length : 0;
+      h2 += sbRow("Score", scoreVal);
+      h2 += sbRow("Regime", orDash(aegisState.regime));
+      h2 += sbRow("Components", compCount || "--");
+    } else if(botId==="phitex"){
+      h2 += sbRow("Pairs tracked", phitexData.pairs.length || "--");
+      h2 += sbRow("Last update", phitexData.last_update ? ago(phitexData.last_update/1000) : "--");
+    } else if(botId==="nexus"){
+      var mc = rawH.market_character || norm.regime || norm.market_character || "--";
+      h2 += sbRow("Market char.", orDash(mc));
+      var engines = rawH.active_engines != null ? rawH.active_engines : (rawH.engines_active != null ? rawH.engines_active : null);
+      h2 += sbRow("Engines active", engines!=null ? engines : "--");
+    }
+    /* Events/min from bus stats */
+    var evCount = ovData.engineCounts && ovData.engineCounts[botId.toUpperCase()+"_UPDATE"] || null;
+    if(evCount!=null) h2 += sbRow("Events (session)", evCount);
+    var lastCalc = ovData.engineLastFired && ovData.engineLastFired[botId.toUpperCase()+"_UPDATE"];
+    if(lastCalc) h2 += sbRow("Last calc", ago(lastCalc));
+  } else {
+    /* Intel bot */
+    h2 += '<div class="sb-hdr">Intelligence State</div>';
+    var regime     = norm.regime || rawH.regime || rawH.market_regime || rawH.current_regime || "--";
+    var conf       = norm.confidence != null ? norm.confidence : (rawH.confidence != null ? rawH.confidence : null);
+    var confStr    = conf!=null ? (conf<=1.01 ? pct1(conf*100) : pct1(conf)) : "--";
+    var sigCount   = norm.signals_count != null ? norm.signals_count : (rawH.active_signals != null ? rawH.active_signals : (rawH.signals_count != null ? rawH.signals_count : null));
+    var pairsWatched = rawH.pairs_watched != null ? rawH.pairs_watched : (rawH.monitored_pairs != null ? rawH.monitored_pairs : (rawH.universe_size != null ? rawH.universe_size : null));
+    h2 += sbRow("Regime", orDash(regime));
+    h2 += sbRow("Confidence", confStr);
+    h2 += sbRow("Signals", sigCount!=null ? sigCount : "--");
+    h2 += sbRow("Pairs watched", pairsWatched!=null ? pairsWatched : "--");
+    h2 += sbRow("Last seen", lastSeen);
+  }
+  h2 += '</div>';
+
+  /* ── Section 3: PERFORMANCE (trading bots only) ── */
+  var h3 = "";
+  if(TRADING_BOTS[botId]){
+    var bex = null;
+    if(ovData.expectancy && ovData.expectancy.bot_stats){
+      bex = ovData.expectancy.bot_stats[botId] || null;
+    }
+    var totalTrades = bex ? (bex.total_trades||0) : (norm.total_trades!=null ? norm.total_trades : null);
+    var wr          = bex && bex.win_rate!=null ? bex.win_rate : (norm.win_rate!=null ? norm.win_rate : null);
+    if(wr!=null&&wr<=1.01) wr=wr*100;
+    var grossPnl = bex && bex.total_gross_pnl!=null ? bex.total_gross_pnl : null;
+    var fees     = bex && bex.total_fees!=null ? bex.total_fees : null;
+    var netPnl   = bex && bex.total_net_pnl!=null ? bex.total_net_pnl : (norm.pnl!=null ? norm.pnl : null);
+    var feeRatio = bex && bex.fees_ate_pct!=null ? bex.fees_ate_pct : (bex && bex.fee_ratio!=null ? bex.fee_ratio : null);
+    var expTrade = bex && bex.expectancy_per_trade!=null ? bex.expectancy_per_trade : null;
+
+    /* Best/worst pair */
+    var bestPair="--", worstPair="--";
+    if(bex && bex.pair_stats){
+      var pairs = bex.pair_stats;
+      var bestWR=-1, worstWR=2;
+      for(var pk in pairs){
+        var pw=pairs[pk].win_rate!=null?pairs[pk].win_rate:null;
+        if(pw==null) continue;
+        if(pw>bestWR){bestWR=pw;bestPair=pk;}
+        if(pw<worstWR){worstWR=pw;worstPair=pk;}
+      }
+    }
+
+    /* Net PnL color */
+    var netPnlCls = netPnl!=null ? (netPnl>0?"green":"red") : "";
+    var feeRatioCls = feeRatio!=null ? (feeRatio>200?"red":feeRatio>100?"amber":"green") : "";
+
+    h3 = '<div class="sb-dsec">';
+    h3 += '<div class="sb-hdr">Performance</div>';
+    h3 += sbRow("Total trades", totalTrades!=null ? totalTrades : "--");
+    h3 += sbRow("Win rate", wr!=null ? pct1(wr) : "--");
+    h3 += sbRow("Gross PnL", grossPnl!=null ? fmtPnl(grossPnl) : "--");
+    h3 += sbRow("Fees", fees!=null ? '<span class="sb-val red">-'+fmt$(Math.abs(fees))+'</span>' : "--");
+    h3 += sbRow("Net PnL", netPnl!=null ? '<span class="sb-val '+netPnlCls+'">'+fmtPnl(netPnl)+'</span>' : "--");
+    h3 += sbRow("Fee ratio", feeRatio!=null ? '<span class="sb-val '+feeRatioCls+'">'+Math.round(feeRatio)+"%</span>" : "--");
+    h3 += sbRow("Exp/trade", expTrade!=null ? '<span class="sb-val '+(expTrade>=0?"green":"red")+'">'+fmtPnl(expTrade)+'</span>' : "--");
+    h3 += sbRow("Best pair", bestPair);
+    h3 += sbRow("Worst pair", worstPair);
+    h3 += '</div>';
+  }
+
+  $bc.innerHTML = h1 + h2 + h3;
+
+  /* ── Fleet context (section 4, always shown) ── */
+  var agg = state.aggregate || {};
+  var poolAmt  = ovData.portfolio ? ovData.portfolio.total : (state.portfolio ? state.portfolio.total : null);
+  var fleetWR  = agg.avg_win_rate!=null ? pct1(agg.avg_win_rate) : "--";
+  var fleetTr  = agg.total_trades!=null ? agg.total_trades : "--";
+  var contrSnap= ovData.contrarian || {};
+  var fearVal  = contrSnap.fear_greed_value!=null ? contrSnap.fear_greed_value : (contrSnap.sentiment_index!=null ? contrSnap.sentiment_index : null);
+  var fearLbl  = contrSnap.fear_greed_label || contrSnap.sentiment_label || (fearVal!=null?(fearVal<25?"EXTREME FEAR":fearVal<45?"FEAR":fearVal<55?"NEUTRAL":fearVal<75?"GREED":"EXTREME GREED"):"--");
+  var fearCls  = fearVal!=null?(fearVal<25?"red":fearVal<45?"amber":fearVal<55?"":"green":"");
+
+  var fc = '<div class="sb-dsec" style="margin-bottom:0">';
+  fc += '<div class="sb-hdr">Fleet Context</div>';
+  fc += sbRow("AEGIS", aegisState.score!=null
+    ? '<span class="sb-val '+(aegisState.score<0.3?"red":aegisState.score<0.6?"amber":"green")+'">'+Number(aegisState.score).toFixed(3)+' '+(aegisState.regime||"")+'</span>'
+    : "--");
+  fc += sbRow("Sentiment", fearVal!=null ? '<span class="sb-val '+fearCls+'">'+fearVal+' '+escHtml(fearLbl)+'</span>' : "--");
+  fc += sbRow("Fleet WR", fleetWR+' ('+fleetTr+')');
+  fc += sbRow("Pool", poolAmt!=null ? fmt$(poolAmt) : "--");
+  fc += '</div>';
+
+  $fc.innerHTML = fc;
+}
 
 /* ===== SIDEBAR TOGGLE ===== */
 var _sbCollapsed=false;
@@ -11542,6 +11768,8 @@ function fetchData(){
         var hasData2=(focusDef.id==="phitex"&&phitexData.pairs.length)||(focusDef.id==="aegis"&&aegisState.score!=null);
         if((fb&&fb.alive)||hasData2) $focusFrame.innerHTML=buildDetailView(focusDef,fb||{raw:{},normalized:{}});
       }
+      /* Refresh sidebar with latest normalized data */
+      if(focusDef) renderSidebar(focusDef.id);
     }
   }).catch(function(){
     failCount++;

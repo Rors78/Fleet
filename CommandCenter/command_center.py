@@ -50,6 +50,7 @@ from fleet_config import (
     KRAKEN_REST as _FC_KRAKEN_REST, PORTFOLIO_TOTAL as _FC_PORTFOLIO_TOTAL,
     PORTFOLIO_LIMITS as _FC_PORTFOLIO_LIMITS, TRADING_BOTS as _FC_TRADING_BOTS,
     PORTFOLIO_FILE as _FC_PORTFOLIO_FILE, WATCHDOG_COOLDOWN as _FC_WATCHDOG_COOLDOWN,
+    WATCHDOG_INTERVAL as _FC_WATCHDOG_INTERVAL, WATCHDOG_FAILURES as _FC_WATCHDOG_FAILURES,
     bot_registry_list,
 )
 
@@ -2794,7 +2795,7 @@ def _health_monitor() -> None:
                     pass
 
             if alive:
-                if fails[bid] >= 3:
+                if fails[bid] >= _FC_WATCHDOG_FAILURES:
                     _event_bus.publish({"source": "health_monitor", "type": "BOT_RECOVERED",
                                         "data": {"bot": bid, "port": port}})
                     log.info("Bot recovered: %s on :%s", bid, port)
@@ -2803,7 +2804,7 @@ def _health_monitor() -> None:
             else:
                 fails[bid] += 1
 
-            state = "online" if alive else ("dead" if fails[bid] >= 3 else "failing")
+            state = "online" if alive else ("dead" if fails[bid] >= _FC_WATCHDOG_FAILURES else "failing")
             cooldown_remaining = max(0, int(_RESTART_COOLDOWN_S - (time.time() - _restart_cooldowns.get(bid, 0))))
             watchdog_snapshot[bid] = {
                 "alive": alive,
@@ -2814,9 +2815,9 @@ def _health_monitor() -> None:
                 "cooldown_remaining_s": cooldown_remaining,
             }
 
-            if fails[bid] == 3:
+            if fails[bid] == _FC_WATCHDOG_FAILURES:
                 _event_bus.publish({"source": "health_monitor", "type": "BOT_DOWN",
-                                    "data": {"bot": bid, "port": port, "consecutive_fails": 3}})
+                                    "data": {"bot": bid, "port": port, "consecutive_fails": _FC_WATCHDOG_FAILURES}})
                 log.warning("Bot down: %s on :%s — attempting auto-restart", bid, port)
 
                 # Check cooldown
@@ -2839,11 +2840,15 @@ def _health_monitor() -> None:
                         if not cmd_val:
                             continue
                         # cmd_val is e.g. ["turtlebot.py", "--auto"]
+                        _restart_log_path = os.path.join(
+                            os.path.dirname(os.path.abspath(__file__)), "logs", f"{bid}_restart.log"
+                        )
+                        restart_log = open(_restart_log_path, "a")
                         subprocess.Popen(
                             ["python"] + cmd_val,
                             cwd=bcfg["dir"],
                             stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
+                            stderr=restart_log,
                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
                         )
                         _restart_cooldowns[bid] = time.time()
@@ -2854,7 +2859,7 @@ def _health_monitor() -> None:
                         log.error("Auto-restart failed for %s", bid, exc_info=True)
 
         _watchdog_state = watchdog_snapshot
-        time.sleep(30)
+        time.sleep(_FC_WATCHDOG_INTERVAL)
 
 
 def main():

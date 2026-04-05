@@ -755,6 +755,132 @@ class GridExecutor:
         self.total_cycles = 0
         self.lock = threading.Lock()
 
+    # ═══ STATE PERSISTENCE ═══
+
+    def _save_state(self):
+        """Atomic write of active_grids to gridzilla_state.json."""
+        state_file = self.config.get("state_file")
+        if not state_file:
+            return
+        try:
+            with self.lock:
+                snapshot = {
+                    "saved_at": time.time(),
+                    "total_pnl": self.total_pnl,
+                    "total_fees": self.total_fees,
+                    "total_cycles": self.total_cycles,
+                    "active_grids": {
+                        pair: {
+                            "design": g["design"],
+                            "status": g["status"],
+                            "deployed_at": g["deployed_at"],
+                            "levels": g["levels"],
+                            "fills": g["fills"],
+                            "cycles_completed": g["cycles_completed"],
+                            "grid_pnl": g["grid_pnl"],
+                            "grid_fees": g["grid_fees"],
+                            "peak_pnl": g["peak_pnl"],
+                            "max_drawdown": g["max_drawdown"],
+                            "range_breaks": g["range_breaks"],
+                            "last_check": g["last_check"],
+                            "reservation_id": g.get("reservation_id", ""),
+                        }
+                        for pair, g in self.active_grids.items()
+                    },
+                }
+            tmp = state_file + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(snapshot, f, indent=2, default=str)
+            os.replace(tmp, state_file)
+        except Exception as e:
+            logging.warning(f"[state] Save failed: {e}")
+
+    def _load_state(self, portfolio_client=None):
+        """Load active_grids from gridzilla_state.json on startup.
+
+        After loading, reconcile: for each loaded grid, verify the portfolio
+        reservation ID still exists (call portfolio manager). If a reservation
+        is gone (orphaned from old run), log a warning and drop that grid entry
+        rather than double-spending.
+        """
+        state_file = self.config.get("state_file")
+        if not state_file or not os.path.exists(state_file):
+            return
+
+        try:
+            with open(state_file, "r", encoding="utf-8") as f:
+                snapshot = json.load(f)
+        except Exception as e:
+            logging.warning(f"[state] Could not read state file: {e}")
+            return
+
+        # Only accept files that were written by v2 (they have an "active_grids" key
+        # at top level with grid dicts that contain "design" + "levels").
+        raw_grids = snapshot.get("active_grids")
+        if not isinstance(raw_grids, dict):
+            logging.info("[state] State file is v1 format — skipping load.")
+            return
+
+        # Fetch current live reservations from portfolio manager once.
+        # /api/portfolio returns {"reservations": [{"reservation_id": ..., ...}, ...]}
+        live_reservation_ids = set()
+        if portfolio_client:
+            try:
+                resp = portfolio_client._get("/api/portfolio")
+                if resp and isinstance(resp, dict):
+                    reservations = resp.get("reservations", [])
+                    live_reservation_ids = {r["reservation_id"] for r in reservations if "reservation_id" in r}
+                    logging.info(
+                        f"[state] Portfolio has {len(live_reservation_ids)} live reservations"
+                    )
+            except Exception as e:
+                logging.warning(f"[state] Could not fetch portfolio for reconciliation: {e}")
+
+        loaded = 0
+        dropped = 0
+        for pair, g in raw_grids.items():
+            rid = g.get("reservation_id", "")
+
+            # Reconcile: if a reservation_id was recorded but is no longer live,
+            # that capital was already cleaned up — do not restore the grid.
+            if rid and live_reservation_ids and rid not in live_reservation_ids:
+                logging.warning(
+                    f"[state] Dropping {pair} grid — reservation {rid} not found "
+                    f"in live portfolio (orphaned from previous run)"
+                )
+                dropped += 1
+                continue
+
+            # Restore grid state
+            grid_state = {
+                "design": g.get("design", {}),
+                "status": g.get("status", "ACTIVE"),
+                "deployed_at": g.get("deployed_at", time.time()),
+                "levels": g.get("levels", []),
+                "fills": g.get("fills", []),
+                "cycles_completed": g.get("cycles_completed", 0),
+                "grid_pnl": g.get("grid_pnl", 0),
+                "grid_fees": g.get("grid_fees", 0),
+                "peak_pnl": g.get("peak_pnl", 0),
+                "max_drawdown": g.get("max_drawdown", 0),
+                "range_breaks": g.get("range_breaks", 0),
+                "last_check": g.get("last_check", time.time()),
+                "reservation_id": rid,
+            }
+            self.active_grids[pair] = grid_state
+
+            # Restore totals
+            self.total_pnl += g.get("grid_pnl", 0)
+            self.total_fees += g.get("grid_fees", 0)
+            self.total_cycles += g.get("cycles_completed", 0)
+
+            loaded += 1
+
+        logging.info(
+            f"[state] Loaded {loaded} grid(s), dropped {dropped} orphaned grid(s) "
+            f"from {state_file}"
+        )
+
     def deploy_grid(self, design):
         """Deploy a designed grid to the market."""
         pair = design["pair"]
@@ -798,7 +924,8 @@ class GridExecutor:
                 f"Grid deployed: {pair} — {design['n_levels']} levels, "
                 f"range {design['range_low']:.2f}-{design['range_high']:.2f}"
             )
-            return True
+        self._save_state()  # persist after deploy (outside lock — _save_state takes its own lock)
+        return True
 
     def check_fills(self, pair, current_price):
         """Check if any grid levels have been hit by current price."""
@@ -928,7 +1055,9 @@ class GridExecutor:
                     except Exception:
                         pass
 
-            return fills
+        if fills:
+            self._save_state()  # persist level fills (outside lock — _save_state takes its own lock)
+        return fills
 
     def check_range_break(self, pair, current_price):
         """Check if price has broken out of the grid range."""
@@ -1023,6 +1152,7 @@ class GridExecutor:
 
     def remove_grid(self, pair):
         """Remove an inactive grid. Returns trade summary dict or None."""
+        summary = None
         with self.lock:
             if pair in self.active_grids:
                 grid = self.active_grids.pop(pair)
@@ -1038,8 +1168,9 @@ class GridExecutor:
                     "reservation_id": grid.get("reservation_id", ""),
                 }
                 self.trade_history.append(summary)
-                return summary
-        return None
+        if summary is not None:
+            self._save_state()  # persist after removal (outside lock — _save_state takes its own lock)
+        return summary
 
     def get_active_grids(self):
         with self.lock:
@@ -1172,6 +1303,9 @@ class GridzillaEngine:
         self.scan_count = 0
         self.pair_analysis = {}  # {pair: last_analysis}
         self.start_time = time.time()
+
+        # Restore persisted grid state (must come after portfolio is initialized)
+        self.executor._load_state(portfolio_client=self.portfolio)
 
         logging.info(f"Gridzilla v{config['version']} initialized")
 
@@ -1318,9 +1452,11 @@ class GridzillaEngine:
                         except Exception:
                             pass  # CC unreachable — deploy with local limits only
                     self.executor.deploy_grid(design)
-                    # Store reservation ID on the grid state
+                    # Store reservation ID on the grid state, then persist so the
+                    # reservation_id survives a restart (deploy_grid saved without it)
                     if _rid and pair in self.executor.active_grids:
                         self.executor.active_grids[pair]["reservation_id"] = _rid
+                        self.executor._save_state()
                     current_exposure += per_pair_alloc
                 else:
                     logging.debug(

@@ -1,0 +1,32 @@
+{
+    "cc_host": "localhost",
+    "cc_port": 9000,
+    "socket_check_interval_s": 15,
+    "http_check_interval_s": 30,
+    "cc_down_threshold": 4,
+    "dedup_window_s": 300,
+    "seen_ids_max": 500,
+    "rate_limit_per_minute": 20,
+    "tier3_enabled": false,
+    "tier3_types": ["REGIME_STORM", "WHALE_ALERT_EXTREME", "AEGIS_DEFENSIVE", "TRADE"],
+    "bot_ports": {
+        "turtlesue": 8070,
+        "sentinel": 8071,
+        "trinity": 8072,
+        "hivemind": 8073,
+        "nexusbrain": 8074,
+        "oracle": 8075,
+        "deepblue": 8076,
+        "gridzilla": 8077,
+        "phitex": 8078,
+        "aegis": 8079,
+        "trekbot": 8080,
+        "trekbot_short": 8087,
+        "inference": 9001,
+        "nexus": 8082,
+        "rubberband": 8083,
+        "contrarian": 8084,
+        "arbitrageur": 8085,
+        "chronos": 8086
+    }
+}

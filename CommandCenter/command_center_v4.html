@@ -216,6 +216,234 @@ body {
   color: var(--text-dim); text-align: center; padding: 2rem 0; font-size: 1rem;
 }
 
+/* ═══════════════════════════════════════
+   DV2 — Bot Detail View Design System v2
+   Matches overview dark theme: #060a12 bg, #0d1117 cards, Orbitron headers
+   ═══════════════════════════════════════ */
+
+/* Outer wrapper — fills focus-frame completely */
+.dv2-frame {
+  display: flex; flex-direction: column;
+  height: 100%; overflow: hidden;
+  background: #060a12;
+  font-family: 'Courier New', monospace;
+  color: #e2e8f0;
+  animation: fadeSlideIn 0.2s ease;
+}
+
+/* Title strip */
+.dv2-title-strip {
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 10px;
+  padding: 8px 12px;
+  background: #0d1117;
+  border-bottom: 1px solid #1e293b;
+}
+.dv2-accent-bar {
+  width: 3px; height: 28px; border-radius: 1px; flex-shrink: 0;
+}
+.dv2-bot-name {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 14px; font-weight: 700; letter-spacing: 2px;
+  color: #e2e8f0; text-transform: uppercase;
+}
+.dv2-bot-sub {
+  font-size: 11px; color: #94a3b8; margin-left: 8px;
+  font-family: 'Courier New', monospace;
+  font-style: italic;
+}
+.dv2-port {
+  margin-left: auto; font-size: 10px; color: #475569;
+  font-family: 'Courier New', monospace;
+}
+.dv2-uptime {
+  font-size: 10px; color: #475569;
+  font-family: 'Courier New', monospace;
+}
+
+/* Stats strip — row of KPI pills below title */
+.dv2-stats-strip {
+  flex-shrink: 0; display: flex; gap: 0;
+  background: #0d1117;
+  border-bottom: 1px solid #1e293b;
+}
+.dv2-kpi {
+  flex: 1; padding: 6px 10px; text-align: center;
+  border-right: 1px solid #1e293b;
+}
+.dv2-kpi:last-child { border-right: none; }
+.dv2-kpi-label {
+  font-size: 9px; font-family: 'Orbitron', 'Courier New', monospace;
+  letter-spacing: 1.2px; text-transform: uppercase;
+  color: #475569; margin-bottom: 2px;
+}
+.dv2-kpi-value {
+  font-size: 13px; font-weight: 700;
+  font-family: 'Courier New', monospace;
+  color: #e2e8f0;
+}
+.dv2-kpi-value.good  { color: #16a085; }
+.dv2-kpi-value.bad   { color: #ef4444; }
+.dv2-kpi-value.warn  { color: #f59e0b; }
+.dv2-kpi-value.cyan  { color: #06b6d4; }
+.dv2-kpi-value.accent { /* set inline per bot */ }
+
+/* Body grid — main content area */
+.dv2-body {
+  flex: 1; display: grid; min-height: 0; overflow: hidden;
+  gap: 5px; padding: 5px;
+  background: #060a12;
+}
+
+/* Grid presets */
+.dv2-grid-4x2 {
+  grid-template-columns: 1fr 1.5fr 1.5fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.dv2-grid-3x2 {
+  grid-template-columns: 1fr 1.5fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.dv2-grid-2x2 {
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+.dv2-grid-3col {
+  grid-template-columns: 1fr 1.4fr 1fr;
+  grid-template-rows: 1fr 1fr;
+}
+
+/* Card */
+.dv2-card {
+  background: #0d1117;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 8px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  min-height: 0; min-width: 0;
+}
+.dv2-card.span2 { grid-column: span 2; }
+.dv2-card.span-row2 { grid-row: span 2; }
+
+/* Card header */
+.dv2-card-hdr {
+  font-family: 'Orbitron', 'Courier New', monospace;
+  font-size: 9px; letter-spacing: 1.5px;
+  text-transform: uppercase; color: #06b6d4;
+  border-bottom: 1px solid #1e293b;
+  padding-bottom: 4px; margin-bottom: 6px;
+  flex-shrink: 0;
+  display: flex; align-items: center; gap: 6px;
+}
+.dv2-card-hdr .dv2-accent-pip {
+  width: 4px; height: 10px; border-radius: 1px; flex-shrink: 0;
+}
+.dv2-card-hdr-right {
+  margin-left: auto; font-size: 9px; color: #475569;
+  font-family: 'Courier New', monospace; letter-spacing: 0;
+  text-transform: none;
+}
+
+/* Scrollable inner */
+.dv2-scroll {
+  flex: 1; overflow-y: auto; min-height: 0;
+}
+.dv2-scroll::-webkit-scrollbar { width: 3px; }
+.dv2-scroll::-webkit-scrollbar-track { background: transparent; }
+.dv2-scroll::-webkit-scrollbar-thumb { background: #1e293b; border-radius: 2px; }
+
+/* Data table */
+.dv2-table {
+  width: 100%; border-collapse: collapse;
+  font-size: 10px; font-family: 'Courier New', monospace;
+}
+.dv2-table th {
+  padding: 3px 5px; text-align: left;
+  font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+  color: #475569; text-transform: uppercase;
+  border-bottom: 1px solid #1e293b;
+  background: rgba(0,0,0,0.2);
+  position: sticky; top: 0; z-index: 1;
+  white-space: nowrap;
+}
+.dv2-table th.r { text-align: right; }
+.dv2-table td {
+  padding: 3px 5px;
+  border-bottom: 1px solid rgba(30,41,59,0.4);
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.dv2-table td.r { text-align: right; }
+.dv2-table tr:hover td { background: rgba(6,182,212,0.03); }
+.dv2-table td.hi  { color: #e2e8f0; }
+.dv2-table td.pos { color: #16a085; font-weight: 700; }
+.dv2-table td.neg { color: #ef4444; font-weight: 700; }
+.dv2-table td.warn { color: #f59e0b; }
+.dv2-table td.cyan { color: #06b6d4; }
+
+/* Bar metric row */
+.dv2-bar-row {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 4px; font-size: 10px;
+}
+.dv2-bar-label { width: 72px; color: #94a3b8; flex-shrink: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dv2-bar-track { flex: 1; height: 5px; background: rgba(255,255,255,0.04); border-radius: 2px; overflow: hidden; }
+.dv2-bar-fill  { height: 100%; border-radius: 2px; transition: width 0.4s ease; }
+.dv2-bar-val   { width: 42px; text-align: right; color: #e2e8f0; flex-shrink: 0; font-weight: 700; }
+
+/* Status dot */
+.dv2-dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; }
+.dv2-dot.alive { background: #16a085; }
+.dv2-dot.dead  { background: #ef4444; }
+.dv2-dot.warn  { background: #f59e0b; }
+.dv2-dot.dim   { background: #475569; }
+
+/* Status state badge */
+.dv2-state {
+  font-family: 'Orbitron', 'Courier New', monospace;
+  font-size: 16px; font-weight: 700; letter-spacing: 3px;
+  text-transform: uppercase; line-height: 1;
+}
+.dv2-state-sub {
+  font-size: 9px; color: #475569; letter-spacing: 0.5px;
+  margin-top: 3px; font-family: 'Courier New', monospace;
+}
+
+/* Mini label+value pair */
+.dv2-kv { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: 1px solid rgba(30,41,59,0.3); font-size: 10px; }
+.dv2-kv:last-child { border-bottom: none; }
+.dv2-kv-k { color: #475569; }
+.dv2-kv-v { color: #e2e8f0; font-weight: 700; font-family: 'Courier New', monospace; }
+
+/* Signal cell */
+.dv2-sig-cell {
+  display: inline-flex; flex-direction: column; align-items: center;
+  width: 40px; padding: 3px 2px;
+  border: 1px solid rgba(74,70,61,0.3);
+  font-family: 'Courier New', monospace;
+  font-size: 9px; text-align: center;
+  cursor: default;
+}
+.dv2-sig-cell .dn { color: #475569; font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; width: 100%; }
+.dv2-sig-cell .df { color: #94a3b8; font-size: 9px; }
+.dv2-sig-cell .dw { font-size: 9px; font-weight: 700; }
+.dv2-sig-cell.cold { border-color: rgba(74,70,61,0.2); background: rgba(20,20,30,0.3); }
+.dv2-sig-cell.hot-green { border-color: rgba(22,160,133,0.4); background: rgba(22,160,133,0.07); }
+.dv2-sig-cell.hot-amber { border-color: rgba(245,158,11,0.4); background: rgba(245,158,11,0.07); }
+.dv2-sig-cell.hot-red   { border-color: rgba(239,68,68,0.4);  background: rgba(239,68,68,0.07); }
+
+/* Offline banner */
+.dv2-offline-banner {
+  flex-shrink: 0; margin: 0 0 4px;
+  padding: 5px 10px;
+  background: rgba(239,68,68,0.06);
+  border: 1px solid rgba(239,68,68,0.2);
+  font-size: 10px; color: #ef4444;
+  font-family: 'Courier New', monospace;
+  letter-spacing: 0.5px;
+}
+
 /* ── SIDEBAR ── */
 .sidebar {
   width: var(--sidebar); min-width: 0; flex-shrink: 0;
@@ -1508,7 +1736,7 @@ function updateAegisGauge(score, regime, components){
   $aegisArc.setAttribute("stroke",score!=null?arcColor:resolveVar(color));
   $aegisArc.setAttribute("stroke-width","7");
   $aegisArc.setAttribute("opacity", score!=null ? "0.9" : "0.2");
-  $aegisScoreVal.textContent=score!=null?score.toFixed(2):"--";
+  $aegisScoreVal.textContent=score!=null?score.toFixed(3):"--";
   $aegisScoreVal.style.color=score!=null?arcColor:resolveVar(color);
   $aegisScoreVal.style.textShadow=score!=null?"0 0 12px "+arcColor+"66":"";
   var rl=regime||aegisRegimeLabel(score);
@@ -1516,7 +1744,7 @@ function updateAegisGauge(score, regime, components){
   $aegisRegimeVal.style.color=resolveVar(color);
   /* Header AEGIS chip */
   document.getElementById("hAegisChip").style.display="";
-  document.getElementById("hAegisScore").textContent=score!=null?score.toFixed(2):"--";
+  document.getElementById("hAegisScore").textContent=score!=null?score.toFixed(3):"--";
   document.getElementById("hAegisScore").style.color=resolveVar(color);
   document.getElementById("hAegisRegime").textContent=rl;
   document.getElementById("hAegisRegime").style.color=resolveVar(color);
@@ -1891,7 +2119,7 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
     if(pnl>0){this.energyTarget=0.7+Math.min(0.3,pnl/50);this.sizeMultiplier=1+Math.min(0.3,pnl/100);}
     else if(pnl<0){this.energyTarget=Math.max(0.2,0.4+pnl/100);this.sizeMultiplier=Math.max(0.8,1+pnl/50);}
     if(this.id==="gridzilla") this.statusLabel=pc>0?pc+" grids":"scanning";
-    if(this.id==="rubberband") this.statusLabel=pc>0?pc+" reversion":"ranging";
+    if(this.id==="rubberband"){var _rbMax=(raw.strategy&&raw.strategy.max_positions!=null)?raw.strategy.max_positions:1;this.statusLabel=pc>0?pc+" reversion":(_rbMax===0?"halted":"ranging");}
     if(this.id==="arbitrageur") this.statusLabel=pc>0?pc+" spreads":"scanning pairs";
     if(this.id==="turtlesue"&&pc===0) this.statusLabel="waiting";
   }
@@ -5501,7 +5729,7 @@ function buildPlanetHeroHTML(botId, def, b, snap){
 /* ===== TREKBOT detail view — SIGNAL WARFARE ===== */
 var _tkSelectedTrade=null;
 function buildTrekBotView(def,b){
-  var c=def.color; /* olive/tan #fb923c */
+  var c=def.color; /* #fb923c */
   var cache=_botDataCache.trekbot||{};
   var hl=cache.health||{};
   var pos=cache.positions||[];
@@ -5524,69 +5752,20 @@ function buildTrekBotView(def,b){
   var ddMult=hl.drawdown_mult||1;
   var openPos=hl.open_positions||0;
   var maxPos=hl.max_positions||20;
-
-  /* Bot state */
-  var botState=openPos>0?"ENGAGED":"ARMED";
-  var stateColor=openPos>0?c:'rgba(251,146,60,0.6)';
-
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
-
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+stateColor+'"></span>TREKBOT <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Signal Warfare</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8080</span></h2>';
   var symCount=hl.active_symbols||"--";
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">27-Signal Confluence Engine · '+symCount+' symbols · '+fmtUptime(hl.uptime_seconds||0)+' uptime</div>';
-  h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(251,146,60,0.15)">';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(251,146,60,0.08)">';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+stateColor+';letter-spacing:0.2em">'+botState+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);margin-top:3px">'+openPos+'/'+maxPos+' positions</div>';
-  h+='</div>';
-  h+='<div style="flex:1.2;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,146,60,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">BALANCE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1rem;color:'+c+'">'+fmt$(equity)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,146,60,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">WIN RATE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1rem;color:'+(wr>=50?c:'var(--red)')+'">'+fmtNum(wr,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,146,60,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">AVG R</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1rem;color:'+(avgR>=0?'var(--green)':'var(--red)')+'">'+fmtNum(avgR,2)+'R</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,146,60,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SIGNALS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.9rem;color:var(--text-secondary)">'+totalSigs+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,146,60,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">MAX DD</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.9rem;color:'+(maxDD>10?'var(--red)':maxDD>5?'#f59e0b':c)+'">'+fmtNum(maxDD,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">HEAT</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.9rem;color:'+(heat>0.7?'var(--red)':c)+'">'+fmtNum(heat*100,0)+'%</div>';
-  h+='</div>';
-  h+='</div>';
+  var botState=openPos>0?"ENGAGED":"ARMED";
+  var stateColor=openPos>0?c:'rgba(251,146,60,0.5)';
 
-  /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
-
-  /* ── ZONE 1: SIGNAL MATRIX (left 35%) ── */
-  h+='<div style="flex:3.5;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
-  h+=buildPlanetHeroHTML('trekbot',def,b,an);
-  h+='<div style="font-family:var(--font-mono);font-size:0.68rem;letter-spacing:0.25em;text-transform:uppercase;color:'+c+';padding-bottom:6px;border-bottom:1px solid rgba(251,146,60,0.1);flex-shrink:0;margin-bottom:6px">SIGNAL MATRIX (27 signals)</div>';
-  /* Signal grid — with human-readable abbreviations */
-  h+='<div style="display:flex;flex-wrap:wrap;gap:3px;flex-shrink:0;margin-bottom:8px">';
-  var sigAllKeys=['2','a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z'];
+  var _tkLongOnly=shortTrades===0&&longTrades>0;
+  var cbD=hl.circuit_breaker_daily_pnl||0; var cbW=hl.circuit_breaker_weekly_pnl||0;
+  var _tkDdC=ddMult<0.75?'#ef4444':ddMult<1?'#f59e0b':c;
   var _tkSigNames={
-    '2':'Chop+MFI','a':'EMA×','b':'Engulf','c':'RSI30','d':'BB↓','e':'Pullbk',
-    'f':'MACD↑','g':'RSIBul','h':'BB%B','i':'MFI↓','j':'OBV⚡','k':'Sqz↑',
+    '2':'Chop+MFI','a':'EMA\u00d7','b':'Engulf','c':'RSI30','d':'BB\u2193','e':'Pullbk',
+    'f':'MACD\u2191','g':'RSIBul','h':'BB%B','i':'MFI\u2193','j':'OBV\u26a1','k':'Sqz\u2191',
     'l':'HstDiv','m':'MFIBul','n':'VolSrg','o':'ADX','p':'StchOS',
-    'q':'Hammer','r':'MCD0×','s':'ATRexp','t':'ChopEx','u':'StcMom',
-    'v':'E200','w':'OBVacc','x':'Tri3×','y':'BBmid','z':'V+T'
+    'q':'Hammer','r':'MCD0\u00d7','s':'ATRexp','t':'ChopEx','u':'StcMom',
+    'v':'E200','w':'OBVacc','x':'Tri3\u00d7','y':'BBmid','z':'V+T'
   };
   var _tkSigFull={
     '2':'Chop+MFI Regime Flow','a':'EMA Cross Up','b':'Bull Engulfing','c':'RSI<30 Cross',
@@ -5597,196 +5776,256 @@ function buildTrekBotView(def,b){
     't':'Chop Exit','u':'Stoch Momentum','v':'EMA200 Reclaim','w':'OBV Accumulate',
     'x':'Triple Confluence (disabled)','y':'BB Mid Reclaim','z':'Vol+Trend Confirm'
   };
+  var sigAllKeys=['2','a','b','c','d','e','f','g','h','i','j','k','l','m','n','o','p','q','r','s','t','u','v','w','x','y','z'];
+
+  /* ── OUTER FRAME ── */
+  var h='<div class="dv2-frame">';
+
+  /* Title strip */
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+stateColor+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+stateColor+'">TREKBOT</span>';
+  h+='<span class="dv2-bot-sub">Signal Warfare \u00b7 27-signal confluence</span>';
+  h+='<span class="dv2-uptime">'+symCount+' syms \u00b7 '+fmtUptime(hl.uptime_seconds||0)+'</span>';
+  h+='<span class="dv2-port">:8080</span>';
+  h+='</div>';
+
+  /* KPI strip */
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+botState+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">POSITIONS</div><div class="dv2-kpi-value" style="color:'+c+'">'+openPos+'/'+maxPos+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">BALANCE</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmt$(equity)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wr>=50?'good':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">AVG R</div><div class="dv2-kpi-value '+(avgR>=0?'good':'bad')+'">'+fmtNum(avgR,2)+'R</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">TOTAL PNL</div><div class="dv2-kpi-value '+(totalPnl>=0?'good':'bad')+'">'+(totalPnl>=0?'+':'')+fmtNum(totalPnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">MAX DD</div><div class="dv2-kpi-value '+(maxDD>10?'bad':maxDD>5?'warn':'')+'">'+fmtNum(maxDD,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">HEAT</div><div class="dv2-kpi-value '+(heat>0.7?'bad':heat>0.4?'warn':'')+'">'+fmtNum(heat*100,0)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SIGNALS</div><div class="dv2-kpi-value cyan">'+totalSigs+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SIG WR</div><div class="dv2-kpi-value '+(sigWr>=50?'good':'bad')+'">'+fmtNum(sigWr,1)+'%</div></div>';
+  h+='</div>';
+
+  /* ── 4×2 BODY GRID ── */
+  h+='<div class="dv2-body dv2-grid-4x2">';
+
+  /* ── R1C1: BOT STATUS ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>BOT STATUS</div>';
+  h+='<div class="dv2-scroll">';
+  /* Planet canvas */
+  h+='<div style="display:flex;justify-content:center;margin-bottom:6px">';
+  h+='<canvas id="ph-trekbot-canvas" style="width:60px;height:60px;border-radius:50%"></canvas>';
+  h+='</div>';
+  /* State */
+  h+='<div style="text-align:center;margin-bottom:8px">';
+  h+='<div class="dv2-state" style="color:'+stateColor+'">'+botState+'</div>';
+  h+='<div class="dv2-state-sub">'+openPos+'/'+maxPos+' pos \u00b7 heat '+fmtNum(heat*100,0)+'%</div>';
+  h+='</div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Regime</span><span class="dv2-kv-v" style="color:#06b6d4">'+escHtml(hl.regime||n.regime||"--")+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Balance</span><span class="dv2-kv-v" style="color:'+c+'">'+fmt$(equity)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Win Rate</span><span class="dv2-kv-v '+(wr>=50?'good':'bad')+'">'+fmtNum(wr,1)+'%</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Avg R</span><span class="dv2-kv-v '+(avgR>=0?'good':'bad')+'">'+fmtNum(avgR,2)+'R</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Long Mode</span><span class="dv2-kv-v" style="color:#16a085">'+longWins+'/'+longTrades+' ('+fmtNum(longTrades>0?longWins/longTrades*100:0,0)+'%)</span></div>';
+  if(_tkLongOnly){
+    h+='<div class="dv2-kv"><span class="dv2-kv-k">Short Mode</span><span class="dv2-kv-v" style="color:#475569">disabled</span></div>';
+  } else {
+    h+='<div class="dv2-kv"><span class="dv2-kv-k">Short Mode</span><span class="dv2-kv-v" style="color:#ef4444">'+shortWins+'/'+shortTrades+' ('+fmtNum(shortTrades>0?shortWins/shortTrades*100:0,0)+'%)</span></div>';
+  }
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">DD Mult</span><span class="dv2-kv-v" style="color:'+_tkDdC+'">'+fmtNum(ddMult,2)+'x</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Kraken</span><span class="dv2-kv-v" style="color:'+(hl.kraken_api==="connected"?'#16a085':'#ef4444')+'">'+escHtml(hl.kraken_api||"--")+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Threads</span><span class="dv2-kv-v" style="color:'+(hl.threads_healthy===hl.total_threads?'#16a085':'#f59e0b')+'">'+(hl.threads_healthy||0)+'/'+(hl.total_threads||0)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">CPU</span><span class="dv2-kv-v">'+fmtNum(hl.cpu_percent||0,1)+'%</span></div>';
+  if(ddMult<1){
+    h+='<div style="margin-top:5px;padding:4px 6px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.2);font-size:9px;color:#f59e0b">\u26a0 Size reduced '+fmtNum((1-ddMult)*100,0)+'% (drawdown)</div>';
+  }
+  h+='<div style="margin-top:6px;font-size:9px;color:#475569">'+ago(b?b.last_seen:0)+'</div>';
+  h+='</div></div>'; /* /card R1C1 */
+
+  /* ── R1C2: SIGNAL MATRIX ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>SIGNAL MATRIX<span class="dv2-card-hdr-right">27 signals</span></div>';
+  h+='<div class="dv2-scroll">';
+  h+='<div style="display:flex;flex-wrap:wrap;gap:2px;">';
   sigAllKeys.forEach(function(sk){
     var sd=perSig[sk]||{f:0,w:0};
     var fired=sd.f||0; var wins=sd.w||0;
     var swr2=fired>0?(wins/fired*100):0;
-    var cellC=fired<5?'rgba(74,70,61,0.25)':swr2>=60?'rgba(74,222,128,0.15)':swr2>=40?'rgba(245,158,11,0.15)':'rgba(248,113,113,0.15)';
-    var borderC2=fired<5?'rgba(74,70,61,0.3)':swr2>=60?'rgba(74,222,128,0.4)':swr2>=40?'rgba(245,158,11,0.4)':'rgba(248,113,113,0.4)';
-    var textC2=fired<5?'var(--text-muted)':swr2>=60?'var(--green)':swr2>=40?'#f59e0b':'var(--red)';
+    var cls=fired<5?'cold':swr2>=60?'hot-green':swr2>=40?'hot-amber':'hot-red';
+    var wc=fired<5?'#475569':swr2>=60?'#16a085':swr2>=40?'#f59e0b':'#ef4444';
     var abbr=_tkSigNames[sk]||sk;
     var fullName=_tkSigFull[sk]||('Signal '+sk);
-    h+='<div style="width:42px;padding:3px 2px;background:'+cellC+';border:1px solid '+borderC2+';text-align:center;cursor:default" title="'+escHtml(fullName)+': '+fired+' fired, '+wins+' wins, '+fmtNum(swr2,0)+'% WR">';
-    h+='<div style="font-family:var(--font-mono);font-size:0.55rem;color:'+textC2+';white-space:nowrap;overflow:hidden;text-overflow:ellipsis">'+abbr+'</div>';
-    h+='<div style="font-family:var(--font-mono);font-size:0.6rem;color:var(--text-muted)">'+fired+'</div>';
-    h+='<div style="font-family:var(--font-mono);font-size:0.6rem;color:'+textC2+'">'+fmtNum(swr2,0)+'%</div>';
+    h+='<div class="dv2-sig-cell '+cls+'" title="'+escHtml(fullName)+': '+fired+' fired, '+wins+' wins, '+fmtNum(swr2,0)+'% WR">';
+    h+='<span class="dn">'+abbr+'</span>';
+    h+='<span class="df">'+fired+'</span>';
+    h+='<span class="dw" style="color:'+wc+'">'+fmtNum(swr2,0)+'%</span>';
     h+='</div>';
   });
   h+='</div>';
-  /* Factor radar */
-  h+='<div style="flex-shrink:0;margin-bottom:6px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:4px">LAST TRADE FACTORS</div>';
-  h+='<div style="display:flex;justify-content:center">'+buildRadarChart(an)+'</div>';
+  /* Signal WR gap note */
+  var _tkWrGap=sigWr-wr;
+  h+='<div style="margin-top:6px;padding:4px 6px;background:rgba(0,0,0,0.2);font-size:9px;color:#475569">';
+  h+='Sig WR '+fmtNum(sigWr,1)+'% \u2192 Trade WR '+fmtNum(wr,1)+'%';
+  if(_tkWrGap>5) h+=' <span style="color:#f59e0b">(-'+fmtNum(_tkWrGap,0)+'% fees+timing)</span>';
+  if(_tkLongOnly) h+=' <span style="color:#f59e0b">\u2022 LONG ONLY</span>';
   h+='</div>';
-  /* Trade log */
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase;flex-shrink:0;margin-bottom:4px">TRADE LOG (last 20)</div>';
-  h+='<div style="flex:1;overflow-y:auto">';
+  h+='</div></div>'; /* /card R1C2 */
+
+  /* ── R1C3: ANALYTICS ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>ANALYTICS<span class="dv2-card-hdr-right">'+tlog.length+' trades</span></div>';
+  h+='<div style="flex:1;display:flex;flex-direction:column;gap:5px;overflow:hidden;">';
+  /* Equity chart */
+  h+='<div style="flex-shrink:0">';
+  h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:2px">CUMULATIVE PNL</div>';
+  h+='<div id="tk-eq-wrap" style="height:48px"><canvas id="tk-eq-canvas" style="width:100%;height:100%"></canvas></div>';
+  h+='<div style="display:flex;justify-content:space-between;font-size:9px;color:#475569;margin-top:1px">';
+  h+='<span>#1</span><span style="color:'+(totalPnl>=0?'#16a085':'#ef4444')+'">'+(totalPnl>=0?'+':'')+fmtNum(totalPnl,2)+'</span></div>';
+  h+='</div>';
+  /* Long/short breakdown */
+  h+='<div style="flex-shrink:0;display:grid;grid-template-columns:1fr 1fr;gap:4px">';
+  h+='<div style="background:rgba(0,0,0,0.25);padding:5px 7px">';
+  h+='<div style="font-size:9px;color:#16a085;letter-spacing:0.8px;margin-bottom:2px">LONG</div>';
+  h+='<div style="font-size:13px;font-weight:700;color:#e2e8f0;font-family:\'Courier New\',monospace">'+longWins+'/'+longTrades+'</div>';
+  h+='<div style="font-size:9px;color:#94a3b8">'+fmtNum(longTrades>0?longWins/longTrades*100:0,0)+'% WR</div>';
+  h+='</div>';
+  h+='<div style="background:rgba(0,0,0,0.25);padding:5px 7px">';
+  h+='<div style="font-size:9px;color:#ef4444;letter-spacing:0.8px;margin-bottom:2px">SHORT</div>';
+  if(_tkLongOnly){
+    h+='<div style="font-size:11px;color:#475569;font-style:italic">disabled</div>';
+  } else {
+    h+='<div style="font-size:13px;font-weight:700;color:#e2e8f0;font-family:\'Courier New\',monospace">'+shortWins+'/'+shortTrades+'</div>';
+    h+='<div style="font-size:9px;color:#94a3b8">'+fmtNum(shortTrades>0?shortWins/shortTrades*100:0,0)+'% WR</div>';
+  }
+  h+='</div>';
+  h+='</div>';
+  /* Circuit breakers */
+  h+='<div style="flex-shrink:0;background:rgba(0,0,0,0.2);border:1px solid #1e293b;padding:6px 8px">';
+  h+='<div style="font-size:9px;font-family:\'Orbitron\',monospace;letter-spacing:1px;color:#06b6d4;margin-bottom:4px;text-transform:uppercase">CIRCUIT BREAKERS</div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Daily PnL</span><span class="dv2-kv-v '+(cbD>=0?'good':'bad')+'">'+(cbD>=0?'+':'')+fmtNum(cbD,2)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Weekly PnL</span><span class="dv2-kv-v '+(cbW>=0?'good':'bad')+'">'+(cbW>=0?'+':'')+fmtNum(cbW,2)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">DD Mult</span><span class="dv2-kv-v" style="color:'+_tkDdC+'">'+fmtNum(ddMult,2)+'x</span></div>';
+  h+='</div>';
+  h+='</div></div>'; /* /card R1C3 */
+
+  /* ── R1C4: SYMBOL PERFORMANCE ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>SYMBOL PERF<span class="dv2-card-hdr-right">'+symStats.length+' syms</span></div>';
+  h+='<div class="dv2-scroll">';
+  var _tkBlacklist={"SOL/USD":1,"DOT/USD":1,"GBP/USD":1};
+  if(symStats.length){
+    var _tkBestWR=0,_tkBestSym='';
+    symStats.forEach(function(ss){if((ss.fired||0)>=20){var _wr2=(ss.wins||0)/(ss.fired||1);if(_wr2>_tkBestWR){_tkBestWR=_wr2;_tkBestSym=ss.symbol;}}});
+    var maxFired=Math.max.apply(null,symStats.map(function(s){return s.fired||0;}));
+    symStats.slice().sort(function(a,x){return (x.fired||0)-(a.fired||0);}).forEach(function(ss){
+      var sFired=ss.fired||0; var sWins=ss.wins||0;
+      var sWR=sFired>0?sWins/sFired:0;
+      var sWRC=sWR>=0.5?'#16a085':sWR>=0.35?'#f59e0b':'#ef4444';
+      var _tkIsBlk=!!_tkBlacklist[ss.symbol];
+      var _tkIsBest=ss.symbol===_tkBestSym&&_tkBestWR>0.5;
+      var firedPct=maxFired>0?(sFired/maxFired*100):0;
+      h+='<div style="margin-bottom:5px;'+(_tkIsBlk?'opacity:0.45;':'')+(_tkIsBest?'border-left:2px solid #f59e0b;padding-left:4px;':'')+'"'+(_tkIsBlk?' title="Blacklisted"':'')+' >';
+      h+='<div style="display:flex;justify-content:space-between;font-size:10px;margin-bottom:2px">';
+      h+='<span style="color:#94a3b8">'+(_tkIsBest?'\u2605 ':'')+(_tkIsBlk?'\u2298 ':'')+escHtml(ss.symbol||"?")+'</span>';
+      h+='<span style="color:'+sWRC+';font-weight:700">'+fmtNum(sWR*100,0)+'%</span>';
+      h+='</div>';
+      h+='<div style="height:5px;background:rgba(255,255,255,0.04);border-radius:2px;position:relative">';
+      h+='<div style="position:absolute;height:5px;width:'+fmtNum(firedPct,0)+'%;background:rgba(251,146,60,0.15);border-radius:2px"></div>';
+      h+='<div style="position:absolute;height:5px;width:'+fmtNum(firedPct*sWR,0)+'%;background:rgba(22,160,133,0.55);border-radius:2px"></div>';
+      h+='</div>';
+      h+='<div style="font-size:9px;color:#475569;text-align:right;margin-top:1px">'+sWins+'/'+sFired+'</div>';
+      h+='</div>';
+    });
+  } else {
+    h+='<div style="font-size:10px;color:#475569;padding:8px">no symbol data</div>';
+  }
+  h+='</div></div>'; /* /card R1C4 */
+
+  /* ── R2C1: TRADE FACTORS (radar) ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>LAST TRADE FACTORS</div>';
+  h+='<div style="flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden">';
+  h+=buildRadarChart(an);
+  h+='</div></div>'; /* /card R2C1 */
+
+  /* ── R2C2: LAST 10 TRADES ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>LAST 10 TRADES</div>';
+  h+='<div class="dv2-scroll">';
   if(tlog.length){
-    h+='<table style="width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:0.65rem"><thead><tr>';
-    h+='<th style="text-align:left;padding:2px 4px;color:var(--text-muted);font-weight:400;font-size:0.65rem;border-bottom:1px solid rgba(251,146,60,0.1);position:sticky;top:0;background:var(--bg)">SYM</th>';
-    h+='<th style="padding:2px 4px;color:var(--text-muted);font-weight:400;font-size:0.65rem;border-bottom:1px solid rgba(251,146,60,0.1);position:sticky;top:0;background:var(--bg)">DIR</th>';
-    h+='<th style="padding:2px 4px;color:var(--text-muted);font-weight:400;font-size:0.65rem;border-bottom:1px solid rgba(251,146,60,0.1);position:sticky;top:0;background:var(--bg)">EXIT</th>';
-    h+='<th style="text-align:right;padding:2px 4px;color:var(--text-muted);font-weight:400;font-size:0.65rem;border-bottom:1px solid rgba(251,146,60,0.1);position:sticky;top:0;background:var(--bg)">R</th>';
-    h+='<th style="text-align:right;padding:2px 4px;color:var(--text-muted);font-weight:400;font-size:0.65rem;border-bottom:1px solid rgba(251,146,60,0.1);position:sticky;top:0;background:var(--bg)">PNL</th>';
-    h+='<th style="text-align:right;padding:2px 4px;color:var(--text-muted);font-weight:400;font-size:0.65rem;border-bottom:1px solid rgba(251,146,60,0.1);position:sticky;top:0;background:var(--bg)">CONF</th>';
-    h+='<th style="text-align:right;padding:2px 4px;color:var(--text-muted);font-weight:400;font-size:0.65rem;border-bottom:1px solid rgba(251,146,60,0.1);position:sticky;top:0;background:var(--bg)">DUR</th>';
+    h+='<table class="dv2-table"><thead><tr>';
+    h+='<th>PAIR</th><th>DIR</th><th class="r">ENTRY</th><th class="r">EXIT</th><th class="r">R</th><th class="r">PNL</th><th class="r">CONF</th><th class="r">DUR</th>';
     h+='</tr></thead><tbody>';
-    var last20=tlog.slice(-20).reverse();
-    last20.forEach(function(tr2){
+    var last10=tlog.slice(-10).reverse();
+    last10.forEach(function(tr2){
       var tpnl2=tr2.pnl||0;
       var det2=tr2.detail||{};
-      var exitC=tr2.exit==="SL"?'var(--red)':'var(--green)';
-      var rowBg2=tpnl2>=0?'rgba(74,222,128,0.03)':'rgba(248,113,113,0.03)';
-      h+='<tr style="background:'+rowBg2+';border-bottom:1px solid rgba(251,146,60,0.04)">';
-      h+='<td style="padding:2px 4px;color:'+c+';font-family:var(--font-serif);font-style:italic">'+escHtml(tr2.sym||"?")+'</td>';
-      h+='<td style="padding:2px 4px;text-align:center;color:'+(tr2.dir==="L"?c:'#f59e0b')+'">'+(tr2.dir==="L"?"L":"S")+'</td>';
-      h+='<td style="padding:2px 4px;text-align:center"><span style="color:'+exitC+';font-size:0.65rem;padding:1px 4px;border:1px solid '+exitC+'">'+(tr2.exit||"--")+'</span></td>';
-      h+='<td style="padding:2px 4px;text-align:right;color:'+(tr2.r>=0?'var(--green)':'var(--red)')+'">'+fmtNum(tr2.r||0,2)+'</td>';
-      h+='<td style="padding:2px 4px;text-align:right;color:'+(tpnl2>=0?'var(--green)':'var(--red)')+'">'+(tpnl2>=0?'+':'')+fmtNum(tpnl2,2)+'</td>';
-      h+='<td style="padding:2px 4px;text-align:right;color:var(--text-secondary)">'+fmtNum(det2.confidence||0,2)+'</td>';
-      h+='<td style="padding:2px 4px;text-align:right;color:var(--text-muted)">'+fmtNum(det2.duration_h||0,1)+'h</td>';
+      var isWin=tpnl2>=0;
+      var exitLabel=tr2.exit||"--";
+      var exitC=tr2.exit==="SL"?'#ef4444':'#16a085';
+      h+='<tr>';
+      h+='<td class="hi" style="color:'+c+'">'+escHtml(tr2.sym||"?")+'</td>';
+      h+='<td style="color:'+(tr2.dir==="L"?'#16a085':'#ef4444');h+=';font-weight:700">'+(tr2.dir==="L"?"L":"S")+'</td>';
+      h+='<td class="r">'+fmtPrice(det2.entry_price||tr2.entry||0)+'</td>';
+      h+='<td class="r"><span style="color:'+exitC+';border:1px solid '+exitC+';padding:0 3px;font-size:8px">'+exitLabel+'</span></td>';
+      h+='<td class="r '+(tr2.r>=0?'pos':'neg')+'">'+fmtNum(tr2.r||0,2)+'</td>';
+      h+='<td class="r '+(isWin?'pos':'neg')+'">'+(tpnl2>=0?'+':'')+fmtNum(tpnl2,2)+'</td>';
+      h+='<td class="r">'+fmtNum(det2.confidence||0,2)+'</td>';
+      h+='<td class="r">'+fmtNum(det2.duration_h||0,1)+'h</td>';
       h+='</tr>';
     });
     h+='</tbody></table>';
   } else {
-    h+='<div style="font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted);padding:8px">no trades logged</div>';
+    h+='<div style="font-size:10px;color:#475569;padding:8px">no trade log yet</div>';
   }
-  h+='</div>';
-  h+='</div>'; /* /zone1 */
+  h+='</div></div>'; /* /card R2C2 */
 
-  /* ── ZONE 2: SYMBOL PERFORMANCE (center 30%) ── */
-  h+='<div style="flex:3;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.68rem;letter-spacing:0.25em;text-transform:uppercase;color:'+c+';padding-bottom:6px;border-bottom:1px solid rgba(251,146,60,0.1);flex-shrink:0;margin-bottom:6px">SYMBOL PERFORMANCE</div>';
-  h+='<div style="flex:1;overflow-y:auto">';
-  var _tkBlacklist={"SOL/USD":1,"DOT/USD":1,"GBP/USD":1};
-  if(symStats.length){
-    /* Find best WR symbol for highlighting (min 20 trades) */
-    var _tkBestWR=0,_tkBestSym='';
-    symStats.forEach(function(ss){if((ss.fired||0)>=20){var wr2=(ss.wins||0)/(ss.fired||1);if(wr2>_tkBestWR){_tkBestWR=wr2;_tkBestSym=ss.symbol;}}});
-    symStats.slice().sort(function(a,x){return (x.fired||0)-(a.fired||0);}).forEach(function(ss){
-      var sFired=ss.fired||0; var sWins=ss.wins||0;
-      var sWR=sFired>0?sWins/sFired:0;
-      var sWRC=sWR>=0.5?'var(--green)':sWR>=0.35?'#f59e0b':'var(--red)';
-      var _tkIsBlk=!!_tkBlacklist[ss.symbol];
-      var _tkIsBest=ss.symbol===_tkBestSym&&_tkBestWR>0.5;
-      h+='<div style="margin-bottom:6px;'+(_tkIsBlk?'opacity:0.5;':'')+(_tkIsBest?'border-left:3px solid var(--gold);padding-left:6px;':'')+'"'+(_tkIsBlk?' title="Blacklisted — 0% WR across fleet"':'')+'>';
-      h+='<div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:0.65rem;margin-bottom:2px">';
-      h+='<span style="color:var(--text);font-family:var(--font-serif);font-style:italic">'+(_tkIsBest?'★ ':'')+(_tkIsBlk?'⊘ ':'')+escHtml(ss.symbol||"?")+'</span>';
-      h+='<span style="color:'+sWRC+'">'+fmtNum(sWR*100,0)+'% ('+sWins+'/'+sFired+')</span>';
-      h+='</div>';
-      h+='<div style="height:8px;background:rgba(0,0,0,0.3);border-radius:2px;position:relative">';
-      var maxFired=Math.max.apply(null,symStats.map(function(s){return s.fired||0;}));
-      var firedPct=maxFired>0?(sFired/maxFired*100):0;
-      h+='<div style="position:absolute;height:8px;width:'+fmtNum(firedPct,0)+'%;background:rgba(251,146,60,0.2);border-radius:2px"></div>';
-      h+='<div style="position:absolute;height:8px;width:'+fmtNum(firedPct*sWR,0)+'%;background:rgba(74,222,128,0.5);border-radius:2px"></div>';
-      h+='</div>';
-      h+='</div>';
+  /* ── R2C3: SIGNAL DECOMPOSITION ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>SIGNAL DECOMP</div>';
+  h+='<div class="dv2-scroll" id="tk-decomp-body">';
+  /* Sort signals by fire count as proxy for contribution, show top 15 */
+  var sigRows=[];
+  sigAllKeys.forEach(function(sk){
+    var sd=perSig[sk]||{f:0,w:0};
+    var fired=sd.f||0; var wins=sd.w||0;
+    if(fired>0) sigRows.push({key:sk,fired:fired,wins:wins,swr:fired>0?wins/fired:0,name:_tkSigNames[sk]||sk,full:_tkSigFull[sk]||sk});
+  });
+  sigRows.sort(function(a,x){return (x.wins*x.swr)-(a.wins*a.swr);});
+  var maxContrib=sigRows.length>0?(sigRows[0].wins*sigRows[0].swr)||1:1;
+  sigRows.slice(0,15).forEach(function(sr){
+    var contrib=sr.wins*sr.swr;
+    var pct=maxContrib>0?(contrib/maxContrib*100):0;
+    var wc=sr.swr>=0.6?'#16a085':sr.swr>=0.4?'#f59e0b':'#ef4444';
+    h+='<div class="dv2-bar-row">';
+    h+='<span class="dv2-bar-label" title="'+escHtml(sr.full)+'">'+sr.name+'</span>';
+    h+='<div class="dv2-bar-track"><div class="dv2-bar-fill" style="width:'+fmtNum(pct,0)+'%;background:'+wc+'40"></div></div>';
+    h+='<span class="dv2-bar-val" style="color:'+wc+'">'+sr.wins+'W</span>';
+    h+='</div>';
+  });
+  if(sigRows.length===0) h+='<div style="font-size:10px;color:#475569;padding:8px">no signal data</div>';
+  h+='</div></div>'; /* /card R2C3 */
+
+  /* ── R2C4: CONFIG ── */
+  h+='<div class="dv2-card">';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>CONFIG</div>';
+  h+='<div class="dv2-scroll">';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Port</span><span class="dv2-kv-v cyan">8080</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Max Positions</span><span class="dv2-kv-v">'+maxPos+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Active Symbols</span><span class="dv2-kv-v">'+symCount+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Mode</span><span class="dv2-kv-v">'+(_tkLongOnly?"LONG ONLY":"L+S")+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Sig WR Thr</span><span class="dv2-kv-v">'+fmtNum(sigWr,1)+'%</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">DD Mult</span><span class="dv2-kv-v" style="color:'+_tkDdC+'">'+fmtNum(ddMult,2)+'x</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Status</span><span class="dv2-kv-v" style="color:'+(hl.status==="healthy"?'#16a085':'#ef4444')+'">'+escHtml(hl.status||"--")+'</span></div>';
+  if(hl.active_symbols){
+    h+='<div style="margin-top:8px;font-size:9px;font-family:\'Orbitron\',monospace;letter-spacing:1px;color:#06b6d4;text-transform:uppercase;border-bottom:1px solid #1e293b;padding-bottom:3px;margin-bottom:4px">SYMBOLS</div>';
+    var _symList=Array.isArray(hl.active_symbols)?hl.active_symbols:(hl.active_symbols+"").split(",");
+    _symList.forEach(function(s){
+      h+='<div style="font-size:10px;color:#94a3b8;padding:2px 0">'+escHtml((s+"").trim())+'</div>';
     });
   }
-  h+='</div>';
-  h+='</div>'; /* /zone2 */
+  h+='</div></div>'; /* /card R2C4 */
 
-  /* ── ZONE 3: ANALYTICS (right 35%) ── */
-  h+='<div style="flex:3.5;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.68rem;letter-spacing:0.25em;text-transform:uppercase;color:'+c+';padding-bottom:6px;border-bottom:1px solid rgba(251,146,60,0.1);flex-shrink:0;margin-bottom:6px">ANALYTICS</div>';
-  h+='<div style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:8px">';
-
-  /* Equity curve from cumulative pnl */
-  h+='<div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:3px">CUMULATIVE PNL</div>';
-  h+='<div id="tk-eq-wrap" style="height:50px"><canvas id="tk-eq-canvas" style="width:100%;height:100%"></canvas></div>';
-  h+='<div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:0.55rem;color:var(--text-muted);margin-top:1px">';
-  h+='<span>Trade #1</span>';
-  h+='<span style="color:'+(totalPnl>=0?'var(--green)':'var(--red)')+'">'+tlog.length+' trades → '+(totalPnl>=0?'+':'')+fmtNum(totalPnl,2)+'</span>';
-  h+='</div>';
-  h+='</div>';
-
-  /* Key metrics */
-  h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:6px">';
-  var pnlC2=totalPnl>=0?'var(--green)':'var(--red)';
-  h+='<div style="background:rgba(0,0,0,0.2);padding:6px 8px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);text-transform:uppercase">TOTAL PNL</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+pnlC2+'">'+(totalPnl>=0?'+':'')+fmtNum(totalPnl,2)+'</div>';
-  h+='</div>';
-  h+='<div style="background:rgba(0,0,0,0.2);padding:6px 8px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);text-transform:uppercase">AVG R</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+(avgR>=0?'var(--green)':'var(--red)')+'">'+fmtNum(avgR,2)+'R</div>';
-  h+='</div>';
-  h+='<div style="background:rgba(0,0,0,0.2);padding:6px 8px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);text-transform:uppercase">WIN RATE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+(wr>=50?c:'var(--red)')+'">'+fmtNum(wr,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="background:rgba(0,0,0,0.2);padding:6px 8px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);text-transform:uppercase">MAX DD</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+(maxDD>10?'var(--red)':maxDD>5?'#f59e0b':c)+'">'+fmtNum(maxDD,1)+'%</div>';
-  h+='</div>';
-  h+='</div>';
-
-  /* Long vs Short */
-  h+='<div style="background:rgba(0,0,0,0.2);border:1px solid rgba(74,70,61,0.2);padding:8px 10px">';
-  var _tkLongOnly=shortTrades===0&&longTrades>0;
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:5px">LONG vs SHORT'+(_tkLongOnly?' <span style="color:#f59e0b;font-size:0.58rem;letter-spacing:0">⚠ LONG ONLY MODE</span>':'')+'</div>';
-  h+='<div style="display:flex;gap:12px">';
-  h+='<div style="flex:1"><div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--green);margin-bottom:2px">LONG</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text)">'+longWins+'/'+longTrades+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted)">'+fmtNum(longTrades>0?longWins/longTrades*100:0,0)+'% WR</div></div>';
-  h+='<div style="flex:1"><div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--red);margin-bottom:2px">SHORT</div>';
-  if(_tkLongOnly){
-    h+='<div style="font-family:var(--font-mono);font-size:0.7rem;color:var(--text-muted);font-style:italic">disabled</div>';
-  } else {
-    h+='<div style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text)">'+shortWins+'/'+shortTrades+'</div>';
-    h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted)">'+fmtNum(shortTrades>0?shortWins/shortTrades*100:0,0)+'% WR</div>';
-  }
-  h+='</div>';
-  h+='</div>';
-  h+='</div>';
-
-  /* Circuit breakers */
-  h+='<div style="background:rgba(0,0,0,0.2);border:1px solid rgba(74,70,61,0.2);padding:8px 10px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:5px">CIRCUIT BREAKERS</div>';
-  var cbD=hl.circuit_breaker_daily_pnl||0; var cbW=hl.circuit_breaker_weekly_pnl||0;
-  h+='<div style="display:flex;gap:8px">';
-  h+='<div style="flex:1"><div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted)">Daily PnL</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.8rem;color:'+(cbD>=0?'var(--green)':'var(--red)')+'">'+(cbD>=0?'+':'')+fmtNum(cbD,2)+'</div></div>';
-  h+='<div style="flex:1"><div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted)">Weekly PnL</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.8rem;color:'+(cbW>=0?'var(--green)':'var(--red)')+'">'+(cbW>=0?'+':'')+fmtNum(cbW,2)+'</div></div>';
-  var _tkDdC=ddMult<0.75?'var(--red)':ddMult<1?'#f59e0b':c;
-  h+='<div style="flex:1"><div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted)">DD Mult</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.8rem;color:'+_tkDdC+'">'+fmtNum(ddMult,2)+'x</div></div>';
-  h+='</div>';
-  if(ddMult<1){
-    h+='<div style="font-family:var(--font-mono);font-size:0.6rem;color:'+_tkDdC+';margin-top:4px;padding:3px 6px;background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.15)">⚠ Position size reduced '+fmtNum((1-ddMult)*100,0)+'% due to drawdown protection</div>';
-  }
-  h+='</div>';
-
-  /* System health */
-  h+='<div style="background:rgba(0,0,0,0.2);border:1px solid rgba(74,70,61,0.2);padding:8px 10px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase;margin-bottom:5px">SYSTEM</div>';
-  h+='<div style="display:flex;gap:8px;font-family:var(--font-mono);font-size:0.65rem">';
-  h+='<span style="color:'+(hl.status==="healthy"?'var(--green)':'var(--red)')+'">'+escHtml(hl.status||"--")+'</span>';
-  h+='<span style="color:var(--text-muted)">CPU: '+fmtNum(hl.cpu_percent||0,1)+'%</span>';
-  h+='<span style="color:var(--text-muted)" title="Process memory usage">Proc MEM: '+fmtNum(hl.memory_percent||0,1)+'%</span>';
-  h+='<span style="color:'+(hl.threads_healthy===hl.total_threads?'var(--green)':'var(--red)')+'">THR: '+(hl.threads_healthy||0)+'/'+(hl.total_threads||0)+'</span>';
-  h+='<span style="color:'+(hl.kraken_api==="connected"?'var(--green)':'var(--red)')+'">'+escHtml(hl.kraken_api||"--")+'</span>';
-  h+='</div>';
-  h+='</div>';
-
-  h+='</div>'; /* /zone3 scroll */
-  h+='</div>'; /* /zone3 */
-  h+='</div>'; /* /3-zone body */
-
-  /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
-  h+='<span>'+symCount+' symbols</span>';
-  h+='<span>max '+maxPos+' positions</span>';
-  h+='<span>'+totalSigs+' signals fired</span>';
-  h+='<span>Sig WR: '+fmtNum(sigWr,1)+'% → Trade WR: '+fmtNum(wr,1)+'%</span>';
-  var _tkWrGap=sigWr-wr;
-  if(_tkWrGap>5) h+='<span style="color:#f59e0b;font-size:0.6rem">(gap: fees+timing -'+fmtNum(_tkWrGap,0)+'%)</span>';
-  if(_tkLongOnly) h+='<span style="color:#f59e0b">LONG ONLY</span>';
-  h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
-  h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-body */
+  h+='</div>'; /* /dv2-frame */
 
   setTimeout(function(){_tkDrawEquity();renderPlanetHero('trekbot',c,b&&b.alive,'ph-trekbot-canvas');},40);
   return h;
@@ -5956,34 +6195,29 @@ function buildDeepBlueView(def,b){
     return '<span style="font-family:var(--font-mono);font-size:0.65rem;color:'+col+'">'+arrow+' '+m.replace('_',' ')+accel+'</span>';
   }
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>DEEP BLUE';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8076</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Whale Intelligence · Multi-Tier Detection · Cycle '+cycle+' · '+(raw.duration?fmtNum(raw.duration,1)+'s scan':'--')+'</div>';
+  /* Title strip */
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">DEEP BLUE</span>';
+  h+='<span class="dv2-bot-sub">Whale Intelligence \u00b7 Multi-Tier Detection</span>';
+  h+='<span class="dv2-uptime">Cycle '+cycle+(raw.duration?' \u00b7 '+fmtNum(raw.duration,1)+'s':'')+'</span>';
+  h+='<span class="dv2-port">:8076</span>';
   h+='</div>';
 
-  /* Tier summary strip */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(34,211,238,0.1)">';
-  var tileData=[
-    [whales.length,'ACTIVE WHALES',c],
-    [extreme,'EXTREME','#ff4444'],
-    [high,'HIGH','var(--gold)'],
-    [moderate,'MODERATE','var(--green)'],
-    [pairArr.length-extreme-high-moderate,'LOW','var(--text-muted)']
-  ];
-  tileData.forEach(function(t){
-    h+='<div style="flex:1;padding:10px 8px;text-align:center;border-right:1px solid rgba(34,211,238,0.06)">';
-    h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.5rem;color:'+t[2]+';line-height:1">'+t[0]+'</div>';
-    h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.12em;margin-top:2px">'+t[1]+'</div>';
-    h+='</div>';
-  });
+  /* KPI strip */
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WHALES</div><div class="dv2-kpi-value" style="color:'+c+'">'+whales.length+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EXTREME</div><div class="dv2-kpi-value bad">'+extreme+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">HIGH</div><div class="dv2-kpi-value warn">'+high+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">MODERATE</div><div class="dv2-kpi-value good">'+moderate+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">LOW</div><div class="dv2-kpi-value">'+Math.max(0,pairArr.length-extreme-high-moderate)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value cyan">'+pairArr.length+'</div></div>';
   h+='</div>';
 
   /* Two-column body */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 1rem;gap:14px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* LEFT: sonar scope canvas + whale alert cards */
   h+='<div style="display:flex;flex-direction:column;gap:12px;width:340px;flex-shrink:0;overflow-y:auto">';
@@ -6244,51 +6478,27 @@ function buildSentinelView(def,b){
   }
 
   /* Build HTML */
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>SENTINEL <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Probability Chamber</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8071</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Monte Carlo Forecast Engine · 500 sims × 3 horizons · Cycle '+(raw.cycle||0)+'</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">SENTINEL</span>';
+  h+='<span class="dv2-bot-sub">Probability Chamber \u00b7 Monte Carlo</span>';
+  h+='<span class="dv2-uptime">Cycle '+(raw.cycle||0)+(raw.scan_duration_s?' \u00b7 '+fmtNum(raw.scan_duration_s,1)+'s':'')+'</span>';
+  h+='<span class="dv2-port">:8071</span>';
   h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(0,191,165,0.12)">';
-  /* Status */
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(0,191,165,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.15em;text-transform:uppercase">STATUS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+statusColor+';letter-spacing:0.15em;margin-top:2px">'+statusLabel+'</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATUS</div><div class="dv2-kpi-value" style="color:'+statusColor+'">'+statusLabel+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value" style="color:'+c+'">'+(raw.pairs_forecast||allPairs.length)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">HC COUNT</div><div class="dv2-kpi-value cyan">'+hcCount+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC+'">'+escHtml(regStr.substring(0,10))+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">AEGIS</div><div class="dv2-kpi-value">'+fmtNum(fleet.aegis_score||0,3)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PHITEX</div><div class="dv2-kpi-value">'+fmtNum(phFleet,2)+'</div></div>';
   h+='</div>';
-  /* Pairs / Cycle */
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(0,191,165,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">PAIRS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+c+'">'+(raw.pairs_forecast||allPairs.length)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(0,191,165,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">CYCLE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:var(--text)">'+(raw.cycle||0)+'</div>';
-  h+='</div>';
-  /* Regime */
-  h+='<div style="flex:2;padding:8px 12px;border-right:1px solid rgba(0,191,165,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">FLEET REGIME</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+regC+';margin-top:3px;letter-spacing:0.05em">'+escHtml(regStr)+'</div>';
-  var regConf=fleet.regime_confidence||0;
-  h+='<div style="background:rgba(0,0,0,0.3);height:3px;margin-top:4px;border-radius:1px"><div style="height:3px;width:'+fmtNum(regConf*100,0)+'%;background:'+regC+';border-radius:1px;transition:width 0.4s"></div></div>';
-  h+='</div>';
-  /* AEGIS + Scan dur */
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(0,191,165,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">AEGIS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:var(--text-secondary)">'+fmtNum(fleet.aegis_score||0,3)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SCAN</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-secondary)">'+(raw.scan_duration_s!=null?fmtNum(raw.scan_duration_s,1)+'s':'--')+'</div>';
-  h+='</div>';
-  h+='</div>'; /* /top bar */
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: FORECAST CONE (left 40%) ── */
   h+='<div style="flex:4;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -6475,14 +6685,14 @@ function buildSentinelView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:8px 2rem 1rem;padding:6px 12px;background:rgba(0,0,0,0.2);border:1px solid rgba(74,70,61,0.1);display:flex;align-items:center;gap:16px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);white-space:nowrap">500 sims × 3 horizons</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:'+c+'">'+hcCount+' high conviction</div>';
-  h+='<div style="flex:1;font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(lastLogs.length?escHtml(lastLogs[lastLogs.length-1]):'')+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);white-space:nowrap">'+ago(b?b.last_seen:0)+'</div>';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
+  h+='<span>500 sims × 3 horizons</span>';
+  h+='<span style="color:'+c+'">'+hcCount+' high conviction</span>';
+  h+='<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(lastLogs.length?escHtml(lastLogs[lastLogs.length-1]):'')+'</span>';
+  h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
 
-  h+='</div>'; /* /detail-view */
+  h+='</div>'; /* /dv2-frame */
 
   /* Defer canvas draw */
   setTimeout(function(){_snDrawCone();},40);
@@ -6724,45 +6934,27 @@ function buildHiveMindView(def,b){
   var regLabel=(regime.regime||"--").toUpperCase();
   var regC=regLabel==="BULL"?"#34d399":regLabel==="BEAR"?"#f87171":"var(--gold)";
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>HIVEMIND <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">The Swarm</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8073</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Differential Evolution Optimizer \u00b7 '+(raw.mode||"ensemble")+' \u00b7 '+members.length+' members \u00b7 '+(cons.n_active||0)+' assets</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">HIVEMIND</span>';
+  h+='<span class="dv2-bot-sub">The Swarm \u00b7 Differential Evolution</span>';
+  h+='<span class="dv2-uptime">'+members.length+' members \u00b7 '+(cons.n_active||0)+' assets</span>';
+  h+='<span class="dv2-port">:8073</span>';
   h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(251,191,36,0.12)">';
-  h+='<div style="flex:1;padding:8px 14px;border-right:1px solid rgba(251,191,36,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase" title="Optimized on historical data — not actual trading PnL">SHARPE <span style="font-size:0.55rem;color:var(--text-muted);letter-spacing:0">(paper)</span></div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.5rem;color:'+c+'">'+fmtNum(cons.sharpe_ratio||0,2)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,191,36,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">ANN RET</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:#34d399">'+fmtNum((cons.annualized_return||0)*100,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,191,36,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">ANN VOL</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-secondary)">'+fmtNum((cons.annualized_vol||0)*100,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,191,36,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">MAX DD</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:#f87171">'+fmtNum((cons.max_drawdown||0)*100,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(251,191,36,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">REGIME</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+regC+'">'+regLabel+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">CVaR 95</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-secondary)">'+fmtNum((cons.cvar_95||0)*100,2)+'%</div>';
-  h+='</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC+'">'+regLabel+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SHARPE</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmtNum(cons.sharpe_ratio||0,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ANN RET</div><div class="dv2-kpi-value good">'+fmtNum((cons.annualized_return||0)*100,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ANN VOL</div><div class="dv2-kpi-value">'+fmtNum((cons.annualized_vol||0)*100,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">MAX DD</div><div class="dv2-kpi-value bad">'+fmtNum((cons.max_drawdown||0)*100,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CVaR 95</div><div class="dv2-kpi-value">'+fmtNum((cons.cvar_95||0)*100,2)+'%</div></div>';
   h+='</div>';
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: ALLOCATION + REGIME (left 28%) ── */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -6931,7 +7123,7 @@ function buildHiveMindView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+regC+'">'+regLabel+'</span>';
   h+='<span>sharpe '+fmtNum(cons.sharpe_ratio||0,2)+'</span>';
   h+='<span>'+members.length+' members</span>';
@@ -6939,7 +7131,7 @@ function buildHiveMindView(def,b){
   h+='<span>'+escHtml(raw.mode||"--")+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 /* ===== NEXUS detail view — THE MATH COUNCIL ===== */
@@ -6966,49 +7158,30 @@ function buildNexusView(def,b){
 
   var charC=raw.market_character==="TRENDING"?"#34d399":raw.market_character==="VOLATILE"?"#f87171":raw.market_character==="MIXED"?c:"var(--text-muted)";
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>NEXUS <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">The Math Council</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8082</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Market Interferometer \u00b7 13 Engines \u00b7 Cycle '+(raw.cycle||0)+' \u00b7 '+fmtNum(raw.scan_duration_s||0,1)+'s</div>';
-  h+='</div>';
-
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(201,162,39,0.12)">';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(201,162,39,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">CHARACTER</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+charC+';margin-top:2px">'+escHtml(raw.market_character||"--")+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(201,162,39,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">VOL FCST</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary)">'+escHtml(raw.volatility_forecast||"--")+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(201,162,39,0.08)">';
   var _nxDispV=raw.lens_dispersion||0;
-  var _nxDispC=_nxDispV<0.05?'var(--green)':_nxDispV<0.1?'var(--gold)':'#f87171';
-  var _nxDispHint=_nxDispV<0.05?'tight agreement':_nxDispV<0.1?'moderate spread':'engines diverging';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">DISPERSION</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+_nxDispC+'">'+fmtNum(_nxDispV,4)+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.55rem;color:'+_nxDispC+'">'+_nxDispHint+'</div>';
+  var _nxDispC=_nxDispV<0.05?'#16a085':_nxDispV<0.1?'#f59e0b':'#ef4444';
+
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">NEXUS</span>';
+  h+='<span class="dv2-bot-sub">Math Council \u00b7 Market Interferometer</span>';
+  h+='<span class="dv2-uptime">Cycle '+(raw.cycle||0)+' \u00b7 '+fmtNum(raw.scan_duration_s||0,1)+'s</span>';
+  h+='<span class="dv2-port">:8082</span>';
   h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(201,162,39,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">CONVICTION</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+c+'">'+fmtNum(raw.mean_conviction||0,3)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(201,162,39,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">ECHOES</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:var(--text-secondary)">'+(raw.active_echoes||0)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1.5;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">FUSION</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:var(--gold)">'+escHtml(gf.fused_regime||"--")+' <span style="font-size:0.65rem;color:var(--text-muted)">'+fmtNum(gf.fused_confidence||0,2)+'</span></div>';
-  h+='</div>';
+
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CHARACTER</div><div class="dv2-kpi-value" style="color:'+charC+'">'+escHtml((raw.market_character||"--").substring(0,10))+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">VOL FCST</div><div class="dv2-kpi-value">'+escHtml((raw.volatility_forecast||"--").substring(0,8))+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">DISPERSION</div><div class="dv2-kpi-value" style="color:'+_nxDispC+'">'+fmtNum(_nxDispV,4)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CONVICTION</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmtNum(raw.mean_conviction||0,3)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ECHOES</div><div class="dv2-kpi-value cyan">'+(raw.active_echoes||0)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">FUSION</div><div class="dv2-kpi-value warn">'+escHtml((gf.fused_regime||"--").substring(0,8))+'</div></div>';
   h+='</div>';
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: ENGINE STATUS + BOT SCORES (left 28%) ── */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -7235,7 +7408,7 @@ function buildNexusView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+charC+'">'+escHtml(raw.market_character||"--")+'</span>';
   h+='<span>cycle '+(raw.cycle||0)+'</span>';
   h+='<span>'+fmtNum(raw.scan_duration_s||0,1)+'s scan</span>';
@@ -7243,7 +7416,7 @@ function buildNexusView(def,b){
   h+='<span>disp '+fmtNum(raw.lens_dispersion||0,4)+' '+escHtml(raw.dispersion_trend||"")+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 /* ===== TRINITY detail view — OVERWATCH NEXUS ===== */
@@ -7276,49 +7449,27 @@ function buildTrinityView(def,b){
   var botState=wsStatus==="CONNECTED"?(opens>0?"TRACKING":"SCANNING"):"OFFLINE";
   var stateColor=botState==="TRACKING"?"#34d399":botState==="SCANNING"?c:"var(--red)";
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>TRINITY <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Overwatch Nexus</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8072</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Real-Time 10-Indicator Multi-Pair Scanner · '+streaming+'/'+total+' polling · '+escHtml(wsStatus==="CONNECTED"?"CC POLLING":wsStatus)+'</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">TRINITY</span>';
+  h+='<span class="dv2-bot-sub">Overwatch Nexus \u00b7 10-Indicator Scanner</span>';
+  h+='<span class="dv2-uptime">'+streaming+'/'+total+' polling</span>';
+  h+='<span class="dv2-port">:8072</span>';
   h+='</div>';
 
-  /* TOP BAR STRIP */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(96,165,250,0.12)">';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(96,165,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">STATUS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+stateColor+';margin-top:2px">'+botState+'</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATUS</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+botState+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value" style="color:'+c+'">'+streaming+'/'+total+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPENS</div><div class="dv2-kpi-value good">'+opens+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">W / L</div><div class="dv2-kpi-value"><span style="color:#16a085">'+wins+'</span>/<span style="color:#ef4444">'+losses+'</span></div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wr>=50?'good':wr>=30?'warn':'')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ERRORS</div><div class="dv2-kpi-value '+(wsRecon>0?'warn':'good')+'">'+wsRecon+'</div></div>';
   h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(96,165,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">PAIRS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+c+'">'+streaming+'/'+total+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(96,165,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">OPENS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:#34d399">'+opens+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(96,165,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">W / L</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem"><span style="color:#34d399">'+wins+'</span> <span style="color:var(--text-muted)">/</span> <span style="color:#f87171">'+losses+'</span></div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(96,165,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">WIN RATE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+(wr>=50?'#34d399':wr>=30?'var(--gold)':'var(--text-muted)')+'">'+fmtNum(wr,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(96,165,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">POLLS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-secondary)">'+fmtNum(wsMsg,0)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">ERRORS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+(wsRecon>0?'var(--gold)':'var(--green)')+'">'+wsRecon+'</div>';
-  h+='</div>';
-  h+='</div>'; /* /top bar */
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: CONFLUENCE RADAR (left 28%) ── */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -7633,7 +7784,7 @@ function buildTrinityView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+stateColor+'">'+botState+'</span>';
   h+='<span>'+streaming+'/'+total+' polling</span>';
   h+='<span>'+opens+' signal tracks</span>';
@@ -7641,7 +7792,7 @@ function buildTrinityView(def,b){
   h+='<span>'+fmtNum(wsMsg,0)+' polls</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 
@@ -7665,46 +7816,28 @@ function buildNexusBrainView(def,b){
   var totalPnl=perf.total_pnl||0;
   var wrPct=(perf.win_rate||0)*100;
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
+  var pnlC=totalPnl>=0?"#16a085":"#ef4444";
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>NEXUSBRAIN <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Confluence Engine</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8074</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Multi-Timeframe Confluence \u00b7 '+(raw.version||"v1.0")+' \u00b7 '+(cfg.timeframes||[]).join("/")+' \u00b7 max '+( cfg.max_positions||5)+' pos</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">NEXUSBRAIN</span>';
+  h+='<span class="dv2-bot-sub">Confluence Engine \u00b7 Multi-Timeframe</span>';
+  h+='<span class="dv2-uptime">'+(cfg.timeframes||[]).join("/")+' \u00b7 max '+(cfg.max_positions||5)+' pos</span>';
+  h+='<span class="dv2-port">:8074</span>';
   h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(167,139,250,0.12)">';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(167,139,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">EQUITY</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+c+'">'+fmt$(equity)+'</div>';
-  h+='</div>';
-  var pnlC=totalPnl>=0?"#34d399":"#f87171";
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(167,139,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">PNL</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+pnlC+'">'+(totalPnl>=0?"+":"")+fmtNum(totalPnl,2)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(167,139,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">WIN RATE</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+(wrPct>=50?'#34d399':'var(--text-secondary)')+'">'+fmtNum(wrPct,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(167,139,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SHARPE</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+c+'">'+fmtNum(perf.sharpe_ratio||0,3)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(167,139,250,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">POSITIONS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+(positions.length?'#34d399':'var(--text-muted)')+'">'+positions.length+'/'+( cfg.max_positions||5)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SIGNALS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:var(--text-secondary)">'+sigs.length+'</div>';
-  h+='</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmt$(equity)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value" style="color:'+pnlC+'">'+(totalPnl>=0?"+":"")+fmtNum(totalPnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wrPct>=50?'good':'bad')+'">'+fmtNum(wrPct,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SHARPE</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmtNum(perf.sharpe_ratio||0,3)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">POSITIONS</div><div class="dv2-kpi-value '+(positions.length?'good':'')+'">'+positions.length+'/'+(cfg.max_positions||5)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SIGNALS</div><div class="dv2-kpi-value cyan">'+sigs.length+'</div></div>';
   h+='</div>';
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: PLANET + PERFORMANCE + EQUITY (left 28%) ── */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -7938,7 +8071,7 @@ function buildNexusBrainView(def,b){
   var _nbHasActionable=sigs.some(function(s){return s.confidence_label!=="REJECT";});
   var _nbTradingLabel=positions.length>0?'TRADING':(_nbHasActionable?'SCANNING':'PAUSED — all signals below threshold');
   var _nbTradingC=positions.length>0?'#34d399':(_nbHasActionable?c:'var(--text-muted)');
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+_nbTradingC+'">'+_nbTradingLabel+'</span>';
   h+='<span style="color:'+c+'">'+fmt$(equity)+'</span>';
   h+='<span>'+(perf.total_trades||0)+' trades</span>';
@@ -7947,7 +8080,7 @@ function buildNexusBrainView(def,b){
   h+='<span>'+positions.length+' open</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
 
   setTimeout(function(){_nbDrawEquity();},40);
   return h;
@@ -8011,47 +8144,29 @@ function buildOracleView(def,b){
   });
   var sortedSectors=Object.entries(sectors).sort(function(a,x){return x[1]-a[1];});
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>ORACLE <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">The All-Seeing Eye</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8075</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Quantitative Multi-Engine Scanner · '+(raw.pairs_scanned||93)+' pairs · Scan '+(raw.scan_count||0)+'</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">ORACLE</span>';
+  h+='<span class="dv2-bot-sub">The All-Seeing Eye \u00b7 Quant Scanner</span>';
+  h+='<span class="dv2-uptime">'+(raw.pairs_scanned||93)+' pairs \u00b7 scan '+(raw.scan_count||0)+'</span>';
+  h+='<span class="dv2-port">:8075</span>';
   h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(255,215,0,0.12)">';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(255,215,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">STATUS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+(raw.status==="scanning"||raw.status==="running"?'var(--green)':'var(--gold)')+';margin-top:2px;text-transform:uppercase">'+escHtml(raw.status||"--")+'</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATUS</div><div class="dv2-kpi-value '+(raw.status==="scanning"||raw.status==="running"?'good':'warn')+'">'+escHtml((raw.status||"--").toUpperCase())+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value" style="color:'+c+'">'+(raw.pairs_scanned||93)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SIGNALS</div><div class="dv2-kpi-value cyan">'+(raw.signals_count||sigs.length)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value warn">'+escHtml(regime.substring(0,8))+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">F&G</div><div class="dv2-kpi-value" style="color:'+fgC+'">'+fg+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCAN</div><div class="dv2-kpi-value">'+fmtNum(raw.scan_duration_s||0,1)+'s</div></div>';
   h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(255,215,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">PAIRS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+c+'">'+(raw.pairs_scanned||93)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(255,215,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SCAN</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-secondary)">'+fmtNum(raw.scan_duration_s||0,1)+'s</div>';
-  h+='</div>';
-  h+='<div style="flex:2;padding:8px 12px;border-right:1px solid rgba(255,215,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">REGIME</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:var(--gold);margin-top:2px;text-transform:uppercase">'+escHtml(regime)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(255,215,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SIGNALS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+c+'">'+(raw.signals_count||sigs.length)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">F&G</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+fgC+'">'+fg+'</div>';
-  h+='</div>';
-  h+='</div>'; /* /top bar */
 
   /* F&G PROMINENT BAR — full width, colored by fear/greed level */
   var _orBearPct=ranked.length?Math.round(macdBear/(macdBull+macdBear||1)*100):0;
   var _orEmaBearPct=ranked.length?Math.round(emaStackBear/(emaStackBull+emaStackBear||1)*100):0;
-  h+='<div style="flex-shrink:0;margin:0 2rem 8px;padding:8px 14px;background:linear-gradient(90deg,'+fgC+'20,transparent 70%);border:1px solid '+fgC+'30;display:flex;align-items:center;gap:14px">';
+  h+='<div style="flex-shrink:0;margin:0 5px 4px;padding:6px 10px;background:linear-gradient(90deg,'+fgC+'20,transparent 70%);border:1px solid '+fgC+'30;display:flex;align-items:center;gap:14px">';
   h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.8rem;color:'+fgC+';font-weight:bold;line-height:1">'+fg+'</div>';
   h+='<div>';
   h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+fgC+';letter-spacing:0.1em">'+fgLabel+'</div>';
@@ -8072,7 +8187,7 @@ function buildOracleView(def,b){
   h+='</div>';
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: FEAR/GREED GAUGE (left 25%) ── */
   h+='<div style="flex:2.5;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -8266,13 +8381,13 @@ function buildOracleView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span>'+fmtNum(raw.pairs_scanned||93,0)+' pairs available</span>';
   h+='<span>'+sigs.length+' top signals</span>';
-  h+='<span style="color:'+fgC+'">F&G: '+fg+' – '+fgLabel+'</span>';
+  h+='<span style="color:'+fgC+'">F&G: '+fg+' - '+fgLabel+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 /* ===== GRIDZILLA detail view — UBERZILLA ===== */
@@ -8371,33 +8486,28 @@ function buildGridzillaView(def,b){
   }
 
   /* Build HTML */
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
-
-  /* Title row */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+stateColor+'"></span>GRIDZILLA';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8077</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Volatility Grid Engine · '+(raw.status||'--')+' · v'+(raw.version||'--')+'</div>';
-  h+='</div>';
-
-  /* Monster state banner */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:10px 16px;border:1px solid '+stateGlow+';background:rgba(0,0,0,0.3);display:flex;align-items:center;gap:20px">';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:2rem;letter-spacing:0.4em;color:'+stateColor+';text-shadow:0 0 20px '+stateGlow+';line-height:1">'+monsterState+'</div>';
-  h+='<div style="flex:1">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;letter-spacing:0.15em;color:var(--text-muted);text-transform:uppercase">'+stateReason+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-secondary);margin-top:3px">uptime '+fmtNum(raw.uptime_hours||0,1)+'h &nbsp;·&nbsp; scans '+(raw.scan_count||0)+' &nbsp;·&nbsp; cycles '+(raw.total_cycles||0)+'</div>';
-  h+='</div>';
-  /* Net PnL in banner */
+  var h='<div class="dv2-frame">';
   var np=raw.net_pnl||0;
-  var npc=np>=0?'var(--green)':'var(--red)';
-  h+='<div style="text-align:right">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted);letter-spacing:0.1em;text-transform:uppercase">NET P&amp;L</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+npc+'">'+(np>=0?'+':'')+fmtNum(np,4)+'</div>';
+  var npc=np>=0?'#16a085':'#ef4444';
+
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+stateColor+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+stateColor+'">GRIDZILLA</span>';
+  h+='<span class="dv2-bot-sub">Volatility Grid Engine \u00b7 '+escHtml(stateReason.substring(0,35))+'</span>';
+  h+='<span class="dv2-port">:8077</span>';
   h+='</div>';
+
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+monsterState+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">NET PNL</div><div class="dv2-kpi-value" style="color:'+npc+'">'+(np>=0?'+':'')+fmtNum(np,4)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CYCLES</div><div class="dv2-kpi-value cyan">'+(raw.total_cycles||0)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">GRIDS</div><div class="dv2-kpi-value">'+(raw.n_active_grids||0)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">UPTIME</div><div class="dv2-kpi-value">'+fmtNum(raw.uptime_hours||0,1)+'h</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCANS</div><div class="dv2-kpi-value">'+(raw.scan_count||0)+'</div></div>';
   h+='</div>';
 
   /* Three-zone body */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 1rem;gap:12px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: REGIME GATE (left) ── */
   h+='<div style="width:220px;flex-shrink:0;display:flex;flex-direction:column;gap:10px;overflow-y:auto">';
@@ -8803,43 +8913,30 @@ function buildTurtleSueView(def,b){
     tabsHtml+='<button onclick="window._tsSetPair(\''+escHtml(pair)+'\')" style="font-family:var(--font-mono);font-size:0.65rem;letter-spacing:0.08em;padding:2px 8px;border:1px solid '+bc+';color:'+tc+';background:'+bg+';cursor:pointer;transition:all 0.15s;'+blkStyle+'"'+(isBlk?' title="Blacklisted — 0% WR across fleet"':(inPos?' title="IN POSITION"':''))+'>'+(isBlk?'⊘ ':'')+(inPos?'● ':'')+label+'</button>';
   });
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
+  var eqC=pnl>=0?c:'#ef4444';
+  var pnlC=pnl>=0?'#16a085':'#ef4444';
+  var ddC=dd>5?'#ef4444':dd>2?'#f97316':c;
 
-  /* Title + state banner */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+stateColor+'"></span>TURTLESUE <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px" title="Richard Donchian\'s original turtle trading rules, est. 1983">1983 Rules</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8070</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Donchian Channel Breakouts · System '+mode+' · Scan '+sc+'</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+stateColor+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+stateColor+'">TURTLESUE</span>';
+  h+='<span class="dv2-bot-sub">1983 Rules \u00b7 Donchian Breakouts</span>';
+  h+='<span class="dv2-uptime">System '+mode+' \u00b7 scan '+sc+'</span>';
+  h+='<span class="dv2-port">:8070</span>';
   h+='</div>';
 
-  /* State + equity strip */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(250,204,21,0.1)">';
-  h+='<div style="flex:2;padding:10px 16px;border-right:1px solid rgba(250,204,21,0.06)">';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.8rem;color:'+stateColor+';text-shadow:0 0 16px '+stateGlow+';line-height:1;letter-spacing:0.2em">'+tsState+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);margin-top:4px;letter-spacing:0.1em">'+(posKeys.length>0?(posKeys.length+' active position'+(posKeys.length>1?'s':'')):'waiting for breakout — price at channel boundary')+'</div>';
-  h+='</div>';
-  var eqC=pnl>=0?c:'var(--red)';
-  var pnlC=pnl>=0?'var(--green)':'var(--red)';
-  var ddC=dd>5?'var(--red)':dd>2?'#f97316':c;
-  h+='<div style="flex:1;padding:10px 12px;text-align:center;border-right:1px solid rgba(250,204,21,0.06)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">EQUITY</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+eqC+'">'+fmt$(eq)+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.68rem;color:'+pnlC+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:10px 12px;text-align:center;border-right:1px solid rgba(250,204,21,0.06)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">DRAWDOWN</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+ddC+'">'+fmtNum(dd,1)+'%</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted)">limit 10%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:10px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">UNITS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:var(--text)">'+(riskLimits.long_units||0)+'L / '+(riskLimits.short_units||0)+'S</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.68rem;color:var(--text-muted)">max '+(riskLimits.max_direction||12)+'</div>';
-  h+='</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+tsState+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value" style="color:'+eqC+'">'+fmt$(eq)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value" style="color:'+pnlC+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">DRAWDOWN</div><div class="dv2-kpi-value" style="color:'+ddC+'">'+fmtNum(dd,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">POSITIONS</div><div class="dv2-kpi-value '+(posKeys.length?'good':'')+'">'+posKeys.length+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">UNITS</div><div class="dv2-kpi-value">'+(riskLimits.long_units||0)+'L/'+(riskLimits.short_units||0)+'S</div></div>';
   h+='</div>';
 
   /* Three-zone body */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 1rem;gap:12px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: DONCHIAN CHANNELS (left, 40%) ── */
   h+='<div style="flex:0 0 40%;display:flex;flex-direction:column;overflow:hidden">';
@@ -9227,41 +9324,25 @@ function buildAegisView(def,b){
 
   var regC=regime==="DEPLOY"?"#34d399":regime==="NORMAL"?c:regime==="CAUTIOUS"?"var(--gold)":"#f87171";
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>AEGIS <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Fleet Command</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8079</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Self-Assessment \u00b7 Risk Throttle \u00b7 Portfolio Guardian \u00b7 Cycle '+cycle+'</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+regC+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+regC+'">AEGIS</span>';
+  h+='<span class="dv2-bot-sub">Fleet Command \u00b7 Risk Throttle</span>';
+  h+='<span class="dv2-uptime">Cycle '+cycle+(raw.scan_duration_s?' \u00b7 '+fmtNum(raw.scan_duration_s,1)+'s':'')+'</span>';
+  h+='<span class="dv2-port">:8079</span>';
   h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid '+regC+'20">';
-  h+='<div style="flex:2;padding:8px 14px;border-right:1px solid '+regC+'15">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">AEGIS SCORE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.8rem;color:'+regC+'">'+fmtNum(score,4)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid '+regC+'15">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">REGIME</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:1.1rem;color:'+regC+';margin-top:2px">'+escHtml(regime)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid '+regC+'15">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">MAX DEPLOY</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:var(--text)">'+(typeof maxDeploy==="number"?maxDeploy+"%":maxDeploy)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid '+regC+'15">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">CYCLE</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-secondary)">'+cycle+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SCAN</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-secondary)">'+fmtNum(raw.scan_duration_s||0,1)+'s</div>';
-  h+='</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCORE</div><div class="dv2-kpi-value" style="color:'+regC+'">'+fmtNum(score,4)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC+'">'+escHtml(regime)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">MAX DEPLOY</div><div class="dv2-kpi-value">'+(typeof maxDeploy==="number"?maxDeploy+'%':maxDeploy)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SOURCES</div><div class="dv2-kpi-value cyan">'+Object.keys(regSources).length+'</div></div>';
   h+='</div>';
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: SCORE GAUGE + COMPONENTS (left 28%) ── */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -9472,7 +9553,7 @@ function buildAegisView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+regC+'">'+escHtml(regime)+'</span>';
   h+='<span>score '+fmtNum(score,4)+'</span>';
   h+='<span>max '+throttlePct+'%</span>';
@@ -9480,7 +9561,7 @@ function buildAegisView(def,b){
   h+='<span>cycle '+cycle+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
 
   setTimeout(function(){_aeDrawScore();},40);
   return h;
@@ -9571,53 +9652,29 @@ function buildRubberbandView(def,b){
   });
   if(!_rbActivePair||sortedPairs.indexOf(_rbActivePair)<0) _rbActivePair=sortedPairs[0]||null;
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+stateColor+'"></span>RUBBERBAND <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Elastic Snap</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8083</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Bollinger Band Mean Reversion · '+(raw.mode||"paper")+' · Scan '+(raw.scan_count||0)+'</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+stateColor+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+stateColor+'">RUBBERBAND</span>';
+  h+='<span class="dv2-bot-sub">Bollinger Band Mean Reversion · '+(raw.mode||"paper")+'</span>';
+  h+='<span class="dv2-uptime">'+botState+' · Scan '+(raw.scan_count||0)+'</span>';
+  h+='<span class="dv2-port">:8083</span>';
   h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(0,229,255,0.12)">';
-  /* State */
-  h+='<div style="flex:2;padding:8px 14px;border-right:1px solid rgba(0,229,255,0.08)">';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.2rem;color:'+stateColor+';letter-spacing:0.2em;text-shadow:0 0 14px '+stateGlow+';line-height:1">'+botState+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);margin-top:3px">'+(botState==="SNAPPED"?posKeys.length+' position'+(posKeys.length>1?'s':'')+' reverting':botState==="STRETCHED"?stretchedPairs.length+' pair'+(stretchedPairs.length>1?'s':'')+' at max tension':'scanning '+pairList.length+' pairs')+'</div>';
-  h+='</div>';
-  /* Equity */
-  h+='<div style="flex:1.2;padding:8px 12px;text-align:center;border-right:1px solid rgba(0,229,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">EQUITY</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1rem;color:'+c+'">'+fmt$(eq)+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:'+(pnl>=0?'var(--green)':'var(--red)')+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div>';
-  h+='</div>';
-  /* Win rate */
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(0,229,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">WIN RATE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+(wr>=55?c:wr>=45?'var(--gold)':'var(--red)')+'">'+fmtNum(wr,1)+'%</div>';
-  h+='</div>';
-  /* Positions */
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(0,229,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">OPEN</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:var(--text)">'+openP+'/'+maxP+'</div>';
-  h+='</div>';
-  /* Regime */
-  h+='<div style="flex:1.5;padding:8px 12px;border-right:1px solid rgba(0,229,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">REGIME</div>';
   var regC2=busRegime==="RANGING"?'var(--green)':busRegime==="TRENDING"?'#f59e0b':'var(--text-secondary)';
-  h+='<div style="font-family:var(--font-mono);font-size:0.7rem;color:'+regC2+';margin-top:3px">'+escHtml(busRegime)+'</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted)">'+(busRegime==="RANGING"?"ideal":"suboptimal")+'</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+botState+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value">'+openP+'/'+maxP+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC2+'">'+escHtml(busRegime)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCANS</div><div class="dv2-kpi-value">'+(raw.scan_count||0)+'</div></div>';
   h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SCANS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-secondary)">'+(raw.scan_count||0)+'</div>';
-  h+='</div>';
-  h+='</div>'; /* /top bar */
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ── ZONE 1: BAND STRETCH VISUALIZER (left 40%) ── */
   h+='<div style="flex:4;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -9802,18 +9859,18 @@ function buildRubberbandView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span>BB('+(strat.bb_period||20)+', '+(strat.bb_std||2.0)+'σ)</span>';
   h+='<span>RSI('+(strat.rsi_period||14)+') &lt;'+RSI_OS+'/&gt;'+RSI_OB+'</span>';
   h+='<span>ADX &lt;'+ADX_THR+'</span>';
   h+='<span>Min R:R 1.5:1</span>';
   h+='<span>Risk '+(((strat.trade_risk_pct||0.03)*100).toFixed(0))+'%/trade</span>';
   h+='<span>Max '+maxP+' pos</span>';
-  h+='<span style="margin-left:auto;color:'+(busRegime==="RANGING"?c:busRegime==="TRENDING"?'#f59e0b':'var(--text-muted)')+'">bus: '+escHtml(busRegime)+'</span>';
-  h+='<span style="color:var(--text-muted)">'+ago(b?b.last_seen:0)+'</span>';
+  h+='<span style="margin-left:auto;color:'+(busRegime==="RANGING"?'#06b6d4':busRegime==="TRENDING"?'#f59e0b':'#475569')+'">bus: '+escHtml(busRegime)+'</span>';
+  h+='<span>'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
 
-  h+='</div>'; /* /detail-view */
+  h+='</div>'; /* /dv2-frame */
 
   setTimeout(function(){_rbDrawBand();_rbDrawEquity();},40);
   return h;
@@ -10074,37 +10131,22 @@ function buildContrarianView(def,b){
   }
   var regimeC=regime==="RANGING"?"var(--gold)":regime==="BULL"?"#34d399":regime==="BEAR"?"#f87171":"var(--text-secondary)";
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
+  var h='<div class="dv2-frame">';
 
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>CONTRARIAN <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Fear Gauge</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8084</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Sentiment Extreme Detector \u00b7 Scan '+(raw.scan_count||0)+' \u00b7 '+fmtNum(raw.scan_duration_s||0,1)+'s</div>';
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">CONTRARIAN</span>';
+  h+='<span class="dv2-bot-sub">Sentiment Extreme Detector</span>';
+  h+='<span class="dv2-uptime">Scan '+(raw.scan_count||0)+' · '+fmtNum(raw.scan_duration_s||0,1)+'s</span>';
+  h+='<span class="dv2-port">:8084</span>';
   h+='</div>';
 
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(239,68,68,0.12)">';
-  h+='<div style="flex:2;padding:8px 14px;border-right:1px solid rgba(239,68,68,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SENTIMENT</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+ssC+';margin-top:2px">'+escHtml(ss)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(239,68,68,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">F&amp;G</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.5rem;color:'+ssC+'">'+sc+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(239,68,68,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">ALERTS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:var(--text)">'+(raw.total_alerts||0)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(239,68,68,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">REGIME</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+regimeC+'">'+escHtml(regime)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">STATUS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+(raw.status==="idle"?'var(--text-muted)':'#34d399')+'">'+escHtml(raw.status||"--")+'</div>';
-  h+='</div>';
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SENTIMENT</div><div class="dv2-kpi-value" style="color:'+ssC+'">'+escHtml(ss)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">F&amp;G</div><div class="dv2-kpi-value" style="color:'+ssC+'">'+sc+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ALERTS</div><div class="dv2-kpi-value">'+(raw.total_alerts||0)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regimeC+'">'+escHtml(regime)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATUS</div><div class="dv2-kpi-value '+(raw.status==="idle"?'':'good')+'">'+escHtml(raw.status||"--")+'</div></div>';
   h+='</div>';
 
   /* Fix 1: CONTRARIAN OUTLOOK BANNER — large, impossible to miss */
@@ -10114,7 +10156,7 @@ function buildContrarianView(def,b){
   else if(sc>=80){_ctOutlook='CONTRARIAN OUTLOOK: BEARISH \u2014 Extreme greed detected, correction risk high';_ctOutlookC='#f87171';_ctOutlookBg='rgba(248,113,113,0.12)';_ctIcon='\u25bc';_ctBold=true;}
   else if(sc>=60){_ctOutlook='Contrarian leaning BEARISH \u2014 Crowd euphoric, caution warranted';_ctOutlookC='rgba(248,113,113,0.85)';_ctOutlookBg='rgba(248,113,113,0.05)';_ctIcon='\u25bd';}
   else{_ctOutlook='No extreme detected \u2014 monitoring for divergence';_ctOutlookBg='rgba(0,0,0,0.1)';}
-  h+='<div style="flex-shrink:0;margin:0 2rem 8px;padding:'+(_ctBold?'14px 18px':'10px 14px')+';background:'+_ctOutlookBg+';border:1px solid '+_ctOutlookC+(_ctBold?'50':'30')+';display:flex;align-items:center;gap:12px">';
+  h+='<div style="flex-shrink:0;margin:0 5px 5px;padding:'+(_ctBold?'10px 14px':'7px 10px')+';background:'+_ctOutlookBg+';border:1px solid '+_ctOutlookC+(_ctBold?'50':'30')+';display:flex;align-items:center;gap:10px">';
   if(_ctIcon) h+='<span style="font-size:'+(_ctBold?'1.4rem':'1rem')+';color:'+_ctOutlookC+'">'+_ctIcon+'</span>';
   h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:'+(_ctBold?'1.05rem':'0.85rem')+';color:'+_ctOutlookC+';letter-spacing:0.06em;'+(_ctBold?'text-shadow:0 0 12px '+_ctOutlookC+'40;':'')+'">'+_ctOutlook+'</div>';
   h+='</div>';
@@ -10133,7 +10175,7 @@ function buildContrarianView(def,b){
       _tbReason=blockers.join(" \u00b7 ");
     }
     if(_tbReason){
-      h+='<div style="flex-shrink:0;margin:0 2rem 6px;padding:6px 12px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;gap:8px">';
+      h+='<div style="flex-shrink:0;margin:0 5px 4px;padding:5px 10px;background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.06);display:flex;align-items:center;gap:8px">';
       h+='<span style="font-family:var(--font-mono);font-size:0.6rem;color:var(--text-muted);letter-spacing:0.08em">\u26a0 NOT TRADING:</span>';
       h+='<span style="font-family:var(--font-mono);font-size:0.6rem;color:var(--text-secondary)">'+escHtml(_tbReason)+'</span>';
       h+='</div>';
@@ -10141,7 +10183,7 @@ function buildContrarianView(def,b){
   }
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ZONE 1: GAUGE + PLANET (left 28%) */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -10367,14 +10409,14 @@ function buildContrarianView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+ssC+'">'+escHtml(ss)+'</span>';
   h+='<span>F&G: '+sc+'</span>';
   h+='<span>'+(raw.total_alerts||0)+' alerts</span>';
   h+='<span>scan '+(raw.scan_count||0)+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 /* ===== ARBITRAGEUR detail view — PAIR SPREADS ===== */
@@ -10415,63 +10457,46 @@ function buildArbitrageurView(def,b){
     collapsedLogs.push({msg:_cl,count:1});
   }
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
-
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>ARBITRAGEUR <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Pair Spreads</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8085</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">'+escHtml(strat.name||"Statistical Arbitrage")+' \u00b7 '+tracked+' pairs \u00b7 Scan '+(raw.scan_count||0)+'</div>';
-  h+='</div>';
-
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(124,77,255,0.12)">';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(124,77,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">EQUITY</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+c+'">'+fmt$(eq)+'</div>';
-  h+='</div>';
   var pnlC=pnl>=0?"#34d399":"#f87171";
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(124,77,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">PNL</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+pnlC+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(124,77,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">WIN RATE</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-secondary)">'+fmtNum(wr,1)+'%</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(124,77,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">OPEN</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:'+(posKeys.length?'#34d399':'var(--text-muted)')+'">'+posKeys.length+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(124,77,255,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">TRACKED</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:var(--text-secondary)">'+tracked+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">REGIME</div>';
   var arbRegime=raw.regime||"--";
   var arbRegimeC=arbRegime==="MEAN_REVERTING"?"#34d399":arbRegime==="DISLOCATION"?"var(--gold)":arbRegime==="STRESSED"?"#f87171":"var(--text-secondary)";
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+arbRegimeC+'">'+escHtml(arbRegime)+'</div>';
+
+  var h='<div class="dv2-frame">';
+
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">ARBITRAGEUR</span>';
+  h+='<span class="dv2-bot-sub">'+escHtml(strat.name||"Statistical Arbitrage")+'</span>';
+  h+='<span class="dv2-uptime">'+tracked+' pairs · Scan '+(raw.scan_count||0)+'</span>';
+  h+='<span class="dv2-port">:8085</span>';
   h+='</div>';
+
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value '+(posKeys.length?'good':'')+'">'+posKeys.length+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">TRACKED</div><div class="dv2-kpi-value">'+tracked+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+arbRegimeC+'">'+escHtml(arbRegime)+'</div></div>';
   h+='</div>';
 
   /* Fix 1: CC connectivity error banner */
   if(ccFail){
-    h+='<div style="flex-shrink:0;margin:0 2rem 6px;padding:8px 14px;background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.25);display:flex;align-items:center;gap:10px">';
-    h+='<span style="font-size:1rem">\u26a0</span>';
-    h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:#f87171;letter-spacing:0.04em">PORTFOLIO RESERVE FAILING \u2014 Arbitrageur cannot reserve capital. Signals are strong but trades are blocked.</div>';
+    h+='<div style="flex-shrink:0;margin:0 5px 4px;padding:6px 10px;background:rgba(248,113,113,0.08);border:1px solid rgba(248,113,113,0.25);display:flex;align-items:center;gap:10px">';
+    h+='<span style="font-size:0.9rem">\u26a0</span>';
+    h+='<div style="font-family:\'Courier New\',monospace;font-size:10px;color:#f87171;letter-spacing:0.04em">PORTFOLIO RESERVE FAILING \u2014 Arbitrageur cannot reserve capital. Signals are strong but trades are blocked.</div>';
     h+='</div>';
   }
   /* Fix 2: PHITEX block banner */
   if(phitexBlocks.length){
-    h+='<div style="flex-shrink:0;margin:0 2rem 6px;padding:6px 14px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.15);display:flex;align-items:center;gap:8px">';
-    h+='<span style="font-family:var(--font-mono);font-size:0.65rem;color:#00bcd4">\u03a6TEX BLOCKING:</span>';
-    h+='<span style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-secondary)">'+escHtml(phitexBlocks.join(", "))+' \u2014 phase transition detected</span>';
+    h+='<div style="flex-shrink:0;margin:0 5px 4px;padding:5px 10px;background:rgba(0,200,200,0.04);border:1px solid rgba(0,200,200,0.15);display:flex;align-items:center;gap:8px">';
+    h+='<span style="font-family:\'Courier New\',monospace;font-size:10px;color:#00bcd4">\u03a6TEX BLOCKING:</span>';
+    h+='<span style="font-family:\'Courier New\',monospace;font-size:10px;color:#94a3b8">'+escHtml(phitexBlocks.join(", "))+' \u2014 phase transition detected</span>';
     h+='</div>';
   }
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ZONE 1: PLANET + STRATEGY (left 28%) */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -10694,8 +10719,8 @@ function buildArbitrageurView(def,b){
   h+='</div>'; /* /zone3 */
   h+='</div>'; /* /3-zone body */
 
-  /* BOTTOM BAR — Fix 8: correlation context */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  /* BOTTOM BAR */
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+c+'">'+fmt$(eq)+'</span>';
   h+='<span>'+tracked+'/'+totalCorr+' corr \u2265'+(strat.corr_threshold||0.8)+'</span>';
   h+='<span>'+posKeys.length+' open</span>';
@@ -10703,7 +10728,7 @@ function buildArbitrageurView(def,b){
   h+='<span>scan '+(raw.scan_count||0)+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 /* ===== CHRONOS detail view — THE CLOCK ===== */
@@ -10718,42 +10743,27 @@ function buildChronosView(def,b){
   var signals=raw.signals||[];
   var overlaps=raw.active_overlaps||[];
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
-
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>CHRONOS <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">The Clock</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8086</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Temporal Intelligence \u00b7 '+(raw.utc||"--")+' \u00b7 '+(raw.candle_count||0)+' candles \u00b7 '+(raw.candle_pair||"BTC/USD")+'</div>';
-  h+='</div>';
-
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(255,171,0,0.12)">';
-  h+='<div style="flex:2;padding:8px 14px;border-right:1px solid rgba(255,171,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SESSIONS</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+c+';margin-top:2px">'+(sessions.length?sessions.join(" + "):"None active")+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(255,171,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">HOUR UTC</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.5rem;color:var(--text)">'+hourUTC+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(255,171,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">HOUR BIAS</div>';
   var biasC=hourBias>55?'#34d399':hourBias<45?'#f87171':'var(--text-secondary)';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+biasC+'">'+fmtNum(hourBias,0)+'%</div>';
+  var h='<div class="dv2-frame">';
+
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">CHRONOS</span>';
+  h+='<span class="dv2-bot-sub">Temporal Intelligence · '+(raw.candle_pair||"BTC/USD")+'</span>';
+  h+='<span class="dv2-uptime">'+(raw.utc||"--")+' · '+(raw.candle_count||0)+' candles</span>';
+  h+='<span class="dv2-port">:8086</span>';
   h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(255,171,0,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">REGIME</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:var(--text-secondary)">'+escHtml(raw.regime||"--")+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">SAMPLES</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:var(--text-muted)">'+(raw.hour_sample_size||0)+'</div>';
-  h+='</div>';
+
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SESSIONS</div><div class="dv2-kpi-value" style="color:'+c+'">'+(sessions.length?sessions.join("+"):"NONE")+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">HOUR UTC</div><div class="dv2-kpi-value">'+hourUTC+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">HOUR BIAS</div><div class="dv2-kpi-value" style="color:'+biasC+'">'+fmtNum(hourBias,0)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value">'+escHtml(raw.regime||"--")+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SAMPLES</div><div class="dv2-kpi-value">'+(raw.hour_sample_size||0)+'</div></div>';
   h+='</div>';
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ZONE 1: PLANET + SESSION MAP (left 28%) */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -10889,14 +10899,14 @@ function buildChronosView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+c+'">'+(sessions.length?sessions.join("+"):"no session")+'</span>';
   h+='<span>'+hourUTC+':00 UTC</span>';
   h+='<span style="color:'+biasC+'">'+fmtNum(hourBias,0)+'% bull</span>';
   h+='<span>scan '+(raw.scan_count||0)+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 /* ===== PHITEX detail view — PHASE DETECTOR ===== */
@@ -10926,46 +10936,28 @@ function buildPhitexView(def,b){
 
   var fleetC=fleetReg==="CRITICAL"?"#f87171":fleetReg==="PRE_CRITICAL"?"var(--gold)":fleetDir!=="NEUTRAL"?c:"var(--text-muted)";
 
-  var h='<div class="detail-view" style="padding:0;overflow:hidden;display:flex;flex-direction:column;height:100%">';
-
-  /* Title */
-  h+='<div style="padding:1.5rem 2rem 0.75rem;flex-shrink:0">';
-  h+='<h2 style="margin-bottom:0.25rem"><span class="dv-accent" style="background:'+c+'"></span>\u03a6TEX <span style="font-family:var(--font-serif);font-weight:300;font-style:italic;color:var(--text-secondary);font-size:1rem;margin-left:8px">Phase Detector</span>';
-  h+='<span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-left:auto">:8078</span></h2>';
-  h+='<div style="font-family:var(--font-serif);font-style:italic;color:var(--text-secondary);font-size:0.9rem">Ising Model Thermodynamics \u00b7 '+pairKeys.length+' pairs \u00b7 Cycle '+cycle+' \u00b7 '+fmtNum(raw.scan_duration_s||0,1)+'s</div>';
-  h+='</div>';
-
-  /* TOP BAR */
-  h+='<div style="flex-shrink:0;display:flex;gap:0;margin:0 2rem 1rem;border:1px solid rgba(232,121,249,0.12)">';
-  h+='<div style="flex:2;padding:8px 14px;border-right:1px solid rgba(232,121,249,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">FLEET SCORE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.5rem;color:'+fleetC+'">'+fmtNum(fleetScore,4)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1.5;padding:8px 14px;border-right:1px solid rgba(232,121,249,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">FLEET REGIME</div>';
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+fleetC+';margin-top:2px">'+escHtml(fleetReg)+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(232,121,249,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">DIRECTION</div>';
   var dirC=fleetDir==="LONG"?"#34d399":fleetDir==="SHORT"?"#f87171":"var(--text-muted)";
-  h+='<div style="font-family:var(--font-mono);font-size:0.85rem;color:'+dirC+'">'+escHtml(fleetDir)+'</div>';
+  var h='<div class="dv2-frame">';
+
+  h+='<div class="dv2-title-strip">';
+  h+='<div class="dv2-accent-bar" style="background:'+c+'"></div>';
+  h+='<span class="dv2-bot-name" style="color:'+c+'">\u03a6TEX</span>';
+  h+='<span class="dv2-bot-sub">Ising Model Thermodynamics</span>';
+  h+='<span class="dv2-uptime">'+pairKeys.length+' pairs · Cycle '+cycle+' · '+fmtNum(raw.scan_duration_s||0,1)+'s</span>';
+  h+='<span class="dv2-port">:8078</span>';
   h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(232,121,249,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">CRITICAL</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+(criticals.length?'#f87171':'var(--text-muted)')+'">'+criticals.length+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center;border-right:1px solid rgba(232,121,249,0.08)">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">PRE-CRIT</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.3rem;color:'+(preCriticals.length?'var(--gold)':'var(--text-muted)')+'">'+preCriticals.length+'</div>';
-  h+='</div>';
-  h+='<div style="flex:1;padding:8px 12px;text-align:center">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.12em;text-transform:uppercase">PAIRS</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.1rem;color:var(--text-secondary)">'+pairKeys.length+'</div>';
-  h+='</div>';
+
+  h+='<div class="dv2-stats-strip">';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">FLEET SCORE</div><div class="dv2-kpi-value" style="color:'+fleetC+'">'+fmtNum(fleetScore,4)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+fleetC+'">'+escHtml(fleetReg)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">DIRECTION</div><div class="dv2-kpi-value" style="color:'+dirC+'">'+escHtml(fleetDir)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CRITICAL</div><div class="dv2-kpi-value '+(criticals.length?'bad':'')+'">'+criticals.length+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PRE-CRIT</div><div class="dv2-kpi-value '+(preCriticals.length?'warn':'')+'">'+preCriticals.length+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value">'+pairKeys.length+'</div></div>';
   h+='</div>';
 
   /* THREE-ZONE BODY */
-  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;margin:0 2rem 0.5rem;gap:10px">';
+  h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
 
   /* ZONE 1: PLANET + FLEET GAUGE + PHASE SUMMARY (left 28%) */
   h+='<div style="flex:2.8;display:flex;flex-direction:column;overflow:hidden;min-width:0">';
@@ -11142,16 +11134,16 @@ function buildPhitexView(def,b){
   h+='</div>'; /* /3-zone body */
 
   /* BOTTOM BAR */
-  h+='<div style="flex-shrink:0;margin:0 2rem 1rem;padding:6px 14px;background:rgba(0,0,0,0.25);border:1px solid rgba(100,180,255,0.06);display:flex;align-items:center;gap:16px;font-family:var(--font-mono);font-size:0.65rem;color:rgba(255,255,255,0.5)">';
+  h+='<div style="flex-shrink:0;padding:5px 10px;background:#0d1117;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+fleetC+'">'+escHtml(fleetReg)+'</span>';
   h+='<span>\u03a6 '+fmtNum(fleetScore,4)+'</span>';
   h+='<span>'+pairKeys.length+' pairs</span>';
   h+='<span style="color:#f87171">'+criticals.length+' crit</span>';
-  h+='<span style="color:var(--gold)">'+preCriticals.length+' pre</span>';
+  h+='<span style="color:#f59e0b">'+preCriticals.length+' pre</span>';
   h+='<span>cycle '+cycle+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';
   h+='</div>';
-  h+='</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 function _buildOfflineBanner(def,b){
@@ -11208,8 +11200,8 @@ function buildDetailView(def,b){
   var raw=b?b.raw||{}:{};
   var n=b?b.normalized||{}:{};
   var c=def.color;
-  var h='<div class="detail-view">';
-  h+='<h2><span class="dv-accent" style="background:'+c+'"></span>'+def.name+' <span style="font-family:var(--font-mono);font-size:0.8rem;color:var(--text-secondary);font-weight:400">:'+def.port+'</span></h2>';
+  var h='<div class="dv2-frame" style="padding:10px;overflow-y:auto">';
+  h+='<div class="dv2-title-strip"><div class="dv2-accent-bar" style="background:'+c+'"></div><span class="dv2-bot-name" style="color:'+c+'">'+escHtml(def.name.toUpperCase())+'</span><span class="dv2-port">:'+def.port+'</span></div>';
   h+=buildPlanetHeroHTML(def.id,def,b,raw);
   h+='<div class="dv-grid">';
   var health=raw.health||{};
@@ -11284,8 +11276,8 @@ function buildDetailView(def,b){
   if(health.memory_percent) h+='<div class="dv-stat"><div class="label">Memory</div><div class="value">'+fmtNum(health.memory_percent,1)+'%</div></div>';
   if(health.threads_healthy!=null) h+='<div class="dv-stat"><div class="label">Threads</div><div class="value">'+health.threads_healthy+'/'+health.total_threads+'</div></div>';
   h+='</div></div>';
-  h+='<div style="text-align:right;font-family:var(--font-mono);font-size:0.8rem;color:var(--text-muted);margin-top:2rem;padding-top:1rem;border-top:1px solid rgba(201,162,39,0.08)">Updated '+(b?ago(b.last_seen):"--")+'</div>';
-  h+='</div>';
+  h+='<div style="text-align:right;font-family:\'Courier New\',monospace;font-size:10px;color:#475569;margin-top:1rem;padding-top:6px;border-top:1px solid #1e293b">Updated '+(b?ago(b.last_seen):"--")+'</div>';
+  h+='</div>'; /* /dv2-frame */
   return h;
 }
 
@@ -11942,6 +11934,25 @@ var _sound={
 (function(){
   var btn=document.getElementById("soundBtn");
   if(btn) btn.addEventListener("click",function(e){e.stopPropagation();_sound.toggle();});
+})();
+
+/* Auto-init sound on first user interaction (browser autoplay policy) */
+(function(){
+  var _soundAutoStarted=false;
+  function _autoStartSound(){
+    if(_soundAutoStarted) return;
+    _soundAutoStarted=true;
+    if(typeof _sound==="undefined") return;
+    if(_sound.initialized){
+      /* Already init'd but context may be suspended after page reload */
+      if(_sound.ctx&&_sound.ctx.state==="suspended") _sound.ctx.resume();
+    } else {
+      /* First time — init does its own 3-second fade on master gain */
+      _sound.init();
+    }
+  }
+  document.addEventListener("click",_autoStartSound,{once:true});
+  document.addEventListener("keydown",_autoStartSound,{once:true});
 })();
 
 /* ===== FLEET INTELLIGENCE — Intel Ring Overlay ===== */

@@ -1227,7 +1227,7 @@ def _compute_aggregate(bots_data: dict) -> dict:
 
     return {
         "bots_alive": alive_count,
-        "bots_total": len(BOT_REGISTRY),
+        "bots_total": len(bots_data),  # polled bots only, not all registered
         "total_equity": sum(v for _, v in equities) if equities else None,
         "total_pnl": sum(v for _, v in pnls) if pnls else None,
         "avg_win_rate": (sum(v for _, v in win_rates) / len(win_rates)) if win_rates else None,
@@ -2473,7 +2473,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             "version": "2.0",
             "uptime_seconds": round(time.time() - _start_time),
             "bots_alive": sum(1 for b in bot_list if b.get("alive")),
-            "bots_total": len(BOT_REGISTRY),
+            "bots_total": len(bot_list),  # polled bots only
             "modules": {
                 "signal_aggregator": True,
                 "signal_decomposition": True,

@@ -351,7 +351,7 @@ def main():
             regime_change_count = 0
 
             for evt in events:
-                eid = str(evt.get("id", evt.get("timestamp", id(evt))))
+                eid = str(evt.get("id") or f"{evt.get('type','')}:{evt.get('source','')}:{evt.get('timestamp','')}")
                 if gate.seen_event(eid):
                     continue
 

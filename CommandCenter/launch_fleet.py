@@ -15,131 +15,23 @@ import sys
 import threading
 import time
 
-# ── Fleet Registry ──────────────────────────────────────────────
-# This is the authoritative source for launch commands and phase ordering.
-# fleet_config.json and command_center.py BOT_REGISTRY have overlapping
-# data — keep them in sync manually when adding/removing bots.
+from fleet_config import BOTS, CC_PORT as COMMAND_CENTER_PORT
 
+# ── Fleet Registry ──────────────────────────────────────────────
+# Derived from fleet_config.py — single source of truth for bot dirs/ports/cmds.
+# To add, remove, or reconfigure a bot: edit fleet_config.py BOTS only.
 FLEET = [
     {
-        "name": "TurtleSue",
-        "port": 8070,
-        "dir": r"D:\TurtleSue",
-        "cmd": ["python", "turtlebot.py", "--auto"],
-    },
-    {
-        "name": "Sentinel",
-        "port": 8071,
-        "dir": r"D:\Sentinel",
-        "cmd": ["python", "sentinel.py"],
-        "phase": 2,  # needs CC market data
-        "slow": True,
-    },
-    {
-        "name": "Trinity",
-        "port": 8072,
-        "dir": r"D:\Trinity",
-        "cmd": ["python", "overwatch.py", "--auto"],
-    },
-    {
-        "name": "HiveMind",
-        "port": 8073,
-        "dir": r"D:\HiveMind",
-        "cmd": ["python", "cli.py", "dashboard", "--synthetic"],
-        "slow": True,
-    },
-    {
-        "name": "NexusBrain",
-        "port": 8074,
-        "dir": r"D:\NexusBrain",
-        "cmd": ["python", "nexus_brain.py", "dashboard", "--auto"],
-    },
-    {
-        "name": "TrekBot",
-        "port": 8080,
-        "dir": r"D:\TrekBot",
-        "cmd": ["python", "trekbot.py"],
-        "slow": True,
-    },
-    {
-        "name": "Oracle",
-        "port": 8075,
-        "dir": r"D:\Oracle",
-        "cmd": ["python", "server.py"],
-        "slow": True,
-    },
-    {
-        "name": "Deep Blue",
-        "port": 8076,
-        "dir": r"D:\Whale Watcher\apex_whale_finder.dir",
-        "cmd": ["python", "main.py"],
-    },
-    {
-        "name": "Gridzilla",
-        "port": 8077,
-        "dir": r"D:\Gridzilla",
-        "cmd": ["python", "gridzilla.py", "--auto"],
-    },
-    {
-        "name": "PHITEX",
-        "port": 8078,
-        "dir": r"D:\PhiTex",
-        "cmd": ["python", "phitex.py"],
-        "slow": True,
-        "phase": 2,   # starts AFTER Command Center is confirmed up
-    },
-    {
-        "name": "AEGIS",
-        "port": 8079,
-        "dir": r"D:\Aegis",
-        "cmd": ["python", "aegis.py"],
-        "phase": 2,   # starts AFTER Command Center is confirmed up
-    },
-    {
-        "name": "Inference",
-        "port": 9001,
-        "dir": r"D:\CommandCenter",
-        "cmd": ["python", "inference_server.py"],
-        "phase": 2,
-    },
-    {
-        "name": "NEXUS",
-        "port": 8082,
-        "dir": r"D:\Nexus",
-        "cmd": ["python", "nexus.py"],
-        "phase": 2,
-    },
-    {
-        "name": "Rubberband",
-        "port": 8083,
-        "dir": r"D:\Rubberband",
-        "cmd": ["python", "rubberband.py", "--auto"],
-        "phase": 2,
-    },
-    {
-        "name": "Contrarian",
-        "port": 8084,
-        "dir": r"D:\Contrarian",
-        "cmd": ["python", "contrarian.py"],
-        "phase": 2,
-    },
-    {
-        "name": "Arbitrageur",
-        "port": 8085,
-        "dir": r"D:\Arbitrageur",
-        "cmd": ["python", "arbitrageur.py"],
-        "phase": 2,
-    },
-    {
-        "name": "Chronos",
-        "port": 8086,
-        "dir": r"D:\Chronos",
-        "cmd": ["python", "chronos.py"],
-        "phase": 2,
-    },
+        "name":  cfg["display"],
+        "dir":   cfg["dir"],
+        "cmd":   cfg["cmd"],
+        "port":  cfg["port"],
+        "phase": cfg.get("phase", 1),
+        "slow":  cfg.get("slow", False),
+    }
+    for cfg in BOTS.values()
+    if cfg.get("cmd")  # bots without a cmd have no subprocess to launch
 ]
-
-from fleet_config import CC_PORT as COMMAND_CENTER_PORT
 
 # ── Helpers ─────────────────────────────────────────────────────
 
@@ -240,8 +132,8 @@ def main():
             time.sleep(0.5)
 
     # Phase 1: All bots EXCEPT those that depend on Command Center
-    phase1 = [b for b in FLEET if b.get("phase", 1) == 1]
-    phase2 = [b for b in FLEET if b.get("phase", 1) == 2]
+    phase1 = [b for b in FLEET if b["phase"] == 1]
+    phase2 = [b for b in FLEET if b["phase"] == 2]
 
     print("  Phase 1: Core fleet...")
     for bot in phase1:

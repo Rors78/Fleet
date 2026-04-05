@@ -74,18 +74,18 @@ CONFIG = {
     # Universe — pairs to scan for grid opportunities
     "universe": [
         "BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD",
-        "DOT/USD", "AVAX/USD", "LINK/USD", "MATIC/USD", "ATOM/USD",
+        "DOT/USD", "AVAX/USD", "LINK/USD", "POL/USD", "ATOM/USD",
     ],
 
     # Grid defaults (all overridden dynamically)
     "min_grid_lines": 5,
-    "max_grid_lines": 25,
+    "max_grid_lines": 5,
     "min_grid_spacing_atr": 0.3,   # minimum spacing = 0.3 ATR
     "max_grid_spacing_atr": 1.5,   # maximum spacing = 1.5 ATR
 
     # Risk
     "max_total_exposure_pct": 0.30,  # max 30% of portfolio in grids
-    "max_per_pair_pct": 0.05,        # max 5% per pair — must stay within portfolio max_per_trade_pct=5%
+    "max_per_pair_pct": 0.048,       # 4.8% per pair — stays under portfolio's 5% max_per_trade cap with float headroom
     "max_drawdown_pct": 0.05,        # kill grid if DD > 5% of allocation
     "fee_rate": 0.0026,              # Kraken taker fee (0.26%) — applied per fill, both legs
 
@@ -611,6 +611,12 @@ class GridArchitect:
 
         grid_spacing = atr * spacing_mult
 
+        # Minimum absolute spacing floor: at least 1.2% of price.
+        # Kraken round-trip fee is 0.52%, so 1.2% spacing gives ~0.68% net margin.
+        # Previous 0.5% floor left POL/USD at 586% fee ratio — unusable.
+        min_spacing = current_price * 0.012
+        grid_spacing = max(grid_spacing, min_spacing)
+
         # ═══ NUMBER OF GRID LINES ═══
         n_lines = int(range_width / (grid_spacing + 1e-10))
         n_lines = max(self.config["min_grid_lines"], min(self.config["max_grid_lines"], n_lines))
@@ -637,6 +643,9 @@ class GridArchitect:
             level_size = base_size * size_mult
 
             level_profit = grid_spacing * (level_size / current_price)
+            # Estimate round-trip fee at design time so fee_ratio gate is meaningful.
+            # Kraken taker 0.26% × 2 sides = 0.52% of position size.
+            level_fee_est = level_size * self.config.get("fee_rate", 0.0026) * 2
 
             levels.append({
                 "price": round(price, 6),
@@ -646,7 +655,7 @@ class GridArchitect:
                 "distance_pct": round((price - current_price) / current_price * 100, 3),
                 "edge_factor": round(edge_factor, 3),
                 "expected_profit": round(level_profit, 4),
-                "fees": 0,
+                "fees": round(level_fee_est, 6),
                 "filled": False,
                 "fill_price": 0,
                 "fill_time": 0,
@@ -681,6 +690,24 @@ class GridArchitect:
             if nearest_buy:
                 sl["take_profit"] = nearest_buy["price"]
                 sl["expected_r"] = round(min_dist / (grid_spacing + 1e-10), 2)
+
+        # ═══ NET PROFIT FLOOR — $0.50 per cycle minimum ═══
+        # Reject grid designs where each level earns less than $0.50 net of fees.
+        # Avg net per level = (spacing% - fee_rate*2) * level_size
+        # If spacing% < fee breakeven this is always negative — hard reject.
+        MIN_NET_PROFIT_PER_CYCLE = 0.50
+        fee_rate = self.config.get("fee_rate", 0.0026)
+        avg_level_size = allocation_usd / max(len(levels), 1)
+        spacing_pct = grid_spacing / (current_price + 1e-10)
+        net_pct_per_cycle = spacing_pct - fee_rate * 2
+        avg_net_per_level = net_pct_per_cycle * avg_level_size
+        if avg_net_per_level < MIN_NET_PROFIT_PER_CYCLE:
+            logging.warning(
+                f"[{pair}] Grid rejected: avg net/level ${avg_net_per_level:.3f} < "
+                f"${MIN_NET_PROFIT_PER_CYCLE} floor (spacing {spacing_pct*100:.2f}%, "
+                f"fees {fee_rate*2*100:.2f}%)"
+            )
+            return None
 
         return {
             "pair": pair,
@@ -1058,19 +1085,16 @@ class BusIntelligence:
             self.aegis_regime = self.bus.aegis_regime() or "DEFENSIVE"
             self.aegis_score = self.bus.aegis_score() or 0.01
 
-            # Whale alert status — check fleet-wide (pair=None returns all)
+            # Whale alert status — only pause on EXTREME alerts for pairs we actually trade.
+            # Fleet-wide whale alerts on unrelated pairs (e.g. OP/USD) must not block
+            # grids on ETH/USD, XRP/USD, ATOM/USD etc.
+            our_pairs = set(CONFIG.get("universe", []))
             whale_alerts = self.bus.whale_alerts(pair=None, max_age=300)
-            if whale_alerts:
-                tiers = {"EXTREME": 3, "HIGH": 2, "MODERATE": 1, "LOW": 0}
-                best_tier = max(
-                    (a.get("data", {}).get("tier", "LOW") for a in whale_alerts),
-                    key=lambda t: tiers.get(t, 0),
-                )
-                # Only pause on EXTREME whales — HIGH fires constantly from Deep Blue
-                # and would permanently block grids during normal market activity
-                self.whale_alert_active = best_tier == "EXTREME"
-            else:
-                self.whale_alert_active = False
+            self.whale_alert_active = any(
+                a.get("data", {}).get("tier") == "EXTREME"
+                and a.get("data", {}).get("pair") in our_pairs
+                for a in (whale_alerts or [])
+            )
 
             # PHITEX critical — check fleet-wide status
             phitex = self.bus.phitex_status(pair=None)
@@ -1276,6 +1300,10 @@ class GridzillaEngine:
 
                 design = self.grid_architect.design(pair, candles, regime, per_pair_alloc)
 
+                # design() returns None if net profit floor not met
+                if design is None:
+                    continue
+
                 # Deploy if design is profitable after fees
                 if design["fee_ratio"] < 80:  # fees must be < 80% of profit
                     # Reserve capital from central portfolio
@@ -1418,8 +1446,6 @@ def main():
     parser.add_argument("--auto", action="store_true", help="Headless mode (fleet launcher)")
     args = parser.parse_args()
 
-    import sys as _sys
-    _sys.path.insert(0, r"D:\CommandCenter")
     try:
         from port_guard import ensure_port, write_pidfile, cleanup_pidfile
         import atexit
@@ -1446,8 +1472,19 @@ def main():
     try:
         engine.start()
     except KeyboardInterrupt:
-        logging.info("Gridzilla shutting down...")
+        logging.info("Gridzilla shutting down — releasing all portfolio reservations...")
         engine.running = False
+        # Release all active grid reservations back to the pool on clean shutdown
+        if engine.portfolio:
+            for pair, grid_state in list(engine.executor.active_grids.items()):
+                rid = grid_state.get("reservation_id", "")
+                if rid:
+                    try:
+                        pnl = grid_state.get("grid_pnl", 0) - grid_state.get("grid_fees", 0)
+                        engine.portfolio.release(rid, pnl=pnl)
+                        logging.info(f"Released reservation {rid} for {pair} (pnl={pnl:.4f})")
+                    except Exception as e:
+                        logging.warning(f"Failed to release reservation {rid}: {e}")
 
 
 if __name__ == "__main__":

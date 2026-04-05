@@ -532,6 +532,423 @@ body {
 .fs-hud-bl { bottom: 0; left: 0; }
 .fs-hud-br { bottom: 0; right: 0; font-size: 0.7rem; color: rgba(255,255,255,0.2); }
 .fs-hud-tl b, .fs-hud-tr b, .fs-hud-bl b { color: rgba(255,255,255,0.8); }
+
+/* ═══════════════════════════════════════
+   OVERVIEW REDESIGN — Mission Control v2
+   ═══════════════════════════════════════ */
+
+/* Color palette */
+:root {
+  --ov-bg: #0a0e17;
+  --ov-card: #111827;
+  --ov-border: #1e293b;
+  --ov-text: #e2e8f0;
+  --ov-muted: #94a3b8;
+  --ov-dim: #475569;
+  --ov-green: #22c55e;
+  --ov-red: #ef4444;
+  --ov-amber: #f59e0b;
+  --ov-blue: #3b82f6;
+  --ov-cyan: #06b6d4;
+  --ov-purple: #8b5cf6;
+}
+
+@keyframes ov-slide-in { from { opacity:0; transform:translateY(-6px); } to { opacity:1; transform:translateY(0); } }
+@keyframes ov-flash-update { 0%,100% { background:transparent; } 50% { background:rgba(59,130,246,0.15); } }
+@keyframes ov-whale-pulse { 0%,100% { border-color:var(--ov-amber); } 50% { border-color:rgba(245,158,11,0.3); } }
+
+/* Content area layout override for overview */
+.content.ov-content-layout {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+/* Panel wrapper */
+#ovPanel {
+  display: none;
+  flex-direction: column;
+  height: 100%;
+  background: var(--ov-bg);
+  overflow: hidden;
+  position: relative;
+}
+#ovPanel.ov-active { display: flex; }
+
+#ovSolarBtn {
+  position: absolute;
+  top: 8px;
+  right: 12px;
+  background: rgba(17,24,39,0.9);
+  border: 1px solid #1e293b;
+  color: #94a3b8;
+  font-family: 'Orbitron', sans-serif;
+  font-size: 10px;
+  letter-spacing: 1px;
+  padding: 5px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  z-index: 100;
+  transition: border-color 0.2s, color 0.2s;
+}
+#ovSolarBtn:hover { border-color: #06b6d4; color: #06b6d4; }
+
+/* Grid and signal bar fade transitions */
+#ovDataGrid, #ovSignalBar {
+  transition: opacity 0.3s;
+}
+
+/* New 4-section scrollable layout */
+.ov-grid {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 0 0 8px 0;
+}
+
+/* Section wrapper */
+.ov-section {
+  padding: 0;
+  margin-bottom: 0;
+}
+
+/* Section header bar */
+.ov-section-hdr {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px;
+  background: rgba(0,0,0,0.3);
+  border-top: 1px solid var(--ov-border);
+  border-bottom: 1px solid var(--ov-border);
+  font-family: 'Orbitron', 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--ov-cyan);
+}
+.ov-section-hdr::before {
+  content: '';
+  display: block;
+  width: 3px;
+  height: 14px;
+  background: var(--ov-cyan);
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.ov-section-hdr:first-child,
+.ov-section:first-child .ov-section-hdr {
+  border-top: none;
+}
+
+/* 4-panel row */
+.ov-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 0;
+  border-bottom: 1px solid var(--ov-border);
+}
+.ov-row-3 {
+  grid-template-columns: 1.2fr 1fr 1fr 1fr;
+}
+
+/* Panel (card in the new layout) */
+.ov-panel {
+  padding: 10px 14px;
+  border-right: 1px solid var(--ov-border);
+  background: var(--ov-bg);
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+}
+.ov-panel:last-child { border-right: none; }
+.ov-panel-wide {
+  min-height: 180px;
+}
+
+/* Card base (kept for compatibility) */
+.ov-card {
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--ov-border);
+  flex-shrink: 0;
+}
+.ov-card-grow { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
+
+/* Columns (kept for compatibility with old code) */
+.ov-col {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-right: 1px solid var(--ov-border);
+  min-height: 0;
+}
+.ov-col:last-child { border-right: none; }
+.ov-col-left  { overflow-y: auto; }
+.ov-col-center { overflow: hidden; }
+.ov-col-right  { overflow-y: auto; }
+
+/* Section headers */
+.ov-hdr {
+  font-family: 'Orbitron', 'JetBrains Mono', monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ov-cyan);
+  margin-bottom: 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(6,182,212,0.15);
+  flex-shrink: 0;
+}
+
+/* AEGIS ring */
+.ov-aegis-wrap { display:flex; flex-direction:column; align-items:center; gap:8px; padding:4px 0; }
+.ov-aegis-svg-wrap { position:relative; width:110px; height:110px; }
+.ov-aegis-svg-wrap svg { width:110px; height:110px; }
+.ov-aegis-center {
+  position:absolute; inset:0; display:flex; flex-direction:column;
+  align-items:center; justify-content:center; gap:3px;
+}
+.ov-aegis-score { font-family:var(--font); font-size:1.5rem; font-weight:700; color:var(--ov-text); }
+.ov-aegis-arc { transition: stroke-dashoffset 0.8s ease, stroke 0.5s ease; }
+.ov-regime-pill {
+  display:inline-block; padding:3px 12px;
+  font-family:var(--font); font-size:0.7rem; font-weight:700; letter-spacing:1.5px;
+  text-transform:uppercase; border:1px solid currentColor; border-radius:3px;
+}
+.ov-deploy-text { font-size:0.7rem; color:var(--ov-muted); font-family:var(--font); }
+
+/* Regime strip */
+.ov-regime-table { width:100%; border-collapse:collapse; font-family:var(--font); font-size:0.7rem; }
+.ov-regime-table tr { border-bottom:1px solid rgba(30,41,59,0.5); }
+.ov-regime-table tr:last-child { border-bottom:none; }
+.ov-regime-table td { padding:4px 2px; }
+.ov-regime-name { color:var(--ov-muted); width:72px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.ov-regime-val { text-align:right; font-weight:700; }
+.ov-regime-arrow { text-align:right; color:var(--ov-dim); width:14px; }
+
+/* Sentiment */
+.ov-sentiment-num { font-family:var(--font); font-size:2rem; font-weight:700; line-height:1; }
+.ov-sentiment-label { font-size:0.7rem; letter-spacing:1.5px; text-transform:uppercase; font-family:var(--font); color:var(--ov-muted); margin-top:3px; }
+
+/* Whale status */
+.ov-whale-clear { color:var(--ov-green); font-size:0.75rem; font-family:var(--font); }
+.ov-whale-active { color:var(--ov-amber); font-size:0.72rem; font-family:var(--font); animation:ov-whale-pulse 1.2s ease-in-out infinite; border:1px solid var(--ov-amber); padding:3px 6px; border-radius:3px; }
+.ov-whale-row { display:flex; justify-content:space-between; font-size:0.7rem; padding:2px 0; }
+
+/* Council engines */
+#ovEngines { display:block; }
+.ov-engine-row { display:flex; align-items:center; gap:4px; padding:2px 0; font-family:var(--font); font-size:0.65rem; min-width:0; }
+.ov-engine-dot { width:7px; height:7px; border-radius:50%; flex-shrink:0; }
+.ov-engine-name { width:70px; color:var(--ov-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; flex-shrink:0; }
+.ov-engine-bar-track { flex:1; height:4px; background:rgba(255,255,255,0.05); border-radius:2px; overflow:hidden; }
+.ov-engine-bar-fill { height:100%; border-radius:2px; transition:width 0.4s ease; }
+.ov-engine-count { width:24px; text-align:right; color:var(--ov-dim); }
+
+/* Live positions table */
+.ov-pos-table { width:100%; border-collapse:collapse; font-family:var(--font); font-size:0.7rem; }
+.ov-pos-table th { padding:5px 6px; text-align:left; font-size:0.65rem; font-weight:700; letter-spacing:1px; color:var(--ov-dim); text-transform:uppercase; border-bottom:1px solid var(--ov-border); background:rgba(0,0,0,0.2); white-space:nowrap; }
+.ov-pos-table td { padding:5px 6px; border-bottom:1px solid rgba(30,41,59,0.4); white-space:nowrap; }
+.ov-pos-table tr:hover td { background:rgba(59,130,246,0.04); }
+.ov-no-pos { text-align:center; padding:24px 0; }
+.ov-no-pos-big { font-family:var(--font); font-size:0.85rem; font-weight:700; letter-spacing:1px; color:var(--ov-green); }
+.ov-no-pos-sub { font-size:0.7rem; color:var(--ov-dim); margin-top:6px; font-family:var(--font); }
+
+/* Gridzilla status */
+.ov-grid-row { display:flex; align-items:center; gap:8px; padding:4px 0; font-family:var(--font); font-size:0.72rem; }
+.ov-grid-pair { color:var(--ov-text); font-weight:700; width:80px; }
+.ov-grid-range { flex:1; position:relative; }
+.ov-grid-range-track { width:100%; height:8px; background:rgba(255,255,255,0.05); border-radius:2px; position:relative; }
+.ov-grid-range-fill { position:absolute; top:0; height:100%; background:rgba(250,204,21,0.2); border-radius:2px; }
+.ov-grid-price-tri { position:absolute; top:50%; transform:translate(-50%,-50%); font-size:8px; color:var(--ov-amber); }
+.ov-grid-stats { font-size:0.65rem; color:var(--ov-dim); }
+.ov-sleeping { text-align:center; padding:10px 0; font-family:var(--font); }
+.ov-sleeping-title { font-size:0.75rem; font-weight:700; letter-spacing:1px; color:var(--ov-dim); text-transform:uppercase; }
+.ov-sleeping-why { font-size:0.67rem; color:var(--ov-dim); margin-top:4px; }
+
+/* Overview event stream */
+.ov-event-stream { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:0; min-height:0; }
+.ov-ev-row {
+  display:grid; grid-template-columns:56px 130px 1fr 68px;
+  gap:4px; padding:5px 8px; font-family:var(--font); font-size:0.65rem;
+  border-bottom:1px solid rgba(30,41,59,0.3);
+  border-left:2px solid transparent;
+  animation:ov-slide-in 0.2s ease;
+}
+.ov-ev-time { color:var(--ov-dim); }
+.ov-ev-type { font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; letter-spacing:0.3px; }
+.ov-ev-msg { color:var(--ov-muted); overflow:hidden; text-overflow:ellipsis; }
+.ov-ev-src { color:var(--ov-dim); text-align:right; overflow:hidden; text-overflow:ellipsis; }
+.ov-ev-count { display:inline-block; margin-left:4px; padding:0 4px; font-size:0.6rem; font-weight:700; background:rgba(239,68,68,0.2); color:#ef4444; border:1px solid rgba(239,68,68,0.4); border-radius:3px; vertical-align:middle; line-height:1.4; }
+
+/* Expectancy card */
+.ov-exp-big { font-family:var(--font); font-size:2rem; font-weight:700; line-height:1; }
+.ov-exp-sub { font-size:0.7rem; color:var(--ov-muted); margin-top:4px; font-family:var(--font); }
+.ov-gauge-wrap { margin:8px 0 4px; }
+.ov-gauge-label { font-size:0.67rem; color:var(--ov-dim); margin-bottom:3px; font-family:var(--font); letter-spacing:0.5px; }
+.ov-gauge-track { width:100%; height:8px; background:rgba(255,255,255,0.05); border-radius:4px; position:relative; overflow:hidden; }
+.ov-gauge-fill { height:100%; border-radius:4px; transition:width 0.6s ease; }
+.ov-gauge-marker { position:absolute; top:0; bottom:0; width:1.5px; background:rgba(255,255,255,0.6); }
+.ov-gauge-marker-label { position:absolute; top:10px; font-size:0.6rem; color:rgba(255,255,255,0.5); transform:translateX(-50%); white-space:nowrap; font-family:var(--font); }
+.ov-target-line { font-size:0.65rem; color:var(--ov-dim); margin-top:3px; text-align:right; font-family:var(--font); }
+
+/* P&L waterfall */
+.ov-wf-row { display:flex; align-items:center; gap:8px; margin:5px 0; font-family:var(--font); font-size:0.7rem; }
+.ov-wf-label { width:72px; color:var(--ov-muted); flex-shrink:0; }
+.ov-wf-track { flex:1; height:6px; background:rgba(255,255,255,0.04); border-radius:3px; overflow:hidden; }
+.ov-wf-fill { height:100%; border-radius:3px; transition:width 0.5s ease; }
+.ov-wf-val { width:60px; text-align:right; font-weight:700; }
+
+/* Bot scoreboard */
+.ov-score-table { width:100%; border-collapse:collapse; font-family:var(--font); font-size:0.68rem; }
+.ov-score-table th { padding:5px 6px; text-align:left; font-size:0.62rem; font-weight:700; letter-spacing:0.8px; color:var(--ov-dim); text-transform:uppercase; border-bottom:1px solid var(--ov-border); background:rgba(0,0,0,0.2); white-space:nowrap; }
+.ov-score-table td { padding:4px 6px; border-bottom:1px solid rgba(30,41,59,0.3); white-space:nowrap; }
+.ov-score-table tr { cursor:pointer; transition:background 0.1s; }
+.ov-score-table tr:hover td { background:rgba(59,130,246,0.06); }
+.ov-score-rank { color:var(--ov-dim); width:18px; text-align:right; }
+.ov-score-dot { display:inline-block; width:7px; height:7px; border-radius:50%; margin-right:5px; }
+.ov-score-flash { animation:ov-flash-update 0.3s ease; }
+
+/* Signal bar */
+.ov-signal-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 0;
+  background: rgba(0,0,0,0.4);
+  border-top: 1px solid var(--ov-border);
+  padding: 6px 16px;
+  overflow: hidden;
+  font-family: var(--font);
+  font-size: 0.65rem;
+}
+.ov-sig-item { display:flex; align-items:center; gap:6px; padding:0 12px; border-right:1px solid var(--ov-border); white-space:nowrap; }
+.ov-sig-item:last-child { border-right:none; }
+.ov-sig-label { color:var(--ov-dim); letter-spacing:0.5px; }
+.ov-sig-bar-track { width:80px; height:5px; background:rgba(255,255,255,0.06); border-radius:2px; overflow:hidden; }
+.ov-sig-bar-fill { height:100%; border-radius:2px; transition:width 0.5s ease; }
+.ov-sig-val { color:var(--ov-text); font-weight:700; min-width:34px; }
+
+/* ── New panel inner elements ── */
+
+/* Panel header */
+.ov-p-hdr {
+  font-family: 'Orbitron', 'JetBrains Mono', monospace;
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ov-cyan);
+  margin-bottom: 8px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid rgba(6,182,212,0.12);
+  flex-shrink: 0;
+}
+
+/* Big number display */
+.ov-big-num { font-family: var(--font); font-size: 1.8rem; font-weight: 700; line-height: 1; }
+.ov-big-label { font-size: 0.65rem; letter-spacing: 1.5px; text-transform: uppercase; font-family: var(--font); color: var(--ov-muted); margin-top: 3px; }
+.ov-sub-text { font-size: 0.67rem; color: var(--ov-muted); font-family: var(--font); margin-top: 2px; }
+
+/* Component bar rows */
+.ov-comp-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-family: var(--font); font-size: 0.65rem; }
+.ov-comp-label { width: 78px; color: var(--ov-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.ov-comp-bar { flex: 1; height: 5px; background: rgba(255,255,255,0.05); border-radius: 2px; overflow: hidden; }
+.ov-comp-fill { height: 100%; border-radius: 2px; transition: width 0.5s ease; }
+.ov-comp-val { width: 38px; text-align: right; font-weight: 700; color: var(--ov-text); flex-shrink: 0; }
+.ov-comp-wt { width: 28px; text-align: right; color: var(--ov-dim); font-size: 0.6rem; flex-shrink: 0; }
+
+/* Risk status */
+.ov-risk-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-family: var(--font);
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+.ov-risk-green { background: rgba(34,197,94,0.12); color: #22c55e; border: 1px solid rgba(34,197,94,0.3); }
+.ov-risk-amber { background: rgba(245,158,11,0.12); color: #f59e0b; border: 1px solid rgba(245,158,11,0.3); }
+.ov-risk-red   { background: rgba(239,68,68,0.12);  color: #ef4444; border: 1px solid rgba(239,68,68,0.3); }
+
+/* Error/warning list */
+.ov-err-row { display: flex; gap: 6px; padding: 3px 0; border-bottom: 1px solid rgba(30,41,59,0.3); font-family: var(--font); font-size: 0.65rem; align-items: flex-start; }
+.ov-err-time { color: var(--ov-dim); white-space: nowrap; flex-shrink: 0; width: 50px; }
+.ov-err-src  { font-weight: 700; white-space: nowrap; flex-shrink: 0; width: 66px; overflow: hidden; text-overflow: ellipsis; }
+.ov-err-msg  { color: var(--ov-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
+
+/* Cooldown list */
+.ov-cd-row { display: flex; justify-content: space-between; align-items: center; padding: 3px 0; border-bottom: 1px solid rgba(30,41,59,0.3); font-family: var(--font); font-size: 0.67rem; }
+.ov-cd-pair { color: var(--ov-text); font-weight: 700; }
+.ov-cd-time { color: var(--ov-amber); font-weight: 700; font-family: var(--font); min-width: 48px; text-align: right; }
+.ov-cd-none { color: var(--ov-green); font-size: 0.7rem; font-family: var(--font); padding: 8px 0; }
+
+/* Gridzilla gate checklist */
+.ov-gate-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; font-family: var(--font); font-size: 0.67rem; }
+.ov-gate-pass { color: var(--ov-green); font-weight: 700; flex-shrink: 0; width: 14px; }
+.ov-gate-fail { color: var(--ov-red);   font-weight: 700; flex-shrink: 0; width: 14px; }
+.ov-gate-label { color: var(--ov-muted); }
+.ov-gate-val   { color: var(--ov-text); font-weight: 700; margin-left: auto; }
+
+/* Ledger / reservations table */
+.ov-ledger-table { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 0.65rem; }
+.ov-ledger-table th { padding: 4px 5px; text-align: left; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.8px; color: var(--ov-dim); text-transform: uppercase; border-bottom: 1px solid var(--ov-border); background: rgba(0,0,0,0.2); white-space: nowrap; }
+.ov-ledger-table td { padding: 3px 5px; border-bottom: 1px solid rgba(30,41,59,0.25); white-space: nowrap; }
+.ov-ledger-stale { color: var(--ov-red); font-weight: 700; }
+.ov-ledger-footer { font-size: 0.65rem; color: var(--ov-dim); font-family: var(--font); margin-top: 5px; display: flex; justify-content: space-between; }
+
+/* Whale intel rows */
+.ov-whale-intel-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; border-bottom: 1px solid rgba(30,41,59,0.3); font-family: var(--font); font-size: 0.67rem; }
+.ov-whale-pair { font-weight: 700; width: 80px; }
+.ov-whale-score { font-weight: 700; width: 32px; text-align: right; }
+.ov-whale-driver { color: var(--ov-dim); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 0.62rem; }
+.ov-extreme { color: var(--ov-red); }
+.ov-high    { color: var(--ov-amber); }
+.ov-medium  { color: var(--ov-muted); }
+
+/* Signal quality bars (panel 3D) */
+.ov-sq-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-family: var(--font); font-size: 0.65rem; }
+.ov-sq-label { width: 80px; color: var(--ov-muted); flex-shrink: 0; }
+.ov-sq-bar { flex: 1; height: 6px; background: rgba(255,255,255,0.05); border-radius: 3px; overflow: hidden; }
+.ov-sq-fill { height: 100%; border-radius: 3px; transition: width 0.5s ease; }
+.ov-sq-val { width: 36px; text-align: right; font-weight: 700; color: var(--ov-text); flex-shrink: 0; }
+
+/* Expanded scoreboard */
+.ov-score-table2 { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 0.64rem; }
+.ov-score-table2 th { padding: 4px 5px; text-align: left; font-size: 0.6rem; font-weight: 700; letter-spacing: 0.8px; color: var(--ov-dim); text-transform: uppercase; border-bottom: 1px solid var(--ov-border); background: rgba(0,0,0,0.2); white-space: nowrap; }
+.ov-score-table2 td { padding: 3px 5px; border-bottom: 1px solid rgba(30,41,59,0.25); white-space: nowrap; }
+.ov-score-table2 th:not(:first-child), .ov-score-table2 td:not(:first-child) { text-align: right; }
+.ov-score-table2 th:nth-child(2), .ov-score-table2 td:nth-child(2) { text-align: left; }
+.ov-score-table2 tr:hover td { background: rgba(59,130,246,0.05); }
+.ov-score-table2 tr.ov-fleet-total td { border-top: 1px solid var(--ov-border); color: var(--ov-text); font-weight: 700; background: rgba(0,0,0,0.25); }
+.ov-fee-high { color: var(--ov-red) !important; }
+.ov-fee-mid  { color: var(--ov-amber) !important; }
+.ov-fee-ok   { color: var(--ov-green) !important; }
+
+/* Fee breakdown bars */
+.ov-fee-bar-row { display: flex; align-items: center; gap: 6px; margin: 3px 0; font-family: var(--font); font-size: 0.64rem; }
+.ov-fee-bar-name { width: 72px; color: var(--ov-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; }
+.ov-fee-bar-track { flex: 1; height: 5px; background: rgba(255,255,255,0.04); border-radius: 2px; overflow: hidden; }
+.ov-fee-bar-fill { height: 100%; border-radius: 2px; background: var(--ov-red); transition: width 0.5s ease; }
+.ov-fee-bar-val { width: 34px; text-align: right; color: var(--ov-dim); flex-shrink: 0; }
+
+/* Trade forensics table */
+.ov-forensics-table { width: 100%; border-collapse: collapse; font-family: var(--font); font-size: 0.64rem; }
+.ov-forensics-table th { padding: 4px 5px; text-align: left; font-size: 0.58rem; font-weight: 700; letter-spacing: 0.7px; color: var(--ov-dim); text-transform: uppercase; border-bottom: 1px solid var(--ov-border); background: rgba(0,0,0,0.2); white-space: nowrap; }
+.ov-forensics-table td { padding: 3px 5px; border-bottom: 1px solid rgba(30,41,59,0.2); white-space: nowrap; }
+.ov-forensics-table th:not(:first-child):not(:nth-child(2)):not(:nth-child(3)),
+.ov-forensics-table td:not(:first-child):not(:nth-child(2)):not(:nth-child(3)) { text-align: right; }
+
+/* Regime summary strip */
+.ov-regime-summary { font-family: var(--font); font-size: 0.65rem; color: var(--ov-dim); margin-top: 6px; padding-top: 5px; border-top: 1px solid rgba(30,41,59,0.4); }
+
+/* Panel inner scroll */
+.ov-panel-scroll { flex: 1; overflow-y: auto; min-height: 0; }
 </style>
 </head>
 <body>
@@ -564,44 +981,289 @@ body {
     </div>
   </div>
   <div class="main">
-    <div class="content" id="contentArea">
-      <div class="content-inner">
-        <div class="orbital-section">
-          <div class="orbital-section-bg"></div>
-          <div class="orbital-wrap" id="orbitalWrap">
-            <canvas class="orbital-canvas" id="orbitalCanvas"></canvas>
-            <div class="orb-tip" id="orbTip"><div class="tip-name"></div><div class="tip-metric"></div></div>
-            <button class="orb-fs-btn" id="orbFsBtn" title="Fullscreen orbital (F)">&#x26F6;</button>
+    <div class="content ov-content-layout" id="contentArea">
+
+      <!-- ══════════════════════════════════════════
+           OVERVIEW MISSION CONTROL PANEL (tab 0)
+           ══════════════════════════════════════════ -->
+      <div id="ovPanel" class="ov-active">
+<button id="ovSolarBtn" title="Open solar system fullscreen (F)" onclick="_orbToggleFS()">&#9737; SOLAR SYSTEM</button>
+<div class="ov-grid" id="ovDataGrid">
+
+  <!-- ══ SECTION 1: FLEET STATUS BAR ══ -->
+  <div class="ov-section">
+    <div class="ov-section-hdr">Fleet Status</div>
+    <div class="ov-row">
+
+      <!-- 1A: AEGIS Deep Score -->
+      <div class="ov-panel" id="ovPanelAegis">
+        <div class="ov-p-hdr">AEGIS Score</div>
+        <div style="display:flex;gap:12px;align-items:flex-start;">
+          <div class="ov-aegis-svg-wrap" style="width:80px;height:80px;flex-shrink:0;">
+            <svg viewBox="0 0 120 120" id="ovAegisSvg" style="width:80px;height:80px;">
+              <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="7"/>
+              <circle cx="60" cy="60" r="44" fill="none" stroke="#94a3b8" stroke-width="7"
+                stroke-dasharray="0 276" stroke-dashoffset="69" stroke-linecap="round"
+                id="ovAegisArc" class="ov-aegis-arc"/>
+            </svg>
+            <div class="ov-aegis-center">
+              <span class="ov-aegis-score" id="ovAegisScore" style="font-size:1.1rem;">--</span>
+            </div>
+          </div>
+          <div style="flex:1;min-width:0;">
+            <div style="margin-bottom:4px;">
+              <span class="ov-regime-pill" id="ovRegimePill" style="color:var(--ov-muted);border-color:var(--ov-dim);font-size:0.62rem;">--</span>
+            </div>
+            <div class="ov-deploy-text" id="ovDeployText" style="margin-bottom:6px;">Max Deploy: --</div>
+            <div id="ovAegisComponents">
+              <!-- filled by renderOvAegis() -->
+            </div>
           </div>
         </div>
-        <!-- Fullscreen HUD (shown only in cinema mode) -->
-        <div id="fsHud">
-          <div class="fs-hud-tl"><span>Fleet: <b id="fsFleet">--/--</b></span><span>Pool: <b id="fsPool">--</b></span><span>Deployed: <b id="fsDeployed">--</b></span></div>
-          <div class="fs-hud-tr"><span>AEGIS: <b id="fsAegis">--</b></span><span id="fsClock2">--:--:--</span></div>
-          <div class="fs-hud-bl"><span id="fsRegime">--</span><span>WR: <b id="fsWR">--</b></span><span id="fsTrades">-- trades</span></div>
-          <div class="fs-hud-br"><span>ESC to exit · F to toggle</span></div>
-        </div>
-
-        <div class="hero-stats">
-          <div class="hero-stat"><span class="hero-stat-value" id="statBots"><span class="accent">--</span></span><span class="hero-stat-label">Bots Online</span></div>
-          <div class="hero-stat"><span class="hero-stat-value" id="statPool">--</span><span class="hero-stat-label">Pool</span></div>
-          <div class="hero-stat"><span class="hero-stat-value" id="statTrades">--</span><span class="hero-stat-label">Total Trades</span></div>
-          <div class="hero-stat"><span class="hero-stat-value" id="statAegis">--</span><span class="hero-stat-label">AEGIS</span></div>
-          <div class="hero-stat"><span class="hero-stat-value" id="statAlive">--</span><span class="hero-stat-label">Alive / Total</span></div>
-        </div>
-        <div class="section-head" style="margin-top:40px"><span class="section-label">Fleet — Trading</span><span class="section-title">Capital Deployment</span></div>
-        <div class="fleet-grid" id="tradingGrid"></div>
-        <div class="section-head"><span class="section-label">Fleet — Intelligence</span><span class="section-title">Market Analysis</span></div>
-        <div class="fleet-grid" id="intelGrid"></div>
-        <div class="offline-strip" id="offlineStrip" style="display:none"></div>
-        <div class="section-head" id="phitexSectionHead"><span class="section-label">PHITEX</span><span class="section-title">Thermal Heatmap <span id="hmLastUpdate" style="font-size:0.72rem;color:var(--text-dim);margin-left:12px"></span></span></div>
-        <div class="heatmap-panel" id="heatmapPanel"><div class="hm-scroll"><table class="hm-table" id="heatmapTable"></table></div></div>
-        <div class="section-head" id="corrSectionHead" style="display:none"><span class="section-label">Brainiac</span><span class="section-title">Pair Correlations</span></div>
-        <div id="correlationWrap" style="display:none"><div class="correlation" id="correlation"></div></div>
-        <div class="section-head" id="daily24hHead" style="display:none"><span class="section-label">Performance</span><span class="section-title">Last 24 Hours</span></div>
-        <div id="daily24h"></div>
       </div>
-    </div>
+
+      <!-- 1B: Sentiment & Market -->
+      <div class="ov-panel" id="ovPanelSentiment">
+        <div class="ov-p-hdr">Sentiment &amp; Market</div>
+        <div style="text-align:center;margin-bottom:8px;">
+          <div class="ov-big-num" id="ovSentimentNum" style="color:var(--ov-muted)">--</div>
+          <div class="ov-big-label" id="ovSentimentLabel">UNKNOWN</div>
+        </div>
+        <div id="ovFundingRates" style="margin-top:4px;"></div>
+      </div>
+
+      <!-- 1C: Portfolio Summary -->
+      <div class="ov-panel" id="ovPanelPortfolio">
+        <div class="ov-p-hdr">Portfolio</div>
+        <div id="ovPortfolioSummary">
+          <div class="ov-sub-text">Loading...</div>
+        </div>
+      </div>
+
+      <!-- 1D: Fleet Errors -->
+      <div class="ov-panel" id="ovPanelErrors">
+        <div class="ov-p-hdr">Fleet Errors / Denials</div>
+        <div id="ovFleetErrors" class="ov-panel-scroll">
+          <div class="ov-sub-text" style="padding:8px 0;">No errors</div>
+        </div>
+      </div>
+
+    </div><!-- /row 1 -->
+  </div><!-- /section 1 -->
+
+  <!-- ══ SECTION 2: ACTIVE OPERATIONS ══ -->
+  <div class="ov-section">
+    <div class="ov-section-hdr">Active Operations</div>
+    <div class="ov-row ov-row-3">
+
+      <!-- 2A: Live Positions -->
+      <div class="ov-panel ov-panel-wide" id="ovPanelPositions" style="grid-column:span 1;">
+        <div class="ov-p-hdr">Live Positions</div>
+        <div id="ovPositions" style="overflow-x:auto;flex:1;">
+          <div class="ov-no-pos">
+            <div class="ov-no-pos-big">NO ACTIVE POSITIONS</div>
+            <div class="ov-no-pos-sub" id="ovCashText">100% CASH</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2B: Gridzilla Deep State -->
+      <div class="ov-panel" id="ovPanelGridzilla">
+        <div class="ov-p-hdr">Gridzilla</div>
+        <div id="ovGridzilla">
+          <div class="ov-sleeping"><div class="ov-sleeping-title">LOADING</div></div>
+        </div>
+      </div>
+
+      <!-- 2C: Active Cooldowns -->
+      <div class="ov-panel" id="ovPanelCooldowns">
+        <div class="ov-p-hdr">Active Cooldowns</div>
+        <div id="ovCooldowns" class="ov-panel-scroll">
+          <div class="ov-cd-none">No active cooldowns</div>
+        </div>
+      </div>
+
+      <!-- 2D: Portfolio Ledger -->
+      <div class="ov-panel" id="ovPanelLedger">
+        <div class="ov-p-hdr">Reservation Ledger</div>
+        <div id="ovLedger" class="ov-panel-scroll">
+          <div class="ov-sub-text">No reservations</div>
+        </div>
+      </div>
+
+    </div><!-- /row 2 -->
+  </div><!-- /section 2 -->
+
+  <!-- ══ SECTION 3: INTELLIGENCE ══ -->
+  <div class="ov-section">
+    <div class="ov-section-hdr">Intelligence</div>
+    <div class="ov-row">
+
+      <!-- 3A: Regime Sources -->
+      <div class="ov-panel" id="ovPanelRegimes">
+        <div class="ov-p-hdr">Regime Sources</div>
+        <table class="ov-regime-table" id="ovRegimeTable">
+          <tbody id="ovRegimeTbody"></tbody>
+        </table>
+        <div class="ov-regime-summary" id="ovRegimeSummary"></div>
+      </div>
+
+      <!-- 3B: Whale Intelligence -->
+      <div class="ov-panel" id="ovPanelWhales">
+        <div class="ov-p-hdr">Whale Intelligence</div>
+        <div id="ovWhaleIntel" class="ov-panel-scroll">
+          <span class="ov-whale-clear">CLEAR &#10003;</span>
+        </div>
+      </div>
+
+      <!-- 3C: Mathematical Council -->
+      <div class="ov-panel" id="ovPanelCouncil">
+        <div class="ov-p-hdr">Mathematical Council</div>
+        <div id="ovEngines" style="flex:1;overflow-y:auto;" class="ov-panel-scroll"></div>
+      </div>
+
+      <!-- 3D: Signal Quality -->
+      <div class="ov-panel" id="ovPanelSignals">
+        <div class="ov-p-hdr">Signal Quality</div>
+        <div id="ovSignalQuality">
+          <div class="ov-sq-row"><span class="ov-sq-label">Consensus</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqConsensus" style="width:0%;background:var(--ov-blue);"></div></div><span class="ov-sq-val" id="ovSqConsensusVal">--</span></div>
+          <div class="ov-sq-row"><span class="ov-sq-label">Coherence</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqCoherence" style="width:0%;background:var(--ov-cyan);"></div></div><span class="ov-sq-val" id="ovSqCoherenceVal">--</span></div>
+          <div class="ov-sq-row"><span class="ov-sq-label">PHITEX Sig</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPhitex" style="width:0%;background:var(--ov-purple);"></div></div><span class="ov-sq-val" id="ovSqPhitexVal">--</span></div>
+          <div class="ov-sq-row"><span class="ov-sq-label">Whale Div</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqWhaleDv" style="width:0%;background:var(--ov-amber);"></div></div><span class="ov-sq-val" id="ovSqWhaleDvVal">--</span></div>
+          <div class="ov-sq-row"><span class="ov-sq-label">Port Stress</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPortStress" style="width:0%;background:var(--ov-red);"></div></div><span class="ov-sq-val" id="ovSqPortStressVal">--</span></div>
+        </div>
+        <div id="ovSignalDecay" style="margin-top:8px;border-top:1px solid rgba(30,41,59,0.4);padding-top:6px;"></div>
+      </div>
+
+    </div><!-- /row 3 -->
+  </div><!-- /section 3 -->
+
+  <!-- ══ SECTION 4: PERFORMANCE & FORENSICS ══ -->
+  <div class="ov-section">
+    <div class="ov-section-hdr">Performance &amp; Forensics</div>
+    <div class="ov-row">
+
+      <!-- 4A: Bot Scoreboard (enhanced) -->
+      <div class="ov-panel ov-panel-wide" id="ovPanelScoreboard">
+        <div class="ov-p-hdr">Bot Scoreboard</div>
+        <div class="ov-panel-scroll">
+          <table class="ov-score-table2">
+            <thead>
+              <tr>
+                <th style="width:18px;text-align:right;">#</th>
+                <th>Bot</th>
+                <th>Trades</th>
+                <th>WR%</th>
+                <th>Gross P&amp;L</th>
+                <th>Fees</th>
+                <th>Net P&amp;L</th>
+                <th>Fee%</th>
+                <th>E/Trade</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody id="ovScoreboard2"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- 4B: Trade Forensics -->
+      <div class="ov-panel" id="ovPanelForensics">
+        <div class="ov-p-hdr">Trade Forensics</div>
+        <div id="ovForensics" class="ov-panel-scroll">
+          <div class="ov-sub-text">Loading...</div>
+        </div>
+      </div>
+
+      <!-- 4C: Fee Analysis -->
+      <div class="ov-panel" id="ovPanelFees">
+        <div class="ov-p-hdr">Fee Analysis</div>
+        <div id="ovFeeAnalysis">
+          <div style="margin-bottom:8px;">
+            <div class="ov-exp-big" id="ovExpBig" style="color:var(--ov-muted);">--</div>
+            <div class="ov-exp-sub" id="ovExpSub">-- trades sampled</div>
+          </div>
+          <div class="ov-gauge-wrap">
+            <div class="ov-gauge-label">FLEET FEE RATIO &nbsp;<span id="ovFeeRatioPct" style="color:var(--ov-red);">--%</span></div>
+            <div class="ov-gauge-track" style="position:relative;overflow:visible;">
+              <div class="ov-gauge-fill" id="ovFeeGauge" style="width:0%;background:var(--ov-red);"></div>
+              <div class="ov-gauge-marker" id="ovFeeMarker" style="left:25%;"></div>
+              <div class="ov-gauge-marker-label" id="ovFeeMarkerLabel" style="left:25%;">TARGET</div>
+            </div>
+            <div class="ov-target-line">Target: &lt;100%</div>
+          </div>
+          <div id="ovFeeBotBreakdown" style="margin-top:8px;"></div>
+          <div id="ovFeeAdvice" style="margin-top:6px;font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);line-height:1.5;border-top:1px solid rgba(30,41,59,0.3);padding-top:5px;"></div>
+        </div>
+      </div>
+
+      <!-- 4D: Event Stream -->
+      <div class="ov-panel" id="ovPanelEvents">
+        <div class="ov-p-hdr">Event Stream <span id="ovEvCount" style="color:var(--ov-dim);font-size:8px;margin-left:6px"></span></div>
+        <div class="ov-event-stream ov-panel-scroll" id="ovEventStream">
+          <div style="padding:12px 8px;font-size:0.67rem;color:var(--ov-dim);">Connecting...</div>
+        </div>
+      </div>
+
+    </div><!-- /row 4 -->
+  </div><!-- /section 4 -->
+
+  <!-- Legacy signal bar (kept for backward compat, hidden) -->
+  <div class="ov-signal-bar" id="ovSignalBar" style="display:none;">
+    <div class="ov-sig-item"><span class="ov-sig-label">CONSENSUS</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigConsensus" style="width:0%;background:var(--ov-blue);"></div></div><span class="ov-sig-val" id="ovSigConsensusVal">--</span></div>
+    <div class="ov-sig-item"><span class="ov-sig-label">COHERENCE</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigCoherence" style="width:0%;background:var(--ov-cyan);"></div></div><span class="ov-sig-val" id="ovSigCoherenceVal">--</span></div>
+    <div class="ov-sig-item"><span class="ov-sig-label">PHITEX</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigPhitex" style="width:0%;background:var(--ov-purple);"></div></div><span class="ov-sig-val" id="ovSigPhitexVal">--</span></div>
+    <div class="ov-sig-item"><span class="ov-sig-label">WHALE DIV</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigWhaleDv" style="width:0%;background:var(--ov-amber);"></div></div><span class="ov-sig-val" id="ovSigWhaleDvVal">--</span></div>
+    <div class="ov-sig-item"><span class="ov-sig-label">PORT STRESS</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigPortStress" style="width:0%;background:var(--ov-red);"></div></div><span class="ov-sig-val" id="ovSigPortStressVal">--</span></div>
+    <div class="ov-sig-item"><span class="ov-sig-label">LONG</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigLong" style="width:0%;background:var(--ov-green);"></div></div><span class="ov-sig-val" id="ovSigLongVal">--%</span></div>
+    <div class="ov-sig-item"><span class="ov-sig-label">SHORT</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigShort" style="width:0%;background:var(--ov-red);"></div></div><span class="ov-sig-val" id="ovSigShortVal">--%</span></div>
+  </div>
+
+</div><!-- /ov-grid -->
+      </div><!-- /ovPanel -->
+
+      <!-- ══════════════════════════════════════════
+           LEGACY CONTENT (hidden on overview, used by bot tabs)
+           ══════════════════════════════════════════ -->
+      <div id="legacyContent" style="display:none;flex:1;overflow-y:auto;padding:0 0 60px;">
+        <div class="content-inner">
+          <div class="orbital-section">
+            <div class="orbital-section-bg"></div>
+            <div class="orbital-wrap" id="orbitalWrap">
+              <canvas class="orbital-canvas" id="orbitalCanvas"></canvas>
+              <div class="orb-tip" id="orbTip"><div class="tip-name"></div><div class="tip-metric"></div></div>
+              <button class="orb-fs-btn" id="orbFsBtn" title="Fullscreen orbital (F)">&#x26F6;</button>
+            </div>
+          </div>
+          <!-- Fullscreen HUD (shown only in cinema mode) -->
+          <div id="fsHud">
+            <div class="fs-hud-tl"><span>Fleet: <b id="fsFleet">--/--</b></span><span>Pool: <b id="fsPool">--</b></span><span>Deployed: <b id="fsDeployed">--</b></span></div>
+            <div class="fs-hud-tr"><span>AEGIS: <b id="fsAegis">--</b></span><span id="fsClock2">--:--:--</span></div>
+            <div class="fs-hud-bl"><span id="fsRegime">--</span><span>WR: <b id="fsWR">--</b></span><span id="fsTrades">-- trades</span></div>
+            <div class="fs-hud-br"><span>ESC to exit · F to toggle</span></div>
+          </div>
+          <div class="hero-stats">
+            <div class="hero-stat"><span class="hero-stat-value" id="statBots"><span class="accent">--</span></span><span class="hero-stat-label">Bots Online</span></div>
+            <div class="hero-stat"><span class="hero-stat-value" id="statPool">--</span><span class="hero-stat-label">Pool</span></div>
+            <div class="hero-stat"><span class="hero-stat-value" id="statTrades">--</span><span class="hero-stat-label">Total Trades</span></div>
+            <div class="hero-stat"><span class="hero-stat-value" id="statAegis">--</span><span class="hero-stat-label">AEGIS</span></div>
+            <div class="hero-stat"><span class="hero-stat-value" id="statAlive">--</span><span class="hero-stat-label">Alive / Total</span></div>
+          </div>
+          <div class="section-head" style="margin-top:40px"><span class="section-label">Fleet — Trading</span><span class="section-title">Capital Deployment</span></div>
+          <div class="fleet-grid" id="tradingGrid"></div>
+          <div class="section-head"><span class="section-label">Fleet — Intelligence</span><span class="section-title">Market Analysis</span></div>
+          <div class="fleet-grid" id="intelGrid"></div>
+          <div class="offline-strip" id="offlineStrip" style="display:none"></div>
+          <div class="section-head" id="phitexSectionHead"><span class="section-label">PHITEX</span><span class="section-title">Thermal Heatmap <span id="hmLastUpdate" style="font-size:0.72rem;color:var(--text-dim);margin-left:12px"></span></span></div>
+          <div class="heatmap-panel" id="heatmapPanel"><div class="hm-scroll"><table class="hm-table" id="heatmapTable"></table></div></div>
+          <div class="section-head" id="corrSectionHead" style="display:none"><span class="section-label">Brainiac</span><span class="section-title">Pair Correlations</span></div>
+          <div id="correlationWrap" style="display:none"><div class="correlation" id="correlation"></div></div>
+          <div class="section-head" id="daily24hHead" style="display:none"><span class="section-label">Performance</span><span class="section-title">Last 24 Hours</span></div>
+          <div id="daily24h"></div>
+        </div>
+      </div><!-- /legacyContent -->
+
+    </div><!-- /contentArea -->
     <div class="focus-frame" id="focusFrame"></div>
     <div class="sidebar" id="sidebar">
       <div class="sb-section" id="aegisSection">
@@ -10652,16 +11314,30 @@ function buildDetailView(def,b){
 }
 
 /* ===== FOCUS MODE ===== */
+var $ovPanel = document.getElementById("ovPanel");
+var $legacyContent = document.getElementById("legacyContent");
+
 function setTab(idx){
   activeTab=idx;
   renderTabBar();
+  /* Hide sidebar on overview tab (data duplicated there); restore on bot tabs */
+  var $sidebar = document.getElementById("sidebar");
+  var $sbToggle = document.getElementById("sbToggle");
   if(idx===0){
+    if($sidebar){ $sidebar.style.display="none"; }
+    if($sbToggle){ $sbToggle.style.display="none"; }
     $contentArea.style.display="";
+    if($ovPanel) $ovPanel.classList.add("ov-active");
+    /* legacyContent is always hidden on tab 0 — overview is data-only */
+    if($legacyContent){ $legacyContent.style.display="none"; }
     $focusFrame.classList.remove("active");
     $focusFrame.innerHTML="";
     renderAll();
   } else {
+    if($sidebar){ $sidebar.style.display=""; }
+    if($sbToggle){ $sbToggle.style.display=""; }
     $contentArea.style.display="none";
+    if($ovPanel) $ovPanel.classList.remove("ov-active");
     $focusFrame.classList.add("active");
     var def=BOTS_DEF[idx-1];
     var b=findBot(state.bots,def.id);
@@ -10706,6 +11382,8 @@ function renderAll(){
   renderFeed(state.feed);
   renderHeatmap(phitexData);
   renderTabBar();
+  /* Overview mission control panel */
+  if(typeof renderOverview==="function") renderOverview();
 }
 
 /* ===== SSE STREAM ===== */
@@ -10752,11 +11430,31 @@ function handleSSEEvent(rawData){
     if(d.fleet_score!=null&&type==="PHITEX_UPDATE") msg+="fleet="+Number(d.fleet_score).toFixed(3)+" ";
     if(!msg&&d.message) msg=d.message;
     addEvent(type,botId,botColor,botName,msg.trim(),ts);
+    /* Feed overview event stream */
+    ovAddEvent(type,botId,msg.trim(),ts);
+    /* Update overview whale alerts + engine tracking */
+    if(/WHALE_ALERT/.test(type)){
+      var d2=ev.data||{};
+      ovData.whaleAlerts.unshift({pair:d2.pair||"?",tier:d2.tier||"HIGH",score:d2.score||0.5,driver:d2.driver||d2.reason||"",ts:ts});
+      ovData.whaleAlerts=ovData.whaleAlerts.slice(0,20);
+      if(activeTab===0) renderOvWhaleIntel();
+    }
+    if(type){
+      ovData.engineCounts[type]=(ovData.engineCounts[type]||0)+1;
+      ovData.engineLastFired[type]=ts;
+    }
+    if(/AEGIS_UPDATE/.test(type)&&activeTab===0) renderOvAegis();
     if(botId){var card=document.getElementById("card-"+botId);if(card)pulseCard(botId);}
     /* Feed orbital animation */
     if(typeof _orbHandleEvent==="function") _orbHandleEvent(ev);
-    /* Feed soundscape */
-    if(typeof _sound!=="undefined") _sound.playEvent(type,d);
+    /* Feed soundscape — FLEET_ALERT fires constantly, mute it */
+    if(typeof _sound!=="undefined"){
+      if(type==="AEGIS_UPDATE"){
+        if(d.regime) _sound.updateHarmony(d.regime);
+      } else if(type!=="FLEET_ALERT"){
+        _sound.playEvent(type,d);
+      }
+    }
     if(/AEGIS_UPDATE/.test(type)){
       if(d.score!=null) aegisState.score=d.score;
       if(d.regime) aegisState.regime=d.regime;
@@ -10772,7 +11470,7 @@ function handleSSEEvent(rawData){
     if(/PHASE_TRANSITION/.test(type)){showAlert("phase","PHASE TRANSITION: "+(d.pair||"")+" PHI="+Number(d.phi_tex||0).toFixed(3)+" "+(d.direction||""));}
     if(/EMERGENCY_REDUCE/.test(type)){showAlert("emergency","CASCADE STOPS: "+(d.reason||"reduce exposure"));}
     if(/HIGH_CONVICTION/.test(type)){showAlert("conviction","FLEET CONFLUENCE: "+(d.reason||d.pair||""));}
-    if(/TRADE_OPEN|TRADE_CLOSE|REGIME_CHANGE|PORTFOLIO_/.test(type)){fetchData();}
+    if(/TRADE_OPEN|TRADE_CLOSE|REGIME_CHANGE|PORTFOLIO_/.test(type)){fetchData();fetchOverviewData();}
     /* Tier 1: Trade lifecycle visuals */
     if(/TRADE_OPEN/.test(type)&&typeof _onTradeOpen==="function") _onTradeOpen(d||{});
     if(/TRADE_CLOSE/.test(type)&&typeof _onTradeClose==="function") _onTradeClose(d||{});
@@ -10793,12 +11491,12 @@ document.addEventListener("keydown",function(e){
   var k=e.key;
   if(k>="0"&&k<="9"){e.preventDefault();setTab(parseInt(k));return}
   if(k==="Escape"){e.preventDefault();if(_orbIsFS){_orbToggleFS();}else{setTab(0);}return}
-  if(k.toLowerCase()==="r"){e.preventDefault();fetchData();fetchPhitex();return}
+  if(k.toLowerCase()==="r"){e.preventDefault();fetchData();fetchPhitex();fetchOverviewData();return}
   if(k.toLowerCase()==="h"){e.preventDefault();heatmapVisible=!heatmapVisible;$heatmapPanel.classList.toggle("hidden",!heatmapVisible);return}
   if(k.toLowerCase()==="a"){e.preventDefault();aegisDetailVisible=!aegisDetailVisible;$aegisSection.style.display=aegisDetailVisible?"":"none";return}
   if(k.toLowerCase()==="f"){e.preventDefault();if(typeof _orbToggleFS==="function")_orbToggleFS();return}
   if(k.toLowerCase()==="s"){e.preventDefault();_sbToggle();return}
-  if(k==="+"||k==="="){_orbZoom=Math.min(4,_orbZoom*1.2);return}
+if(k==="+"||k==="="){_orbZoom=Math.min(4,_orbZoom*1.2);return}
   if(k==="-"){_orbZoom=Math.max(0.5,_orbZoom/1.2);return}
   if(k==="0"&&!e.ctrlKey){_orbZoomTo(_orbLW/2,_orbLH/2,1);return}
 });
@@ -10889,79 +11587,137 @@ function fetchData(){
   $aegisArc.setAttribute("stroke-dashoffset",(circ*0.25).toFixed(1));
 })();
 
-/* ===== COSMOS v5 — SOUND SYSTEM (COMPLETE REWRITE) ===== */
+/* ===== COSMOS v5 — SOUND SYSTEM (REAL NASA RECORDINGS) ===== */
 
 var _sound={
   ctx:null,initialized:false,enabled:false,
-  master:null,events:null,drone:null,
-  bigVerb:null,bigSend:null,ducker:null,
-  voices:{},_timers:[],
-  _recentSounds:[],_MAX_SPS:3,
-  _wormholeOscs:null,
-  /* Drone state */
-  _droneOscs:[],_droneGains:[],_droneFilters:[],
-  _droneBaseFreqs:[55,82.5,110,165],
-  _chordIdx:0,_lastChordTime:0,
-  /* Black hole hum */
-  _bhOsc:null,_bhGain:null,
+  master:null,events:null,ambient:null,
+  _buffers:{},          /* decoded AudioBuffer cache */
+  _sources:{},          /* active looping source nodes */
+  _gains:{},            /* per-channel gain nodes */
+  _panners:{},          /* per-bot StereoPannerNode */
+  _timers:[],
+  _recentSounds:[],_MAX_SPS:4,
+  _CC_URL:"http://localhost:9000",
+
+  /* Frequency bands for per-bot bandpass filters */
+  _botBands:{
+    trekbot:      {lo:300,hi:900,pan:0.0},
+    nexusbrain:   {lo:80,hi:250,pan:-0.3},
+    gridzilla:    {lo:200,hi:600,pan:0.4},
+    turtlesue:    {lo:500,hi:1500,pan:-0.5},
+    rubberband:   {lo:150,hi:400,pan:0.6},
+    arbitrageur:  {lo:400,hi:1200,pan:-0.2},
+    hivemind:     {lo:60,hi:180,pan:0.2},
+    oracle:       {lo:700,hi:2000,pan:-0.7},
+    deepblue:     {lo:30,hi:100,pan:0.5},
+    sentinel:     {lo:250,hi:800,pan:-0.4},
+    trinity:      {lo:600,hi:1800,pan:0.1},
+    phitex:       {lo:900,hi:2500,pan:-0.1},
+    aegis:        {lo:40,hi:120,pan:0.3},
+    nexus:        {lo:120,hi:350,pan:-0.6},
+    chronos:      {lo:800,hi:2200,pan:0.7},
+    contrarian:   {lo:350,hi:1000,pan:-0.3},
+  },
 
   init:function(){
     if(this.initialized) return;
     try{
       this.ctx=new(window.AudioContext||window.webkitAudioContext)();
       if(this.ctx.state==="suspended") this.ctx.resume();
-    }catch(e){console.error("Audio init failed:",e);return;}
+    }catch(e){console.error("[SOUND] AudioContext failed:",e);return;}
 
-    var c=this.ctx;
+    var c=this.ctx,self=this;
 
-    /* Compressor -> destination */
     var comp=c.createDynamicsCompressor();
-    comp.threshold.value=-18;comp.ratio.value=4;
+    comp.threshold.value=-14;comp.ratio.value=4;comp.attack.value=0.003;comp.release.value=0.25;
     comp.connect(c.destination);
+    this.master=c.createGain();this.master.gain.value=0;this.master.connect(comp);
+    this._verb=this._makeVerb(5.0);
+    this._verbSend=c.createGain();this._verbSend.gain.value=0.18;
+    this._verbSend.connect(this._verb);this._verb.connect(this.master);
+    this.ambient=c.createGain();this.ambient.gain.value=0.28;
+    this.events=c.createGain();this.events.gain.value=0.55;this.events.connect(this.master);
+    this.ducker=c.createGain();this.ducker.gain.value=1.0;
+    this.ambient.connect(this.ducker);this.ducker.connect(this.master);
+    this.master.gain.linearRampToValueAtTime(0.45,c.currentTime+3);
+    this.initialized=true;this.enabled=true;this._updateBtn();
+    this._loadSamples(function(){
+      self._startAmbientLoop();
+      console.log("[SOUND] NASA real-audio online. Buffers: "+Object.keys(self._buffers).join(", "));
+    });
+  },
 
-    /* Master */
-    this.master=c.createGain();
-    this.master.gain.value=0;
-    this.master.connect(comp);
+  _loadSamples:function(onDone){
+    var self=this,c=this.ctx;
+    var files={jupiter:"jupiter.mp3",saturn:"saturn.mp3",earth:"earth_chorus.mp3",solar:"solar_wind.wav"};
+    var keys=Object.keys(files),loaded=0,total=keys.length;
+    keys.forEach(function(key){
+      fetch(self._CC_URL+"/audio/"+files[key])
+        .then(function(r){if(!r.ok) throw new Error(r.status);return r.arrayBuffer();})
+        .then(function(ab){return c.decodeAudioData(ab);})
+        .then(function(buf){self._buffers[key]=buf;loaded++;if(loaded===total) onDone();})
+        .catch(function(e){console.warn("[SOUND] Failed "+key+": "+e.message);loaded++;if(loaded===total) onDone();});
+    });
+  },
 
-    /* Ducker — dips ambient when events play */
-    this.ducker=c.createGain();
-    this.ducker.connect(this.master);
+  _playBuf:function(key,offset,duration,vol,pan,loop,dest){
+    var buf=this._buffers[key];if(!buf) return null;
+    var c=this.ctx,now=c.currentTime;
+    var src=c.createBufferSource();src.buffer=buf;src.loop=!!loop;
+    if(loop&&offset!=null){src.loopStart=offset;src.loopEnd=(offset||0)+(duration||buf.duration);}
+    var g=c.createGain();g.gain.value=vol||0.2;
+    if(pan!=null&&pan!==0){var pn=c.createStereoPanner();pn.pan.value=Math.max(-1,Math.min(1,pan));src.connect(pn);pn.connect(g);}
+    else{src.connect(g);}
+    g.connect(dest||this.ambient);
+    src.start(now,offset||0,loop?undefined:duration);
+    return {src:src,gain:g};
+  },
 
-    /* Drone layer (ambient) */
-    this.drone=c.createGain();this.drone.gain.value=0.3;
-    this.drone.connect(this.ducker);
+  _playBufFiltered:function(key,offset,duration,vol,pan,loFreq,hiFreq,dest){
+    var buf=this._buffers[key];if(!buf) return null;
+    var c=this.ctx,now=c.currentTime;
+    var src=c.createBufferSource();src.buffer=buf;
+    var lo=c.createBiquadFilter();lo.type="highpass";lo.frequency.value=loFreq||200;lo.Q.value=0.7;
+    var hi=c.createBiquadFilter();hi.type="lowpass";hi.frequency.value=hiFreq||2000;hi.Q.value=0.7;
+    var g=c.createGain();g.gain.value=vol||0.15;
+    var pn=c.createStereoPanner();pn.pan.value=Math.max(-1,Math.min(1,pan||0));
+    src.connect(lo);lo.connect(hi);hi.connect(pn);pn.connect(g);g.connect(dest||this.ambient);
+    src.start(now,offset||0,duration);
+    return {src:src,gain:g};
+  },
 
-    /* Events layer */
-    this.events=c.createGain();this.events.gain.value=0.5;
-    this.events.connect(this.master);
-
-    /* Reverb */
-    this.bigVerb=this._verb(4.5);
-    this.bigVerb.connect(this.master);
-    this.bigSend=c.createGain();this.bigSend.gain.value=0.2;
-    this.bigSend.connect(this.bigVerb);
-
-    /* Start generative layers */
-    this._initDrone();
-    this._initBlackHoleHum();
-    this._initAmbience();
-
-    /* Fade in */
-    this.master.gain.linearRampToValueAtTime(0.4,c.currentTime+3);
-    this.initialized=true;this.enabled=true;
-    this._updateBtn();
-    console.log("[SOUND] Generative soundscape initialized");
+  _startAmbientLoop:function(){
+    var self=this;
+    if(!this._buffers.jupiter&&!this._buffers.solar){console.warn("[SOUND] No ambient buffers");return;}
+    if(this._buffers.jupiter){
+      var c=this.ctx,src=c.createBufferSource();src.buffer=this._buffers.jupiter;src.loop=true;
+      var g=c.createGain();g.gain.value=0.22;
+      var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=1200;
+      src.connect(lp);lp.connect(g);g.connect(this.ambient);src.start();
+      this._sources.jupiter=src;this._gains.jupiter_main=g;
+    }
+    if(this._buffers.solar){
+      var c2=this.ctx,src2=c2.createBufferSource();src2.buffer=this._buffers.solar;src2.loop=true;src2.playbackRate.value=0.85;
+      var g2=c2.createGain();g2.gain.value=0.08;
+      var hp=c2.createBiquadFilter();hp.type="bandpass";hp.frequency.value=800;hp.Q.value=1.5;
+      src2.connect(hp);hp.connect(g2);g2.connect(this.ambient);src2.start();
+      this._sources.solar=src2;this._gains.solar_main=g2;
+    }
   },
 
   test:function(){
     if(!this.initialized) this.init();
     if(this.ctx.state==="suspended") this.ctx.resume();
-    var c=this.ctx,now=c.currentTime;
-    var o=c.createOscillator();o.frequency.value=440;
-    var g=c.createGain();
-    g.gain.setValueAtTime(0.2,now);g.gain.exponentialRampToValueAtTime(0.001,now+1);
-    o.connect(g);g.connect(c.destination);o.start(now);o.stop(now+1.2);
+    if(this._buffers.jupiter){
+      console.log("[SOUND] Playing Jupiter magnetosphere");
+      this._playBuf("jupiter",0,4,0.5,0,false,this.events);
+    }else{
+      var c=this.ctx,now=c.currentTime;
+      var o=c.createOscillator();o.frequency.value=55;
+      var g=c.createGain();g.gain.setValueAtTime(0.2,now);g.gain.exponentialRampToValueAtTime(0.001,now+1.5);
+      o.connect(g);g.connect(c.destination);o.start(now);o.stop(now+2);
+    }
   },
 
   toggle:function(){
@@ -10971,7 +11727,7 @@ var _sound={
     var now=this.ctx.currentTime;
     this.master.gain.cancelScheduledValues(now);
     this.master.gain.setValueAtTime(this.master.gain.value,now);
-    this.master.gain.linearRampToValueAtTime(this.enabled?0.4:0,now+1.5);
+    this.master.gain.linearRampToValueAtTime(this.enabled?0.45:0,now+1.5);
     this._updateBtn();
   },
 
@@ -10980,433 +11736,166 @@ var _sound={
     if(btn){btn.innerHTML=this.enabled?"\u{1f50a}":"\u{1f507}";btn.classList.toggle("on",this.enabled);}
   },
 
-  _verb:function(dur){
-    var c=this.ctx,rate=c.sampleRate,len=rate*dur;
+  _makeVerb:function(dur){
+    var c=this.ctx,rate=c.sampleRate,len=Math.floor(rate*dur);
     var buf=c.createBuffer(2,len,rate);
-    for(var ch=0;ch<2;ch++){
-      var d=buf.getChannelData(ch);
-      for(var i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2)*0.25;
-    }
+    for(var ch=0;ch<2;ch++){var d=buf.getChannelData(ch);for(var i=0;i<len;i++) d[i]=(Math.random()*2-1)*Math.pow(1-i/len,2.5)*0.2;}
     var conv=c.createConvolver();conv.buffer=buf;return conv;
   },
 
-  _noise:function(sec){
-    var c=this.ctx;
-    var buf=c.createBuffer(1,c.sampleRate*sec,c.sampleRate);
-    var d=buf.getChannelData(0);var v=0;
-    for(var i=0;i<d.length;i++){v=(v+0.02*(Math.random()*2-1))/1.02;d[i]=v*3.5;}
-    return buf;
+  _canPlay:function(priority){
+    var now=Date.now();
+    this._recentSounds=this._recentSounds.filter(function(t){return now-t<1000;});
+    if(this._recentSounds.length>=this._MAX_SPS){if(priority<2) return false;}
+    this._recentSounds.push(now);return true;
   },
 
-  _sched:function(fn,min,max){
-    var self=this;
-    var go=function(){if(self.enabled) fn();self._timers.push(setTimeout(go,min+Math.random()*(max-min)));};
-    self._timers.push(setTimeout(go,min+Math.random()*(max-min)));
-  },
-
-  /* ═══ LAYER 1: AMBIENT DRONE — open fifths, evolving ═══ */
-  _initDrone:function(){
-    var c=this.ctx;
-    for(var i=0;i<this._droneBaseFreqs.length;i++){
-      var osc=c.createOscillator();
-      var gain=c.createGain();
-      var filter=c.createBiquadFilter();
-      osc.type=i<2?"sine":"triangle";
-      osc.frequency.value=this._droneBaseFreqs[i];
-      gain.gain.value=0.025;
-      filter.type="lowpass";filter.frequency.value=800;filter.Q.value=1;
-      osc.connect(filter);filter.connect(gain);gain.connect(this.drone);gain.connect(this.bigSend);
-      osc.start();
-      this._droneOscs.push(osc);this._droneGains.push(gain);this._droneFilters.push(filter);
-    }
-    /* Start generative melody layer */
-    this._melodyTimer=null;
-    this._schedMelody();
-  },
-
-  /* ═══ GENERATIVE MELODY — sparse Eno-style notes over the chord pad ═══ */
-  _schedMelody:function(){
-    var self=this;
-    var delay=3000+Math.random()*5000; /* 3-8 seconds between notes */
-    this._melodyTimer=setTimeout(function(){
-      if(self.initialized&&self.enabled) self._playMelodyNote();
-      self._schedMelody();
-    },delay);
-  },
-
-  _playMelodyNote:function(){
-    var c=this.ctx,now=c.currentTime;
-    /* Get current chord frequencies from the drone oscillators */
-    var chordFreqs=[];
-    for(var i=0;i<this._droneOscs.length;i++){
-      chordFreqs.push(this._droneOscs[i].frequency.value);
-    }
-    if(!chordFreqs.length) return;
-
-    /* Build scale from chord: root, 2nd, 3rd, 5th, octave, 9th — pentatonic feel */
-    var root=chordFreqs[0]; /* lowest drone note ~55-82Hz */
-    var scaleMultipliers=[1, 9/8, 5/4, 3/2, 2, 9/4, 5/2, 3]; /* major pentatonic-ish intervals */
-    var mul=scaleMultipliers[Math.floor(Math.random()*scaleMultipliers.length)];
-
-    /* Place in high register (800-2000Hz) by octave-shifting */
-    var freq=root*mul;
-    while(freq<700) freq*=2;
-    while(freq>2200) freq/=2;
-    freq*=(0.98+Math.random()*0.04); /* micro-detune for organic feel */
-
-    /* Gentle sine note with slow attack and long release */
-    var dur=2+Math.random()*3;
-    var attack=0.3+Math.random()*0.5;
-
-    var osc=c.createOscillator();
-    var gain=c.createGain();
-    osc.type="sine";
-    osc.frequency.value=freq;
-
-    gain.gain.setValueAtTime(0,now);
-    gain.gain.linearRampToValueAtTime(0.018+Math.random()*0.01,now+attack);
-    gain.gain.setValueAtTime(0.018+Math.random()*0.005,now+attack+0.3);
-    gain.gain.exponentialRampToValueAtTime(0.001,now+dur);
-
-    osc.connect(gain);
-    gain.connect(this.drone); /* through drone bus → ducker → master */
-    gain.connect(this.bigSend); /* touch of reverb */
-    osc.start(now);
-    osc.stop(now+dur+0.2);
-
-    /* Occasional second note — a fifth above, quieter, delayed */
-    if(Math.random()<0.3){
-      var osc2=c.createOscillator();
-      var gain2=c.createGain();
-      var delay2=0.4+Math.random()*0.8;
-      osc2.type="sine";
-      osc2.frequency.value=freq*1.5*(0.99+Math.random()*0.02);
-      gain2.gain.setValueAtTime(0,now+delay2);
-      gain2.gain.linearRampToValueAtTime(0.01,now+delay2+attack);
-      gain2.gain.exponentialRampToValueAtTime(0.001,now+delay2+dur*0.7);
-      osc2.connect(gain2);gain2.connect(this.drone);gain2.connect(this.bigSend);
-      osc2.start(now+delay2);osc2.stop(now+delay2+dur+0.2);
-    }
-  },
-
-  /* Call every few seconds to evolve drone based on fleet state */
-  evolveDrone:function(regime,aegisScore,eventRate){
-    if(!this.initialized||!this.enabled) return;
-    var now=this.ctx.currentTime;
-    var filterFreq,volume,detune;
-    switch(regime){
-      case"RANGING":filterFreq=800;volume=0.025;detune=0;break;
-      case"TRENDING":filterFreq=1200;volume=0.03;detune=5;break;
-      case"VOLATILE":filterFreq=1800;volume=0.035;detune=15;break;
-      case"CHAOTIC":filterFreq=2400;volume=0.04;detune=30;break;
-      case"SYSTEMIC":filterFreq=3000;volume=0.045;detune=40;break;
-      default:filterFreq=800;volume=0.025;detune=0;
-    }
-    volume*=Math.max(0.6,0.5+aegisScore*0.5);
-    detune+=eventRate*2;
-    for(var i=0;i<this._droneOscs.length;i++){
-      var rampTime=2+Math.random()*3;
-      this._droneOscs[i].detune.linearRampToValueAtTime(
-        detune*(i%2===0?1:-1)+(Math.random()-0.5)*5,now+rampTime);
-      this._droneGains[i].gain.linearRampToValueAtTime(
-        volume*(0.8+Math.random()*0.4),now+rampTime);
-      this._droneFilters[i].frequency.linearRampToValueAtTime(filterFreq,now+rampTime);
-    }
-    /* Chord progression — shift every ~45s */
-    if(now-this._lastChordTime>45){
-      this._lastChordTime=now;
-      this._progressChord(regime);
-    }
-  },
-
-  _progressChord:function(regime){
-    var progs={
-      RANGING: [[55,82.5,110,165],[73.4,110,146.8,220],[55,82.5,110,165]],
-      TRENDING:[[65.4,98,130.8,196],[73.4,110,146.8,220],[82.5,123.5,165,247]],
-      VOLATILE:[[62,82.5,123.5,165],[55,82.5,110,165],[58.3,87.3,116.5,175]],
-      CHAOTIC: [[55,73.4,98,130.8],[58.3,77.8,103.8,138.6],[55,73.4,98,130.8]],
-      SYSTEMIC:[[49,65.4,82.5,110],[55,73.4,98,130.8],[49,65.4,82.5,110]]
-    };
-    var prog=progs[regime]||progs.RANGING;
-    this._chordIdx=(this._chordIdx+1)%prog.length;
-    var chord=prog[this._chordIdx];
-    var now=this.ctx.currentTime;
-    for(var i=0;i<this._droneOscs.length&&i<chord.length;i++){
-      this._droneOscs[i].frequency.linearRampToValueAtTime(
-        chord[i]*(0.99+Math.random()*0.02),now+3);
-    }
-  },
-
-  /* ═══ BLACK HOLE HUM — ultra-low, always present ═══ */
-  _initBlackHoleHum:function(){
-    var c=this.ctx;
-    this._bhOsc=c.createOscillator();
-    this._bhGain=c.createGain();
-    var bhFilter=c.createBiquadFilter();
-    this._bhOsc.type="sine";this._bhOsc.frequency.value=25;
-    bhFilter.type="lowpass";bhFilter.frequency.value=40;
-    this._bhGain.gain.value=0.02;
-    this._bhOsc.connect(bhFilter);bhFilter.connect(this._bhGain);
-    this._bhGain.connect(this.drone);
-    this._bhOsc.start();
-  },
-
-  updateBlackHoleHum:function(feeRatio){
-    if(!this._bhGain) return;
-    var target=0.015+Math.min(0.05,feeRatio/500*0.05);
-    this._bhGain.gain.linearRampToValueAtTime(target,this.ctx.currentTime+2);
-  },
-
-  /* ═══ AMBIENCE — cosmic pings, space groans, meteor twinkles ═══ */
-  _initAmbience:function(){
-    var self=this;
-    /* Cosmic pings — pentatonic, randomized */
-    var pent=[220,246.9,293.7,329.6,391.9];
-    this._sched(function(){
-      var c=self.ctx,now=c.currentTime;
-      var freq=pent[Math.floor(Math.random()*pent.length)]*(0.95+Math.random()*0.1);
-      var o=c.createOscillator();o.frequency.value=freq;
-      var f=c.createBiquadFilter();f.type="bandpass";f.frequency.value=freq;f.Q.value=30+Math.random()*20;
-      var g=c.createGain();g.gain.setValueAtTime(0.004,now);g.gain.exponentialRampToValueAtTime(0.0001,now+2+Math.random());
-      o.connect(f);f.connect(g);g.connect(self.bigSend);o.start(now);o.stop(now+3.5);
-    },12000,35000);
-
-    /* Space groans */
-    this._sched(function(){
-      var c=self.ctx,now=c.currentTime,freq=25+Math.random()*35;
-      var o=c.createOscillator();o.frequency.setValueAtTime(freq,now);
-      o.frequency.linearRampToValueAtTime(freq*(0.6+Math.random()*0.3),now+4);
-      var g=c.createGain();g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(0.015,now+1);
-      g.gain.exponentialRampToValueAtTime(0.001,now+5);
-      o.connect(g);g.connect(self.drone);g.connect(self.bigSend);o.start(now);o.stop(now+6);
-    },30000,70000);
-
-    /* Stellar wind — filtered noise with slow LFO */
-    var c=this.ctx;
-    var wns=c.createBufferSource();wns.buffer=this._noise(6);wns.loop=true;
-    var wf=c.createBiquadFilter();wf.type="bandpass";wf.frequency.value=1000;wf.Q.value=2;
-    var wlfo=c.createOscillator();wlfo.frequency.value=0.05;
-    var wlfoG=c.createGain();wlfoG.gain.value=400;
-    wlfo.connect(wlfoG);wlfoG.connect(wf.frequency);wlfo.start();
-    var wg=c.createGain();wg.gain.value=0.006;
-    wns.connect(wf);wf.connect(wg);wg.connect(this.ducker);wns.start();
-  },
-
-  /* ═══ LAYER 2: GENERATIVE EVENT SOUNDS — every event sounds different ═══ */
-
-  /* Trade entry — energy burst with pitch variation */
-  _tradeEntry:function(botId){
-    var c=this.ctx,now=c.currentTime;
-    var baseFreq=220+Math.random()*180;
-    var dur=0.3+Math.random()*0.2;
-    var attack=0.01+Math.random()*0.02;
-    /* Rising sweep */
-    var osc=c.createOscillator();var gain=c.createGain();var filt=c.createBiquadFilter();
-    osc.type="sine";
-    osc.frequency.setValueAtTime(baseFreq*0.5,now);
-    osc.frequency.exponentialRampToValueAtTime(baseFreq*2,now+dur*0.3);
-    osc.frequency.exponentialRampToValueAtTime(baseFreq,now+dur);
-    gain.gain.setValueAtTime(0,now);gain.gain.linearRampToValueAtTime(0.06,now+attack);
-    gain.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    filt.type="bandpass";filt.frequency.value=baseFreq*2;filt.Q.value=2+Math.random()*3;
-    osc.connect(filt);filt.connect(gain);gain.connect(this.events);gain.connect(this.bigSend);
-    osc.start(now);osc.stop(now+dur+0.1);
-    /* Click transient */
-    var click=c.createOscillator();var cg=c.createGain();
-    click.type="square";click.frequency.value=baseFreq*4+Math.random()*200;
-    cg.gain.setValueAtTime(0.025,now);cg.gain.exponentialRampToValueAtTime(0.001,now+0.05);
-    click.connect(cg);cg.connect(this.events);click.start(now);click.stop(now+0.06);
-  },
-
-  /* Trade win — triumphant chime, scaled to PnL */
-  _tradeWin:function(pnl){
-    var c=this.ctx,now=c.currentTime,self=this;
-    var mag=Math.min(1,pnl/20);
-    var nHarm=2+Math.floor(mag*4);
-    var sustain=0.5+mag*2;
-    var intervals=[1,1.25,1.5,1.875,2,2.5];
-    var baseFreq=420+Math.random()*120;
-    for(var i=0;i<nHarm;i++){
-      var delay=i*(0.05+Math.random()*0.08);
-      var freq=baseFreq*intervals[i%intervals.length]*(0.98+Math.random()*0.04);
-      var osc=c.createOscillator();var gain=c.createGain();
-      osc.type=i===0?"sine":"triangle";osc.frequency.value=freq;
-      gain.gain.setValueAtTime(0,now+delay);
-      gain.gain.linearRampToValueAtTime(0.035*(1-i*0.1),now+delay+0.02);
-      gain.gain.exponentialRampToValueAtTime(0.001,now+delay+sustain);
-      osc.connect(gain);gain.connect(self.events);gain.connect(self.bigSend);
-      osc.start(now+delay);osc.stop(now+delay+sustain+0.1);
-    }
-  },
-
-  /* Trade loss — descending minor with closing filter */
-  _tradeLoss:function(lossAmt){
-    var c=this.ctx,now=c.currentTime;
-    var mag=Math.min(1,Math.abs(lossAmt)/20);
-    var dur=0.4+mag*1.5;
-    var baseFreq=200+Math.random()*60;
-    var osc=c.createOscillator();var gain=c.createGain();var filt=c.createBiquadFilter();
-    osc.type="sawtooth";
-    osc.frequency.setValueAtTime(baseFreq,now);
-    osc.frequency.exponentialRampToValueAtTime(baseFreq*0.5,now+dur);
-    filt.type="lowpass";filt.frequency.setValueAtTime(2000,now);
-    filt.frequency.exponentialRampToValueAtTime(200,now+dur);filt.Q.value=3+Math.random()*4;
-    gain.gain.setValueAtTime(0,now);gain.gain.linearRampToValueAtTime(0.035*mag,now+0.02);
-    gain.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    osc.connect(filt);filt.connect(gain);gain.connect(this.events);
-    osc.start(now);osc.stop(now+dur+0.1);
-    /* Big losses get sub thud */
-    if(mag>0.5){
-      var sub=c.createOscillator();var sg=c.createGain();
-      sub.type="sine";sub.frequency.value=40+Math.random()*20;
-      sg.gain.setValueAtTime(0.05*mag,now);sg.gain.exponentialRampToValueAtTime(0.001,now+0.3);
-      sub.connect(sg);sg.connect(this.events);sub.start(now);sub.stop(now+0.4);
-    }
-  },
-
-  /* Whale detection — deep call with LFO modulation */
   _whale:function(data){
     var c=this.ctx,now=c.currentTime,self=this;
-    var dur=2+Math.random()*2;
-    var baseFreq=30+Math.random()*30;
-    var mag=(data||{}).tier==="EXTREME"?1:(data||{}).tier==="HIGH"?0.7:0.4;
-    /* Main voice with pitch LFO */
-    var osc=c.createOscillator();var gain=c.createGain();
-    var lfo=c.createOscillator();var lfoG=c.createGain();
-    osc.type="sine";osc.frequency.value=baseFreq;
-    lfo.type="sine";lfo.frequency.value=0.3+Math.random()*0.4;
-    lfoG.gain.value=baseFreq*0.15;lfo.connect(lfoG);lfoG.connect(osc.frequency);
-    gain.gain.setValueAtTime(0,now);gain.gain.linearRampToValueAtTime(0.05*mag,now+dur*0.2);
-    gain.gain.setValueAtTime(0.05*mag,now+dur*0.6);gain.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    osc.connect(gain);gain.connect(this.events);gain.connect(this.bigSend);
-    osc.start(now);lfo.start(now);osc.stop(now+dur+0.1);lfo.stop(now+dur+0.1);
-    /* Harmonic overtone */
-    var harm=c.createOscillator();var hg=c.createGain();
-    harm.type="sine";harm.frequency.value=baseFreq*3+Math.random()*20;
-    hg.gain.setValueAtTime(0,now+0.5);hg.gain.linearRampToValueAtTime(0.015,now+dur*0.4);
-    hg.gain.exponentialRampToValueAtTime(0.001,now+dur*0.8);
-    harm.connect(hg);hg.connect(this.events);harm.start(now);harm.stop(now+dur+0.1);
+    var mag=(data||{}).tier==="EXTREME"?1.0:(data||{}).tier==="HIGH"?0.65:0.4;
+    if(this._buffers.solar){
+      var src=c.createBufferSource();src.buffer=this._buffers.solar;src.playbackRate.value=0.28+Math.random()*0.08;
+      var g=c.createGain();g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(0.18*mag,now+0.4);g.gain.setValueAtTime(0.18*mag,now+2.5);g.gain.exponentialRampToValueAtTime(0.001,now+5);
+      var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=350+Math.random()*150;
+      var ofs=Math.random()*Math.max(0,this._buffers.solar.duration-8);
+      src.connect(lp);lp.connect(g);g.connect(this.events);g.connect(this._verbSend);
+      src.start(now,ofs);setTimeout(function(){try{src.stop();}catch(e){}},6000);
+    }
+    if(mag>0.6&&this._buffers.jupiter){
+      var src2=c.createBufferSource();src2.buffer=this._buffers.jupiter;src2.playbackRate.value=0.5;
+      var g2=c.createGain();g2.gain.setValueAtTime(0,now+0.3);g2.gain.linearRampToValueAtTime(0.12*mag,now+1.2);g2.gain.exponentialRampToValueAtTime(0.001,now+5);
+      var lp2=c.createBiquadFilter();lp2.type="lowpass";lp2.frequency.value=200;
+      var ofs2=Math.random()*Math.max(0,this._buffers.jupiter.duration-6);
+      src2.connect(lp2);lp2.connect(g2);g2.connect(this.events);
+      src2.start(now,ofs2);setTimeout(function(){try{src2.stop();}catch(e){}},6000);
+    }
   },
 
-  /* Regime change — long evolving tonal shift */
+  _tradeEntry:function(botId){
+    var c=this.ctx,now=c.currentTime;
+    var band=this._botBands[botId]||{lo:300,hi:900,pan:0};
+    if(this._buffers.earth){
+      var buf=this._buffers.earth,offset=Math.random()*(buf.duration-2.5);
+      var n=this._playBufFiltered("earth",offset,2.2,0.22,band.pan,band.lo,band.hi,this.events);
+      if(n){n.gain.gain.setValueAtTime(0,now);n.gain.gain.linearRampToValueAtTime(0.22,now+0.08);n.gain.gain.exponentialRampToValueAtTime(0.001,now+2.2);}
+    }
+  },
+
+  _tradeWin:function(pnl){
+    var c=this.ctx,now=c.currentTime;
+    var mag=Math.min(1.0,Math.max(0.2,pnl/15));
+    if(this._buffers.saturn){
+      var buf=this._buffers.saturn,dur=2.5+mag*2.5,offset=Math.random()*(buf.duration-dur-1);
+      var src=c.createBufferSource();src.buffer=buf;
+      var g=c.createGain();g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(0.25*mag,now+0.15);g.gain.setValueAtTime(0.25*mag,now+dur*0.6);g.gain.exponentialRampToValueAtTime(0.001,now+dur);
+      var bp=c.createBiquadFilter();bp.type="bandpass";bp.frequency.value=800+Math.random()*400;bp.Q.value=0.5;
+      src.connect(bp);bp.connect(g);g.connect(this.events);g.connect(this._verbSend);
+      src.start(now,offset);setTimeout(function(){try{src.stop();}catch(e){}},dur*1000+500);
+    }
+  },
+
+  _tradeLoss:function(lossAmt){
+    var c=this.ctx,now=c.currentTime;
+    var mag=Math.min(1.0,Math.max(0.2,Math.abs(lossAmt)/15));
+    if(this._buffers.jupiter){
+      var buf=this._buffers.jupiter,dur=1.5+mag*2,offset=Math.random()*(buf.duration-dur-1);
+      var src=c.createBufferSource();src.buffer=buf;src.playbackRate.value=0.7+Math.random()*0.2;
+      var g=c.createGain();g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(0.18*mag,now+0.1);g.gain.exponentialRampToValueAtTime(0.001,now+dur);
+      var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=600;
+      src.connect(lp);lp.connect(g);g.connect(this.events);
+      src.start(now,offset);setTimeout(function(){try{src.stop();}catch(e){}},dur*1000+500);
+    }
+  },
+
   _regimeShift:function(data){
     var c=this.ctx,now=c.currentTime;
-    var dur=3+Math.random()*2;
-    var regFreqs={RANGING:220,TRENDING:330,VOLATILE:440,CHAOTIC:165,SYSTEMIC:110};
-    var fromFreq=regFreqs[(data||{}).from]||220;
-    var toFreq=regFreqs[(data||{}).to]||220;
-    var osc=c.createOscillator();var gain=c.createGain();
-    osc.type="sine";osc.frequency.setValueAtTime(fromFreq,now);
-    osc.frequency.exponentialRampToValueAtTime(toFreq,now+dur*0.7);
-    gain.gain.setValueAtTime(0,now);gain.gain.linearRampToValueAtTime(0.04,now+dur*0.1);
-    gain.gain.setValueAtTime(0.04,now+dur*0.7);gain.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    osc.connect(gain);gain.connect(this.events);gain.connect(this.bigSend);
-    osc.start(now);osc.stop(now+dur+0.1);
-    /* Pad — 5th above */
-    var pad=c.createOscillator();var pg=c.createGain();
-    pad.type="triangle";pad.frequency.setValueAtTime(fromFreq*1.5,now);
-    pad.frequency.exponentialRampToValueAtTime(toFreq*1.5,now+dur*0.7);
-    pg.gain.setValueAtTime(0,now+0.5);pg.gain.linearRampToValueAtTime(0.015,now+dur*0.3);
-    pg.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    pad.connect(pg);pg.connect(this.events);pad.start(now);pad.stop(now+dur+0.1);
-  },
-
-  /* Engine event — per-engine characteristic ping */
-  _enginePing:function(engineName){
-    var c=this.ctx,now=c.currentTime;
-    var sigs={
-      shannon_entropy:{f:523,t:"sine",d:0.2},chaos_state:{f:440,t:"triangle",d:0.4},
-      manifold_warning:{f:659,t:"sine",d:0.25},quantum_collapse:{f:587,t:"triangle",d:0.5},
-      catastrophe_warning:{f:262,t:"square",d:0.8},cycle_detected:{f:494,t:"sine",d:0.3},
-      structure_forming:{f:392,t:"sine",d:0.6},causal_flow:{f:349,t:"triangle",d:0.35},
-      book_phase:{f:330,t:"sawtooth",d:0.3}
-    };
-    var sig=sigs[engineName]||{f:440,t:"sine",d:0.3};
-    var freq=sig.f*(0.95+Math.random()*0.1);
-    var dur=sig.d*(0.8+Math.random()*0.4);
-    var osc=c.createOscillator();var gain=c.createGain();var filt=c.createBiquadFilter();
-    osc.type=sig.t;osc.frequency.value=freq;
-    /* Per-engine pitch envelopes */
-    if(engineName==="chaos_state"){
-      osc.frequency.setValueAtTime(freq,now);
-      osc.frequency.linearRampToValueAtTime(freq*1.3,now+dur*0.3);
-      osc.frequency.linearRampToValueAtTime(freq*0.7,now+dur*0.6);
-      osc.frequency.linearRampToValueAtTime(freq,now+dur);
-    }else if(engineName==="catastrophe_warning"){
-      osc.frequency.setValueAtTime(freq*2,now);
-      osc.frequency.exponentialRampToValueAtTime(freq*0.5,now+dur);
-    }else if(engineName==="structure_forming"){
-      osc.frequency.setValueAtTime(freq*0.5,now);
-      osc.frequency.exponentialRampToValueAtTime(freq,now+dur*0.7);
-    }else if(engineName==="quantum_collapse"){
-      var qLfo=c.createOscillator();var qLfoG=c.createGain();
-      qLfo.frequency.value=12+Math.random()*8;qLfoG.gain.value=freq*0.05;
-      qLfo.connect(qLfoG);qLfoG.connect(osc.frequency);
-      qLfo.start(now);qLfo.stop(now+dur+0.1);
+    if(this._buffers.earth){
+      var buf=this._buffers.earth,offset=Math.random()*(buf.duration-5);
+      var src=c.createBufferSource();src.buffer=buf;
+      var g=c.createGain();g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(0.14,now+1.5);g.gain.setValueAtTime(0.14,now+3);g.gain.linearRampToValueAtTime(0,now+5.5);
+      var bp=c.createBiquadFilter();bp.type="bandpass";bp.frequency.value=400;bp.Q.value=1;bp.frequency.linearRampToValueAtTime(1600,now+5);
+      src.connect(bp);bp.connect(g);g.connect(this.ambient);g.connect(this._verbSend);
+      src.start(now,offset);setTimeout(function(){try{src.stop();}catch(e){}},6500);
     }
-    filt.type="bandpass";filt.frequency.value=freq*3;filt.Q.value=1+Math.random();
-    gain.gain.setValueAtTime(0,now);gain.gain.linearRampToValueAtTime(0.04,now+0.01);
-    gain.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    osc.connect(filt);filt.connect(gain);gain.connect(this.events);gain.connect(this.bigSend);
-    osc.start(now);osc.stop(now+dur+0.1);
   },
 
-  /* Fee consumed — short crunchy noise burst */
-  _feeConsume:function(feeAmt){
-    var c=this.ctx,now=c.currentTime;
-    var mag=Math.min(1,feeAmt/2);
-    var bufSz=c.sampleRate*0.1;
-    var buf=c.createBuffer(1,bufSz,c.sampleRate);var d=buf.getChannelData(0);
-    for(var i=0;i<bufSz;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/bufSz*8);
-    var noise=c.createBufferSource();noise.buffer=buf;
-    var gain=c.createGain();var filt=c.createBiquadFilter();
-    filt.type="bandpass";filt.frequency.value=80+Math.random()*60;filt.Q.value=10;
-    gain.gain.value=0.025*mag;
-    noise.connect(filt);filt.connect(gain);gain.connect(this.events);noise.start(now);
-  },
-
-  /* Emergency, fleet alert, signals — kept simple */
   _emergency:function(){
-    var c=this.ctx,now=c.currentTime;
-    for(var i=0;i<3;i++){
-      var t=now+i*0.5;
-      var o=c.createOscillator();o.frequency.setValueAtTime(80-i*10,t);o.frequency.exponentialRampToValueAtTime(25,t+0.35);
-      var g=c.createGain();g.gain.setValueAtTime(0.06,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.5);
-      o.connect(g);g.connect(this.events);g.connect(this.bigSend);o.start(t);o.stop(t+0.7);
+    var c=this.ctx,now=c.currentTime,self=this;
+    if(!this._buffers.jupiter) return;
+    for(var i=0;i<3;i++){(function(idx){
+      var t=now+idx*0.6,src=c.createBufferSource();src.buffer=self._buffers.jupiter;src.playbackRate.value=0.35;
+      var g=c.createGain();g.gain.setValueAtTime(0.22,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.55);
+      var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=280;
+      src.connect(lp);lp.connect(g);g.connect(self.events);g.connect(self._verbSend);
+      src.start(t,idx*0.8);setTimeout(function(){try{src.stop();}catch(e){}},2500+idx*600);
+    })(i);}
+  },
+
+  _signalFire:function(){
+    if(this._buffers.earth){
+      var buf=this._buffers.earth,offset=Math.random()*Math.max(0,buf.duration-1);
+      this._playBufFiltered("earth",offset,0.8,0.14,Math.random()*0.6-0.3,800,2400,this.events);
     }
   },
+
   _fleetAlert:function(){
-    var c=this.ctx,now=c.currentTime;
-    for(var i=0;i<3;i++){var t=now+i*0.2;var f=i%2===0?440:880;
-      var o=c.createOscillator();o.frequency.value=f;
-      var g=c.createGain();g.gain.setValueAtTime(0.025,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.08);
-      o.connect(g);g.connect(this.events);o.start(t);o.stop(t+0.1);}
+    /* 3 staggered Jupiter stabs — heavy, not tonal */
+    var self=this,c=this.ctx,now=c.currentTime;
+    if(!this._buffers.jupiter) return;
+    for(var i=0;i<3;i++){(function(idx){
+      var t=now+idx*0.22,src=c.createBufferSource();src.buffer=self._buffers.jupiter;
+      src.playbackRate.value=1.2+Math.random()*0.3;
+      var g=c.createGain();g.gain.setValueAtTime(0.18,t);g.gain.exponentialRampToValueAtTime(0.001,t+0.35);
+      var bp=c.createBiquadFilter();bp.type="bandpass";bp.frequency.value=600+idx*200;bp.Q.value=1.5;
+      var ofs=Math.random()*Math.max(0,self._buffers.jupiter.duration-1);
+      src.connect(bp);bp.connect(g);g.connect(self.events);
+      src.start(t,ofs);setTimeout(function(){try{src.stop();}catch(e){}},1200);
+    })(i);}
   },
-  _signalFire:function(){
-    var c=this.ctx,now=c.currentTime;
-    var o=c.createOscillator();o.frequency.value=1800+Math.random()*400;
-    var g=c.createGain();g.gain.setValueAtTime(0.02,now);g.gain.exponentialRampToValueAtTime(0.0001,now+0.05);
-    o.connect(g);g.connect(this.events);g.connect(this.bigSend);o.start(now);o.stop(now+0.08);
-  },
+
   _botDown:function(data){
     var c=this.ctx,now=c.currentTime;
-    var o=c.createOscillator();o.frequency.setValueAtTime(440,now);o.frequency.exponentialRampToValueAtTime(55,now+2);
-    var g=c.createGain();g.gain.setValueAtTime(0.04,now);g.gain.exponentialRampToValueAtTime(0.001,now+2.5);
-    o.connect(g);g.connect(this.events);g.connect(this.bigSend);o.start(now);o.stop(now+3);
-  },
-  _botUp:function(data){
-    var c=this.ctx,now=c.currentTime,self=this;
-    [220,330,440,554].forEach(function(f,i){
-      var o=c.createOscillator();o.frequency.value=f;
-      var g=c.createGain();g.gain.setValueAtTime(0,now+i*0.1);g.gain.linearRampToValueAtTime(0.025,now+i*0.1+0.04);
-      g.gain.exponentialRampToValueAtTime(0.001,now+i*0.1+0.6);
-      o.connect(g);g.connect(self.events);g.connect(self.bigSend);o.start(now+i*0.1);o.stop(now+i*0.1+0.8);
-    });
+    if(this._buffers.saturn){
+      var buf=this._buffers.saturn,offset=Math.random()*Math.max(0,buf.duration-5);
+      var src=c.createBufferSource();src.buffer=buf;src.playbackRate.value=0.25;
+      var g=c.createGain();g.gain.setValueAtTime(0.15,now);g.gain.exponentialRampToValueAtTime(0.001,now+4);
+      var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=180;
+      src.connect(lp);lp.connect(g);g.connect(this.events);g.connect(this._verbSend);
+      src.start(now,offset);setTimeout(function(){try{src.stop();}catch(e){}},5000);
+    }
   },
 
-  /* ═══ SPATIAL — call every frame ═══ */
+  _botUp:function(data){
+    var c=this.ctx,now=c.currentTime;
+    if(this._buffers.saturn){
+      var buf=this._buffers.saturn,offset=Math.random()*Math.max(0,buf.duration-4);
+      var src=c.createBufferSource();src.buffer=buf;src.playbackRate.value=1.15;
+      var g=c.createGain();g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(0.18,now+0.3);g.gain.exponentialRampToValueAtTime(0.001,now+3);
+      var bp=c.createBiquadFilter();bp.type="bandpass";bp.frequency.value=1200;bp.Q.value=0.8;
+      src.connect(bp);bp.connect(g);g.connect(this.events);g.connect(this._verbSend);
+      src.start(now,offset);setTimeout(function(){try{src.stop();}catch(e){}},4000);
+    }
+  },
+
+  _adaptAmbient:function(regime,aegisScore){
+    if(!this.initialized) return;
+    var c=this.ctx,now=c.currentTime;
+    if(this._gains.jupiter_main){
+      var jVol=regime==="VOLATILE"?0.32:regime==="CHAOTIC"?0.38:regime==="SYSTEMIC"?0.42:0.22;
+      jVol*=Math.max(0.6,0.5+aegisScore*0.5);
+      this._gains.jupiter_main.gain.linearRampToValueAtTime(jVol,now+4);
+    }
+    if(this._gains.solar_main){
+      var sVol=0.05+Math.max(0,(1-aegisScore)*0.1);
+      this._gains.solar_main.gain.linearRampToValueAtTime(sVol,now+6);
+    }
+    if(this._sources.jupiter){
+      var rate=regime==="CHAOTIC"?0.82:regime==="VOLATILE"?0.90:regime==="TRENDING"?1.05:0.95;
+      this._sources.jupiter.playbackRate.linearRampToValueAtTime(rate,now+8);
+    }
+  },
+
   updateSpatial:function(bodies,w,h){
-    /* Evolve drone based on fleet state every ~5 seconds */
     if(!this.initialized||!this.enabled) return;
     if(!this._lastEvolve) this._lastEvolve=0;
     var now=Date.now();
@@ -11414,134 +11903,36 @@ var _sound={
       this._lastEvolve=now;
       var regime=(typeof aegisState!=="undefined"&&aegisState.regime)||"NORMAL";
       var score=(typeof aegisState!=="undefined"&&aegisState.score!=null)?aegisState.score:0.5;
-      this.evolveDrone(regime,score,_orbEventRate||0);
-      this.updateBlackHoleHum(_feeBlackHole.feeRatio||100);
+      this._adaptAmbient(regime,score);
     }
   },
 
-  /* ═══ DATA-REACTIVE (simplified — drone handles modulation) ═══ */
   modulate:function(botId,data){},
   updateHarmony:function(regime){
-    /* Regime change triggers drone evolution */
     if(this.initialized&&this.enabled){
-      this.evolveDrone(regime,(typeof aegisState!=="undefined"&&aegisState.score!=null)?aegisState.score:0.5,_orbEventRate||0);
+      var score=(typeof aegisState!=="undefined"&&aegisState.score!=null)?aegisState.score:0.5;
+      this._adaptAmbient(regime,score);
     }
   },
 
-  /* ═══ RATE LIMITER — max 3 sounds per second ═══ */
-  _canPlay:function(priority){
-    var now=Date.now();
-    this._recentSounds=this._recentSounds.filter(function(t){return now-t<1000;});
-    if(this._recentSounds.length>=this._MAX_SPS){
-      if(priority<2) return false;
-    }
-    this._recentSounds.push(now);
-    return true;
-  },
-
-  /* ═══ SUPERNOVA — noise burst + sub impact ═══ */
-  _supernova:function(size){
-    if(!this._canPlay(3)) return;
-    var c=this.ctx,now=c.currentTime;
-    var durations={tiny:0.2,small:0.4,medium:0.8,large:1.5,catastrophic:3};
-    var volumes={tiny:0.015,small:0.03,medium:0.05,large:0.07,catastrophic:0.1};
-    var dur=durations[size]||0.4;
-    var vol=volumes[size]||0.03;
-    /* Noise burst */
-    var bufSz=Math.floor(c.sampleRate*dur);
-    var buf=c.createBuffer(1,bufSz,c.sampleRate);var d=buf.getChannelData(0);
-    for(var i=0;i<bufSz;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/bufSz*3);
-    var noise=c.createBufferSource();noise.buffer=buf;
-    var ng=c.createGain();var nf=c.createBiquadFilter();
-    nf.type="lowpass";nf.frequency.setValueAtTime(4000,now);nf.frequency.exponentialRampToValueAtTime(100,now+dur);
-    ng.gain.value=vol;
-    noise.connect(nf);nf.connect(ng);ng.connect(this.events);noise.start(now);
-    /* Sub impact */
-    var sub=c.createOscillator();var sg=c.createGain();
-    sub.type="sine";sub.frequency.setValueAtTime(80,now);sub.frequency.exponentialRampToValueAtTime(20,now+dur);
-    sg.gain.setValueAtTime(vol*1.5,now);sg.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    sub.connect(sg);sg.connect(this.events);sub.start(now);sub.stop(now+dur+0.1);
-    /* Large/catastrophic: metallic ring tail */
-    if(size==="large"||size==="catastrophic"){
-      var ring=c.createOscillator();var rg=c.createGain();
-      ring.type="sine";ring.frequency.value=120+Math.random()*80;
-      rg.gain.setValueAtTime(0,now+0.1);rg.gain.linearRampToValueAtTime(0.02,now+0.3);
-      rg.gain.exponentialRampToValueAtTime(0.001,now+dur*2);
-      ring.connect(rg);rg.connect(this.events);ring.connect(this.bigSend);
-      ring.start(now);ring.stop(now+dur*2+0.1);
-    }
-  },
-
-  /* ═══ WORMHOLE GATE — detuned oscillators, continuous ═══ */
-  updateWormhole:function(spreadWidth){
-    if(!this.initialized||!this.enabled) return;
-    var c=this.ctx,now=c.currentTime;
-    if(!this._wormholeOscs){
-      var oscA=c.createOscillator();var oscB=c.createOscillator();
-      var gA=c.createGain();var gB=c.createGain();
-      oscA.type="sine";oscB.type="sine";
-      oscA.frequency.value=174.6;oscB.frequency.value=174.6;
-      gA.gain.value=0.008;gB.gain.value=0.008;
-      oscA.connect(gA);oscB.connect(gB);
-      gA.connect(this.drone);gB.connect(this.drone);
-      oscA.start();oscB.start();
-      this._wormholeOscs={oscA:oscA,oscB:oscB,gA:gA,gB:gB};
-    }
-    var detune=spreadWidth*50;
-    this._wormholeOscs.oscB.detune.linearRampToValueAtTime(detune,now+1);
-    var vol=0.005+spreadWidth*0.015;
-    this._wormholeOscs.gA.gain.linearRampToValueAtTime(vol,now+1);
-    this._wormholeOscs.gB.gain.linearRampToValueAtTime(vol,now+1);
-  },
-
-  /* ═══ SHOOTING STAR WHOOSH — filtered noise with stereo pan sweep ═══ */
-  _shootingStar:function(startPan,endPan){
-    if(!this._canPlay(1)) return;
-    var c=this.ctx,now=c.currentTime;
-    var dur=0.6+Math.random()*0.3;
-    var bufSz=Math.floor(c.sampleRate*dur);
-    var buf=c.createBuffer(1,bufSz,c.sampleRate);var d=buf.getChannelData(0);
-    for(var i=0;i<bufSz;i++) d[i]=(Math.random()*2-1)*Math.exp(-i/bufSz*4);
-    var noise=c.createBufferSource();noise.buffer=buf;
-    var g=c.createGain();var f=c.createBiquadFilter();var pan=c.createStereoPanner();
-    f.type="highpass";f.frequency.setValueAtTime(1000,now);
-    f.frequency.exponentialRampToValueAtTime(4000,now+dur*0.3);
-    f.frequency.exponentialRampToValueAtTime(800,now+dur);
-    g.gain.setValueAtTime(0,now);g.gain.linearRampToValueAtTime(0.02,now+0.02);
-    g.gain.exponentialRampToValueAtTime(0.001,now+dur);
-    pan.pan.setValueAtTime(Math.max(-1,Math.min(1,startPan||0)),now);
-    pan.pan.linearRampToValueAtTime(Math.max(-1,Math.min(1,endPan||0)),now+dur);
-    noise.connect(f);f.connect(g);g.connect(pan);pan.connect(this.events);noise.start(now);
-  },
-
-  /* ═══ CINEMA MODE — boost master volume ═══ */
   setCinemaMode:function(isCinema){
     if(!this.initialized||!this.enabled) return;
     var now=this.ctx.currentTime;
     this.master.gain.cancelScheduledValues(now);
     this.master.gain.setValueAtTime(this.master.gain.value,now);
-    this.master.gain.linearRampToValueAtTime(isCinema?0.65:0.4,now+1);
+    this.master.gain.linearRampToValueAtTime(isCinema?0.68:0.45,now+1);
   },
 
-  /* ═══ EVENT DISPATCHER — routes events to generative sounds ═══ */
   playEvent:function(type,data){
     if(!this.initialized||!this.enabled) return;
     if(type==="PHITEX_UPDATE"||type==="AEGIS_UPDATE"||type==="BOT_STATUS"||
        type==="NEWTON_FORCE"||type==="NEWTON_REACTION"||type==="EUCLID_LEVEL"||
        type==="CHRONOS_ALERT"||type==="PORTFOLIO_RESERVE"||type==="PORTFOLIO_DENIAL") return;
-
-    var c=this.ctx,now=c.currentTime;
-    var played=false;
-
+    var c=this.ctx,now=c.currentTime,played=false;
     if(type==="WHALE_ALERT"){if(this._canPlay(2)){this._whale(data);played=true;}}
     else if(type==="TRADE_OPEN"){if(this._canPlay(3)){this._tradeEntry((data||{}).bot_id||"");played=true;}}
     else if(type==="TRADE_CLOSE"){
-      if(this._canPlay(3)){
-        var pnl=(data||{}).net_pnl||(data||{}).pnl||0;
-        if(pnl>0) this._tradeWin(pnl); else this._tradeLoss(pnl);
-        if((data||{}).fees) this._feeConsume((data||{}).fees);
-        played=true;
-      }
+      if(this._canPlay(3)){var pnl=(data||{}).net_pnl||(data||{}).pnl||0;if(pnl>0) this._tradeWin(pnl); else this._tradeLoss(pnl);played=true;}
     }
     else if(type==="REGIME_CHANGE"){if(this._canPlay(2)){this._regimeShift(data);played=true;}}
     else if(type==="EMERGENCY_REDUCE"){if(this._canPlay(3)){this._emergency();played=true;}}
@@ -11549,26 +11940,25 @@ var _sound={
     else if(type==="BOT_RECOVERED"){if(this._canPlay(3)){this._botUp(data);played=true;}}
     else if(type==="SIGNAL"||type==="HIGH_CONVICTION"){if(this._canPlay(1)){this._signalFire();played=true;}}
     else if(type==="FLEET_ALERT"){if(this._canPlay(2)){this._fleetAlert();played=true;}}
-    else if(/SHANNON|CHAOS_STATE|MANIFOLD|QUANTUM|CATASTROPHE|CYCLE_DETECTED|STRUCTURE_FORMING|CAUSAL_FLOW|BOOK_PHASE/.test(type)){
-      if(this._canPlay(1)){this._enginePing(type.toLowerCase());played=true;}
-    }
-
     if(played){
-      this.ducker.gain.cancelScheduledValues(now);
-      this.ducker.gain.setValueAtTime(this.ducker.gain.value,now);
-      this.ducker.gain.linearRampToValueAtTime(0.3,now+0.04);
-      this.ducker.gain.linearRampToValueAtTime(1,now+1.5);
+      var dk=this.ducker;dk.gain.cancelScheduledValues(now);dk.gain.setValueAtTime(dk.gain.value,now);
+      dk.gain.linearRampToValueAtTime(0.25,now+0.06);dk.gain.linearRampToValueAtTime(1.0,now+2.0);
     }
   },
 
   playHover:function(botId){
     if(!this.initialized||!this.enabled) return;
-    /* Quick bright ping on hover */
-    var c=this.ctx,now=c.currentTime;
-    var freq=300+Math.random()*200;
-    var o=c.createOscillator();o.frequency.value=freq;
-    var g=c.createGain();g.gain.setValueAtTime(0.015,now);g.gain.exponentialRampToValueAtTime(0.001,now+0.2);
-    o.connect(g);g.connect(this.events);o.start(now);o.stop(now+0.3);
+    /* Hover — whisper of Earth chorus, high-passed */
+    if(this._buffers.earth){
+      var buf=this._buffers.earth;
+      var offset=Math.random()*Math.max(0,buf.duration-0.4);
+      var c=this.ctx,now=c.currentTime;
+      var src=c.createBufferSource();src.buffer=buf;
+      var g=c.createGain();g.gain.setValueAtTime(0.04,now);g.gain.exponentialRampToValueAtTime(0.001,now+0.3);
+      var bp=c.createBiquadFilter();bp.type="highpass";bp.frequency.value=2000;
+      src.connect(bp);bp.connect(g);g.connect(this.events);
+      src.start(now,offset,0.3);
+    }
   }
 };
 
@@ -13754,14 +14144,1432 @@ function _updateFsHud(){
 
 /* (fullscreen HUD + parallax init handled in _orbToggleFS above) */
 
+/* ═══════════════════════════════════════════════════════════════
+   OVERVIEW MISSION CONTROL — Data + Render Functions
+   ═══════════════════════════════════════════════════════════════ */
+
+var ovData = {
+  expectancy: null,
+  portfolio: null,
+  recentEvents: [],
+  whaleAlerts: [],
+  engineCounts: {},
+  engineLastFired: {},
+  aegisDetail: null,        /* from http://localhost:8079/api/snapshot */
+  contrarian: null,         /* from http://localhost:8084/api/snapshot */
+  gridzillaSnap: null,      /* from http://localhost:8077/api/snapshot */
+  deepblue: null,           /* from http://localhost:8076/api/snapshot */
+  nexusCouncil: null,       /* from http://localhost:8082/api/snapshot */
+  arbitrageur: null,        /* from http://localhost:8085/api/snapshot */
+  signalDecay: null,        /* from /api/signals/decay (may 404) */
+  lastFetch: 0
+};
+
+/* ── Overview event stream (separate from sidebar stream) ── */
+function ovSanitize(str){
+  if(!str) return '';
+  // Order matters: longest/most-specific patterns first so â€" and â€œ
+  // are replaced before the bare â€ catch-all fires on their prefix bytes.
+  return str
+    .replace(/â€"/g, '\u2014')   // em-dash —
+    .replace(/â€¦/g, '\u2026')   // ellipsis …
+    .replace(/â€œ/g, '\u201c')   // left double quote "
+    .replace(/â€™/g, '\u2019')   // right single quote '
+    .replace(/â€˜/g, '\u2018')   // left single quote '
+    .replace(/â€/g, '\u201d')    // right double quote " (catch-all, must be last)
+    .replace(/Ã©/g, '\u00e9');
+}
+
+var ovEventEntries = [];
+var OV_MAX_EVENTS = 80;
+
+var OV_HIGH_SIGNAL_TYPES = /TRADE_OPEN|TRADE_CLOSE|WHALE_ALERT|REGIME_CHANGE|PORTFOLIO_DENIAL|QUANTUM_COLLAPSE|MANIFOLD_WARNING|CHAOS_STATE|CATASTROPHE_WARNING|ALERT|WARNING|EMERGENCY|COOLDOWN/i;
+
+function ovEvColor(type){
+  if(/EMERGENCY|WARNING|ALERT/.test(type)) return "#ef4444";
+  if(/DENIAL|COLLAPSE|CATASTROPHE/.test(type)) return "#f59e0b";
+  if(/TRADE_OPEN/.test(type)) return "#22c55e";
+  if(/TRADE_CLOSE|REGIME/.test(type)) return "#3b82f6";
+  if(/QUANTUM|MANIFOLD|CHAOS|CYCLE/.test(type)) return "#06b6d4";
+  return "#94a3b8";
+}
+
+function ovEvBuildHtml(entry){
+  var typeColor = ovEvColor(entry.type);
+  var shortType = entry.type.length > 18 ? entry.type.slice(0,16)+".." : entry.type;
+  /* Badge inside type cell to avoid breaking the 4-col grid */
+  var badge = entry.count > 1 ? '<span class="ov-ev-count">\xd7'+entry.count+'</span>' : '';
+  return '<div class="ov-ev-row" style="border-left-color:'+typeColor+'">'
+    +'<span class="ov-ev-time">'+escHtml(entry.timeStr)+'</span>'
+    +'<span class="ov-ev-type" style="color:'+typeColor+'">'+escHtml(ovSanitize(shortType))+badge+'</span>'
+    +'<span class="ov-ev-msg">'+escHtml(ovSanitize(entry.msg||""))+'</span>'
+    +'<span class="ov-ev-src">'+escHtml(ovSanitize(entry.srcName||""))+'</span>'
+    +'</div>';
+}
+
+function ovAddEvent(type, source, msg, ts){
+  if(!OV_HIGH_SIGNAL_TYPES.test(type)) return;
+  var nowSec = Date.now()/1000;
+  var evTs = ts || nowSec;
+
+  /* Deduplication: collapse identical type from same source within 5 seconds */
+  if(ovEventEntries.length > 0){
+    var last = ovEventEntries[0];
+    if(last.type === type && last.source === source && (nowSec - last.ts) < 5){
+      last.count = (last.count || 1) + 1;
+      last.html = ovEvBuildHtml(last);
+      var el2 = document.getElementById("ovEventStream");
+      if(el2 && activeTab === 0) renderOvEventStream(el2);
+      return;
+    }
+  }
+
+  var timeStr = evTs ? fmtHHMMSS(evTs) : "--:--:--";
+  var def = botDef(source);
+  var srcName = def ? def.name : (source||"");
+  var entry = {
+    type: type,
+    source: source||"",
+    msg: msg||"",
+    timeStr: timeStr,
+    srcName: srcName,
+    ts: evTs,
+    count: 1
+  };
+  entry.html = ovEvBuildHtml(entry);
+  ovEventEntries.unshift(entry);
+  if(ovEventEntries.length > OV_MAX_EVENTS) ovEventEntries = ovEventEntries.slice(0, OV_MAX_EVENTS);
+  var el = document.getElementById("ovEventStream");
+  if(el && activeTab === 0){
+    renderOvEventStream(el);
+  }
+}
+
+function renderOvEventStream(el){
+  if(!el) return;
+  if(!ovEventEntries.length){
+    el.innerHTML = '<div style="padding:12px 8px;font-size:0.67rem;color:var(--ov-dim);">No high-signal events yet</div>';
+    return;
+  }
+  var h = "";
+  for(var i=0;i<Math.min(ovEventEntries.length,12);i++) h+=ovEventEntries[i].html;
+  el.innerHTML = h;
+  var cnt = document.getElementById("ovEvCount");
+  if(cnt) cnt.textContent = ovEventEntries.length+" events";
+}
+
+function fmtHHMMSS(ts){
+  var d = new Date(ts*1000);
+  return String(d.getHours()).padStart(2,"0")+":"+String(d.getMinutes()).padStart(2,"0")+":"+String(d.getSeconds()).padStart(2,"0");
+}
+
+/* ── Engine event type → name map ── */
+var OV_ENGINE_MAP = [
+  {name:"Euclid",        types:["EUCLID_LEVEL"]},
+  {name:"Schwarzschild", types:["SCHWARZSCHILD_HORIZON"]},
+  {name:"Fisher/IGM",    types:["MANIFOLD_WARNING"]},
+  {name:"Topology",      types:["CYCLE_DETECTED"]},
+  {name:"Quantum",       types:["QUANTUM_COLLAPSE"]},
+  {name:"Causal Flow",   types:["CAUSAL_FLOW"]},
+  {name:"Newton",        types:["NEWTON_FORCE","NEWTON_REACTION"]},
+  {name:"Einstein",      types:["EINSTEIN_CURVE","EINSTEIN_FIELD","EINSTEIN_ENERGY"]},
+  {name:"Shannon",       types:["SHANNON_ENTROPY"]},
+  {name:"Boltzmann",     types:["BOOK_PHASE"]},
+  {name:"Lorenz",        types:["CHAOS_STATE"]},
+  {name:"Thom",          types:["CATASTROPHE_WARNING"]},
+  {name:"Prigogine",     types:["STRUCTURE_FORMING"]},
+  {name:"Riemann",       types:["RIEMANN_SURFACE","CURVATURE_EVENT"]}
+];
+
+/* ── Regime color helper ── */
+function ovRegimeColor(r){
+  if(!r) return "#475569";
+  var up = r.toUpperCase();
+  if(/BEAR|FEAR|SELL|DOWN/.test(up)) return "#ef4444";
+  if(/BULL|GREED|BUY|TREND/.test(up)) return "#22c55e";
+  if(/RANG|NEUTRAL|MIXED|EQUIL/.test(up)) return "#3b82f6";
+  if(/TRANS|VOLAT|ACTIVITY/.test(up)) return "#f59e0b";
+  return "#94a3b8";
+}
+
+function ovRegimeArrow(r){
+  if(!r) return "\u2194";
+  var up = r.toUpperCase();
+  if(/BEAR|FEAR|SELL|DOWN/.test(up)) return "\u2193";
+  if(/BULL|GREED|BUY|TREND/.test(up)) return "\u2191";
+  if(/RANG|NEUTRAL|EQUIL/.test(up)) return "\u2194";
+  return "\u2192";
+}
+
+/* ── Main overview render (called every 10s + on SSE) ── */
+function renderOverview(){
+  if(activeTab !== 0) return;
+  /* Section 1 */
+  renderOvAegis();
+  renderOvSentiment();
+  renderOvPortfolioSummary();
+  renderOvFleetErrors();
+  /* Section 2 */
+  renderOvPositions();
+  renderOvGridzilla();
+  renderOvCooldowns();
+  renderOvLedger();
+  /* Section 3 */
+  renderOvRegimes();
+  renderOvWhaleIntel();
+  renderOvEngines();
+  renderOvSignalQuality();
+  /* Section 4 */
+  renderOvScoreboard();
+  renderOvForensics();
+  renderOvFeeAnalysis();
+  var el = document.getElementById("ovEventStream");
+  if(el) renderOvEventStream(el);
+}
+
+/* ── 1A. AEGIS Deep Score ── */
+function renderOvAegis(){
+  var score = aegisState.score;
+  var regime = aegisState.regime || "--";
+  var deploy = aegisState.recommended_deploy;
+
+  var scoreEl = document.getElementById("ovAegisScore");
+  if(scoreEl) scoreEl.textContent = score != null ? score.toFixed(3) : "--";
+
+  var arc = document.getElementById("ovAegisArc");
+  if(arc && score != null){
+    var circ = 2*Math.PI*44;
+    var fill = circ * Math.max(0, Math.min(1, score));
+    var gap = circ - fill;
+    var arcColor = score >= 0.6 ? "#22c55e" : score >= 0.3 ? "#f59e0b" : "#ef4444";
+    arc.setAttribute("stroke-dasharray", fill.toFixed(1)+" "+gap.toFixed(1));
+    arc.setAttribute("stroke", arcColor);
+  }
+
+  var pill = document.getElementById("ovRegimePill");
+  if(pill){
+    var pillColor = regime==="DEFENSIVE"?"#ef4444":regime==="CAUTIOUS"?"#f59e0b":regime==="DEPLOY"?"#22c55e":"#3b82f6";
+    pill.textContent = regime;
+    pill.style.color = pillColor;
+    pill.style.borderColor = pillColor;
+  }
+
+  var dText = document.getElementById("ovDeployText");
+  if(dText) dText.textContent = "Max Deploy: "+(deploy!=null?Math.round(deploy)+"%":"--");
+
+  /* AEGIS component bars */
+  var compEl = document.getElementById("ovAegisComponents");
+  if(!compEl) return;
+  var c = aegisState.components || {};
+
+  /* If AEGIS didn't include sentiment in its components, derive it from fear/greed sources.
+     AEGIS formula: contribution = (fear_greed/100 - 0.5) * 2, so sentiment component ≈ fear_greed/100 */
+  if(c.sentiment == null && c.fear_greed == null){
+    var _fg = null;
+    var _ctSnap = ovData.contrarian;
+    if(_ctSnap) _fg = _ctSnap.fear_greed_index || _ctSnap.fear_greed || _ctSnap.sentiment_score || null;
+    if(_fg == null){
+      var _bots2 = ["contrarian","phitex","aegis"];
+      for(var _bi=0;_bi<_bots2.length;_bi++){
+        var _bb = findBot(state.bots, _bots2[_bi]);
+        if(!_bb) continue;
+        var _br = _bb.raw || {};
+        var _bn = _bb.normalized || {};
+        var _cand = _br.fear_greed_index || _br.fear_greed || _bn.fear_greed_index || _bn.fear_greed || _bn.sentiment_score;
+        if(_cand != null){ _fg = _cand; break; }
+      }
+    }
+    if(_fg != null){
+      /* Normalize to 0-1 scale matching how AEGIS stores components */
+      c = Object.assign({}, c, {sentiment: _fg / 100});
+    }
+  }
+
+  /* Canonical component weights from aegis.py */
+  var comps = [
+    {key:"consensus_entropy",  alt:"consensus",       label:"Consensus",   wt:25, color:"rgba(59,130,246,0.8)"},
+    {key:"signal_coherence",   alt:"coherence",       label:"Coherence",   wt:20, color:"rgba(34,197,94,0.8)"},
+    {key:"whale_divergence",   alt:"whale_div",       label:"Whale Div",   wt:15, color:"rgba(6,182,212,0.8)"},
+    {key:"portfolio_stress",   alt:"port_stress",     label:"Port Stress", wt:15, color:"rgba(245,158,11,0.8)"},
+    {key:"phitex_signal",      alt:"phitex_sig",      label:"PHITEX Sig",  wt:15, color:"rgba(232,121,249,0.8)"},
+    {key:"sentiment",          alt:"fear_greed",      label:"Sentiment",   wt:10, color:"rgba(251,191,36,0.8)"}
+  ];
+  var h = "";
+  for(var i=0;i<comps.length;i++){
+    var comp = comps[i];
+    var val = c[comp.key] != null ? c[comp.key] : (c[comp.alt] != null ? c[comp.alt] : null);
+    var barPct = val != null ? Math.min(100, Math.max(0, val * 100)) : 0;
+    var contrib = val != null ? (val * comp.wt / 100).toFixed(3) : "--";
+    /* For sentiment row, also show the raw fear/greed number (0-100) as a tooltip */
+    var valDisplay = val != null ? val.toFixed(3) : "--";
+    if(comp.key === "sentiment" && val != null){
+      valDisplay = val.toFixed(3)+' <span style="font-size:0.58rem;color:var(--ov-dim)">('+Math.round(val*100)+'/100)</span>';
+    }
+    h += '<div class="ov-comp-row">'
+      +'<span class="ov-comp-label">'+comp.label+'</span>'
+      +'<div class="ov-comp-bar"><div class="ov-comp-fill" style="width:'+barPct.toFixed(1)+'%;background:'+comp.color+'"></div></div>'
+      +'<span class="ov-comp-val">'+valDisplay+'</span>'
+      +'<span class="ov-comp-wt" title="Weight '+comp.wt+'%, contrib '+contrib+'">'+comp.wt+'%</span>'
+      +'</div>';
+  }
+  compEl.innerHTML = h;
+}
+
+/* ── 1B. Sentiment & Market ── */
+function renderOvSentiment(){
+  var fg = null;
+  /* Try Contrarian snapshot first (most authoritative for fear/greed) */
+  var ctSnap = ovData.contrarian;
+  if(ctSnap){
+    fg = ctSnap.fear_greed_index || ctSnap.fear_greed || ctSnap.sentiment_score || null;
+  }
+  /* Fall back to state.bots */
+  if(fg == null){
+    var bots = ["contrarian","phitex","aegis"];
+    for(var i=0;i<bots.length;i++){
+      var b = findBot(state.bots, bots[i]);
+      if(!b) continue;
+      var n = b.normalized || {};
+      var r = b.raw || {};
+      var candidate = r.fear_greed_index || r.fear_greed || n.fear_greed_index || n.fear_greed || n.sentiment_score;
+      if(candidate != null){ fg = candidate; break; }
+    }
+  }
+  if(fg == null && aegisState.components){
+    var comp = aegisState.components;
+    var s = comp.sentiment || comp.fear_greed;
+    if(s != null) fg = Math.round(s * 100);
+  }
+
+  var numEl = document.getElementById("ovSentimentNum");
+  var lblEl = document.getElementById("ovSentimentLabel");
+  if(!numEl || !lblEl) return;
+
+  if(fg == null){
+    numEl.textContent = "--";
+    numEl.style.color = "#475569";
+    lblEl.textContent = "UNKNOWN";
+  } else {
+    var val = Math.round(fg);
+    var color, label;
+    if(val <= 25){ color="#ef4444"; label="EXTREME FEAR"; }
+    else if(val <= 45){ color="#f97316"; label="FEAR"; }
+    else if(val <= 55){ color="#eab308"; label="NEUTRAL"; }
+    else if(val <= 75){ color="#84cc16"; label="GREED"; }
+    else { color="#22c55e"; label="EXTREME GREED"; }
+    numEl.textContent = val;
+    numEl.style.color = color;
+    lblEl.textContent = label;
+    lblEl.style.color = color;
+  }
+
+  /* Funding rate extremes from Contrarian snapshot */
+  var frEl = document.getElementById("ovFundingRates");
+  if(!frEl) return;
+  var funding = ctSnap && (ctSnap.funding_rates || ctSnap.funding || null);
+  if(!funding){
+    frEl.innerHTML = '';
+    return;
+  }
+  /* funding is object of {pair: rate} or array */
+  var pairs = [];
+  if(typeof funding === 'object' && !Array.isArray(funding)){
+    for(var k in funding) pairs.push({pair:k, rate:funding[k]});
+  } else if(Array.isArray(funding)){
+    pairs = funding;
+  }
+  /* Sort by abs rate, show top 3 */
+  pairs.sort(function(a,b){ return Math.abs(b.rate||0) - Math.abs(a.rate||0); });
+  var fh = '<div style="font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);margin-top:4px;letter-spacing:0.3px;">TOP FUNDING</div>';
+  var shown = 0;
+  for(var j=0;j<pairs.length&&shown<3;j++){
+    var pr = pairs[j];
+    var rate = pr.rate || pr.funding_rate || 0;
+    var rateColor = rate > 0.0001 ? "#ef4444" : rate < -0.0001 ? "#22c55e" : "#94a3b8";
+    fh += '<div style="display:flex;justify-content:space-between;font-size:0.65rem;font-family:var(--font);padding:2px 0;">'
+      +'<span style="color:#e2e8f0">'+escHtml(pr.pair||pr.symbol||"?")+'</span>'
+      +'<span style="color:'+rateColor+';font-weight:700">'+(rate>=0?"+":"")+Number(rate*100).toFixed(4)+'%</span>'
+      +'</div>';
+    shown++;
+  }
+  if(!shown) frEl.innerHTML = '';
+  else frEl.innerHTML = fh;
+}
+
+/* ── 1C. Portfolio Summary ── */
+function renderOvPortfolioSummary(){
+  var el = document.getElementById("ovPortfolioSummary");
+  if(!el) return;
+  var p = ovData.portfolio || state.portfolio;
+  if(!p){ el.innerHTML = '<div class="ov-sub-text">Loading...</div>'; return; }
+
+  var total = p.total || 10000;
+  var avail = p.available != null ? p.available : total;
+  var deployed = total - avail;
+  var availPct = (avail/total*100).toFixed(1);
+  var depPct   = (deployed/total*100).toFixed(1);
+
+  /* Direction amounts */
+  var longAmt  = (p.by_direction && p.by_direction.LONG)  || 0;
+  var shortAmt = (p.by_direction && p.by_direction.SHORT) || 0;
+  var dirCap   = total * 0.60; /* 60% directional cap */
+  var longHdRm = Math.max(0, dirCap - longAmt);
+  var shortHdRm= Math.max(0, dirCap - shortAmt);
+
+  /* Risk status */
+  var depPctNum = parseFloat(depPct);
+  var riskClass, riskLabel;
+  if(depPctNum >= 70){ riskClass="ov-risk-red";   riskLabel="HIGH RISK"; }
+  else if(depPctNum >= 50){ riskClass="ov-risk-amber"; riskLabel="MODERATE"; }
+  else { riskClass="ov-risk-green";  riskLabel="OK"; }
+
+  function portRow(label, val, sub){
+    return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(30,41,59,0.3);">'
+      +'<span style="font-size:0.65rem;color:var(--ov-muted);font-family:var(--font);">'+label+'</span>'
+      +'<span style="font-family:var(--font);font-size:0.75rem;font-weight:700;color:var(--ov-text);">'+val
+      +(sub?'<span style="font-size:0.6rem;color:var(--ov-dim);font-weight:400;margin-left:4px;">'+sub+'</span>':'')
+      +'</span>'
+      +'</div>';
+  }
+
+  var h = portRow("Pool", fmt$(total), "total")
+    +portRow("Available", fmt$(avail), availPct+"%")
+    +portRow("Deployed",  fmt$(deployed), depPct+"%")
+    +portRow("Long",      fmt$(longAmt), "hdRoom: "+fmt$(longHdRm))
+    +portRow("Short",     fmt$(shortAmt), "hdRoom: "+fmt$(shortHdRm));
+
+  /* Only show risk badge when it is actionable (MODERATE or HIGH RISK — not "OK") */
+  if(riskClass !== "ov-risk-green"){
+    h += '<div style="margin-top:8px;"><span class="ov-risk-badge '+riskClass+'">'+riskLabel+'</span></div>';
+  }
+
+  el.innerHTML = h;
+}
+
+/* ── 1D. Fleet Errors ── */
+function renderOvFleetErrors(){
+  var el = document.getElementById("ovFleetErrors");
+  if(!el) return;
+  var evts = ovData.recentEvents || [];
+  var now = Date.now()/1000;
+
+  /* Explicitly exclude intel/council event types that are NOT errors */
+  var INTEL_EXCLUDE = /^(MANIFOLD_WARNING|CYCLE_DETECTED|QUANTUM_COLLAPSE|CAUSAL_FLOW|SHANNON_ENTROPY|BOOK_PHASE|CHAOS_STATE|STRUCTURE_FORMING|CATASTROPHE_WARNING|WHALE_ALERT|SIGNAL|TRADE_OPEN|TRADE_CLOSE|REGIME_CHANGE|ATTENTION|PHITEX_UPDATE|AEGIS_UPDATE|NEWTON_FORCE|NEWTON_REACTION|EUCLID_LEVEL|CHRONOS_ALERT|EINSTEIN_ENERGY|SCHWARZSCHILD_HORIZON)$/;
+
+  /* Real error patterns — type OR message must contain one of these */
+  var ERR_TYPE  = /error|failed|failure|exception|crash|denied|denial|rejected|timeout|EMERGENCY|PORTFOLIO_DENIAL/i;
+  var ERR_MSG   = /error|fail|exception|crash|denied|rejected|timeout|emergency/i;
+
+  var filtered = evts.filter(function(e){
+    var t = e.type || "";
+    /* Skip intel events unconditionally */
+    if(INTEL_EXCLUDE.test(t)) return false;
+    var d = e.data || {};
+    var msg = (d.message||d.reason||e.message||"").toLowerCase();
+    /* BOT_STATUS is only an error if the status indicates offline/dead */
+    if(t === "BOT_STATUS"){
+      var st = (d.status || d.state || "").toLowerCase();
+      return st === "offline" || st === "dead" || st === "error" || st === "crashed";
+    }
+    /* Must match error type OR error message text */
+    return ERR_TYPE.test(t) || ERR_MSG.test(msg);
+  }).filter(function(e){
+    return (now - (e.ts||e.timestamp||0)) < 1800; /* last 30 min */
+  }).slice(0,5);
+
+  if(!filtered.length){
+    el.innerHTML = '<span style="color:#22c55e">All systems nominal &#10003;</span>';
+    return;
+  }
+
+  var h = "";
+  for(var i=0;i<filtered.length;i++){
+    var ev = filtered[i];
+    var d = ev.data || {};
+    var msg = d.message || d.reason || ev.message || "";
+    var src = ev.source || ev.bot_id || "";
+    var def = botDef(src);
+    var srcName = def ? def.name : src;
+    var isErr = /ERROR|EMERGENCY|CRASH|EXCEPTION/.test(ev.type||"");
+    var rowColor = isErr ? "#ef4444" : "#f59e0b";
+    var ts = ev.ts || ev.timestamp || 0;
+    var timeStr = ts ? fmtHHMMSS(ts) : "--";
+    h += '<div class="ov-err-row" style="border-left:2px solid '+rowColor+';padding-left:4px;">'
+      +'<span class="ov-err-time">'+escHtml(timeStr)+'</span>'
+      +'<span class="ov-err-src" style="color:'+rowColor+'">'+escHtml(srcName)+'</span>'
+      +'<span class="ov-err-msg">'+escHtml(ovSanitize(String(msg||ev.type||"?").slice(0,60)))+'</span>'
+      +'</div>';
+  }
+  el.innerHTML = h;
+}
+
+/* ── 2A. Live Positions Table ── */
+function renderOvPositions(){
+  var el = document.getElementById("ovPositions");
+  if(!el) return;
+  var p = ovData.portfolio || state.portfolio;
+  var res = p && Array.isArray(p.reservations) ? p.reservations : [];
+  if(!p || res.length === 0){
+    var avail = p ? (p.available != null ? fmt$(p.available) : "--") : "--";
+    el.innerHTML = '<div class="ov-no-pos">'
+      +'<div class="ov-no-pos-big">NO ACTIVE POSITIONS &mdash; 100% CASH</div>'
+      +'<div class="ov-no-pos-sub">Available: '+avail+'</div>'
+      +'</div>';
+    return;
+  }
+
+  var now = Date.now()/1000;
+  var rows = res.slice();
+
+  rows.sort(function(a,b){
+    var pa = a.unrealized_pnl != null ? a.unrealized_pnl : -9999;
+    var pb = b.unrealized_pnl != null ? b.unrealized_pnl : -9999;
+    return pb - pa;
+  });
+
+  /* Try to pull entry prices from bot snapshots */
+  /* Arbitrageur: open_spreads_detail or positions array */
+  var arbSnap = ovData.arbitrageur;
+
+  var h = '<table class="ov-pos-table"><thead><tr>'
+    +'<th>BOT</th><th>PAIR</th><th>DIR</th><th>SIZE</th><th>ENTRY</th><th>UNREAL P&L</th><th>AGE</th><th>FEE EST</th>'
+    +'</tr></thead><tbody>';
+
+  for(var i=0;i<rows.length;i++){
+    var r = rows[i];
+    var def = botDef(r.bot_id);
+    var botName = def ? def.name : (r.bot_id||"?");
+    var botColor = def ? def.color : "#94a3b8";
+    var dir = (r.direction||"").toUpperCase();
+    var dirStr = dir==="LONG"
+      ? '<span style="color:#22c55e">&#8593;LONG</span>'
+      : dir==="SHORT"
+      ? '<span style="color:#ef4444">&#8595;SHORT</span>'
+      : escHtml(dir);
+    var size = r.amount != null ? fmt$(r.amount) : "--";
+
+    /* entry_price: from reservation, or from bot snapshot */
+    var entryPrice = r.entry_price != null ? r.entry_price : null;
+    if(entryPrice == null && r.bot_id === "arbitrageur" && arbSnap){
+      /* Arbitrageur stores open_spreads_detail as [{pair, entry, ...}] */
+      var spreads = arbSnap.open_spreads_detail || arbSnap.positions || [];
+      for(var s=0;s<spreads.length;s++){
+        if(spreads[s].pair === r.pair || spreads[s].symbol === r.pair){
+          entryPrice = spreads[s].entry || spreads[s].entry_price || null;
+          break;
+        }
+      }
+    }
+    var entryStr = entryPrice != null ? fmtPrice(entryPrice) : '<span style="color:#334155">&mdash;</span>';
+
+    var pnl = r.unrealized_pnl != null ? r.unrealized_pnl : null;
+    var pnlStr = pnl != null
+      ? '<span style="color:'+(pnl>=0?"#22c55e":"#ef4444")+';font-weight:700">'+(pnl>=0?"+":"")+fmt$(pnl)+'</span>'
+      : '<span style="color:#475569">&mdash;</span>';
+    var age = r.reserved_at ? fmtAge(now - r.reserved_at) : "--";
+    var feeEst = r.amount != null ? fmt$(r.amount * 0.0052) : "--";
+
+    h += '<tr>'
+      +'<td style="color:'+botColor+';font-weight:700">'+escHtml(botName)+'</td>'
+      +'<td style="color:#e2e8f0;font-weight:700">'+escHtml(r.pair||"?")+'</td>'
+      +'<td>'+dirStr+'</td>'
+      +'<td style="color:#e2e8f0;text-align:right;font-family:var(--font-mono,monospace)">'+size+'</td>'
+      +'<td style="color:#94a3b8;text-align:right;font-family:var(--font-mono,monospace)">'+entryStr+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace)">'+pnlStr+'</td>'
+      +'<td style="color:#64748b">'+escHtml(age)+'</td>'
+      +'<td style="color:#475569;text-align:right;font-family:var(--font-mono,monospace)">'+feeEst+'</td>'
+      +'</tr>';
+  }
+  h += '</tbody></table>';
+  el.innerHTML = h;
+}
+
+function fmtAge(secs){
+  if(secs == null || isNaN(secs)) return "--";
+  secs = Math.max(0, Math.round(secs));
+  var h = Math.floor(secs/3600);
+  var m = Math.floor((secs%3600)/60);
+  var s = secs%60;
+  if(h > 0) return h+"h"+String(m).padStart(2,"0")+"m";
+  if(m > 0) return m+"m"+String(s).padStart(2,"0")+"s";
+  return s+"s";
+}
+
+/* ── 2B. Gridzilla Deep State ── */
+function renderOvGridzilla(){
+  var el = document.getElementById("ovGridzilla");
+  if(!el) return;
+  var b = findBot(state.bots, "gridzilla");
+  if(!b){
+    el.innerHTML = '<div class="ov-sleeping"><div class="ov-sleeping-title">GRIDZILLA &mdash; OFFLINE</div></div>';
+    return;
+  }
+  var raw = b.raw || {};
+  var norm = b.normalized || {};
+  var grids = raw.active_grids || raw.grids || null;
+
+  /* Gate checklist */
+  var adxVal  = raw.adx != null ? raw.adx : (raw.indicators && raw.indicators.adx != null ? raw.indicators.adx : null);
+  var adxThr  = raw.adx_threshold != null ? raw.adx_threshold : 25;
+  var hurstVal= raw.hurst != null ? raw.hurst : null;
+  var hurstThr= raw.hurst_threshold != null ? raw.hurst_threshold : 0.55;
+  var aegisOk = !raw.aegis_block;
+  var whaleOk = !raw.whale_pause;
+
+  /* gateRow: pass=true→✓ green, pass=false→✗ red, pass=null→? grey (missing data) */
+  function gateRow(label, pass, extra){
+    var icon;
+    if(pass === null || pass === undefined){
+      icon = '<span style="color:#64748b;font-weight:700;flex-shrink:0;width:14px;display:inline-block">?</span>';
+    } else if(pass){
+      icon = '<span class="ov-gate-pass">&#10003;</span>';
+    } else {
+      icon = '<span class="ov-gate-fail">&#10007;</span>';
+    }
+    return '<div class="ov-gate-row">'+icon+'<span class="ov-gate-label">'+label+'</span>'
+      +(extra?'<span class="ov-gate-val">'+extra+'</span>':'')+'</div>';
+  }
+
+  /* ADX: pass (grid-friendly) when value < threshold; null when missing */
+  var adxPass  = adxVal  != null ? (adxVal  < adxThr)   : null;
+  /* Hurst: pass (mean-reverting) when value < 0.45; null when missing */
+  var hurstPass= hurstVal != null ? (hurstVal < 0.45)    : null;
+  /* AEGIS gate: pass only if we have data AND not blocked */
+  var aegisPass= raw.hasOwnProperty('aegis_block') ? !raw.aegis_block : null;
+  /* Whale gate: pass only if we have data AND not paused */
+  var whalePass= raw.hasOwnProperty('whale_pause') ? !raw.whale_pause : null;
+
+  var gateH = '<div style="margin-top:4px;">';
+  gateH += gateRow("ADX",   adxPass,   adxVal  != null ? adxVal.toFixed(1)+'/'+adxThr        : "--");
+  gateH += gateRow("Hurst", hurstPass, hurstVal!= null ? hurstVal.toFixed(3)+'/0.45'          : "--");
+  gateH += gateRow("AEGIS", aegisPass, aegisPass===null ? "--" : (aegisPass?"OK":"blocked"));
+  gateH += gateRow("Whale", whalePass, whalePass===null ? "--" : (whalePass?"clear":"paused"));
+  gateH += '</div>';
+
+  if(!grids || !Object.keys(grids).length){
+    var reason = norm.regime || raw.status_reason || raw.reason || "awaiting conditions";
+    var why = raw.whale_pause ? "whale pause" : raw.aegis_block ? "AEGIS block" : raw.cooldown ? "cooldown" : reason;
+    var lastCycles = raw.total_cycles != null ? raw.total_cycles : "--";
+    var lastWr = raw.win_rate != null ? raw.win_rate : (norm.win_rate != null ? norm.win_rate : null);
+    if(lastWr != null && lastWr <= 1.01 && lastWr > 0) lastWr = lastWr * 100;
+    var lastNet = raw.net_pnl != null ? raw.net_pnl : (norm.pnl != null ? norm.pnl : null);
+    var netColor = lastNet != null && lastNet >= 0 ? "var(--ov-green)" : "var(--ov-red)";
+    var netStr = lastNet != null ? (lastNet >= 0 ? "+" : "") + "$" + Math.abs(lastNet).toFixed(2) : "--";
+
+    el.innerHTML = '<div class="ov-sleeping">'
+      +'<div class="ov-sleeping-title">SLEEPING</div>'
+      +'<div class="ov-sleeping-why">'+escHtml(String(why))+'</div>'
+      +'<div style="font-size:0.63rem;color:var(--ov-muted);margin-top:3px;">'
+        +'Cycles: <span style="color:var(--ov-text)">'+lastCycles+'</span>'
+        +' &nbsp; WR: <span style="color:var(--ov-text)">'+(lastWr!=null?lastWr.toFixed(1)+'%':"--")+'</span>'
+        +' &nbsp; Net: <span style="color:'+netColor+';font-weight:700">'+netStr+'</span>'
+      +'</div>'
+      +'</div>'
+      + gateH;
+    return;
+  }
+
+  var h = "";
+  var pairs = Object.keys(grids).slice(0,3);
+  for(var i=0;i<pairs.length;i++){
+    var pair = pairs[i];
+    var g = grids[pair];
+    if(!g) continue;
+    var lo = g.range_low || g.low || 0;
+    var hi = g.range_high || g.high || lo*1.05;
+    var cur = g.current_price || g.price || 0;
+    var span = hi - lo;
+    var curPct = span > 0 ? Math.max(2, Math.min(98, (cur-lo)/span*100)) : 50;
+    var cycles = g.cycles_completed || g.cycles || 0;
+    var fills = g.fills || 0;
+    var gpnl = g.pnl || g.total_pnl || 0;
+    var gpnlColor = gpnl >= 0 ? "#22c55e" : "#ef4444";
+    h += '<div class="ov-grid-row">'
+      +'<span class="ov-grid-pair" style="color:#facc15">'+escHtml(pair)+'</span>'
+      +'<div class="ov-grid-range">'
+        +'<div class="ov-grid-range-track">'
+          +'<div class="ov-grid-range-fill" style="left:0;width:100%"></div>'
+          +'<div class="ov-grid-price-tri" style="left:'+curPct.toFixed(1)+'%">&#x25BC;</div>'
+        +'</div>'
+        +'<div class="ov-grid-stats">'+cycles+' cyc &nbsp; '+fills+' fills &nbsp; <span style="color:'+gpnlColor+'">'+(gpnl>=0?"+":"")+fmt$(gpnl)+'</span></div>'
+      +'</div>'
+      +'</div>';
+  }
+  el.innerHTML = (h || '<div class="ov-sleeping"><div class="ov-sleeping-title">SLEEPING</div></div>') + gateH;
+}
+
+/* ── 2C. Active Cooldowns ── */
+function renderOvCooldowns(){
+  var el = document.getElementById("ovCooldowns");
+  if(!el) return;
+  var p = ovData.portfolio || state.portfolio;
+  var cds = p && p.pair_cooldowns ? p.pair_cooldowns : {};
+  var now = Date.now()/1000;
+  var keys = Object.keys(cds).filter(function(k){ return cds[k] > now; });
+  if(!keys.length){
+    el.innerHTML = '<div class="ov-cd-none">No active cooldowns &#10003;</div>';
+    return;
+  }
+  keys.sort(function(a,b){ return cds[a]-cds[b]; });
+  var h = "";
+  for(var i=0;i<keys.length;i++){
+    var pair = keys[i];
+    var remaining = Math.max(0, Math.round(cds[pair] - now));
+    var mins = Math.floor(remaining/60);
+    var secs = remaining%60;
+    var timeStr = mins > 0 ? mins+"m "+String(secs).padStart(2,"0")+"s" : secs+"s";
+    h += '<div class="ov-cd-row">'
+      +'<span class="ov-cd-pair">'+escHtml(pair)+'</span>'
+      +'<span class="ov-cd-time">'+timeStr+'</span>'
+      +'</div>';
+  }
+  el.innerHTML = h;
+}
+
+/* ── 2D. Portfolio Ledger ── */
+function renderOvLedger(){
+  var el = document.getElementById("ovLedger");
+  if(!el) return;
+  var p = ovData.portfolio || state.portfolio;
+  var res = p && Array.isArray(p.reservations) ? p.reservations : [];
+  if(!res.length){
+    el.innerHTML = '<div class="ov-sub-text">No active reservations</div>';
+    return;
+  }
+  var now = Date.now()/1000;
+  var STALE_THRESHOLD = 7200; /* 2 hours */
+  var staleCount = 0;
+  var totalAmt = 0;
+
+  var h = '<table class="ov-ledger-table"><thead><tr>'
+    +'<th>Bot</th><th>Pair</th><th>Dir</th><th>Size</th><th>Age</th><th>Flag</th>'
+    +'</tr></thead><tbody>';
+
+  for(var i=0;i<res.length;i++){
+    var r = res[i];
+    var def = botDef(r.bot_id);
+    var botColor = def ? def.color : "#94a3b8";
+    var botName = def ? def.name : (r.bot_id||"?");
+    var dir = (r.direction||"").toUpperCase();
+    var dirColor = dir==="LONG"?"#22c55e":dir==="SHORT"?"#ef4444":"#94a3b8";
+    var age = r.reserved_at ? (now - r.reserved_at) : 0;
+    var ageStr = fmtAge(age);
+    var isStale = age > STALE_THRESHOLD;
+    if(isStale) staleCount++;
+    var amt = r.amount || 0;
+    totalAmt += amt;
+
+    h += '<tr>'
+      +'<td style="color:'+botColor+';font-weight:700">'+escHtml(botName)+'</td>'
+      +'<td style="color:#e2e8f0">'+escHtml(r.pair||"?")+'</td>'
+      +'<td style="color:'+dirColor+';font-weight:700">'+escHtml(dir)+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace);color:#94a3b8">'+fmt$(amt)+'</td>'
+      +'<td style="color:'+(isStale?"#ef4444":"#64748b")+'">'+escHtml(ageStr)+'</td>'
+      +'<td>'+(isStale?'<span class="ov-ledger-stale">STALE</span>':'<span style="color:#334155">&mdash;</span>')+'</td>'
+      +'</tr>';
+  }
+  h += '</tbody></table>';
+
+  var footer = '<div class="ov-ledger-footer">'
+    +'<span>'+res.length+' reservations &nbsp; '+fmt$(totalAmt)+'</span>'
+    +'<span style="color:'+(staleCount>0?"#ef4444":"#22c55e")+'">'
+    +(staleCount>0?"Stale: "+staleCount:"Stale: NONE")+'</span>'
+    +'</div>';
+
+  el.innerHTML = h + footer;
+}
+
+/* ── 3A. Regime Sources ── */
+var OV_INTEL_BOTS = ["sentinel","contrarian","trinity","hivemind","oracle","chronos","nexus","phitex"];
+
+function renderOvRegimes(){
+  var tbody = document.getElementById("ovRegimeTbody");
+  var summEl = document.getElementById("ovRegimeSummary");
+  if(!tbody) return;
+
+  var rangingCount = 0, fearCount = 0, otherCount = 0;
+  var h = "";
+
+  for(var i=0;i<OV_INTEL_BOTS.length;i++){
+    var id = OV_INTEL_BOTS[i];
+    var b = findBot(state.bots, id);
+    var def = botDef(id);
+    var name = def ? def.name : id;
+    var regime = (b && b.normalized && b.normalized.regime) ? b.normalized.regime : "--";
+    var color = ovRegimeColor(regime);
+    var arrow = ovRegimeArrow(regime);
+    var shortRegime = regime.length > 14 ? regime.slice(0,12)+".." : regime;
+
+    /* Key confidence metric per bot */
+    var confMetric = "";
+    if(b && b.normalized){
+      var n = b.normalized;
+      var raw = b.raw || {};
+      if(id==="sentinel")    confMetric = n.signals_count != null ? n.signals_count+" sig" : "";
+      else if(id==="trinity") confMetric = n.signals_count != null ? n.signals_count+" sig" : "";
+      else if(id==="hivemind") confMetric = raw.consensus_pct != null ? Math.round(raw.consensus_pct*100)+"%" : (n.win_rate!=null?n.win_rate.toFixed(0)+"%WR":"");
+      else if(id==="oracle")  confMetric = raw.signal_strength != null ? raw.signal_strength.toFixed(2) : "";
+      else if(id==="chronos") confMetric = raw.temporal_score != null ? raw.temporal_score.toFixed(2) : "";
+      else if(id==="nexus")   confMetric = raw.market_character || "";
+      else if(id==="phitex")  confMetric = raw.temperature != null ? raw.temperature.toFixed(1)+"°" : "";
+      else if(id==="contrarian") confMetric = raw.fear_greed_index != null ? "F/G:"+Math.round(raw.fear_greed_index) : "";
+    }
+
+    var ru = regime.toUpperCase();
+    if(/RANG|NEUTRAL|EQUIL/.test(ru)) rangingCount++;
+    else if(/BEAR|FEAR|SELL|DOWN|CRASH/.test(ru)) fearCount++;
+    else otherCount++;
+
+    h += '<tr>'
+      +'<td class="ov-regime-name" style="color:'+(def?def.color:"#94a3b8")+'">'+escHtml(name)+'</td>'
+      +'<td class="ov-regime-val" style="color:'+color+'">'+escHtml(shortRegime)+'</td>'
+      +'<td class="ov-regime-arrow" style="color:'+color+'">'+arrow+'</td>'
+      +'<td style="font-size:0.62rem;color:var(--ov-dim);text-align:right;font-family:var(--font);">'+escHtml(confMetric)+'</td>'
+      +'</tr>';
+  }
+  tbody.innerHTML = h;
+
+  if(summEl){
+    var total = OV_INTEL_BOTS.length;
+    summEl.innerHTML = '<span style="color:var(--ov-blue)">'+rangingCount+'/'+total+' RANGING</span>'
+      +' &nbsp; <span style="color:var(--ov-red)">'+fearCount+'/'+total+' FEAR</span>'
+      +' &nbsp; <span style="color:var(--ov-muted)">'+otherCount+'/'+total+' OTHER</span>';
+  }
+}
+
+/* ── 3B. Whale Intelligence ── */
+function renderOvWhaleIntel(){
+  var el = document.getElementById("ovWhaleIntel");
+  if(!el) return;
+  var snap = ovData.deepblue;
+  var now = Date.now()/1000;
+
+  /* Build whale list from deepblue snapshot + recent events */
+  var pairs = {};
+
+  /* From DeepBlue snapshot — look for monitored_pairs, whale_scores, active_pairs */
+  if(snap){
+    var monPairs = snap.monitored_pairs || snap.whale_scores || snap.active_pairs || null;
+    if(monPairs && typeof monPairs === 'object'){
+      var arr = Array.isArray(monPairs) ? monPairs : Object.keys(monPairs).map(function(k){
+        var v = monPairs[k];
+        return typeof v === 'object' ? Object.assign({pair:k},v) : {pair:k,score:v};
+      });
+      for(var i=0;i<arr.length;i++){
+        var p = arr[i];
+        var pairKey = p.pair || p.symbol || p.name || "?";
+        var score = p.score || p.whale_score || p.intensity || 0;
+        var tier = p.tier || (score>0.8?"EXTREME":score>0.5?"HIGH":"MEDIUM");
+        var driver = p.driver || p.primary_driver || p.reason || "";
+        pairs[pairKey] = {pair:pairKey, score:score, tier:tier, driver:driver, fromSnap:true};
+      }
+    }
+  }
+
+  /* Also add from recent whale alert events */
+  var wEvts = ovData.whaleAlerts || [];
+  for(var j=0;j<wEvts.length;j++){
+    var w = wEvts[j];
+    var pk = w.pair||"?";
+    if(!pairs[pk] || (w.score||0) > (pairs[pk].score||0)){
+      pairs[pk] = {pair:pk, score:w.score||0.5, tier:w.tier||"HIGH", driver:w.driver||"", fromEvent:true};
+    }
+  }
+
+  var list = Object.values ? Object.values(pairs) : Object.keys(pairs).map(function(k){return pairs[k];});
+  list.sort(function(a,b){ return (b.score||0)-(a.score||0); });
+
+  if(!list.length){
+    el.innerHTML = '<span class="ov-whale-clear" style="display:block;padding:8px 0;">CLEAR &#10003;</span>';
+    return;
+  }
+
+  /* Summary counts */
+  var extremeCount = list.filter(function(x){ return (x.tier||"").toUpperCase()==="EXTREME"; }).length;
+  var highCount = list.filter(function(x){ return (x.tier||"").toUpperCase()==="HIGH"; }).length;
+
+  var h = '<div style="font-size:0.62rem;font-family:var(--font);margin-bottom:6px;">'
+    +'<span style="color:var(--ov-red)">'+extremeCount+' EXTREME</span>'
+    +' &nbsp; <span style="color:var(--ov-amber)">'+highCount+' HIGH</span>'
+    +' &nbsp; <span style="color:var(--ov-muted)">'+list.length+' active pairs</span>'
+    +'</div>';
+
+  for(var k=0;k<Math.min(list.length,8);k++){
+    var item = list[k];
+    var tu = (item.tier||"").toUpperCase();
+    var pairClass = tu==="EXTREME" ? "ov-extreme" : tu==="HIGH" ? "ov-high" : "ov-medium";
+    h += '<div class="ov-whale-intel-row">'
+      +'<span class="ov-whale-pair '+pairClass+'">'+escHtml(item.pair)+'</span>'
+      +'<span class="ov-whale-score '+pairClass+'">'+item.score.toFixed(2)+'</span>'
+      +'<span class="ov-whale-driver">'+escHtml(item.driver||tu)+'</span>'
+      +'</div>';
+  }
+  el.innerHTML = h;
+}
+
+/* ── 3C. Council Engines ── */
+function renderOvEngines(){
+  var el = document.getElementById("ovEngines");
+  if(!el) return;
+  var now = Date.now()/1000;
+  var counts = ovData.engineCounts;
+  var lastFired = ovData.engineLastFired;
+
+  /* Try to enrich from NEXUS snapshot */
+  var nexusSnap = ovData.nexusCouncil;
+  var nexusEngines = nexusSnap && (nexusSnap.engines || nexusSnap.active_engines || null);
+
+  var maxCount = 1;
+  for(var k in counts) if(counts[k] > maxCount) maxCount = counts[k];
+
+  var h = "";
+  for(var i=0;i<OV_ENGINE_MAP.length;i++){
+    var eng = OV_ENGINE_MAP[i];
+    var count = 0;
+    var mostRecent = 0;
+    for(var j=0;j<eng.types.length;j++){
+      count += counts[eng.types[j]] || 0;
+      var lf = lastFired[eng.types[j]] || 0;
+      if(lf > mostRecent) mostRecent = lf;
+    }
+
+    /* Also check NEXUS snapshot for engine last-fired */
+    if(nexusEngines && nexusEngines[eng.name.toLowerCase()]){
+      var ne = nexusEngines[eng.name.toLowerCase()];
+      var nts = ne.last_fired || ne.last_event || 0;
+      if(nts > mostRecent) mostRecent = nts;
+    }
+
+    var dotColor, dotGlow = "";
+    var age = now - mostRecent;
+    if(mostRecent > 0 && age < 300){ dotColor="#22c55e"; dotGlow="box-shadow:0 0 5px #22c55e"; }
+    else if(mostRecent > 0 && age < 1800){ dotColor="#f59e0b"; dotGlow=""; }
+    else { dotColor="#334155"; dotGlow=""; }
+
+    var barPct = count > 0 ? Math.max(4, Math.round(count/maxCount*100)) : 0;
+    var barColor = dotColor === "#334155" ? "#1e293b" : dotColor;
+    var lastAgoStr = mostRecent > 0 ? ago(mostRecent) : "silent";
+
+    h += '<div class="ov-engine-row" title="'+escHtml(eng.name)+': '+count+' events, last '+lastAgoStr+'">'
+      +'<div class="ov-engine-dot" style="background:'+dotColor+';'+dotGlow+'"></div>'
+      +'<span class="ov-engine-name">'+escHtml(eng.name)+'</span>'
+      +'<div class="ov-engine-bar-track"><div class="ov-engine-bar-fill" style="width:'+barPct+'%;background:'+barColor+'"></div></div>'
+      +'<span class="ov-engine-count">'+count+'</span>'
+      +'</div>';
+  }
+  el.innerHTML = h;
+}
+
+/* ── 3D. Signal Quality ── */
+function renderOvSignalQuality(){
+  var c = aegisState.components || {};
+
+  function setSQ(barId, valId, val){
+    var bar = document.getElementById(barId);
+    var valEl = document.getElementById(valId);
+    if(bar) bar.style.width = (val!=null ? Math.min(100, Math.max(0, val*100)) : 0).toFixed(1)+"%";
+    if(valEl) valEl.textContent = val!=null ? val.toFixed(3) : "--";
+  }
+
+  var consensus  = c.consensus_entropy  != null ? c.consensus_entropy  : (c.consensus || c.signal_consensus);
+  var coherence  = c.signal_coherence   != null ? c.signal_coherence   : (c.coherence || c.regime_coherence);
+  var whaleDv    = c.whale_divergence   || c.whale_div;
+  var portStress = c.portfolio_stress   || c.port_stress;
+  var phitexSig  = c.phitex_signal      || c.phitex_sig;
+
+  setSQ("ovSqConsensus",  "ovSqConsensusVal",  consensus);
+  setSQ("ovSqCoherence",  "ovSqCoherenceVal",  coherence);
+  setSQ("ovSqPhitex",     "ovSqPhitexVal",     phitexSig);
+  setSQ("ovSqWhaleDv",    "ovSqWhaleDvVal",    whaleDv);
+  setSQ("ovSqPortStress", "ovSqPortStressVal", portStress);
+
+  /* Also keep legacy signal bar IDs in sync (hidden bar, but referenced elsewhere) */
+  function setSig(barId, valId, val, max, decimals){
+    var bar = document.getElementById(barId);
+    var valEl = document.getElementById(valId);
+    if(bar) bar.style.width = (val!=null ? Math.min(100, val/max*100) : 0).toFixed(1)+"%";
+    if(valEl) valEl.textContent = val!=null ? val.toFixed(decimals) : "--";
+  }
+  setSig("ovSigConsensus","ovSigConsensusVal", consensus, 1, 3);
+  setSig("ovSigCoherence","ovSigCoherenceVal", coherence, 1, 3);
+  setSig("ovSigPhitex",   "ovSigPhitexVal",    phitexSig, 1, 3);
+  setSig("ovSigWhaleDv",  "ovSigWhaleDvVal",   whaleDv,   1, 3);
+  setSig("ovSigPortStress","ovSigPortStressVal",portStress,1, 3);
+
+  /* Signal decay half-lives if available */
+  var decayEl = document.getElementById("ovSignalDecay");
+  if(decayEl && ovData.signalDecay){
+    var sd = ovData.signalDecay;
+    var dh = '<div style="font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);margin-bottom:3px;letter-spacing:0.5px;">SIGNAL HALF-LIVES</div>';
+    for(var k in sd){
+      if(sd.hasOwnProperty(k)){
+        var entry = sd[k];
+        /* entry is an object like {half_life_seconds, half_life_human, ...} */
+        var hlSec  = (entry && typeof entry === 'object') ? (entry.half_life_seconds != null ? entry.half_life_seconds : null) : (typeof entry === 'number' ? entry : null);
+        var hlHuman= (entry && typeof entry === 'object') ? (entry.half_life_human || null) : null;
+        var ageStr = (entry && typeof entry === 'object' && entry.freshest_age_seconds != null) ? (' · age '+entry.freshest_age_seconds+'s') : '';
+        var displayVal = hlHuman ? hlHuman : (hlSec != null ? hlSec+'s' : '?');
+        dh += '<div style="display:flex;justify-content:space-between;font-size:0.65rem;font-family:var(--font);padding:1px 0;">'
+          +'<span style="color:var(--ov-muted)">'+escHtml(k)+'</span>'
+          +'<span style="color:var(--ov-text);font-weight:700">'+escHtml(displayVal)+escHtml(ageStr)+'</span>'
+          +'</div>';
+      }
+    }
+    decayEl.innerHTML = dh;
+  } else if(decayEl){
+    decayEl.innerHTML = '';
+  }
+}
+
+/* ── 4A. Bot Scoreboard (enhanced) ── */
+function renderOvScoreboard(){
+  /* Legacy tbody for backward compat */
+  var tbodyOld = document.getElementById("ovScoreboard");
+  var tbody = document.getElementById("ovScoreboard2");
+  if(!tbody && !tbodyOld) return;
+  var ex = ovData.expectancy;
+  var perBot = ex && ex.bot_stats ? ex.bot_stats : {};
+
+  var entries = [];
+  for(var i=0;i<BOTS_DEF.length;i++){
+    var def = BOTS_DEF[i];
+    var b = findBot(state.bots, def.id);
+    var alive = b && b.alive;
+    if(def.id==="phitex"&&phitexData.pairs.length) alive=true;
+    if(def.id==="aegis"&&aegisState.score!=null) alive=true;
+    var n = (b && b.normalized) || {};
+    var bex = perBot.hasOwnProperty(def.id) ? perBot[def.id] : null;
+
+    var netPnl   = bex && bex.total_net_pnl  != null ? bex.total_net_pnl  : (n.pnl != null ? n.pnl : null);
+    var grossPnl = bex && bex.total_gross_pnl != null ? bex.total_gross_pnl : null;
+    var fees     = bex && bex.total_fees       != null ? bex.total_fees      : null;
+    var feeRatio = bex && bex.fees_ate_pct     != null ? bex.fees_ate_pct    : (bex && bex.fee_ratio != null ? bex.fee_ratio : null);
+    var expTrade = bex && bex.expectancy_per_trade != null ? bex.expectancy_per_trade : null;
+    var trades   = bex ? (bex.total_trades || 0) : (n.total_trades || null);
+    var wr       = bex && bex.win_rate != null ? bex.win_rate : (n.win_rate != null ? n.win_rate : null);
+    if(wr != null && wr <= 1.01) wr = wr * 100;
+
+    var status = !b ? "offline" : !alive ? "halted" : (n.regime && n.regime.toLowerCase().indexOf("sleep")>=0 ? "sleeping" : (trades>0||n.open_positions>0?"active":"waiting"));
+    entries.push({def:def,alive:alive,netPnl:netPnl,grossPnl:grossPnl,fees:fees,feeRatio:feeRatio,expTrade:expTrade,trades:trades,wr:wr,status:status,b:b});
+  }
+
+  entries.sort(function(a,b){
+    var pa = a.netPnl != null ? a.netPnl : -99999;
+    var pb = b.netPnl != null ? b.netPnl : -99999;
+    return pb - pa;
+  });
+
+  /* Fleet totals */
+  var fleetGross = 0, fleetFees = 0, fleetNet = 0, fleetTrades = 0;
+  if(ex){
+    fleetGross  = ex.total_gross_pnl || ex.gross_pnl || 0;
+    fleetFees   = ex.total_fees       || ex.fees       || 0;
+    fleetNet    = ex.total_net_pnl    || ex.net_pnl    || 0;
+    fleetTrades = ex.total_trades     || ex.trades     || 0;
+  }
+  var fleetFeeRatio = fleetGross > 0 ? (fleetFees/fleetGross*100) : (ex && ex.fees_ate_pct ? ex.fees_ate_pct : null);
+
+  function pnlCell(v){
+    if(v==null) return '<td style="color:#334155">&mdash;</td>';
+    return '<td style="color:'+(v>=0?"#22c55e":"#ef4444")+';font-weight:700;text-align:right;font-family:var(--font-mono,monospace)">'+(v>=0?"+":"")+fmt$(v)+'</td>';
+  }
+  function feeRatioCell(v){
+    if(v==null) return '<td style="color:#334155">&mdash;</td>';
+    var cls = v>200?"ov-fee-high":v>100?"ov-fee-mid":"ov-fee-ok";
+    return '<td class="'+cls+'" style="text-align:right;font-family:var(--font-mono,monospace)">'+Math.round(v)+'%</td>';
+  }
+  function feesCell(v){
+    if(v==null) return '<td style="color:#334155">&mdash;</td>';
+    return '<td style="color:#ef4444;text-align:right;font-family:var(--font-mono,monospace)">-'+fmt$(Math.abs(v))+'</td>';
+  }
+
+  var h = "";
+  for(var i=0;i<entries.length;i++){
+    var e = entries[i];
+    var dotColor, dotBorder = "";
+    if(!e.alive){ dotColor="#334155"; dotBorder="border:1px solid #475569"; }
+    else if(e.status==="halted"){ dotColor="transparent"; dotBorder="border:1.5px solid #ef4444"; }
+    else if(e.status==="waiting"||e.status==="sleeping"){ dotColor="#f59e0b"; }
+    else { dotColor="#22c55e"; dotBorder="box-shadow:0 0 4px #22c55e"; }
+
+    var trStr    = e.trades != null ? e.trades : '&mdash;';
+    var wrStr    = e.wr != null ? e.wr.toFixed(1)+"%" : '&mdash;';
+    var expStr   = e.expTrade != null
+      ? '<span style="color:'+(e.expTrade>=0?"#22c55e":"#ef4444")+'">'+(e.expTrade>=0?"+":"")+e.expTrade.toFixed(2)+'</span>'
+      : '&mdash;';
+    var tabIdx   = BOTS_DEF.indexOf(e.def) + 1;
+
+    h += '<tr onclick="window._setTab('+tabIdx+')">'
+      +'<td style="color:#334155;text-align:right;font-family:var(--font-mono,monospace)">'+(i+1)+'</td>'
+      +'<td style="text-align:left;"><span class="ov-score-dot" style="background:'+dotColor+';'+dotBorder+'"></span>'
+        +'<span style="color:'+e.def.color+';font-weight:700">'+escHtml(e.def.name)+'</span></td>'
+      +'<td style="color:#64748b;text-align:right">'+trStr+'</td>'
+      +'<td style="color:#64748b;text-align:right">'+wrStr+'</td>'
+      +pnlCell(e.grossPnl)
+      +feesCell(e.fees)
+      +pnlCell(e.netPnl)
+      +feeRatioCell(e.feeRatio)
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace);font-size:0.62rem">'+expStr+'</td>'
+      +'<td style="color:#475569;font-size:0.6rem;letter-spacing:0.3px">'+escHtml(e.status)+'</td>'
+      +'</tr>';
+  }
+
+  /* Fleet total row */
+  h += '<tr class="ov-fleet-total">'
+    +'<td></td>'
+    +'<td style="text-align:left;color:var(--ov-cyan);font-weight:700;font-family:var(--font);">FLEET</td>'
+    +'<td style="text-align:right;color:var(--ov-text)">'+fleetTrades+'</td>'
+    +'<td></td>'
+    +pnlCell(fleetGross||null)
+    +feesCell(fleetFees||null)
+    +pnlCell(fleetNet||null)
+    +feeRatioCell(fleetFeeRatio)
+    +'<td></td>'
+    +'<td></td>'
+    +'</tr>';
+
+  if(tbody) tbody.innerHTML = h;
+  /* Also update old tbody for any code referencing it */
+  if(tbodyOld && tbodyOld !== tbody){
+    /* Minimal old format for compat */
+    var oldH = "";
+    for(var ii=0;ii<entries.length;ii++){
+      var ee = entries[ii];
+      var pnlStr2 = ee.netPnl != null
+        ? '<span style="color:'+(ee.netPnl>=0?"#22c55e":"#ef4444")+';font-weight:700">'+(ee.netPnl>=0?"+":"")+fmt$(ee.netPnl)+'</span>'
+        : '<span style="color:#334155">&mdash;</span>';
+      var tidx = BOTS_DEF.indexOf(ee.def)+1;
+      oldH += '<tr onclick="window._setTab('+tidx+')">'
+        +'<td class="ov-score-rank" style="color:#334155">'+(ii+1)+'</td>'
+        +'<td><span class="ov-score-dot"></span><span style="color:'+ee.def.color+';font-weight:700">'+escHtml(ee.def.name)+'</span></td>'
+        +'<td style="color:#64748b">'+(ee.trades!=null?ee.trades:'&mdash;')+'</td>'
+        +'<td style="color:#64748b">'+(ee.wr!=null?ee.wr.toFixed(1)+"%":'&mdash;')+'</td>'
+        +'<td>'+pnlStr2+'</td>'
+        +'<td style="color:#475569;font-size:0.63rem">'+escHtml(ee.status)+'</td>'
+        +'</tr>';
+    }
+    tbodyOld.innerHTML = oldH;
+  }
+}
+
+/* ── 4B. Trade Forensics ── */
+function renderOvForensics(){
+  var el = document.getElementById("ovForensics");
+  if(!el) return;
+  var ex = ovData.expectancy;
+
+  /* /api/expectancy may include recent_trades array */
+  var trades = ex && Array.isArray(ex.recent_trades) ? ex.recent_trades : [];
+
+  if(!trades.length && ex){
+    /* Fallback: show closed trades from recent events */
+    var evts = ovData.recentEvents || [];
+    var closed = evts.filter(function(e){ return e.type==="TRADE_CLOSE"; }).slice(0,10);
+    if(closed.length){
+      var ch = '<table class="ov-forensics-table"><thead><tr>'
+        +'<th>Time</th><th>Bot</th><th>Pair</th><th>Dir</th><th>Net P&L</th>'
+        +'</tr></thead><tbody>';
+      for(var i=0;i<closed.length;i++){
+        var ev = closed[i];
+        var d = ev.data || {};
+        var def = botDef(ev.source||ev.bot_id||"");
+        var botColor = def ? def.color : "#94a3b8";
+        var botName  = def ? def.name  : (ev.source||ev.bot_id||"?");
+        var pnl = d.pnl != null ? d.pnl : (d.net_pnl != null ? d.net_pnl : null);
+        var pnlStr = pnl != null ? '<span style="color:'+(pnl>=0?"#22c55e":"#ef4444")+'">'+(pnl>=0?"+":"")+fmt$(pnl)+'</span>' : '&mdash;';
+        ch += '<tr>'
+          +'<td>'+escHtml(fmtHHMMSS(ev.ts||ev.timestamp||0))+'</td>'
+          +'<td style="color:'+botColor+';font-weight:700">'+escHtml(botName)+'</td>'
+          +'<td style="color:#e2e8f0">'+escHtml(d.pair||"?")+'</td>'
+          +'<td style="color:'+(d.direction==="LONG"?"#22c55e":"#ef4444")+'">'+escHtml(d.direction||"?")+'</td>'
+          +'<td style="text-align:right;font-family:var(--font-mono,monospace)">'+pnlStr+'</td>'
+          +'</tr>';
+      }
+      ch += '</tbody></table>';
+      el.innerHTML = ch;
+      return;
+    }
+    el.innerHTML = '<div class="ov-sub-text" style="padding:8px 0;">'
+      +'No recent trade data &mdash; /api/expectancy returns aggregates only.<br>'
+      +'Individual trade history requires recent TRADE_CLOSE events on bus.</div>';
+    return;
+  }
+
+  /* Full forensics table from recent_trades */
+  var h = '<table class="ov-forensics-table"><thead><tr>'
+    +'<th>Time</th><th>Bot</th><th>Pair</th><th>Dir</th>'
+    +'<th>Size</th><th>Entry</th><th>Exit</th><th>Gross</th><th>Fee</th><th>Net</th>'
+    +'</tr></thead><tbody>';
+
+  for(var j=0;j<Math.min(trades.length,10);j++){
+    var t = trades[j];
+    var def2 = botDef(t.bot_id||t.bot||"");
+    var bc = def2 ? def2.color : "#94a3b8";
+    var bn = def2 ? def2.name  : (t.bot_id||t.bot||"?");
+    var dir2 = (t.direction||"").toUpperCase();
+    var dc = dir2==="LONG"?"#22c55e":"#ef4444";
+    var net2 = t.net_pnl != null ? t.net_pnl : (t.pnl != null ? t.pnl : null);
+    var gross2 = t.gross_pnl != null ? t.gross_pnl : null;
+    var fee2 = t.fee != null ? t.fee : (t.total_fee != null ? t.total_fee : null);
+    var ts2 = t.close_time || t.timestamp || t.ts || 0;
+    h += '<tr>'
+      +'<td>'+escHtml(ts2?fmtHHMMSS(ts2):"--")+'</td>'
+      +'<td style="color:'+bc+';font-weight:700">'+escHtml(bn)+'</td>'
+      +'<td style="color:#e2e8f0">'+escHtml(t.pair||"?")+'</td>'
+      +'<td style="color:'+dc+'">'+escHtml(dir2)+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace)">'+fmt$(t.size||t.amount||null)+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace)">'+fmtPrice(t.entry_price||t.entry||null)+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace)">'+fmtPrice(t.exit_price||t.exit||null)+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace);color:'+(gross2!=null?(gross2>=0?"#22c55e":"#ef4444"):"#94a3b8")+'">'+(gross2!=null?(gross2>=0?"+":"")+fmt$(gross2):"&mdash;")+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace);color:#ef4444">'+(fee2!=null?"-"+fmt$(Math.abs(fee2)):"&mdash;")+'</td>'
+      +'<td style="text-align:right;font-family:var(--font-mono,monospace);color:'+(net2!=null?(net2>=0?"#22c55e":"#ef4444"):"#334155")+';font-weight:700">'+(net2!=null?(net2>=0?"+":"")+fmt$(net2):"&mdash;")+'</td>'
+      +'</tr>';
+  }
+  h += '</tbody></table>';
+  el.innerHTML = h;
+}
+
+/* ── 4C. Fee Analysis ── */
+function renderOvFeeAnalysis(){
+  var ex = ovData.expectancy;
+  var bigEl = document.getElementById("ovExpBig");
+  var subEl = document.getElementById("ovExpSub");
+  var gaugeEl = document.getElementById("ovFeeGauge");
+  var ratioPctEl = document.getElementById("ovFeeRatioPct");
+
+  if(!bigEl) return;
+
+  if(!ex){
+    bigEl.textContent = "--";
+    bigEl.style.color = "#475569";
+    if(subEl) subEl.textContent = "-- trades sampled";
+    return;
+  }
+
+  var exp = ex.fleet_expectancy || ex.expectancy_per_trade || 0;
+  var trades = ex.total_trades || ex.trades || 0;
+  var feeRatio = ex.fees_ate_pct || ex.fee_ratio || 0;
+  var totalFees = ex.total_fees || ex.fees || 0;
+  var totalGross = ex.total_gross_pnl || ex.gross_pnl || 0;
+  var avgFee = trades > 0 ? totalFees / trades : 0;
+
+  var expSign = exp < 0 ? "-" : "+";
+  var expColor = exp < 0 ? "#ef4444" : "#22c55e";
+  bigEl.innerHTML = '<span style="color:'+expColor+'">'+expSign+'$'+Math.abs(exp).toFixed(2)+'</span> / trade';
+  bigEl.style.color = expColor;
+  if(subEl) subEl.textContent = trades + " trades sampled";
+
+  if(ratioPctEl) ratioPctEl.textContent = Math.round(feeRatio) + "%";
+  if(ratioPctEl) ratioPctEl.style.color = feeRatio>200?"#ef4444":feeRatio>100?"#f59e0b":"#22c55e";
+  if(gaugeEl){
+    var pct = Math.min(100, feeRatio / 4);
+    gaugeEl.style.width = Math.max(0, pct).toFixed(1) + "%";
+    gaugeEl.style.background = feeRatio > 200 ? "#ef4444" : feeRatio > 100 ? "#f59e0b" : "#22c55e";
+  }
+  var marker = document.getElementById("ovFeeMarker");
+  var markerLbl = document.getElementById("ovFeeMarkerLabel");
+  if(marker) marker.style.left = "25%";
+  if(markerLbl) markerLbl.style.left = "25%";
+
+  /* Per-bot fee breakdown bars */
+  var breakdownEl = document.getElementById("ovFeeBotBreakdown");
+  if(breakdownEl && ex.bot_stats){
+    var perBot = ex.bot_stats;
+    var feeEntries = [];
+    for(var id in perBot){
+      if(perBot.hasOwnProperty(id)){
+        var bfees = perBot[id].total_fees || 0;
+        if(bfees > 0){
+          var bdef = botDef(id);
+          feeEntries.push({name:bdef?bdef.name:id, fees:bfees, color:bdef?bdef.color:"#94a3b8"});
+        }
+      }
+    }
+    feeEntries.sort(function(a,b){ return b.fees-a.fees; });
+    var maxFee = feeEntries.length ? feeEntries[0].fees : 1;
+    var bh = '<div style="font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);margin-bottom:3px;letter-spacing:0.3px;">FEE BREAKDOWN BY BOT</div>';
+    for(var i=0;i<feeEntries.length;i++){
+      var fe = feeEntries[i];
+      var barPct = Math.min(100, fe.fees/maxFee*100);
+      var pctOfTotal = totalFees > 0 ? (fe.fees/totalFees*100).toFixed(0) : 0;
+      bh += '<div class="ov-fee-bar-row">'
+        +'<span class="ov-fee-bar-name" style="color:'+fe.color+'">'+escHtml(fe.name)+'</span>'
+        +'<div class="ov-fee-bar-track"><div class="ov-fee-bar-fill" style="width:'+barPct.toFixed(1)+'%;background:'+fe.color+'"></div></div>'
+        +'<span class="ov-fee-bar-val">'+pctOfTotal+'%</span>'
+        +'</div>';
+    }
+    bh += '<div style="font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);margin-top:4px;">Total: '+fmt$(totalFees)+' &nbsp; Avg/trade: '+fmt$(avgFee)+'</div>';
+    breakdownEl.innerHTML = bh;
+  }
+
+  /* Fee advice */
+  var adviceEl = document.getElementById("ovFeeAdvice");
+  if(adviceEl){
+    if(feeRatio > 100){
+      var neededSizeMult = feeRatio/100;
+      var neededReduction = Math.round((1 - 100/feeRatio)*100);
+      adviceEl.innerHTML = 'Target: reduce fee ratio to &lt;100% &mdash; need <strong style="color:var(--ov-text)">'
+        +neededSizeMult.toFixed(1)+'&times; larger trades</strong> OR <strong style="color:var(--ov-text)">'
+        +neededReduction+'% fewer trades</strong> at current sizes.';
+    } else {
+      adviceEl.innerHTML = '<span style="color:var(--ov-green)">Fee ratio healthy. Current: '+Math.round(feeRatio)+'%</span>';
+    }
+  }
+}
+
+/* ── Fetch overview-specific data ── */
+function fetchOverviewData(){
+  ovData.lastFetch = Date.now();
+
+  /* 1. Expectancy */
+  fetch("/api/expectancy")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.expectancy = d; }
+      if(activeTab===0){ renderOvScoreboard(); renderOvFeeAnalysis(); renderOvForensics(); }
+    })
+    .catch(function(){});
+
+  /* 2. Portfolio (positions + cooldowns + ledger) */
+  fetch("/api/portfolio")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.portfolio = d; }
+      if(activeTab===0){ renderOvPositions(); renderOvPortfolioSummary(); renderOvCooldowns(); renderOvLedger(); renderOvSignalQuality(); }
+    })
+    .catch(function(){});
+
+  /* 3. Recent events (whale + engine counts + errors) */
+  fetch("/api/events/recent?n=200")
+    .then(function(r){ return r.ok ? r.json() : []; })
+    .then(function(evts){
+      if(!Array.isArray(evts)) return;
+      var now = Date.now()/1000;
+      ovData.recentEvents = evts;
+
+      ovData.whaleAlerts = evts.filter(function(e){
+        return e.type === "WHALE_ALERT" && (now - (e.ts||e.timestamp||0)) < 300;
+      }).map(function(e){
+        var d = e.data || {};
+        return {pair:d.pair||e.pair||"?", tier:d.tier||e.tier||"HIGH", score:d.score||e.score||0.5, driver:d.driver||e.driver||"", ts:e.ts||e.timestamp||0};
+      });
+
+      var counts = {}, lastFired = {};
+      for(var i=0;i<evts.length;i++){
+        var ev = evts[i];
+        var t = ev.type || "";
+        counts[t] = (counts[t]||0) + 1;
+        var ets = ev.ts || ev.timestamp || 0;
+        if(!lastFired[t] || ets > lastFired[t]) lastFired[t] = ets;
+      }
+      ovData.engineCounts = counts;
+      ovData.engineLastFired = lastFired;
+
+      /* Seed event stream */
+      if(ovEventEntries.length === 0){
+        var sorted = evts.slice().sort(function(a,b){ return (b.ts||b.timestamp||0)-(a.ts||a.timestamp||0); });
+        for(var j=0;j<sorted.length&&ovEventEntries.length<12;j++){
+          var e = sorted[j];
+          var d = e.data || {};
+          var msg = "";
+          if(d.pair) msg += d.pair+" ";
+          if(d.direction) msg += d.direction+" ";
+          if(d.pnl != null) msg += "PnL=$"+Number(d.pnl).toFixed(2)+" ";
+          if(d.reason) msg += d.reason+" ";
+          if(!msg && d.message) msg = d.message;
+          if(!msg && e.message) msg = e.message;
+          ovAddEvent(e.type||"EVENT", e.source||e.bot_id||"", msg.trim(), e.ts||e.timestamp||0);
+        }
+      }
+
+      if(activeTab===0){ renderOvWhaleIntel(); renderOvEngines(); renderOvFleetErrors(); }
+    })
+    .catch(function(){});
+
+  /* 4. AEGIS snapshot */
+  fetch("http://localhost:8079/api/snapshot")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.aegisDetail = d; }
+    })
+    .catch(function(){});
+
+  /* 5. Contrarian snapshot (sentiment + funding) */
+  fetch("http://localhost:8084/api/snapshot")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.contrarian = d; }
+      if(activeTab===0){ renderOvSentiment(); }
+    })
+    .catch(function(){});
+
+  /* 6. Gridzilla snapshot */
+  fetch("http://localhost:8077/api/snapshot")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.gridzillaSnap = d; }
+    })
+    .catch(function(){});
+
+  /* 7. DeepBlue snapshot (whale intelligence) */
+  fetch("http://localhost:8076/api/snapshot")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.deepblue = d; }
+      if(activeTab===0){ renderOvWhaleIntel(); }
+    })
+    .catch(function(){});
+
+  /* 8. NEXUS snapshot (council engines) */
+  fetch("http://localhost:8082/api/snapshot")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.nexusCouncil = d; }
+      if(activeTab===0){ renderOvEngines(); }
+    })
+    .catch(function(){});
+
+  /* 9. Arbitrageur snapshot (position entry prices) */
+  fetch("http://localhost:8085/api/snapshot")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.arbitrageur = d; }
+      if(activeTab===0){ renderOvPositions(); }
+    })
+    .catch(function(){});
+
+  /* 10. Signal decay endpoint (graceful 404 handling) */
+  fetch("/api/signals/decay")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.signalDecay = d; }
+      if(activeTab===0){ renderOvSignalQuality(); }
+    })
+    .catch(function(){});
+}
+
+/* ── Backward-compat stubs for old render function names ── */
+function renderOvExpectancy(){ renderOvFeeAnalysis(); }
+function renderOvWaterfall(){} /* removed — replaced by fee analysis */
+function renderOvSignalBar(){ renderOvSignalQuality(); }
+function renderOvWhales(){ renderOvWhaleIntel(); }
+
 /* ===== INIT ===== */
 renderTabBar();
 renderAll();
+/* Initial state: tab 0 active, hide sidebar */
+(function(){
+  var $sb=document.getElementById("sidebar");
+  var $sbt=document.getElementById("sbToggle");
+  if(activeTab===0){ if($sb) $sb.style.display="none"; if($sbt) $sbt.style.display="none"; }
+})();
 fetchData();
 fetchPhitex();
+fetchOverviewData();
 connectSSE();
 setInterval(fetchData,POLL_MS);
 setInterval(fetchPhitex,POLL_MS);
+setInterval(fetchOverviewData, 10000);
 
 /* Post-init enhancements */
 setTimeout(function(){

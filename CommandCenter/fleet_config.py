@@ -23,7 +23,7 @@ KRAKEN_FEE_TAKER = 0.0026
 KRAKEN_FEE_MAKER = 0.0016
 
 # ── TIMING ──
-POLL_INTERVAL = 4             # CC poll cycle (seconds)
+POLL_INTERVAL = 10            # CC poll cycle (seconds) — raised from 4s to cut 429s (240→96 req/min)
 HTTP_TIMEOUT = 5              # bot-to-bot HTTP timeout
 REQUEST_TIMEOUT = 3           # per-request timeout in CC
 UNIVERSE_REFRESH_HOURS = 6
@@ -50,23 +50,28 @@ MIN_TRADE_SIZE_USD = 5.0
 
 # ── BOT REGISTRY ──
 # Every bot defined once.  Keys match bot IDs used in CC, event bus, and portfolio.
+# Fields used by launch_fleet.py:
+#   cmd   — subprocess argv list; None means the bot has no standalone launcher
+#   phase — 1 = starts before Command Center, 2 = starts after CC is up
+#   slow  — True = bot needs ~30s to bind its port (adds a 2s inter-launch delay)
 BOTS = {
-    "turtlesue":   {"port": 8070, "dir": os.path.join(DATA_DRIVE, "TurtleSue"),                                "role": "trader",  "display": "TurtleSue",  "color": "#00e676", "endpoints": ["/api/snapshot"]},
-    "sentinel":    {"port": 8071, "dir": os.path.join(DATA_DRIVE, "Sentinel"),                                  "role": "support", "display": "Sentinel",   "color": "#00bfa5", "endpoints": ["/api/snapshot"]},
-    "trinity":     {"port": 8072, "dir": os.path.join(DATA_DRIVE, "Trinity"),                                   "role": "support", "display": "Trinity",    "color": "#00b0ff", "endpoints": ["/api/snapshot"]},
-    "hivemind":    {"port": 8073, "dir": os.path.join(DATA_DRIVE, "HiveMind"),                                  "role": "support", "display": "HiveMind",   "color": "#ffab00", "endpoints": ["/api/snapshot"]},
-    "nexusbrain":  {"port": 8074, "dir": os.path.join(DATA_DRIVE, "NexusBrain"),                                "role": "trader",  "display": "NexusBrain", "color": "#d500f9", "endpoints": ["/api/snapshot"]},
-    "oracle":      {"port": 8075, "dir": os.path.join(DATA_DRIVE, "Oracle"),                                    "role": "intel",   "display": "Oracle",     "color": "#76ff03", "endpoints": ["/api/snapshot"]},
-    "deepblue":    {"port": 8076, "dir": os.path.join(DATA_DRIVE, "Whale Watcher", "apex_whale_finder.dir"),    "role": "intel",   "display": "Deep Blue",  "color": "#18ffff", "endpoints": ["/api/snapshot"]},
-    "gridzilla":   {"port": 8077, "dir": os.path.join(DATA_DRIVE, "Gridzilla"),                                 "role": "trader",  "display": "Gridzilla",  "color": "#ffd600", "endpoints": ["/api/snapshot"]},
-    "phitex":      {"port": 8078, "dir": os.path.join(DATA_DRIVE, "PhiTex"),                                    "role": "support", "display": "PHITEX",     "color": "#e040fb", "endpoints": ["/api/snapshot"]},
-    "aegis":       {"port": 8079, "dir": os.path.join(DATA_DRIVE, "Aegis"),                                     "role": "support", "display": "AEGIS",      "color": "#e0e0e0", "endpoints": ["/api/snapshot"]},
-    "trekbot":     {"port": 8080, "dir": os.path.join(DATA_DRIVE, "TrekBot"),                                   "role": "trader",  "display": "TrekBot",    "color": "#ff6d00", "endpoints": ["/health", "/positions", "/analytics"]},
-    "nexus":       {"port": 8082, "dir": os.path.join(DATA_DRIVE, "Nexus"),                                     "role": "intel",   "display": "NEXUS",      "color": "#26c6da", "endpoints": ["/api/snapshot"]},
-    "rubberband":  {"port": 8083, "dir": os.path.join(DATA_DRIVE, "Rubberband"),                                "role": "trader",  "display": "Rubberband", "color": "#00e5ff", "endpoints": ["/api/snapshot"]},
-    "contrarian":  {"port": 8084, "dir": os.path.join(DATA_DRIVE, "Contrarian"),                                "role": "support", "display": "Contrarian", "color": "#ff1744", "endpoints": ["/api/snapshot"]},
-    "arbitrageur": {"port": 8085, "dir": os.path.join(DATA_DRIVE, "Arbitrageur"),                               "role": "trader",  "display": "Arbitrageur","color": "#7c4dff", "endpoints": ["/api/snapshot"]},
-    "chronos":     {"port": 8086, "dir": os.path.join(DATA_DRIVE, "Chronos"),                                   "role": "support", "display": "Chronos",    "color": "#ff9100", "endpoints": ["/api/snapshot"]},
+    "turtlesue":   {"port": 8070, "dir": os.path.join(DATA_DRIVE, "TurtleSue"),                             "role": "trader",  "display": "TurtleSue",  "color": "#00e676", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "turtlebot.py", "--auto"],                    "phase": 1, "slow": False},
+    "sentinel":    {"port": 8071, "dir": os.path.join(DATA_DRIVE, "Sentinel"),                               "role": "support", "display": "Sentinel",   "color": "#00bfa5", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "sentinel.py"],                               "phase": 2, "slow": True},   # needs CC market data
+    "trinity":     {"port": 8072, "dir": os.path.join(DATA_DRIVE, "Trinity"),                                "role": "support", "display": "Trinity",    "color": "#00b0ff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "overwatch.py", "--auto"],                    "phase": 1, "slow": False},
+    "hivemind":    {"port": 8073, "dir": os.path.join(DATA_DRIVE, "HiveMind"),                               "role": "support", "display": "HiveMind",   "color": "#ffab00", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "cli.py", "dashboard", "--synthetic"],        "phase": 1, "slow": True},
+    "nexusbrain":  {"port": 8074, "dir": os.path.join(DATA_DRIVE, "NexusBrain"),                             "role": "trader",  "display": "NexusBrain", "color": "#d500f9", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus_brain.py", "dashboard", "--auto"],     "phase": 1, "slow": False},
+    "oracle":      {"port": 8075, "dir": os.path.join(DATA_DRIVE, "Oracle"),                                 "role": "intel",   "display": "Oracle",     "color": "#76ff03", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "server.py"],                                 "phase": 1, "slow": True},
+    "deepblue":    {"port": 8076, "dir": os.path.join(DATA_DRIVE, "Whale Watcher", "apex_whale_finder.dir"), "role": "intel",   "display": "Deep Blue",  "color": "#18ffff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "main.py"],                                   "phase": 1, "slow": False},
+    "gridzilla":   {"port": 8077, "dir": os.path.join(DATA_DRIVE, "Gridzilla"),                              "role": "trader",  "display": "Gridzilla",  "color": "#ffd600", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "gridzilla.py", "--auto"],                    "phase": 1, "slow": False},
+    "phitex":      {"port": 8078, "dir": os.path.join(DATA_DRIVE, "PhiTex"),                                 "role": "support", "display": "PHITEX",     "color": "#e040fb", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "phitex.py"],                                 "phase": 2, "slow": True},
+    "aegis":       {"port": 8079, "dir": os.path.join(DATA_DRIVE, "Aegis"),                                  "role": "support", "display": "AEGIS",      "color": "#e0e0e0", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "aegis.py"],                                  "phase": 2, "slow": False},
+    "trekbot":     {"port": 8080, "dir": os.path.join(DATA_DRIVE, "TrekBot"),                                "role": "trader",  "display": "TrekBot",    "color": "#ff6d00", "endpoints": ["/health", "/positions", "/analytics"],  "cmd": ["python", "trekbot.py"],                                "phase": 1, "slow": True},
+    "inference":   {"port": 9001, "dir": os.path.join(CC_DIR),                                               "role": "support", "display": "Inference",  "color": "#b0bec5", "endpoints": ["/health"],                              "cmd": ["python", "inference_server.py"],                       "phase": 2, "slow": False},
+    "nexus":       {"port": 8082, "dir": os.path.join(DATA_DRIVE, "Nexus"),                                  "role": "intel",   "display": "NEXUS",      "color": "#26c6da", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus.py"],                                  "phase": 2, "slow": False},
+    "rubberband":  {"port": 8083, "dir": os.path.join(DATA_DRIVE, "Rubberband"),                             "role": "trader",  "display": "Rubberband", "color": "#00e5ff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "rubberband.py", "--auto"],                   "phase": 2, "slow": False},
+    "contrarian":  {"port": 8084, "dir": os.path.join(DATA_DRIVE, "Contrarian"),                             "role": "support", "display": "Contrarian", "color": "#ff1744", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "contrarian.py"],                             "phase": 2, "slow": False},
+    "arbitrageur": {"port": 8085, "dir": os.path.join(DATA_DRIVE, "Arbitrageur"),                            "role": "trader",  "display": "Arbitrageur","color": "#7c4dff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "arbitrageur.py"],                            "phase": 2, "slow": False},
+    "chronos":     {"port": 8086, "dir": os.path.join(DATA_DRIVE, "Chronos"),                                "role": "support", "display": "Chronos",    "color": "#ff9100", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "chronos.py"],                                "phase": 2, "slow": False},
 }
 
 # ── PATHS ──

@@ -133,6 +133,10 @@ PORTFOLIO_FILE = _FC_PORTFOLIO_FILE
 class PortfolioManager:
     """Central capital pool shared by all trading bots."""
 
+    PAIR_COOLDOWN_SECS = 600        # 10 min base cooldown after any trade closes
+    PAIR_COOLDOWN_AGGRESSIVE = 300  # 5 min when AEGIS score > 0.7 (fast market)
+    COOLDOWN_EXEMPT_BOTS = {"gridzilla"}  # grid bots manage their own frequency via fee gate
+
     def __init__(self, total: float, limits: dict[str, int], filepath: str):
         self._lock = threading.Lock()
         self.total = total
@@ -140,6 +144,8 @@ class PortfolioManager:
         self.filepath = filepath
         self.reservations: dict[str, dict] = {}
         self.history: list[dict] = []
+        self._pair_cooldowns: dict[str, dict] = {}  # pair -> {ts, bot_id}
+        self.aegis_score: float = 0.0  # updated by _apply_aegis_adjustment each cycle
         self._load()
 
     # ── Persistence ──
@@ -220,6 +226,36 @@ class PortfolioManager:
         from fleet_config import is_blacklisted
         pair = normalize_pair(pair) or pair  # canonical format for per-pair limits
         with self._lock:
+            # 0. Per-pair cooldown — first check, before all capital arithmetic and blacklist
+            #    lookups (no point running any of that for a pair still cooling down).
+            #    Gridzilla exempt — fee gate handles its frequency.
+            #    Duration adapts to AEGIS: 5 min when aggressive, 10 min otherwise.
+            if bot_id.lower() not in self.COOLDOWN_EXEMPT_BOTS:
+                cooldown_secs = (
+                    self.PAIR_COOLDOWN_AGGRESSIVE
+                    if self.aegis_score > 0.7
+                    else self.PAIR_COOLDOWN_SECS
+                )
+                cd = self._pair_cooldowns.get(pair)
+                if cd:
+                    elapsed = time.time() - cd["ts"]
+                    remaining = cooldown_secs - elapsed
+                    if remaining > 0:
+                        log.info(
+                            "COOLDOWN DENIED: %s requested %s, %.0fs remaining after %s's close",
+                            bot_id, pair, remaining, cd["bot_id"],
+                        )
+                        return {
+                            "ok": False,
+                            "reason": f"COOLDOWN: {pair} has {remaining:.0f}s remaining (last close: {cd['bot_id']})",
+                        }
+
+            # Prune cooldown entries older than 1 hour to prevent memory growth
+            cutoff = time.time() - 3600
+            self._pair_cooldowns = {
+                p: v for p, v in self._pair_cooldowns.items() if v["ts"] > cutoff
+            }
+
             # Blacklist check — fleet-wide protection
             if is_blacklisted(pair):
                 return {"ok": False, "reason": f"Pair {pair} is blacklisted (0% WR across fleet)"}
@@ -255,9 +291,9 @@ class PortfolioManager:
             if dir_exp + amount > max_dir:
                 return {"ok": False, "reason": f"Direction limit: {direction} at {dir_exp:.2f}+{amount:.2f} > {max_dir:.2f} max ({lim['max_directional_pct']}%)"}
 
-            # 5. Per-trade limit
+            # 5. Per-trade limit (epsilon prevents float equality rejection at exact boundary)
             max_trade = self.total * lim["max_per_trade_pct"] / 100
-            if amount > max_trade:
+            if amount > max_trade + 0.01:
                 return {"ok": False, "reason": f"Trade limit: {amount:.2f} > {max_trade:.2f} max ({lim['max_per_trade_pct']}%)"}
 
             # 6. Concentration check — no single pair > 40% of total pool
@@ -267,30 +303,20 @@ class PortfolioManager:
             if pair_concentration_of_pool > 0.40:
                 return {"ok": False, "reason": f"Concentration limit: {pair} would be {pair_concentration_of_pool:.0%} of pool (max 40%)"}
 
-            # 7. Direction balance — no more than 70% in one direction
-            # Bootstrap exception: waive when deployed=$0 (cold start), first trade
-            # is always 100% in one direction and can never pass otherwise.
+            # 7. Hard directional cap — no single direction may exceed 60% of pool
+            # Absolute rule regardless of what's on the other side. Prevents fleet herding.
+            # 60% of $9,948 = ~$5,969 max LONG or SHORT across all bots simultaneously.
             dir_totals = self.exposure_by_direction()
-            long_total = dir_totals.get("LONG", 0)
-            short_total = dir_totals.get("SHORT", 0)
-            if deployed > 0:
-                if direction == "LONG":
-                    long_total += amount
-                else:
-                    short_total += amount
-                total_directional = long_total + short_total
-                if total_directional > 0:
-                    dominant_pct = max(long_total, short_total) / total_directional
-                    if dominant_pct > 0.70:
-                        dominant_dir = "LONG" if long_total > short_total else "SHORT"
-                        return {"ok": False, "reason": f"Direction balance: {dominant_dir} would be {dominant_pct:.0%} (max 70%)"}
+            dir_after = dir_totals.get(direction, 0) + amount
+            if dir_after > self.total * 0.60:
+                return {"ok": False, "reason": f"Directional cap: {direction} would be ${dir_after:.0f} ({dir_after/self.total:.0%} of pool, max 60%)"}
 
             # 8. Fee floor — reject tiny trades where fees dominate
-            # Kraken taker fee ~0.26%, round trip = ~0.52%
-            estimated_round_trip_fee = amount * 0.0052
-            min_profitable_amount = 5.0  # $5 minimum to cover ~$0.026 fee
+            # At Kraken 0.26% taker, round-trip = 0.52%. A $30 position = $0.156 fee.
+            # Minimum profit target ~$0.50 requires fees < 30% of that — enforced here fleet-wide.
+            min_profitable_amount = 30.0  # fleet-wide $30 floor, raised 2026-04-05 from $5
             if amount < min_profitable_amount:
-                return {"ok": False, "reason": f"Fee floor: ${amount:.2f} trade too small (min ${min_profitable_amount:.0f} to cover fees)"}
+                return {"ok": False, "reason": f"Fee floor: ${amount:.2f} trade too small (min ${min_profitable_amount:.0f} fleet-wide)"}
 
             # 9. Fleet intelligence gate — check engine risk assessment
             try:
@@ -343,6 +369,9 @@ class PortfolioManager:
                 return {"ok": False, "reason": f"Reservation '{reservation_id}' not found"}
 
             self.total += pnl
+
+            # Stamp pair cooldown — blocks re-entry until cooldown expires
+            self._pair_cooldowns[res["pair"]] = {"ts": time.time(), "bot_id": res["bot_id"]}
 
             self.history.append({
                 "action": "release",
@@ -421,6 +450,11 @@ class PortfolioManager:
             else:
                 risk_status = "GREEN"      # within limits
 
+            reservations_list = [
+                dict(reservation_id=rid, **r)
+                for rid, r in self.reservations.items()
+            ]
+
             return {
                 "total": self.total,
                 "deployed": round(deployed, 2),
@@ -433,7 +467,16 @@ class PortfolioManager:
                 "by_pair": by_pair,
                 "by_direction": by_dir,
                 "active_reservations": len(self.reservations),
+                "reservations": reservations_list,
                 "history_recent": self.history[-20:],
+                "pair_cooldowns": {
+                    pair: {
+                        "remaining_secs": round(self.PAIR_COOLDOWN_SECS - (time.time() - v["ts"])),
+                        "last_bot": v["bot_id"],
+                    }
+                    for pair, v in self._pair_cooldowns.items()
+                    if time.time() - v["ts"] < self.PAIR_COOLDOWN_SECS
+                },
             }
 
 
@@ -1951,6 +1994,7 @@ def _apply_aegis_adjustment():
         old_limit = _portfolio_mgr.limits.get("max_deployed_pct", 80)
         if old_limit != new_limit:
             _portfolio_mgr.limits["max_deployed_pct"] = new_limit
+        _portfolio_mgr.aegis_score = float(score)  # cooldown governor reads this
 
     if old_limit != new_limit:
         _event_bus.publish({
@@ -1969,6 +2013,7 @@ def _apply_aegis_adjustment():
 
 def _poll_loop():
     """Continuously fetch, normalize, aggregate, and store state."""
+    _last_stale_cleanup = 0
     while True:
         _poll_all_bots()
         try:
@@ -1980,6 +2025,12 @@ def _poll_loop():
             _fleet_intel.poll()
         except Exception:
             pass
+        # Hourly stale reservation cleanup (catches bots killed without clean shutdown)
+        if _portfolio_mgr and time.time() - _last_stale_cleanup > 3600:
+            released = _portfolio_mgr.force_release_stale(max_age_hours=2)
+            if released:
+                log.info("Auto-released %d stale reservation(s) (>2h old)", released)
+            _last_stale_cleanup = time.time()
         time.sleep(POLL_INTERVAL)
 
 
@@ -2046,6 +2097,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
     _GET_PREFIX_ROUTES: list[tuple[str, str]] = [
         ("/api/bot/",         "_serve_bot_prefix"),
         ("/api/expectancy/",  "_serve_expectancy_prefix"),
+        ("/audio/",           "_serve_audio_file"),
     ]
 
     # -- Exact-match POST route table -----------------------------------------
@@ -2207,6 +2259,34 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             }
 
         self._send_json(payload)
+
+    def _serve_audio_file(self, parsed, path: str) -> None:
+        """Serve static audio files from the audio/ directory."""
+        filename = path.split("/audio/", 1)[1].strip("/")
+        # Safety: no path traversal
+        if "/" in filename or "\\" in filename or ".." in filename:
+            self.send_error(400, "Bad Request")
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(here, "audio", filename)
+        if not os.path.isfile(file_path):
+            self.send_error(404, "Not Found")
+            return
+        ext = filename.rsplit(".", 1)[-1].lower()
+        mime = {"mp3": "audio/mpeg", "wav": "audio/wav", "ogg": "audio/ogg"}.get(ext, "application/octet-stream")
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Accept-Ranges", "bytes")
+            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_error(500, str(e))
 
     def _serve_bot_prefix(self, parsed, path: str) -> None:
         """Return raw snapshot for a single bot (prefix route)."""
@@ -2788,9 +2868,9 @@ def main():
 
     # Initialize portfolio manager
     _portfolio_mgr = PortfolioManager(PORTFOLIO_TOTAL, PORTFOLIO_LIMITS, PORTFOLIO_FILE)
-    stale = _portfolio_mgr.force_release_stale(max_age_hours=24)
+    stale = _portfolio_mgr.force_release_stale(max_age_hours=2)
     if stale:
-        print(f"  Portfolio: released {stale} stale reservation(s)")
+        print(f"  Portfolio: released {stale} stale reservation(s) (>2h old)")
     print(f"  Portfolio: ${_portfolio_mgr.available():,.2f} available of ${_portfolio_mgr.total:,.2f}")
     print(f"  Portfolio API: http://localhost:9000/api/portfolio")
     print()

@@ -79,17 +79,17 @@ Standalone modules that read event logs / live bot data and return structured in
 - `signal_decomposition.py` — Attributes unique P/L contribution to each signal source (marginal value, accuracy, cost-adjusted expectancy).
 - `signal_decay.py` — Applies empirical half-life decay to signals before consumption; tracks per-type half-lives.
 - `fleet_intel_score.py` — Synthesizes all engine outputs into per-pair intelligence scores by polling NEXUS snapshot + event bus.
-- `causal_flow.py` — Granger causality graph between bots, pairs, and events; answers "does X actually precede Y?"
-- `shannon.py` — Information theory: mutual information between signals, channel capacity per bot-to-bot link, entropy of the event stream. **NOT YET WIRED into Nexus.**
+- `causal_flow.py` — Granger causality graph between bots, pairs, and events; answers "does X actually precede Y?" Wired in NEXUS; emits `CAUSAL_FLOW`.
+- `shannon.py` — Information theory: mutual information between signals, channel capacity per bot-to-bot link, entropy of the event stream. Wired in NEXUS; emits `SHANNON_ENTROPY` (fires when fleet noise ratio > 70%).
 
 **Market geometry / physics:**
-- `info_geometry.py` — Fisher Information Metric: measures how fast the market's return distribution is changing shape (low = stable regime, high = transition). Wired; emits `MANIFOLD_WARNING`.
-- `topology.py` — Persistent homology on price point clouds: detects structural market features that survive across time scales. Wired; emits `CYCLE_DETECTED`.
-- `quantum_state.py` — Superposition model: market holds multiple regime states simultaneously with amplitudes; collapses on measurement. Wired; emits `QUANTUM_COLLAPSE` (currently silent — threshold not met).
-- `lorenz.py` — Strange attractor mapping in phase space; Lyapunov exponent estimates predictability horizon. **NOT YET WIRED into Nexus.**
-- `boltzmann.py` — Statistical mechanics of the order book: temperature (spread × volume), pressure (bid/ask imbalance), entropy (disorder). **NOT YET WIRED into Nexus.**
-- `prigogine.py` — Dissipative structures: detects when the market is far-from-equilibrium and spontaneously self-organizing (regime birth). **NOT YET WIRED into Nexus.**
-- `thom.py` — Catastrophe theory: classifies imminent regime transitions as fold, cusp, or swallowtail catastrophes. **NOT YET WIRED into Nexus.**
+- `info_geometry.py` — Fisher Information Metric: measures how fast the market's return distribution is changing shape (low = stable regime, high = transition). Wired in NEXUS; emits `MANIFOLD_WARNING`.
+- `topology.py` — Persistent homology on price point clouds: detects structural market features that survive across time scales. Wired in NEXUS; emits `CYCLE_DETECTED`.
+- `quantum_state.py` — Superposition model: market holds multiple regime states simultaneously with amplitudes; collapses on measurement. Wired in NEXUS; emits `QUANTUM_COLLAPSE` (silent — threshold not met in current regime).
+- `lorenz.py` — Strange attractor mapping in phase space; Lyapunov exponent estimates predictability horizon. Wired in NEXUS; emits `CHAOS_STATE` (fires when attractor departure > 0.5).
+- `boltzmann.py` — Statistical mechanics of the order book: temperature (spread × volume), pressure (bid/ask imbalance), entropy (disorder). Wired in NEXUS; emits `BOOK_PHASE` (fires on BOILING/PLASMA state).
+- `prigogine.py` — Dissipative structures: detects when the market is far-from-equilibrium and spontaneously self-organizing (regime birth). Wired in NEXUS; emits `STRUCTURE_FORMING` (fires when structure_formation_score > 0.4). Requires 210 candles — NEXUS fetches limit=300 to ensure margin.
+- `thom.py` — Catastrophe theory: classifies imminent regime transitions as fold, cusp, or swallowtail catastrophes. Wired in NEXUS; emits `CATASTROPHE_WARNING` (fires when ews_score > 0.6).
 
 **Diagnostics:**
 - `fleet_audit.py` — 6-phase full-system diagnostic; outputs JSON + human-readable report. Run ad-hoc: `python fleet_audit.py`.
@@ -245,9 +245,11 @@ Reaction rules from `reactions.json` spawn in separate daemon threads to avoid b
 Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
 
 ## Key Metrics to Watch
-- **Expectancy** (the primary health signal): Fleet at -$1.45/trade, TrekBot at -$0.21/trade (closest to positive). Fee ratio was 650% of gross profit — fees are the #1 problem, not signal quality. Bots have alpha but fees erase it.
-- **Fee floor:** $5 minimum trade size enforced in portfolio manager. NexusBrain min_confluence raised to 0.65.
-- **AEGIS score:** Controls deployment limit. Score ~0.04 → DEFENSIVE → 30% max deployment.
+- **Expectancy** (the primary health signal): Fleet at -$1.27/trade as of 2026-04-04 (107 trades), improving from -$1.45. Fee ratio compressing: was 650%, then 385%, now 272%. Bots have alpha but fees still erode it — target is sub-100% fee ratio.
+- **Fee floor:** $30 minimum trade size enforced in portfolio manager (raised from $5 on 2026-04-04). NexusBrain min_confluence raised to 0.80.
+- **Gridzilla spacing floor:** 1.2% minimum grid spacing (raised from 0.5% on 2026-04-04). Max 5 grid lines. $0.50 net profit floor per level.
+- **Trade frequency governor:** 10-min per-pair cooldown in portfolio manager after any trade closes. Adaptive: 5 min when AEGIS score > 0.7. Gridzilla exempt (fee gate handles its frequency).
+- **AEGIS score:** Controls deployment limit. Score ~0.008 → DEFENSIVE → 30% max deployment (2026-04-04, EXTREME_FEAR market).
 - **Concentration limit:** Max 40% of deployed capital in any single pair.
 
 ## Working Rules

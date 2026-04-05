@@ -534,18 +534,18 @@ body {
 .fs-hud-tl b, .fs-hud-tr b, .fs-hud-bl b { color: rgba(255,255,255,0.8); }
 
 /* ═══════════════════════════════════════
-   OVERVIEW REDESIGN — Mission Control v2
+   OVERVIEW REDESIGN — Single-Viewport Grid v3
    ═══════════════════════════════════════ */
 
 /* Color palette */
 :root {
-  --ov-bg: #0a0e17;
-  --ov-card: #111827;
+  --ov-bg: #060a12;
+  --ov-card: #0d1117;
   --ov-border: #1e293b;
   --ov-text: #e2e8f0;
   --ov-muted: #94a3b8;
   --ov-dim: #475569;
-  --ov-green: #22c55e;
+  --ov-green: #16a085;
   --ov-red: #ef4444;
   --ov-amber: #f59e0b;
   --ov-blue: #3b82f6;
@@ -563,13 +563,15 @@ body {
   flex-direction: column;
   overflow: hidden;
   padding: 0;
+  background: var(--ov-bg);
 }
 
 /* Panel wrapper */
 #ovPanel {
   display: none;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   background: var(--ov-bg);
   overflow: hidden;
   position: relative;
@@ -580,7 +582,7 @@ body {
   position: absolute;
   top: 8px;
   right: 12px;
-  background: rgba(17,24,39,0.9);
+  background: rgba(13,17,23,0.95);
   border: 1px solid #1e293b;
   color: #94a3b8;
   font-family: 'Orbitron', sans-serif;
@@ -594,101 +596,94 @@ body {
 }
 #ovSolarBtn:hover { border-color: #06b6d4; color: #06b6d4; }
 
-/* Grid and signal bar fade transitions */
-#ovDataGrid, #ovSignalBar {
-  transition: opacity 0.3s;
-}
-
-/* New 4-section scrollable layout */
-.ov-grid {
+/* ── 11-cell no-scroll grid ── */
+#ovGrid {
+  display: grid;
+  grid-template-columns: 1fr 1.5fr 1.5fr 1fr;
+  grid-template-rows: 2fr 2fr 1fr;
+  gap: 6px;
+  padding: 6px;
   flex: 1;
   min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-  padding: 0 0 8px 0;
-}
-
-/* Section wrapper */
-.ov-section {
-  padding: 0;
-  margin-bottom: 0;
-}
-
-/* Section header bar */
-.ov-section-hdr {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 16px;
-  background: rgba(0,0,0,0.3);
-  border-top: 1px solid var(--ov-border);
-  border-bottom: 1px solid var(--ov-border);
-  font-family: 'Orbitron', 'JetBrains Mono', monospace;
-  font-size: 9px;
-  font-weight: 700;
-  letter-spacing: 2.5px;
-  text-transform: uppercase;
-  color: var(--ov-cyan);
-}
-.ov-section-hdr::before {
-  content: '';
-  display: block;
-  width: 3px;
-  height: 14px;
-  background: var(--ov-cyan);
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-.ov-section-hdr:first-child,
-.ov-section:first-child .ov-section-hdr {
-  border-top: none;
-}
-
-/* 4-panel row */
-.ov-row {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 0;
-  border-bottom: 1px solid var(--ov-border);
-}
-.ov-row-3 {
-  grid-template-columns: 1.2fr 1fr 1fr 1fr;
-}
-
-/* Panel (card in the new layout) */
-.ov-panel {
-  padding: 10px 14px;
-  border-right: 1px solid var(--ov-border);
-  background: var(--ov-bg);
-  min-height: 140px;
-  display: flex;
-  flex-direction: column;
-}
-.ov-panel:last-child { border-right: none; }
-.ov-panel-wide {
-  min-height: 180px;
-}
-
-/* Card base (kept for compatibility) */
-.ov-card {
-  padding: 10px 12px;
-  border-bottom: 1px solid var(--ov-border);
-  flex-shrink: 0;
-}
-.ov-card-grow { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-
-/* Columns (kept for compatibility with old code) */
-.ov-col {
-  display: flex;
-  flex-direction: column;
   overflow: hidden;
-  border-right: 1px solid var(--ov-border);
+  box-sizing: border-box;
+  background: var(--ov-bg);
+}
+
+/* Grid cell assignments */
+#ovCellAegis      { grid-column: 1; grid-row: 1; }
+#ovCellPositions  { grid-column: 2; grid-row: 1; }
+#ovCellScoreboard { grid-column: 3; grid-row: 1; }
+#ovCellPortfolio  { grid-column: 4; grid-row: 1; }
+#ovCellRegimes    { grid-column: 1; grid-row: 2; }
+#ovCellGridzilla  { grid-column: 2; grid-row: 2; }
+#ovCellWhale      { grid-column: 3; grid-row: 2; }
+#ovCellSignals    { grid-column: 4; grid-row: 2; }
+#ovCellSentiment  { grid-column: 1; grid-row: 3; }
+#ovCellEvents     { grid-column: 2 / 4; grid-row: 3; }
+#ovCellFees       { grid-column: 4; grid-row: 3; }
+
+/* Cell base */
+.ov-cell {
+  background: var(--ov-card);
+  border: 1px solid var(--ov-border);
+  border-radius: 6px;
+  padding: 8px;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   min-height: 0;
 }
-.ov-col:last-child { border-right: none; }
-.ov-col-left  { overflow-y: auto; }
-.ov-col-center { overflow: hidden; }
-.ov-col-right  { overflow-y: auto; }
+.ov-cell-hdr {
+  font-family: 'Orbitron', sans-serif;
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--ov-cyan);
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--ov-border);
+  padding-bottom: 4px;
+  margin-bottom: 6px;
+  flex-shrink: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ov-cell-hdr span.ov-ev-cnt {
+  color: var(--ov-dim);
+  font-size: 8px;
+  margin-left: 6px;
+  letter-spacing: 0;
+  font-family: 'Courier New', monospace;
+}
+.ov-cell-body {
+  flex: 1;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+  font-family: 'Courier New', monospace;
+  color: var(--ov-muted);
+  min-height: 0;
+}
+
+/* Whale cell split: top whale, bottom council */
+#ovCellWhale { flex-direction: column; }
+.ov-whale-top { flex: 0 0 38%; overflow: hidden; display: flex; flex-direction: column; border-bottom: 1px solid var(--ov-border); padding-bottom: 4px; margin-bottom: 4px; }
+.ov-council-bottom { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+
+/* Signal cell split: top signals, bottom fee ratio */
+#ovCellSignals { flex-direction: column; }
+.ov-signals-top { flex: 0 0 60%; overflow: hidden; display: flex; flex-direction: column; border-bottom: 1px solid var(--ov-border); padding-bottom: 4px; margin-bottom: 4px; }
+.ov-fees-bottom { flex: 1; overflow: hidden; display: flex; flex-direction: column; min-height: 0; }
+
+/* ── Legacy signal bar fade transitions (hidden, compat) ── */
+#ovDataGrid, #ovSignalBar { transition: opacity 0.3s; }
+
+/* ── Old layout stubs (kept for backward compat) ── */
+.ov-grid { display:none; }
+.ov-section { display:none; }
+.ov-panel  { display:none; }
+.ov-signal-bar { display:none; }
 
 /* Section headers */
 .ov-hdr {
@@ -770,7 +765,7 @@ body {
 .ov-sleeping-why { font-size:0.67rem; color:var(--ov-dim); margin-top:4px; }
 
 /* Overview event stream */
-.ov-event-stream { flex:1; overflow-y:auto; display:flex; flex-direction:column; gap:0; min-height:0; }
+.ov-event-stream { flex:1; overflow:hidden; display:flex; flex-direction:column; gap:0; min-height:0; }
 .ov-ev-row {
   display:grid; grid-template-columns:56px 130px 1fr 68px;
   gap:4px; padding:5px 8px; font-family:var(--font); font-size:0.65rem;
@@ -988,228 +983,188 @@ body {
            ══════════════════════════════════════════ -->
       <div id="ovPanel" class="ov-active">
 <button id="ovSolarBtn" title="Open solar system fullscreen (F)" onclick="_orbToggleFS()">&#9737; SOLAR SYSTEM</button>
-<div class="ov-grid" id="ovDataGrid">
 
-  <!-- ══ SECTION 1: FLEET STATUS BAR ══ -->
-  <div class="ov-section">
-    <div class="ov-section-hdr">Fleet Status</div>
-    <div class="ov-row">
+<!-- 11-cell no-scroll grid -->
+<div id="ovGrid">
 
-      <!-- 1A: AEGIS Deep Score -->
-      <div class="ov-panel" id="ovPanelAegis">
-        <div class="ov-p-hdr">AEGIS Score</div>
-        <div style="display:flex;gap:12px;align-items:flex-start;">
-          <div class="ov-aegis-svg-wrap" style="width:80px;height:80px;flex-shrink:0;">
-            <svg viewBox="0 0 120 120" id="ovAegisSvg" style="width:80px;height:80px;">
-              <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="7"/>
-              <circle cx="60" cy="60" r="44" fill="none" stroke="#94a3b8" stroke-width="7"
-                stroke-dasharray="0 276" stroke-dashoffset="69" stroke-linecap="round"
-                id="ovAegisArc" class="ov-aegis-arc"/>
-            </svg>
-            <div class="ov-aegis-center">
-              <span class="ov-aegis-score" id="ovAegisScore" style="font-size:1.1rem;">--</span>
-            </div>
-          </div>
-          <div style="flex:1;min-width:0;">
-            <div style="margin-bottom:4px;">
-              <span class="ov-regime-pill" id="ovRegimePill" style="color:var(--ov-muted);border-color:var(--ov-dim);font-size:0.62rem;">--</span>
-            </div>
-            <div class="ov-deploy-text" id="ovDeployText" style="margin-bottom:6px;">Max Deploy: --</div>
-            <div id="ovAegisComponents">
-              <!-- filled by renderOvAegis() -->
-            </div>
+  <!-- R1C1: AEGIS -->
+  <div class="ov-cell" id="ovCellAegis">
+    <div class="ov-cell-hdr">AEGIS</div>
+    <div class="ov-cell-body">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:5px;flex-shrink:0;">
+        <div style="position:relative;width:56px;height:56px;flex-shrink:0;">
+          <svg viewBox="0 0 120 120" id="ovAegisSvg" style="width:56px;height:56px;">
+            <circle cx="60" cy="60" r="44" fill="none" stroke="rgba(255,255,255,0.05)" stroke-width="8"/>
+            <circle cx="60" cy="60" r="44" fill="none" stroke="#94a3b8" stroke-width="8"
+              stroke-dasharray="0 276" stroke-dashoffset="69" stroke-linecap="round"
+              id="ovAegisArc" class="ov-aegis-arc"/>
+          </svg>
+          <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
+            <span style="font-family:var(--font);font-size:0.75rem;font-weight:700;color:var(--ov-text)" id="ovAegisScore">--</span>
           </div>
         </div>
-      </div>
-
-      <!-- 1B: Sentiment & Market -->
-      <div class="ov-panel" id="ovPanelSentiment">
-        <div class="ov-p-hdr">Sentiment &amp; Market</div>
-        <div style="text-align:center;margin-bottom:8px;">
-          <div class="ov-big-num" id="ovSentimentNum" style="color:var(--ov-muted)">--</div>
-          <div class="ov-big-label" id="ovSentimentLabel">UNKNOWN</div>
-        </div>
-        <div id="ovFundingRates" style="margin-top:4px;"></div>
-      </div>
-
-      <!-- 1C: Portfolio Summary -->
-      <div class="ov-panel" id="ovPanelPortfolio">
-        <div class="ov-p-hdr">Portfolio</div>
-        <div id="ovPortfolioSummary">
-          <div class="ov-sub-text">Loading...</div>
-        </div>
-      </div>
-
-      <!-- 1D: Fleet Errors -->
-      <div class="ov-panel" id="ovPanelErrors">
-        <div class="ov-p-hdr">Fleet Errors / Denials</div>
-        <div id="ovFleetErrors" class="ov-panel-scroll">
-          <div class="ov-sub-text" style="padding:8px 0;">No errors</div>
-        </div>
-      </div>
-
-    </div><!-- /row 1 -->
-  </div><!-- /section 1 -->
-
-  <!-- ══ SECTION 2: ACTIVE OPERATIONS ══ -->
-  <div class="ov-section">
-    <div class="ov-section-hdr">Active Operations</div>
-    <div class="ov-row ov-row-3">
-
-      <!-- 2A: Live Positions -->
-      <div class="ov-panel ov-panel-wide" id="ovPanelPositions" style="grid-column:span 1;">
-        <div class="ov-p-hdr">Live Positions</div>
-        <div id="ovPositions" style="overflow-x:auto;flex:1;">
-          <div class="ov-no-pos">
-            <div class="ov-no-pos-big">NO ACTIVE POSITIONS</div>
-            <div class="ov-no-pos-sub" id="ovCashText">100% CASH</div>
+        <div style="flex:1;min-width:0;">
+          <div style="margin-bottom:3px;">
+            <span class="ov-regime-pill" id="ovRegimePill" style="color:var(--ov-muted);border-color:var(--ov-dim);font-size:0.58rem;padding:2px 6px;">--</span>
           </div>
+          <div style="font-size:0.6rem;color:var(--ov-muted);font-family:var(--font);" id="ovDeployText">Max Deploy: --</div>
         </div>
       </div>
+      <div id="ovAegisComponents" style="flex:1;overflow:hidden;"></div>
+    </div>
+  </div>
 
-      <!-- 2B: Gridzilla Deep State -->
-      <div class="ov-panel" id="ovPanelGridzilla">
-        <div class="ov-p-hdr">Gridzilla</div>
-        <div id="ovGridzilla">
-          <div class="ov-sleeping"><div class="ov-sleeping-title">LOADING</div></div>
+  <!-- R1C2: Live Positions -->
+  <div class="ov-cell" id="ovCellPositions">
+    <div class="ov-cell-hdr">ACTIVE POSITIONS</div>
+    <div class="ov-cell-body" id="ovPositions">
+      <div class="ov-no-pos">
+        <div class="ov-no-pos-big">NO ACTIVE POSITIONS</div>
+        <div class="ov-no-pos-sub" id="ovCashText">100% CASH</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- R1C3: Bot Scoreboard -->
+  <div class="ov-cell" id="ovCellScoreboard">
+    <div class="ov-cell-hdr">BOT SCOREBOARD</div>
+    <div class="ov-cell-body" style="overflow:hidden;">
+      <table class="ov-score-table2" style="table-layout:fixed;width:100%;">
+        <thead>
+          <tr>
+            <th style="width:18px;text-align:right;">#</th>
+            <th style="text-align:left;">Bot</th>
+            <th>Trd</th>
+            <th>WR%</th>
+            <th>Gross</th>
+            <th>Fees</th>
+            <th>Net</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="ovScoreboard2"></tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- R1C4: Portfolio + Errors -->
+  <div class="ov-cell" id="ovCellPortfolio">
+    <div class="ov-cell-hdr">PORTFOLIO</div>
+    <div class="ov-cell-body" style="display:flex;flex-direction:column;gap:0;">
+      <div id="ovPortfolioSummary" style="flex-shrink:0;">
+        <div class="ov-sub-text">Loading...</div>
+      </div>
+      <div style="border-top:1px solid var(--ov-border);margin:5px 0 4px;flex-shrink:0;"></div>
+      <div style="font-family:'Orbitron',sans-serif;font-size:8px;letter-spacing:1.2px;color:var(--ov-cyan);text-transform:uppercase;margin-bottom:4px;flex-shrink:0;">ERRORS / DENIALS</div>
+      <div id="ovFleetErrors" style="flex:1;overflow:hidden;">
+        <span style="color:#22c55e;font-size:0.65rem;">All systems nominal &#10003;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- R2C1: Regime Sources -->
+  <div class="ov-cell" id="ovCellRegimes">
+    <div class="ov-cell-hdr">REGIME SOURCES</div>
+    <div class="ov-cell-body" style="overflow:hidden;">
+      <table class="ov-regime-table" id="ovRegimeTable" style="width:100%;">
+        <tbody id="ovRegimeTbody"></tbody>
+      </table>
+      <div class="ov-regime-summary" id="ovRegimeSummary" style="font-size:0.6rem;margin-top:4px;padding-top:3px;border-top:1px solid rgba(30,41,59,0.4);"></div>
+    </div>
+  </div>
+
+  <!-- R2C2: Gridzilla + Cooldowns -->
+  <div class="ov-cell" id="ovCellGridzilla">
+    <div class="ov-cell-hdr">GRIDZILLA</div>
+    <div class="ov-cell-body" style="display:flex;flex-direction:column;gap:0;">
+      <div id="ovGridzilla" style="flex:1;overflow:hidden;">
+        <div class="ov-sleeping"><div class="ov-sleeping-title">LOADING</div></div>
+      </div>
+      <div style="border-top:1px solid var(--ov-border);margin:4px 0 3px;flex-shrink:0;"></div>
+      <div style="font-family:'Orbitron',sans-serif;font-size:8px;letter-spacing:1.2px;color:var(--ov-cyan);text-transform:uppercase;margin-bottom:3px;flex-shrink:0;">COOLDOWNS</div>
+      <div id="ovCooldowns" style="overflow:hidden;flex-shrink:0;">
+        <div class="ov-cd-none">Clear &#10003;</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- R2C3: Whale Intel + Council Engines -->
+  <div class="ov-cell" id="ovCellWhale">
+    <div class="ov-cell-hdr">WHALE INTEL</div>
+    <div class="ov-whale-top">
+      <div id="ovWhaleIntel" style="flex:1;overflow:hidden;">
+        <span class="ov-whale-clear">CLEAR &#10003;</span>
+      </div>
+    </div>
+    <div class="ov-council-bottom">
+      <div style="font-family:'Orbitron',sans-serif;font-size:8px;letter-spacing:1.2px;color:var(--ov-cyan);text-transform:uppercase;margin-bottom:3px;flex-shrink:0;">COUNCIL — 14 ENGINES</div>
+      <div id="ovEngines" style="flex:1;overflow:hidden;display:grid;grid-template-columns:1fr 1fr;gap:0 6px;"></div>
+    </div>
+  </div>
+
+  <!-- R2C4: Signal Quality + Fee Ratio summary -->
+  <div class="ov-cell" id="ovCellSignals">
+    <div class="ov-cell-hdr">SIGNAL QUALITY</div>
+    <div class="ov-signals-top">
+      <div id="ovSignalQuality" style="flex:1;overflow:hidden;">
+        <div class="ov-sq-row"><span class="ov-sq-label">Consensus</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqConsensus" style="width:0%;background:var(--ov-blue);"></div></div><span class="ov-sq-val" id="ovSqConsensusVal">--</span></div>
+        <div class="ov-sq-row"><span class="ov-sq-label">Coherence</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqCoherence" style="width:0%;background:var(--ov-cyan);"></div></div><span class="ov-sq-val" id="ovSqCoherenceVal">--</span></div>
+        <div class="ov-sq-row"><span class="ov-sq-label">PHITEX Sig</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPhitex" style="width:0%;background:var(--ov-purple);"></div></div><span class="ov-sq-val" id="ovSqPhitexVal">--</span></div>
+        <div class="ov-sq-row"><span class="ov-sq-label">Whale Div</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqWhaleDv" style="width:0%;background:var(--ov-amber);"></div></div><span class="ov-sq-val" id="ovSqWhaleDvVal">--</span></div>
+        <div class="ov-sq-row"><span class="ov-sq-label">Port Stress</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPortStress" style="width:0%;background:var(--ov-red);"></div></div><span class="ov-sq-val" id="ovSqPortStressVal">--</span></div>
+      </div>
+    </div>
+    <div class="ov-fees-bottom">
+      <div style="font-family:'Orbitron',sans-serif;font-size:8px;letter-spacing:1.2px;color:var(--ov-cyan);text-transform:uppercase;margin-bottom:3px;flex-shrink:0;">FEE RATIO</div>
+      <div id="ovFeeRatioMini" style="flex:1;overflow:hidden;"></div>
+    </div>
+  </div>
+
+  <!-- R3C1: Sentiment -->
+  <div class="ov-cell" id="ovCellSentiment">
+    <div class="ov-cell-hdr">SENTIMENT</div>
+    <div class="ov-cell-body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;">
+      <div class="ov-big-num" id="ovSentimentNum" style="color:var(--ov-muted);font-size:1.6rem;">--</div>
+      <div class="ov-big-label" id="ovSentimentLabel" style="font-size:0.58rem;margin-top:2px;">UNKNOWN</div>
+      <div id="ovFundingRates" style="margin-top:4px;width:100%;"></div>
+    </div>
+  </div>
+
+  <!-- R3C2-3: Event Stream -->
+  <div class="ov-cell" id="ovCellEvents">
+    <div class="ov-cell-hdr">EVENT STREAM <span class="ov-ev-cnt" id="ovEvCount"></span></div>
+    <div class="ov-event-stream" id="ovEventStream" style="flex:1;overflow:hidden;display:flex;flex-direction:column;gap:0;">
+      <div style="padding:8px;font-size:0.65rem;color:var(--ov-dim);">Connecting...</div>
+    </div>
+  </div>
+
+  <!-- R3C4: Fee Analysis -->
+  <div class="ov-cell" id="ovCellFees">
+    <div class="ov-cell-hdr">FEE ANALYSIS</div>
+    <div class="ov-cell-body" id="ovFeeAnalysis">
+      <div style="margin-bottom:5px;flex-shrink:0;">
+        <div class="ov-exp-big" id="ovExpBig" style="color:var(--ov-muted);font-size:1.3rem;">--</div>
+        <div class="ov-exp-sub" id="ovExpSub" style="font-size:0.6rem;">-- trades</div>
+      </div>
+      <div class="ov-gauge-wrap" style="flex-shrink:0;">
+        <div class="ov-gauge-label">FLEET FEE RATIO &nbsp;<span id="ovFeeRatioPct" style="color:var(--ov-red);">--%</span></div>
+        <div class="ov-gauge-track" style="position:relative;overflow:visible;">
+          <div class="ov-gauge-fill" id="ovFeeGauge" style="width:0%;background:var(--ov-red);"></div>
+          <div class="ov-gauge-marker" id="ovFeeMarker" style="left:25%;"></div>
+          <div class="ov-gauge-marker-label" id="ovFeeMarkerLabel" style="left:25%;">TARGET</div>
         </div>
+        <div class="ov-target-line">Target: &lt;100%</div>
       </div>
+      <div id="ovFeeBotBreakdown" style="flex:1;overflow:hidden;margin-top:4px;"></div>
+    </div>
+  </div>
 
-      <!-- 2C: Active Cooldowns -->
-      <div class="ov-panel" id="ovPanelCooldowns">
-        <div class="ov-p-hdr">Active Cooldowns</div>
-        <div id="ovCooldowns" class="ov-panel-scroll">
-          <div class="ov-cd-none">No active cooldowns</div>
-        </div>
-      </div>
+</div><!-- /#ovGrid -->
 
-      <!-- 2D: Portfolio Ledger -->
-      <div class="ov-panel" id="ovPanelLedger">
-        <div class="ov-p-hdr">Reservation Ledger</div>
-        <div id="ovLedger" class="ov-panel-scroll">
-          <div class="ov-sub-text">No reservations</div>
-        </div>
-      </div>
-
-    </div><!-- /row 2 -->
-  </div><!-- /section 2 -->
-
-  <!-- ══ SECTION 3: INTELLIGENCE ══ -->
-  <div class="ov-section">
-    <div class="ov-section-hdr">Intelligence</div>
-    <div class="ov-row">
-
-      <!-- 3A: Regime Sources -->
-      <div class="ov-panel" id="ovPanelRegimes">
-        <div class="ov-p-hdr">Regime Sources</div>
-        <table class="ov-regime-table" id="ovRegimeTable">
-          <tbody id="ovRegimeTbody"></tbody>
-        </table>
-        <div class="ov-regime-summary" id="ovRegimeSummary"></div>
-      </div>
-
-      <!-- 3B: Whale Intelligence -->
-      <div class="ov-panel" id="ovPanelWhales">
-        <div class="ov-p-hdr">Whale Intelligence</div>
-        <div id="ovWhaleIntel" class="ov-panel-scroll">
-          <span class="ov-whale-clear">CLEAR &#10003;</span>
-        </div>
-      </div>
-
-      <!-- 3C: Mathematical Council -->
-      <div class="ov-panel" id="ovPanelCouncil">
-        <div class="ov-p-hdr">Mathematical Council</div>
-        <div id="ovEngines" style="flex:1;overflow-y:auto;" class="ov-panel-scroll"></div>
-      </div>
-
-      <!-- 3D: Signal Quality -->
-      <div class="ov-panel" id="ovPanelSignals">
-        <div class="ov-p-hdr">Signal Quality</div>
-        <div id="ovSignalQuality">
-          <div class="ov-sq-row"><span class="ov-sq-label">Consensus</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqConsensus" style="width:0%;background:var(--ov-blue);"></div></div><span class="ov-sq-val" id="ovSqConsensusVal">--</span></div>
-          <div class="ov-sq-row"><span class="ov-sq-label">Coherence</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqCoherence" style="width:0%;background:var(--ov-cyan);"></div></div><span class="ov-sq-val" id="ovSqCoherenceVal">--</span></div>
-          <div class="ov-sq-row"><span class="ov-sq-label">PHITEX Sig</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPhitex" style="width:0%;background:var(--ov-purple);"></div></div><span class="ov-sq-val" id="ovSqPhitexVal">--</span></div>
-          <div class="ov-sq-row"><span class="ov-sq-label">Whale Div</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqWhaleDv" style="width:0%;background:var(--ov-amber);"></div></div><span class="ov-sq-val" id="ovSqWhaleDvVal">--</span></div>
-          <div class="ov-sq-row"><span class="ov-sq-label">Port Stress</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPortStress" style="width:0%;background:var(--ov-red);"></div></div><span class="ov-sq-val" id="ovSqPortStressVal">--</span></div>
-        </div>
-        <div id="ovSignalDecay" style="margin-top:8px;border-top:1px solid rgba(30,41,59,0.4);padding-top:6px;"></div>
-      </div>
-
-    </div><!-- /row 3 -->
-  </div><!-- /section 3 -->
-
-  <!-- ══ SECTION 4: PERFORMANCE & FORENSICS ══ -->
-  <div class="ov-section">
-    <div class="ov-section-hdr">Performance &amp; Forensics</div>
-    <div class="ov-row">
-
-      <!-- 4A: Bot Scoreboard (enhanced) -->
-      <div class="ov-panel ov-panel-wide" id="ovPanelScoreboard">
-        <div class="ov-p-hdr">Bot Scoreboard</div>
-        <div class="ov-panel-scroll">
-          <table class="ov-score-table2">
-            <thead>
-              <tr>
-                <th style="width:18px;text-align:right;">#</th>
-                <th>Bot</th>
-                <th>Trades</th>
-                <th>WR%</th>
-                <th>Gross P&amp;L</th>
-                <th>Fees</th>
-                <th>Net P&amp;L</th>
-                <th>Fee%</th>
-                <th>E/Trade</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody id="ovScoreboard2"></tbody>
-          </table>
-        </div>
-      </div>
-
-      <!-- 4B: Trade Forensics -->
-      <div class="ov-panel" id="ovPanelForensics">
-        <div class="ov-p-hdr">Trade Forensics</div>
-        <div id="ovForensics" class="ov-panel-scroll">
-          <div class="ov-sub-text">Loading...</div>
-        </div>
-      </div>
-
-      <!-- 4C: Fee Analysis -->
-      <div class="ov-panel" id="ovPanelFees">
-        <div class="ov-p-hdr">Fee Analysis</div>
-        <div id="ovFeeAnalysis">
-          <div style="margin-bottom:8px;">
-            <div class="ov-exp-big" id="ovExpBig" style="color:var(--ov-muted);">--</div>
-            <div class="ov-exp-sub" id="ovExpSub">-- trades sampled</div>
-          </div>
-          <div class="ov-gauge-wrap">
-            <div class="ov-gauge-label">FLEET FEE RATIO &nbsp;<span id="ovFeeRatioPct" style="color:var(--ov-red);">--%</span></div>
-            <div class="ov-gauge-track" style="position:relative;overflow:visible;">
-              <div class="ov-gauge-fill" id="ovFeeGauge" style="width:0%;background:var(--ov-red);"></div>
-              <div class="ov-gauge-marker" id="ovFeeMarker" style="left:25%;"></div>
-              <div class="ov-gauge-marker-label" id="ovFeeMarkerLabel" style="left:25%;">TARGET</div>
-            </div>
-            <div class="ov-target-line">Target: &lt;100%</div>
-          </div>
-          <div id="ovFeeBotBreakdown" style="margin-top:8px;"></div>
-          <div id="ovFeeAdvice" style="margin-top:6px;font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);line-height:1.5;border-top:1px solid rgba(30,41,59,0.3);padding-top:5px;"></div>
-        </div>
-      </div>
-
-      <!-- 4D: Event Stream -->
-      <div class="ov-panel" id="ovPanelEvents">
-        <div class="ov-p-hdr">Event Stream <span id="ovEvCount" style="color:var(--ov-dim);font-size:8px;margin-left:6px"></span></div>
-        <div class="ov-event-stream ov-panel-scroll" id="ovEventStream">
-          <div style="padding:12px 8px;font-size:0.67rem;color:var(--ov-dim);">Connecting...</div>
-        </div>
-      </div>
-
-    </div><!-- /row 4 -->
-  </div><!-- /section 4 -->
-
-  <!-- Legacy signal bar (kept for backward compat, hidden) -->
-  <div class="ov-signal-bar" id="ovSignalBar" style="display:none;">
+<!-- Legacy compat: hidden containers that old code may reference -->
+<div style="display:none">
+  <div id="ovDataGrid"></div>
+  <div id="ovSignalBar">
     <div class="ov-sig-item"><span class="ov-sig-label">CONSENSUS</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigConsensus" style="width:0%;background:var(--ov-blue);"></div></div><span class="ov-sig-val" id="ovSigConsensusVal">--</span></div>
     <div class="ov-sig-item"><span class="ov-sig-label">COHERENCE</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigCoherence" style="width:0%;background:var(--ov-cyan);"></div></div><span class="ov-sig-val" id="ovSigCoherenceVal">--</span></div>
     <div class="ov-sig-item"><span class="ov-sig-label">PHITEX</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigPhitex" style="width:0%;background:var(--ov-purple);"></div></div><span class="ov-sig-val" id="ovSigPhitexVal">--</span></div>
@@ -1218,8 +1173,29 @@ body {
     <div class="ov-sig-item"><span class="ov-sig-label">LONG</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigLong" style="width:0%;background:var(--ov-green);"></div></div><span class="ov-sig-val" id="ovSigLongVal">--%</span></div>
     <div class="ov-sig-item"><span class="ov-sig-label">SHORT</span><div class="ov-sig-bar-track"><div class="ov-sig-bar-fill" id="ovSigShort" style="width:0%;background:var(--ov-red);"></div></div><span class="ov-sig-val" id="ovSigShortVal">--%</span></div>
   </div>
+  <!-- Old panel IDs for any JS that targets them directly -->
+  <div id="ovPanelAegis"></div>
+  <div id="ovPanelSentiment"></div>
+  <div id="ovPanelPortfolio"></div>
+  <div id="ovPanelErrors"></div>
+  <div id="ovPanelPositions"></div>
+  <div id="ovPanelGridzilla"></div>
+  <div id="ovPanelCooldowns"></div>
+  <div id="ovPanelLedger"></div>
+  <div id="ovPanelRegimes"></div>
+  <div id="ovPanelWhales"></div>
+  <div id="ovPanelCouncil"></div>
+  <div id="ovPanelSignals"></div>
+  <div id="ovPanelScoreboard"></div>
+  <div id="ovPanelForensics"></div>
+  <div id="ovPanelFees"></div>
+  <div id="ovPanelEvents"></div>
+  <div id="ovLedger"></div>
+  <div id="ovForensics"></div>
+  <div id="ovSignalDecay"></div>
+  <table><tbody id="ovScoreboard"></tbody></table>
+</div>
 
-</div><!-- /ov-grid -->
       </div><!-- /ovPanel -->
 
       <!-- ══════════════════════════════════════════
@@ -11469,7 +11445,7 @@ function handleSSEEvent(rawData){
     }
     if(/PHASE_TRANSITION/.test(type)){showAlert("phase","PHASE TRANSITION: "+(d.pair||"")+" PHI="+Number(d.phi_tex||0).toFixed(3)+" "+(d.direction||""));}
     if(/EMERGENCY_REDUCE/.test(type)){showAlert("emergency","CASCADE STOPS: "+(d.reason||"reduce exposure"));}
-    if(/HIGH_CONVICTION/.test(type)){showAlert("conviction","FLEET CONFLUENCE: "+(d.reason||d.pair||""));}
+    /* HIGH_CONVICTION events appear in the event stream — no banner needed */
     if(/TRADE_OPEN|TRADE_CLOSE|REGIME_CHANGE|PORTFOLIO_/.test(type)){fetchData();fetchOverviewData();}
     /* Tier 1: Trade lifecycle visuals */
     if(/TRADE_OPEN/.test(type)&&typeof _onTradeOpen==="function") _onTradeOpen(d||{});
@@ -14248,11 +14224,11 @@ function ovAddEvent(type, source, msg, ts){
 function renderOvEventStream(el){
   if(!el) return;
   if(!ovEventEntries.length){
-    el.innerHTML = '<div style="padding:12px 8px;font-size:0.67rem;color:var(--ov-dim);">No high-signal events yet</div>';
+    el.innerHTML = '<div style="padding:8px;font-size:0.65rem;color:var(--ov-dim);">No high-signal events yet</div>';
     return;
   }
   var h = "";
-  for(var i=0;i<Math.min(ovEventEntries.length,12);i++) h+=ovEventEntries[i].html;
+  for(var i=0;i<Math.min(ovEventEntries.length,10);i++) h+=ovEventEntries[i].html;
   el.innerHTML = h;
   var cnt = document.getElementById("ovEvCount");
   if(cnt) cnt.textContent = ovEventEntries.length+" events";
@@ -14304,25 +14280,22 @@ function ovRegimeArrow(r){
 /* ── Main overview render (called every 10s + on SSE) ── */
 function renderOverview(){
   if(activeTab !== 0) return;
-  /* Section 1 */
+  /* Row 1 */
   renderOvAegis();
-  renderOvSentiment();
+  renderOvPositions();
+  renderOvScoreboard();
   renderOvPortfolioSummary();
   renderOvFleetErrors();
-  /* Section 2 */
-  renderOvPositions();
+  /* Row 2 */
+  renderOvRegimes();
   renderOvGridzilla();
   renderOvCooldowns();
-  renderOvLedger();
-  /* Section 3 */
-  renderOvRegimes();
   renderOvWhaleIntel();
   renderOvEngines();
   renderOvSignalQuality();
-  /* Section 4 */
-  renderOvScoreboard();
-  renderOvForensics();
   renderOvFeeAnalysis();
+  /* Row 3 */
+  renderOvSentiment();
   var el = document.getElementById("ovEventStream");
   if(el) renderOvEventStream(el);
 }
@@ -14388,7 +14361,7 @@ function renderOvAegis(){
   /* Canonical component weights from aegis.py */
   var comps = [
     {key:"consensus_entropy",  alt:"consensus",       label:"Consensus",   wt:25, color:"rgba(59,130,246,0.8)"},
-    {key:"signal_coherence",   alt:"coherence",       label:"Coherence",   wt:20, color:"rgba(34,197,94,0.8)"},
+    {key:"signal_coherence",   alt:"coherence",       label:"Coherence",   wt:20, color:"rgba(20,184,166,0.6)"},
     {key:"whale_divergence",   alt:"whale_div",       label:"Whale Div",   wt:15, color:"rgba(6,182,212,0.8)"},
     {key:"portfolio_stress",   alt:"port_stress",     label:"Port Stress", wt:15, color:"rgba(245,158,11,0.8)"},
     {key:"phitex_signal",      alt:"phitex_sig",      label:"PHITEX Sig",  wt:15, color:"rgba(232,121,249,0.8)"},
@@ -14603,7 +14576,7 @@ function renderOvFleetErrors(){
   el.innerHTML = h;
 }
 
-/* ── 2A. Live Positions Table ── */
+/* ── Positions Table (compact — BOT | PAIR | DIR | SIZE | AGE | FEE EST) ── */
 function renderOvPositions(){
   var el = document.getElementById("ovPositions");
   if(!el) return;
@@ -14612,71 +14585,48 @@ function renderOvPositions(){
   if(!p || res.length === 0){
     var avail = p ? (p.available != null ? fmt$(p.available) : "--") : "--";
     el.innerHTML = '<div class="ov-no-pos">'
-      +'<div class="ov-no-pos-big">NO ACTIVE POSITIONS &mdash; 100% CASH</div>'
+      +'<div class="ov-no-pos-big">NO ACTIVE POSITIONS</div>'
       +'<div class="ov-no-pos-sub">Available: '+avail+'</div>'
       +'</div>';
     return;
   }
 
   var now = Date.now()/1000;
-  var rows = res.slice();
+  var STALE = 7200;
+  var rows = res.slice().sort(function(a,b){ return (b.amount||0)-(a.amount||0); });
 
-  rows.sort(function(a,b){
-    var pa = a.unrealized_pnl != null ? a.unrealized_pnl : -9999;
-    var pb = b.unrealized_pnl != null ? b.unrealized_pnl : -9999;
-    return pb - pa;
-  });
-
-  /* Try to pull entry prices from bot snapshots */
-  /* Arbitrageur: open_spreads_detail or positions array */
-  var arbSnap = ovData.arbitrageur;
-
-  var h = '<table class="ov-pos-table"><thead><tr>'
-    +'<th>BOT</th><th>PAIR</th><th>DIR</th><th>SIZE</th><th>ENTRY</th><th>UNREAL P&L</th><th>AGE</th><th>FEE EST</th>'
+  var h = '<table class="ov-pos-table" style="table-layout:fixed;width:100%;"><thead><tr>'
+    +'<th style="width:62px">BOT</th><th>PAIR</th><th style="width:44px">DIR</th>'
+    +'<th style="width:52px;text-align:right">SIZE</th>'
+    +'<th style="width:44px;text-align:right">AGE</th>'
+    +'<th style="width:46px;text-align:right">FEE</th>'
     +'</tr></thead><tbody>';
 
   for(var i=0;i<rows.length;i++){
     var r = rows[i];
     var def = botDef(r.bot_id);
     var botName = def ? def.name : (r.bot_id||"?");
+    /* Truncate to 8 chars */
+    if(botName.length > 8) botName = botName.slice(0,7)+".";
     var botColor = def ? def.color : "#94a3b8";
     var dir = (r.direction||"").toUpperCase();
     var dirStr = dir==="LONG"
-      ? '<span style="color:#22c55e">&#8593;LONG</span>'
+      ? '<span style="color:#22c55e">&#8593;L</span>'
       : dir==="SHORT"
-      ? '<span style="color:#ef4444">&#8595;SHORT</span>'
+      ? '<span style="color:#ef4444">&#8595;S</span>'
       : escHtml(dir);
     var size = r.amount != null ? fmt$(r.amount) : "--";
-
-    /* entry_price: from reservation, or from bot snapshot */
-    var entryPrice = r.entry_price != null ? r.entry_price : null;
-    if(entryPrice == null && r.bot_id === "arbitrageur" && arbSnap){
-      /* Arbitrageur stores open_spreads_detail as [{pair, entry, ...}] */
-      var spreads = arbSnap.open_spreads_detail || arbSnap.positions || [];
-      for(var s=0;s<spreads.length;s++){
-        if(spreads[s].pair === r.pair || spreads[s].symbol === r.pair){
-          entryPrice = spreads[s].entry || spreads[s].entry_price || null;
-          break;
-        }
-      }
-    }
-    var entryStr = entryPrice != null ? fmtPrice(entryPrice) : '<span style="color:#334155">&mdash;</span>';
-
-    var pnl = r.unrealized_pnl != null ? r.unrealized_pnl : null;
-    var pnlStr = pnl != null
-      ? '<span style="color:'+(pnl>=0?"#22c55e":"#ef4444")+';font-weight:700">'+(pnl>=0?"+":"")+fmt$(pnl)+'</span>'
-      : '<span style="color:#475569">&mdash;</span>';
-    var age = r.reserved_at ? fmtAge(now - r.reserved_at) : "--";
+    var age = r.reserved_at ? (now - r.reserved_at) : 0;
+    var isStale = age > STALE;
+    var ageStr = r.reserved_at ? fmtAge(age) : "--";
     var feeEst = r.amount != null ? fmt$(r.amount * 0.0052) : "--";
 
-    h += '<tr>'
-      +'<td style="color:'+botColor+';font-weight:700">'+escHtml(botName)+'</td>'
-      +'<td style="color:#e2e8f0;font-weight:700">'+escHtml(r.pair||"?")+'</td>'
-      +'<td>'+dirStr+'</td>'
+    h += '<tr style="'+(isStale?'background:rgba(239,68,68,0.07);':'')+'">'
+      +'<td style="color:'+botColor+';font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(botName)+'</td>'
+      +'<td style="color:#e2e8f0;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+escHtml(r.pair||"?")+'</td>'
+      +'<td style="text-align:center">'+dirStr+'</td>'
       +'<td style="color:#e2e8f0;text-align:right;font-family:var(--font-mono,monospace)">'+size+'</td>'
-      +'<td style="color:#94a3b8;text-align:right;font-family:var(--font-mono,monospace)">'+entryStr+'</td>'
-      +'<td style="text-align:right;font-family:var(--font-mono,monospace)">'+pnlStr+'</td>'
-      +'<td style="color:#64748b">'+escHtml(age)+'</td>'
+      +'<td style="color:'+(isStale?"#ef4444":"#64748b")+';text-align:right">'+escHtml(ageStr)+'</td>'
       +'<td style="color:#475569;text-align:right;font-family:var(--font-mono,monospace)">'+feeEst+'</td>'
       +'</tr>';
   }
@@ -15007,7 +14957,7 @@ function renderOvWhaleIntel(){
   el.innerHTML = h;
 }
 
-/* ── 3C. Council Engines ── */
+/* ── Council Engines (2-col compact) ── */
 function renderOvEngines(){
   var el = document.getElementById("ovEngines");
   if(!el) return;
@@ -15018,9 +14968,6 @@ function renderOvEngines(){
   /* Try to enrich from NEXUS snapshot */
   var nexusSnap = ovData.nexusCouncil;
   var nexusEngines = nexusSnap && (nexusSnap.engines || nexusSnap.active_engines || null);
-
-  var maxCount = 1;
-  for(var k in counts) if(counts[k] > maxCount) maxCount = counts[k];
 
   var h = "";
   for(var i=0;i<OV_ENGINE_MAP.length;i++){
@@ -15033,28 +14980,26 @@ function renderOvEngines(){
       if(lf > mostRecent) mostRecent = lf;
     }
 
-    /* Also check NEXUS snapshot for engine last-fired */
     if(nexusEngines && nexusEngines[eng.name.toLowerCase()]){
       var ne = nexusEngines[eng.name.toLowerCase()];
       var nts = ne.last_fired || ne.last_event || 0;
       if(nts > mostRecent) mostRecent = nts;
     }
 
-    var dotColor, dotGlow = "";
+    var dotColor;
     var age = now - mostRecent;
-    if(mostRecent > 0 && age < 300){ dotColor="#22c55e"; dotGlow="box-shadow:0 0 5px #22c55e"; }
-    else if(mostRecent > 0 && age < 1800){ dotColor="#f59e0b"; dotGlow=""; }
-    else { dotColor="#334155"; dotGlow=""; }
+    if(mostRecent > 0 && age < 300){ dotColor="#22c55e"; }
+    else if(mostRecent > 0 && age < 1800){ dotColor="#f59e0b"; }
+    else { dotColor="#334155"; }
 
-    var barPct = count > 0 ? Math.max(4, Math.round(count/maxCount*100)) : 0;
-    var barColor = dotColor === "#334155" ? "#1e293b" : dotColor;
     var lastAgoStr = mostRecent > 0 ? ago(mostRecent) : "silent";
+    /* Truncate name to 8 chars for 2-col compact */
+    var shortName2 = eng.name.length > 8 ? eng.name.slice(0,7)+"." : eng.name;
 
-    h += '<div class="ov-engine-row" title="'+escHtml(eng.name)+': '+count+' events, last '+lastAgoStr+'">'
-      +'<div class="ov-engine-dot" style="background:'+dotColor+';'+dotGlow+'"></div>'
-      +'<span class="ov-engine-name">'+escHtml(eng.name)+'</span>'
-      +'<div class="ov-engine-bar-track"><div class="ov-engine-bar-fill" style="width:'+barPct+'%;background:'+barColor+'"></div></div>'
-      +'<span class="ov-engine-count">'+count+'</span>'
+    h += '<div style="display:flex;align-items:center;gap:3px;font-family:var(--font);font-size:0.58rem;padding:1px 0;overflow:hidden;" title="'+escHtml(eng.name)+': '+count+' events, last '+escHtml(lastAgoStr)+'">'
+      +'<span style="width:7px;height:7px;border-radius:50%;background:'+dotColor+';flex-shrink:0;display:inline-block;"></span>'
+      +'<span style="color:var(--ov-muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex:1">'+escHtml(shortName2)+'</span>'
+      +'<span style="color:var(--ov-dim);min-width:16px;text-align:right;flex-shrink:0">'+count+'</span>'
       +'</div>';
   }
   el.innerHTML = h;
@@ -15096,29 +15041,7 @@ function renderOvSignalQuality(){
   setSig("ovSigWhaleDv",  "ovSigWhaleDvVal",   whaleDv,   1, 3);
   setSig("ovSigPortStress","ovSigPortStressVal",portStress,1, 3);
 
-  /* Signal decay half-lives if available */
-  var decayEl = document.getElementById("ovSignalDecay");
-  if(decayEl && ovData.signalDecay){
-    var sd = ovData.signalDecay;
-    var dh = '<div style="font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);margin-bottom:3px;letter-spacing:0.5px;">SIGNAL HALF-LIVES</div>';
-    for(var k in sd){
-      if(sd.hasOwnProperty(k)){
-        var entry = sd[k];
-        /* entry is an object like {half_life_seconds, half_life_human, ...} */
-        var hlSec  = (entry && typeof entry === 'object') ? (entry.half_life_seconds != null ? entry.half_life_seconds : null) : (typeof entry === 'number' ? entry : null);
-        var hlHuman= (entry && typeof entry === 'object') ? (entry.half_life_human || null) : null;
-        var ageStr = (entry && typeof entry === 'object' && entry.freshest_age_seconds != null) ? (' · age '+entry.freshest_age_seconds+'s') : '';
-        var displayVal = hlHuman ? hlHuman : (hlSec != null ? hlSec+'s' : '?');
-        dh += '<div style="display:flex;justify-content:space-between;font-size:0.65rem;font-family:var(--font);padding:1px 0;">'
-          +'<span style="color:var(--ov-muted)">'+escHtml(k)+'</span>'
-          +'<span style="color:var(--ov-text);font-weight:700">'+escHtml(displayVal)+escHtml(ageStr)+'</span>'
-          +'</div>';
-      }
-    }
-    decayEl.innerHTML = dh;
-  } else if(decayEl){
-    decayEl.innerHTML = '';
-  }
+  /* Signal decay removed from compact layout — no [object Object] risk */
 }
 
 /* ── 4A. Bot Scoreboard (enhanced) ── */
@@ -15183,6 +15106,13 @@ function renderOvScoreboard(){
     return '<td style="color:#ef4444;text-align:right;font-family:var(--font-mono,monospace)">-'+fmt$(Math.abs(v))+'</td>';
   }
 
+  /* Compact name truncation */
+  function shortName(n){
+    var map = {NexusBrain:"NexusBr.", Arbitrageur:"Arbitrag.", Rubberband:"Rubberb.", TurtleSue:"TurtleSue", NexusBrain:"NexusBr.", HiveMind:"HiveMind"};
+    if(map[n]) return map[n];
+    return n.length > 9 ? n.slice(0,8)+"." : n;
+  }
+
   var h = "";
   for(var i=0;i<entries.length;i++){
     var e = entries[i];
@@ -15193,24 +15123,28 @@ function renderOvScoreboard(){
     else { dotColor="#22c55e"; dotBorder="box-shadow:0 0 4px #22c55e"; }
 
     var trStr    = e.trades != null ? e.trades : '&mdash;';
-    var wrStr    = e.wr != null ? e.wr.toFixed(1)+"%" : '&mdash;';
-    var expStr   = e.expTrade != null
-      ? '<span style="color:'+(e.expTrade>=0?"#22c55e":"#ef4444")+'">'+(e.expTrade>=0?"+":"")+e.expTrade.toFixed(2)+'</span>'
-      : '&mdash;';
+    var wrStr    = e.wr != null ? e.wr.toFixed(0)+"%" : '&mdash;';
     var tabIdx   = BOTS_DEF.indexOf(e.def) + 1;
+    var sName    = shortName(e.def.name);
 
-    h += '<tr onclick="window._setTab('+tabIdx+')">'
-      +'<td style="color:#334155;text-align:right;font-family:var(--font-mono,monospace)">'+(i+1)+'</td>'
-      +'<td style="text-align:left;"><span class="ov-score-dot" style="background:'+dotColor+';'+dotBorder+'"></span>'
-        +'<span style="color:'+e.def.color+';font-weight:700">'+escHtml(e.def.name)+'</span></td>'
+    /* Status dot glyph */
+    var statusDot;
+    if(!e.alive) statusDot = '<span style="color:#334155">&#9679;</span>';
+    else if(e.status==="halted") statusDot = '<span style="color:#ef4444">&#9679;</span>';
+    else if(e.status==="waiting"||e.status==="sleeping") statusDot = '<span style="color:#f59e0b">&#9679;</span>';
+    else statusDot = '<span style="color:#22c55e">&#9679;</span>';
+
+    h += '<tr onclick="window._setTab('+tabIdx+')" style="cursor:pointer;">'
+      +'<td style="color:#334155;text-align:right;font-family:var(--font-mono,monospace);width:14px">'+(i+1)+'</td>'
+      +'<td style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
+        +'<span class="ov-score-dot" style="background:'+dotColor+';'+dotBorder+'"></span>'
+        +'<span style="color:'+e.def.color+';font-weight:700">'+escHtml(sName)+'</span></td>'
       +'<td style="color:#64748b;text-align:right">'+trStr+'</td>'
       +'<td style="color:#64748b;text-align:right">'+wrStr+'</td>'
       +pnlCell(e.grossPnl)
       +feesCell(e.fees)
       +pnlCell(e.netPnl)
-      +feeRatioCell(e.feeRatio)
-      +'<td style="text-align:right;font-family:var(--font-mono,monospace);font-size:0.62rem">'+expStr+'</td>'
-      +'<td style="color:#475569;font-size:0.6rem;letter-spacing:0.3px">'+escHtml(e.status)+'</td>'
+      +'<td style="text-align:center;padding:3px 2px">'+statusDot+'</td>'
       +'</tr>';
   }
 
@@ -15223,8 +15157,6 @@ function renderOvScoreboard(){
     +pnlCell(fleetGross||null)
     +feesCell(fleetFees||null)
     +pnlCell(fleetNet||null)
-    +feeRatioCell(fleetFeeRatio)
-    +'<td></td>'
     +'<td></td>'
     +'</tr>';
 
@@ -15329,7 +15261,7 @@ function renderOvForensics(){
   el.innerHTML = h;
 }
 
-/* ── 4C. Fee Analysis ── */
+/* ── Fee Analysis (ovCellFees) + mini ratio bar in ovCellSignals ── */
 function renderOvFeeAnalysis(){
   var ex = ovData.expectancy;
   var bigEl = document.getElementById("ovExpBig");
@@ -15342,7 +15274,10 @@ function renderOvFeeAnalysis(){
   if(!ex){
     bigEl.textContent = "--";
     bigEl.style.color = "#475569";
-    if(subEl) subEl.textContent = "-- trades sampled";
+    if(subEl) subEl.textContent = "-- trades";
+    /* Mini ratio cell */
+    var miniEl = document.getElementById("ovFeeRatioMini");
+    if(miniEl) miniEl.innerHTML = '<span style="color:var(--ov-dim);font-size:0.6rem;">--</span>';
     return;
   }
 
@@ -15357,14 +15292,14 @@ function renderOvFeeAnalysis(){
   var expColor = exp < 0 ? "#ef4444" : "#22c55e";
   bigEl.innerHTML = '<span style="color:'+expColor+'">'+expSign+'$'+Math.abs(exp).toFixed(2)+'</span> / trade';
   bigEl.style.color = expColor;
-  if(subEl) subEl.textContent = trades + " trades sampled";
+  if(subEl) subEl.textContent = trades + " trades";
 
-  if(ratioPctEl) ratioPctEl.textContent = Math.round(feeRatio) + "%";
-  if(ratioPctEl) ratioPctEl.style.color = feeRatio>200?"#ef4444":feeRatio>100?"#f59e0b":"#22c55e";
+  var ratioColor = feeRatio>200?"#ef4444":feeRatio>100?"#f59e0b":"#22c55e";
+  if(ratioPctEl){ ratioPctEl.textContent = Math.round(feeRatio)+"%"; ratioPctEl.style.color = ratioColor; }
   if(gaugeEl){
     var pct = Math.min(100, feeRatio / 4);
-    gaugeEl.style.width = Math.max(0, pct).toFixed(1) + "%";
-    gaugeEl.style.background = feeRatio > 200 ? "#ef4444" : feeRatio > 100 ? "#f59e0b" : "#22c55e";
+    gaugeEl.style.width = Math.max(0, pct).toFixed(1)+"%";
+    gaugeEl.style.background = ratioColor;
   }
   var marker = document.getElementById("ovFeeMarker");
   var markerLbl = document.getElementById("ovFeeMarkerLabel");
@@ -15387,33 +15322,51 @@ function renderOvFeeAnalysis(){
     }
     feeEntries.sort(function(a,b){ return b.fees-a.fees; });
     var maxFee = feeEntries.length ? feeEntries[0].fees : 1;
-    var bh = '<div style="font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);margin-bottom:3px;letter-spacing:0.3px;">FEE BREAKDOWN BY BOT</div>';
+    var bh = '';
     for(var i=0;i<feeEntries.length;i++){
       var fe = feeEntries[i];
       var barPct = Math.min(100, fe.fees/maxFee*100);
-      var pctOfTotal = totalFees > 0 ? (fe.fees/totalFees*100).toFixed(0) : 0;
+      var feeAmt = fmt$(fe.fees);
       bh += '<div class="ov-fee-bar-row">'
-        +'<span class="ov-fee-bar-name" style="color:'+fe.color+'">'+escHtml(fe.name)+'</span>'
+        +'<span class="ov-fee-bar-name" style="color:'+fe.color+'">'+escHtml(fe.name.length>9?fe.name.slice(0,8)+".":fe.name)+'</span>'
         +'<div class="ov-fee-bar-track"><div class="ov-fee-bar-fill" style="width:'+barPct.toFixed(1)+'%;background:'+fe.color+'"></div></div>'
-        +'<span class="ov-fee-bar-val">'+pctOfTotal+'%</span>'
+        +'<span class="ov-fee-bar-val" style="color:var(--ov-dim)">'+feeAmt+'</span>'
         +'</div>';
     }
-    bh += '<div style="font-size:0.62rem;color:var(--ov-dim);font-family:var(--font);margin-top:4px;">Total: '+fmt$(totalFees)+' &nbsp; Avg/trade: '+fmt$(avgFee)+'</div>';
+    bh += '<div style="font-size:0.58rem;color:var(--ov-dim);font-family:var(--font);margin-top:3px;">Avg/trade: '+fmt$(avgFee)+'</div>';
     breakdownEl.innerHTML = bh;
   }
 
-  /* Fee advice */
-  var adviceEl = document.getElementById("ovFeeAdvice");
-  if(adviceEl){
-    if(feeRatio > 100){
-      var neededSizeMult = feeRatio/100;
-      var neededReduction = Math.round((1 - 100/feeRatio)*100);
-      adviceEl.innerHTML = 'Target: reduce fee ratio to &lt;100% &mdash; need <strong style="color:var(--ov-text)">'
-        +neededSizeMult.toFixed(1)+'&times; larger trades</strong> OR <strong style="color:var(--ov-text)">'
-        +neededReduction+'% fewer trades</strong> at current sizes.';
-    } else {
-      adviceEl.innerHTML = '<span style="color:var(--ov-green)">Fee ratio healthy. Current: '+Math.round(feeRatio)+'%</span>';
+  /* Mini fee ratio in ovCellSignals bottom half */
+  var miniEl = document.getElementById("ovFeeRatioMini");
+  if(miniEl){
+    var miniPct = Math.min(100, feeRatio / 4);
+    var mh = '<div style="font-size:0.65rem;font-family:var(--font);font-weight:700;color:'+ratioColor+';margin-bottom:2px;">'+Math.round(feeRatio)+'%</div>'
+      +'<div style="width:100%;height:5px;background:rgba(255,255,255,0.05);border-radius:2px;overflow:hidden;margin-bottom:4px;">'
+        +'<div style="height:100%;width:'+miniPct.toFixed(1)+'%;background:'+ratioColor+';border-radius:2px;"></div>'
+      +'</div>'
+      +'<div style="font-size:0.58rem;color:var(--ov-dim);font-family:var(--font);">Target &lt;100%</div>';
+    /* Top offenders (top 2) */
+    if(ex.bot_stats){
+      var top = [];
+      for(var bid in ex.bot_stats){
+        if(ex.bot_stats.hasOwnProperty(bid)){
+          var bf = ex.bot_stats[bid].total_fees||0;
+          if(bf > 0) top.push({id:bid, fees:bf});
+        }
+      }
+      top.sort(function(a,b){return b.fees-a.fees;});
+      for(var ti=0;ti<Math.min(top.length,2);ti++){
+        var tdef = botDef(top[ti].id);
+        var tname = tdef ? tdef.name : top[ti].id;
+        if(tname.length > 9) tname = tname.slice(0,8)+".";
+        mh += '<div style="display:flex;justify-content:space-between;font-size:0.58rem;font-family:var(--font);padding:1px 0;">'
+          +'<span style="color:'+(tdef?tdef.color:"#94a3b8")+'">'+escHtml(tname)+'</span>'
+          +'<span style="color:#ef4444">'+fmt$(top[ti].fees)+'</span>'
+          +'</div>';
+      }
     }
+    miniEl.innerHTML = mh;
   }
 }
 
@@ -15426,7 +15379,7 @@ function fetchOverviewData(){
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(d){
       if(d){ ovData.expectancy = d; }
-      if(activeTab===0){ renderOvScoreboard(); renderOvFeeAnalysis(); renderOvForensics(); }
+      if(activeTab===0){ renderOvScoreboard(); renderOvFeeAnalysis(); }
     })
     .catch(function(){});
 
@@ -15435,7 +15388,7 @@ function fetchOverviewData(){
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(d){
       if(d){ ovData.portfolio = d; }
-      if(activeTab===0){ renderOvPositions(); renderOvPortfolioSummary(); renderOvCooldowns(); renderOvLedger(); renderOvSignalQuality(); }
+      if(activeTab===0){ renderOvPositions(); renderOvPortfolioSummary(); renderOvCooldowns(); renderOvSignalQuality(); }
     })
     .catch(function(){});
 

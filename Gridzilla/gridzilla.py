@@ -58,6 +58,13 @@ try:
 except ImportError:
     _is_blacklisted = lambda pair: False
 
+from indicators import (
+    rsi as _ind_rsi,
+    bollinger_bands as _ind_bollinger_bands,
+    calc_atr as _ind_calc_atr,
+    calc_adx as _ind_calc_adx,
+)
+
 # ═══════════════════════════════════════════════════════════════
 # CONFIGURATION
 # ═══════════════════════════════════════════════════════════════
@@ -87,7 +94,7 @@ CONFIG = {
     "max_total_exposure_pct": 0.30,  # max 30% of portfolio in grids
     "max_per_pair_pct": 0.048,       # 4.8% per pair — stays under portfolio's 5% max_per_trade cap with float headroom
     "max_drawdown_pct": 0.05,        # kill grid if DD > 5% of allocation
-    "fee_rate": 0.0026,              # Kraken taker fee (0.26%) — applied per fill, both legs
+    "fee_rate": 0.001,               # Kraken taker fee (0.10%) — applied per fill, both legs
 
     # Regime thresholds
     "adx_trend_threshold": 25,       # ADX > 25 = trending, no grid
@@ -212,127 +219,24 @@ class Indicators:
 
     @staticmethod
     def atr(highs, lows, closes, period=14):
-        if len(closes) < period + 1:
-            return 0
-        trs = []
-        for i in range(1, len(closes)):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i - 1]),
-                abs(lows[i] - closes[i - 1]),
-            )
-            trs.append(tr)
-        if len(trs) < period:
-            return sum(trs) / len(trs) if trs else 0
-        # Wilder's smoothing
-        atr_val = sum(trs[:period]) / period
-        for i in range(period, len(trs)):
-            atr_val = (atr_val * (period - 1) + trs[i]) / period
-        return atr_val
+        return _ind_calc_atr(highs, lows, closes, period) or 0
 
     @staticmethod
     def adx(highs, lows, closes, period=14):
-        if len(closes) < period * 2:
-            return 20  # neutral default
-
-        plus_dms = []
-        minus_dms = []
-        trs = []
-
-        for i in range(1, len(closes)):
-            tr = max(
-                highs[i] - lows[i],
-                abs(highs[i] - closes[i - 1]),
-                abs(lows[i] - closes[i - 1]),
-            )
-            trs.append(tr)
-
-            plus_dm = highs[i] - highs[i - 1]
-            minus_dm = lows[i - 1] - lows[i]
-
-            if plus_dm > minus_dm and plus_dm > 0:
-                plus_dms.append(plus_dm)
-                minus_dms.append(0)
-            elif minus_dm > plus_dm and minus_dm > 0:
-                plus_dms.append(0)
-                minus_dms.append(minus_dm)
-            else:
-                plus_dms.append(0)
-                minus_dms.append(0)
-
-        if len(trs) < period:
-            return 20
-
-        # Smoothed averages
-        atr_s = sum(trs[:period]) / period
-        plus_di_s = sum(plus_dms[:period]) / period
-        minus_di_s = sum(minus_dms[:period]) / period
-
-        dx_values = []
-        for i in range(period, len(trs)):
-            atr_s = (atr_s * (period - 1) + trs[i]) / period
-            plus_di_s = (plus_di_s * (period - 1) + plus_dms[i]) / period
-            minus_di_s = (minus_di_s * (period - 1) + minus_dms[i]) / period
-
-            if atr_s > 0:
-                plus_di = (plus_di_s / atr_s) * 100
-                minus_di = (minus_di_s / atr_s) * 100
-            else:
-                plus_di = minus_di = 0
-
-            di_sum = plus_di + minus_di
-            if di_sum > 0:
-                dx = abs(plus_di - minus_di) / di_sum * 100
-            else:
-                dx = 0
-            dx_values.append(dx)
-
-        if not dx_values:
-            return 20
-
-        adx = sum(dx_values[-period:]) / min(period, len(dx_values))
-        return adx
+        return _ind_calc_adx(highs, lows, closes, period) or 20
 
     @staticmethod
     def bollinger(closes, period=20, std_mult=2.0):
         if len(closes) < period:
             return {"upper": 0, "lower": 0, "mid": 0, "width": 0, "pct_b": 0.5}
-
-        recent = closes[-period:]
-        mid = sum(recent) / period
-        variance = sum((c - mid) ** 2 for c in recent) / period
-        std = math.sqrt(variance) if variance > 0 else 0
-
-        upper = mid + std_mult * std
-        lower = mid - std_mult * std
+        upper, mid, lower = _ind_bollinger_bands(closes, period, std_mult)
         width = (upper - lower) / (mid + 1e-10)
         pct_b = (closes[-1] - lower) / (upper - lower + 1e-10)
-
         return {"upper": upper, "lower": lower, "mid": mid, "width": width, "pct_b": pct_b}
 
     @staticmethod
     def rsi(closes, period=14):
-        if len(closes) < period + 1:
-            return 50
-
-        gains = []
-        losses = []
-        for i in range(1, len(closes)):
-            change = closes[i] - closes[i - 1]
-            gains.append(max(0, change))
-            losses.append(max(0, -change))
-
-        avg_gain = sum(gains[:period]) / period
-        avg_loss = sum(losses[:period]) / period
-
-        for i in range(period, len(gains)):
-            avg_gain = (avg_gain * (period - 1) + gains[i]) / period
-            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-
-        if avg_loss == 0:
-            return 100
-        rs = avg_gain / avg_loss
-        return 100 - (100 / (1 + rs))
+        return _ind_rsi(closes, period)
 
     @staticmethod
     def support_resistance(highs, lows, closes, lookback=50, sensitivity=0.02):
@@ -645,7 +549,7 @@ class GridArchitect:
             level_profit = grid_spacing * (level_size / current_price)
             # Estimate round-trip fee at design time so fee_ratio gate is meaningful.
             # Kraken taker 0.26% × 2 sides = 0.52% of position size.
-            level_fee_est = level_size * self.config.get("fee_rate", 0.0026) * 2
+            level_fee_est = level_size * self.config.get("fee_rate", 0.001) * 2
 
             levels.append({
                 "price": round(price, 6),
@@ -1387,6 +1291,23 @@ class GridzillaEngine:
                         summary = self.executor.remove_grid(pair)
                         if summary and summary.get("reservation_id") and self.portfolio:
                             try:
+                                # Report outcome to signal aggregator
+                                try:
+                                    import urllib.request as urlreq
+                                    url = f"{config['cc_url']}/api/signals/outcome"
+                                    data = json.dumps({
+                                        "bot_id": "gridzilla",
+                                        "pair": pair,
+                                        "direction": "LONG",
+                                        "won": (summary["pnl"] - summary["fees"]) > 0,
+                                        "pnl": float(summary["pnl"] - summary["fees"]),
+                                        "fees": float(summary["fees"])
+                                    }).encode("utf-8")
+                                    req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
+                                    urlreq.urlopen(req, timeout=3)
+                                except Exception:
+                                    pass
+                                
                                 self.portfolio.release(summary["reservation_id"], pnl=summary["pnl"] - summary["fees"])
                             except Exception:
                                 pass
@@ -1398,6 +1319,23 @@ class GridzillaEngine:
                         summary = self.executor.remove_grid(pair)
                         if summary and summary.get("reservation_id") and self.portfolio:
                             try:
+                                # Report outcome to signal aggregator
+                                try:
+                                    import urllib.request as urlreq
+                                    url = f"{config['cc_url']}/api/signals/outcome"
+                                    data = json.dumps({
+                                        "bot_id": "gridzilla",
+                                        "pair": pair,
+                                        "direction": "LONG",
+                                        "won": (summary["pnl"] - summary["fees"]) > 0,
+                                        "pnl": float(summary["pnl"] - summary["fees"]),
+                                        "fees": float(summary["fees"])
+                                    }).encode("utf-8")
+                                    req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
+                                    urlreq.urlopen(req, timeout=3)
+                                except Exception:
+                                    pass
+                                
                                 self.portfolio.release(summary["reservation_id"], pnl=summary["pnl"] - summary["fees"])
                             except Exception:
                                 pass
@@ -1429,7 +1367,7 @@ class GridzillaEngine:
                     max_exposure - current_exposure,
                 )
 
-                if per_pair_alloc < 20:  # minimum allocation
+                if per_pair_alloc < 50:  # minimum allocation (raised from $20 on 2026-04-06)
                     continue
 
                 design = self.grid_architect.design(pair, candles, regime, per_pair_alloc)
@@ -1532,6 +1470,7 @@ class GridzillaEngine:
 
         class Handler(BaseHTTPRequestHandler):
             def do_GET(self):
+              try:
                 path = urlparse(self.path).path.rstrip("/")
 
                 if path in ("", "/health", "/api/snapshot"):
@@ -1565,6 +1504,8 @@ class GridzillaEngine:
 
                 else:
                     self.send_error(404)
+              except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError, OSError):
+                  pass  # Client disconnected — normal during health checks
 
             def log_message(self, fmt, *args):
                 pass  # silent

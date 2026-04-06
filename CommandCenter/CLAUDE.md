@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What This Is
-Unified mission control for a 16-bot crypto trading fleet. Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), and self-evolution analysis (Ultron).
+Unified mission control for a 17-bot crypto trading fleet (16 original + TrekBot SHORT). Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), and self-evolution analysis (Ultron).
 
 ## Run
 ```bash
@@ -42,7 +42,7 @@ python evolution.py --days 7
 ## Architecture
 
 ### Core Files
-- `command_center.py` — Single-file backend (~2000 lines): bot polling, 14 normalizers (11 named functions + 3 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration.
+- `command_center.py` — Single-file backend (~3100 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration.
 - `command_center_v4.html` — Current active dashboard (single-file, all CSS/JS inline). Served at `/`.
 - `backups/` — Archived older dashboard versions (v3, etc.).
 
@@ -64,11 +64,9 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 ### Shared Libraries
 - `standards.py` — Canonical regime labels (`BULL`, `BEAR`, `RANGING`, `VOLATILE`, `TRANSITIONING`), `REGIME_MAP` for normalizing any bot's regime label, `normalize_pair()` for Kraken pair formats.
 - `portfolio_client.py` — Thin stdlib-only client for bots to reserve/release capital from the central pool.
-- `design_system.css` — Unified fleet design language: color system, typography, spacing, cards, tables, status indicators, animations. The single source of truth for all dashboard styling.
-- `resilient_http.py` — Retry-aware GET/POST helper for fleet communication. Import instead of raw `requests`.
-- `fleet_config.py` — Python module single-source-of-truth for bot ports/paths (distinct from `fleet_config.json`). Bots import this instead of hardcoding.
+- `fleet_config.py` — Python module single-source-of-truth for bot ports/paths (distinct from `fleet_config.json`). Bots and `launch_fleet.py` import this instead of hardcoding.
 - `port_guard.py` — Call `ensure_port(port, bot_name)` on startup; kills zombie processes occupying the port before the HTTP server binds.
-- `bot_bootstrap.py` — `BotBase` class providing standardized startup lifecycle for every bot.
+- `notifier.py` — Independent external watchdog (no fleet imports). Monitors CC health via Telegram alerts. Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
 ### Advanced Analytics Engines
 Standalone modules that read event logs / live bot data and return structured insights. None are imported by `command_center.py` — they run independently or are called by `evolution.py` / `weekly_analysis.py`.
@@ -81,6 +79,9 @@ Standalone modules that read event logs / live bot data and return structured in
 - `fleet_intel_score.py` — Synthesizes all engine outputs into per-pair intelligence scores by polling NEXUS snapshot + event bus.
 - `causal_flow.py` — Granger causality graph between bots, pairs, and events; answers "does X actually precede Y?" Wired in NEXUS; emits `CAUSAL_FLOW`.
 - `shannon.py` — Information theory: mutual information between signals, channel capacity per bot-to-bot link, entropy of the event stream. Wired in NEXUS; emits `SHANNON_ENTROPY` (fires when fleet noise ratio > 70%).
+- `denial_cost.py` — Portfolio denial opportunity cost analyzer. Reads `PORTFOLIO_RESERVE_DENIED` events, computes what denied trades would have netted. Usage: `python denial_cost.py --days 3 --hold-minutes 240`.
+- `regime_expectancy.py` — Regime-conditional expectancy. Joins TrekBot factor logs with expectancy data to produce per-regime E[V] net of fees.
+- `signal_attribution.py` — Fee-adjusted signal value. Attributes P/L to individual signals post-fees using `goldeneye_factors.log` + `logs/expectancy.json`.
 
 **Market geometry / physics:**
 - `info_geometry.py` — Fisher Information Metric: measures how fast the market's return distribution is changing shape (low = stable regime, high = transition). Wired in NEXUS; emits `MANIFOLD_WARNING`.
@@ -95,14 +96,14 @@ Standalone modules that read event logs / live bot data and return structured in
 - `fleet_audit.py` — 6-phase full-system diagnostic; outputs JSON + human-readable report. Run ad-hoc: `python fleet_audit.py`.
 
 ### Infrastructure
-- `launch_fleet.py` — Two-phase launcher. Phase 1: core bots. Phase 2 (after CC is up): CC-dependent bots (PHITEX, AEGIS, Inference, NEXUS, Rubberband, Contrarian, Arbitrageur, Chronos). Ctrl+C shuts down everything.
+- `launch_fleet.py` — Two-phase launcher. Imports `BOTS` from `fleet_config.py` (single source of truth). Phase 1: core bots. Phase 2 (after CC is up): CC-dependent bots (PHITEX, AEGIS, Inference, NEXUS, Rubberband, Contrarian, Arbitrageur, Chronos). Ctrl+C shuts down everything.
 - `inference_server.py` — Port 9001. Proxies to Ollama (Tesla P4). Endpoints: `/api/ai/trade-journal`, `/api/ai/post-mortem`, `/api/ai/fleet-assessment`.
 - `fleet_config.json` — Bot registry with ports/dirs/cmds/phases (read by `_health_monitor` for auto-restart). Also documents fleet-wide settings (portfolio limits, event bus, Brainiac intervals, market data) but these sections are **not loaded by code** — the corresponding constants are hardcoded in `command_center.py` and `collector.py`. Keep in sync manually.
 - `universe.json` — Config for auto-discovering top 50 Kraken USD pairs by volume.
 - `portfolio.json` — Persisted portfolio state (created at runtime, atomic writes).
 
 ### Data Flow
-1. `_poll_loop()` polls all 16 bots every 4s via HTTP
+1. `_poll_loop()` polls all bots every 4s via HTTP
 2. Per-bot normalizer standardizes responses into common schema: `{pnl, positions, win_rate, regime, signals, ...}`
 3. `_compute_aggregate()` builds fleet-wide stats
 4. `_extract_feed()` merges signal/alert feeds, dedupes
@@ -139,6 +140,7 @@ Standalone modules that read event logs / live bot data and return structured in
 | Rubberband | 8083 | /api/snapshot | Trader |
 | Contrarian | 8084 | /api/snapshot | Trader |
 | Arbitrageur | 8085 | /api/snapshot | Trader |
+| TrekBot SHORT | 8087 | /health + /positions + /analytics | Trader (pool, Phase 2) |
 | Chronos | 8086 | /api/snapshot | Temporal |
 | **Inference** | **9001** | /api/ai/* | **AI (Ollama, Phase 2)** |
 | **Command Center** | **9000** | serves all APIs below | **Aggregator** |
@@ -174,7 +176,7 @@ Standalone modules that read event logs / live bot data and return structured in
 - `GET /health` — inference server status + model info
 
 ## Central Portfolio
-6 trading bots (TurtleSue, NexusBrain, Gridzilla, TrekBot, Rubberband, Contrarian) share one $10,000 pool.
+7 trading bots (TurtleSue, NexusBrain, Gridzilla, TrekBot, TrekBot SHORT, Rubberband, Arbitrageur) share one $10,000 pool.
 
 ### Risk Limits
 - Max total deployed: 80% (always keep 20% cash)
@@ -224,7 +226,7 @@ No test suite. Validation is runtime only:
 ## Key Patterns & Gotchas
 
 ### Normalizers
-Each bot gets a normalizer function (in `command_center.py` ~line 753-1057) that translates its raw API response into a standard schema: `{equity, pnl, pnl_pct, win_rate, drawdown_pct, sharpe, open_positions, total_trades, regime, signals_count, uptime, ...}`. Win rates arrive in different scales (0-1 vs 0-100) — normalizers handle this. TrekBot is special: it uses 3 endpoints (`/health`, `/positions`, `/analytics`) instead of the single `/api/snapshot` the others use. NEXUS reports `market_character` instead of `regime`.
+Each bot gets a normalizer function (in `command_center.py` ~line 878-1184) that translates its raw API response into a standard schema: `{equity, pnl, pnl_pct, win_rate, drawdown_pct, sharpe, open_positions, total_trades, regime, signals_count, uptime, ...}`. Win rates arrive in different scales (0-1 vs 0-100) — normalizers handle this. TrekBot is special: it uses 3 endpoints (`/health`, `/positions`, `/analytics`) instead of the single `/api/snapshot` the others use. NEXUS reports `market_character` instead of `regime`.
 
 ### Thread Safety
 All shared state is protected by simple `threading.Lock()` (no RLock). Three locks: `_lock` (bots/aggregate/feed), `PortfolioManager._lock` (instance-level), and `_universe_lock`. Bot polling is serial within the poll loop, so aggregate state represents a ~1s window, not an atomic moment.
@@ -233,7 +235,7 @@ All shared state is protected by simple `threading.Lock()` (no RLock). Three loc
 Portfolio state is saved via atomic writes (temp file + `os.replace()`). History is capped at 200 entries — use `logs/events/` for full audit trail. Failed validations return a reason string but are not logged to history.
 
 ### Phase 2 Dependencies
-Bots marked `"phase": 2` in `fleet_config.json` require Command Center to be running. Note: `launch_fleet.py` hardcodes its own `FLEET` list and does not read `fleet_config.json` — the `phase` field there is for documentation/health-monitor reference only. `launch_fleet.py` waits 15s for CC to bind port 9000 before launching Phase 2. If inference server fails, Phase 2 features degrade silently.
+Bots marked `"phase": 2` in `fleet_config.py` require Command Center to be running. `launch_fleet.py` derives its FLEET list from `fleet_config.py` (single source of truth). It waits 15s for CC to bind port 9000 before launching Phase 2. If inference server fails, Phase 2 features degrade silently. Note: `fleet_config.json` also has a `phase` field but it is for documentation/health-monitor reference only — it is not read by `launch_fleet.py`.
 
 ### Inference Model Chain
 `inference_server.py` searches for models in order: `gemma2:2b` → `phi4-mini` → `mistral-nemo` → `qwen3.5:4b` → `deepseek-r1:7b` → first available. All prompts instruct JSON-only responses (no markdown).

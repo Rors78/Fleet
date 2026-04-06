@@ -61,7 +61,7 @@ BOTS = {
     "hivemind":    {"port": 8073, "dir": os.path.join(DATA_DRIVE, "HiveMind"),                               "role": "support", "display": "HiveMind",   "color": "#ffab00", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "cli.py", "dashboard", "--synthetic"],        "phase": 1, "slow": True},
     "nexusbrain":  {"port": 8074, "dir": os.path.join(DATA_DRIVE, "NexusBrain"),                             "role": "trader",  "display": "NexusBrain", "color": "#d500f9", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus_brain.py", "dashboard", "--auto"],     "phase": 1, "slow": False},
     "oracle":      {"port": 8075, "dir": os.path.join(DATA_DRIVE, "Oracle"),                                 "role": "intel",   "display": "Oracle",     "color": "#76ff03", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "server.py"],                                 "phase": 1, "slow": True},
-    "deepblue":    {"port": 8076, "dir": os.path.join(DATA_DRIVE, "Whale Watcher", "apex_whale_finder.dir"), "role": "intel",   "display": "Deep Blue",  "color": "#18ffff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "main.py"],                                   "phase": 1, "slow": False},
+    "deepblue":    {"port": 8076, "dir": os.path.join(DATA_DRIVE, "Whale Watcher", "apex_whale_finder.dir"), "role": "intel",   "display": "Deep Blue",  "color": "#18ffff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "main.py", "--headless"],                       "phase": 1, "slow": False},
     "gridzilla":   {"port": 8077, "dir": os.path.join(DATA_DRIVE, "Gridzilla"),                              "role": "trader",  "display": "Gridzilla",  "color": "#ffd600", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "gridzilla.py", "--auto"],                    "phase": 1, "slow": False},
     "phitex":      {"port": 8078, "dir": os.path.join(DATA_DRIVE, "PhiTex"),                                 "role": "support", "display": "PHITEX",     "color": "#e040fb", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "phitex.py"],                                 "phase": 2, "slow": True},
     "aegis":       {"port": 8079, "dir": os.path.join(DATA_DRIVE, "Aegis"),                                  "role": "support", "display": "AEGIS",      "color": "#e0e0e0", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "aegis.py"],                                  "phase": 2, "slow": False},
@@ -153,3 +153,18 @@ def bot_registry_list() -> list[dict]:
          "color": cfg["color"], "endpoints": cfg["endpoints"]}
         for bid, cfg in BOTS.items()
     ]
+
+
+def get_deployment_limits(cc_unreachable: bool = False) -> dict:
+    """Return deployment limits. When CC unreachable, use conservative fallback."""
+    if cc_unreachable:
+        return {
+            "max_position_pct": 0.05,
+            "max_pairs": 2,
+            "max_daily_trades": 1,
+        }
+    return {
+        "max_position_pct": 0.30,
+        "max_pairs": 10,
+        "max_daily_trades": 10,
+    }

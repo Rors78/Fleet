@@ -50,7 +50,7 @@
         "hivemind":   {"port": 8073, "dir": "D:\\HiveMind",   "cmd": ["cli.py", "dashboard", "--synthetic"],  "type": "optimizer", "phase": 1},
         "nexusbrain": {"port": 8074, "dir": "D:\\NexusBrain", "cmd": ["nexus_brain.py", "dashboard", "--auto"],"type": "trader",  "pairs": 10, "phase": 1},
         "oracle":     {"port": 8075, "dir": "D:\\Oracle",     "cmd": ["server.py"],     "type": "intel",   "pairs": 93, "phase": 1},
-        "deepblue":   {"port": 8076, "dir": "D:\\Whale Watcher\\apex_whale_finder.dir", "cmd": ["main.py"], "type": "intel", "pairs": 50, "phase": 1},
+        "deepblue":   {"port": 8076, "dir": "D:\\Whale Watcher\\apex_whale_finder.dir", "cmd": ["main.py", "--headless"], "type": "intel", "pairs": 50, "phase": 1},
         "gridzilla":  {"port": 8077, "dir": "D:\\Gridzilla",  "cmd": ["gridzilla.py", "--auto"],  "type": "trader",  "pairs": 12, "phase": 1},
         "trekbot":    {"port": 8080, "dir": "D:\\TrekBot",    "cmd": ["trekbot.py"],    "type": "trader",  "pairs": 20, "phase": 1},
         "phitex":     {"port": 8078, "dir": "D:\\PhiTex",     "cmd": ["phitex.py"],     "type": "novel",   "pairs": 50, "phase": 2},

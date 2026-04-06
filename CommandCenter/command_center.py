@@ -369,6 +369,17 @@ class PortfolioManager:
             if not res:
                 return {"ok": False, "reason": f"Reservation '{reservation_id}' not found"}
 
+            # Calculate and log fee impact (Kraken taker 0.26% × 2 = 0.52% round-trip)
+            amount = res["amount"]
+            KRAKEN_TAKER = 0.0026
+            round_trip_fees = amount * KRAKEN_TAKER * 2
+            fee_pct = (round_trip_fees / amount * 100) if amount > 0 else 0
+            
+            # Log significant fee events (>2% of position is significant)
+            if fee_pct > 2:
+                log.warning(f"Fee alert: {res['bot_id']} {res['pair']} "
+                           f"fees ${round_trip_fees:.2f} ({fee_pct:.1f}%) on ${amount:.0f}")
+
             self.total += pnl
 
             # Stamp pair cooldown — blocks re-entry until cooldown expires
@@ -379,8 +390,9 @@ class PortfolioManager:
                 "reservation_id": reservation_id,
                 "bot_id": res["bot_id"],
                 "pair": res["pair"],
-                "amount": res["amount"],
+                "amount": amount,
                 "pnl": pnl,
+                "fees": round_trip_fees,
                 "new_total": self.total,
                 "timestamp": time.time(),
             })
@@ -1956,6 +1968,29 @@ _last_aegis_adjust = 0
 _AEGIS_COOLDOWN = 300  # 5 minutes between adjustments
 
 
+def _get_fleet_fee_ratio():
+    """Calculate fleet fee ratio from portfolio history.
+    Returns: fee_ratio (total_fees / abs(total_gross_pnl))
+    Returns None if insufficient data.
+    """
+    if not _portfolio_mgr:
+        return None
+    try:
+        with _portfolio_mgr._lock:
+            history = _portfolio_mgr.reservations.get("history", [])
+        if not history:
+            return None
+        # Get last 100 trades for recent fee ratio
+        recent = history[-100:] if len(history) > 100 else history
+        total_fees = sum(h.get("fees", 0) for h in recent)
+        total_gross = sum(h.get("gross_pnl", 0) for h in recent)
+        if abs(total_gross) < 0.01:  # Avoid division by near-zero
+            return None
+        return total_fees / abs(total_gross)
+    except Exception:
+        return None
+
+
 def _apply_aegis_adjustment():
     """Read AEGIS score and dynamically adjust portfolio deployment limits."""
     global _last_aegis_adjust
@@ -1978,18 +2013,43 @@ def _apply_aegis_adjustment():
     if score is None:
         return
 
+    # Get fleet fee ratio for throttle calculation
+    fee_ratio = _get_fleet_fee_ratio()
+
+    # Base deployment limit from AEGIS score
     if score >= 0.8:
-        new_limit = 90
+        base_limit = 90
         regime = "DEPLOY"
     elif score >= 0.5:
-        new_limit = 80
+        base_limit = 80
         regime = "NORMAL"
     elif score >= 0.2:
-        new_limit = 60
+        base_limit = 60
         regime = "CAUTIOUS"
     else:
-        new_limit = 30
+        base_limit = 30
         regime = "DEFENSIVE"
+
+    # Apply fee ratio throttle - reduce deployment when fees are unhealthy
+    # fee_ratio > 1.0 means fees > gross profit (bad)
+    # fee_ratio > 2.0 means fees are 2x gross profit (catastrophic)
+    if fee_ratio is not None and fee_ratio > 1.0:
+        if fee_ratio > 2.0:
+            fee_multiplier = 0.3  # Severe throttle - 30% of base
+            throttle_reason = "FEE_CATASTROPHIC"
+        elif fee_ratio > 1.5:
+            fee_multiplier = 0.5  # Moderate throttle - 50% of base
+            throttle_reason = "FEE_CRITICAL"
+        elif fee_ratio > 1.0:
+            fee_multiplier = 0.7  # Light throttle - 70% of base
+            throttle_reason = "FEE_HIGH"
+        else:
+            fee_multiplier = 1.0
+            throttle_reason = None
+        new_limit = int(base_limit * fee_multiplier)
+    else:
+        new_limit = base_limit
+        throttle_reason = None
 
     with _portfolio_mgr._lock:
         old_limit = _portfolio_mgr.limits.get("max_deployed_pct", 80)
@@ -1998,6 +2058,7 @@ def _apply_aegis_adjustment():
         _portfolio_mgr.aegis_score = float(score)  # cooldown governor reads this
 
     if old_limit != new_limit:
+        throttle_info = f" (fee_ratio={fee_ratio:.1%})" if fee_ratio else ""
         _event_bus.publish({
             "source": "command_center",
             "type": "PORTFOLIO_LIMIT_CHANGE",
@@ -2006,8 +2067,11 @@ def _apply_aegis_adjustment():
                 "regime": regime,
                 "old_limit": old_limit,
                 "new_limit": new_limit,
+                "throttle_reason": throttle_reason,
+                "fee_ratio": round(fee_ratio, 3) if fee_ratio else None,
             },
         })
+        log.info(f"AEGIS: {regime} -> {new_limit}% (base={base_limit}){throttle_info}")
 
     _last_aegis_adjust = now
 
@@ -2072,6 +2136,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/portfolio":           "_serve_portfolio",
         "/api/portfolio/available": "_serve_portfolio_available",
         "/api/portfolio/exposure":  "_serve_portfolio_exposure",
+        "/api/portfolio/reservations": "_serve_portfolio_reservations",
         "/api/fleet/daily":         "_serve_fleet_daily",
         "/api/market/ohlc":         "_serve_market_ohlc",
         "/api/market/ohlc/bulk":    "_serve_market_ohlc_bulk",
@@ -2083,6 +2148,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/signals/rankings":    "_serve_signals_rankings",
         "/api/signals/decomposition": "_serve_signals_decomposition",
         "/api/expectancy":          "_serve_expectancy",
+        "/api/trades":              "_serve_trades",
         "/api/signals/decay":       "_serve_signals_decay",
         "/api/manifest":            "_serve_manifest",
         # UPGRADE: Fleet Intelligence endpoints
@@ -2341,6 +2407,24 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             return
         self._send_json(_portfolio_mgr.exposure_snapshot())
 
+    def _serve_portfolio_reservations(self, parsed) -> None:
+        """GET /api/portfolio/reservations — return all active reservations."""
+        if not _portfolio_mgr:
+            self._send_json({"error": "Portfolio manager not initialized"}, 503)
+            return
+        with _portfolio_mgr._lock:
+            reservations = {
+                rid: {
+                    "bot_id": r["bot_id"],
+                    "pair": r["pair"],
+                    "amount": r["amount"],
+                    "direction": r.get("direction"),
+                    "reserved_at": r["reserved_at"],
+                }
+                for rid, r in _portfolio_mgr.reservations.items()
+            }
+        self._send_json({"reservations": reservations})
+
     def _serve_fleet_daily(self, parsed) -> None:
         if not _fleet_logger:
             self._send_json({"error": "Fleet logger not initialized"}, 503)
@@ -2425,6 +2509,60 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     def _serve_expectancy(self, parsed) -> None:
         self._send_json(_expectancy_tracker.get_fleet_stats())
+
+    def _serve_trades(self, parsed) -> None:
+        """Return per-bot trade history from event logs. Survives restarts.
+        Query params: ?bot=trekbot&limit=50
+        """
+        import glob as _glob
+        qs = parsed.query or ""
+        params: dict[str, str] = {}
+        for part in qs.split("&"):
+            if "=" in part:
+                k, v = part.split("=", 1)
+                params[k] = v
+        bot_filter = params.get("bot", "").strip().lower()
+        try:
+            limit = int(params.get("limit", "100"))
+        except ValueError:
+            limit = 100
+
+        trades: list[dict] = []
+        log_dir = os.path.join(os.path.dirname(__file__), "logs", "events")
+        for fpath in sorted(_glob.glob(os.path.join(log_dir, "*.jsonl"))):
+            try:
+                with open(fpath, encoding="utf-8") as fh:
+                    for line in fh:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            ev = json.loads(line)
+                        except Exception:
+                            continue
+                        if ev.get("type") != "TRADE_CLOSE":
+                            continue
+                        bot = ev.get("bot") or ev.get("source") or ""
+                        if bot_filter and bot.lower() != bot_filter:
+                            continue
+                        trades.append({
+                            "ts":         ev.get("ts", 0),
+                            "bot":        bot,
+                            "pair":       ev.get("pair", ""),
+                            "pnl":        ev.get("pnl", 0),
+                            "gross_pnl":  ev.get("gross_pnl", ev.get("pnl", 0)),
+                            "fees":       ev.get("fees", 0),
+                            "duration_s": ev.get("duration_s", 0),
+                            "exit_reason":ev.get("exit_reason", ""),
+                            "direction":  ev.get("direction", ev.get("side", "")),
+                            "won":        (ev.get("pnl", 0) or 0) > 0,
+                        })
+            except Exception:
+                pass
+
+        # newest first, capped
+        trades.sort(key=lambda t: t["ts"], reverse=True)
+        self._send_json({"trades": trades[:limit], "total": len(trades)})
 
     def _serve_expectancy_prefix(self, parsed, path: str) -> None:
         bot_id = path.split("/api/expectancy/", 1)[1].strip("/")
@@ -2768,6 +2906,10 @@ def _health_monitor() -> None:
     global _watchdog_state
     fails: dict[str, int] = {b["id"]: 0 for b in BOT_REGISTRY}
     last_seen: dict[str, float] = {b["id"]: 0.0 for b in BOT_REGISTRY}
+    # Circuit breaker state: open after 10 failures, closed after cooldown
+    circuit_state: dict[str, dict] = {b["id"]: {"open": False, "opened_at": 0.0} for b in BOT_REGISTRY}
+    CIRCUIT_FAILURE_THRESHOLD = 10
+    CIRCUIT_COOLDOWN_SECS = 300  # 5 minutes
     fleet_cfg_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fleet_config.json")
     bot_cmds: dict[str, dict] = {}
     try:
@@ -2801,11 +2943,32 @@ def _health_monitor() -> None:
                     log.info("Bot recovered: %s on :%s", bid, port)
                 fails[bid] = 0
                 last_seen[bid] = time.time()
+                # Close circuit breaker on recovery
+                if circuit_state[bid]["open"]:
+                    circuit_state[bid]["open"] = False
+                    log.info(f"Circuit breaker closed for {bid} (recovered)")
             else:
                 fails[bid] += 1
 
             state = "online" if alive else ("dead" if fails[bid] >= _FC_WATCHDOG_FAILURES else "failing")
             cooldown_remaining = max(0, int(_RESTART_COOLDOWN_S - (time.time() - _restart_cooldowns.get(bid, 0))))
+
+            # Circuit breaker: skip polling dead bots during cooldown
+            circuit = circuit_state[bid]
+            if circuit["open"] and time.time() - circuit["opened_at"] < CIRCUIT_COOLDOWN_SECS:
+                # Skip polling - circuit is open
+                state = "circuit_open"
+                cooldown_remaining = max(0, int(CIRCUIT_COOLDOWN_SECS - (time.time() - circuit["opened_at"])))
+                watchdog_snapshot[bid] = {
+                    "alive": False,
+                    "port": port,
+                    "state": state,
+                    "consecutive_failures": fails[bid],
+                    "last_seen": last_seen[bid],
+                    "cooldown_remaining_s": cooldown_remaining,
+                }
+                continue
+
             watchdog_snapshot[bid] = {
                 "alive": alive,
                 "port": port,
@@ -2857,6 +3020,12 @@ def _health_monitor() -> None:
                                             "data": {"bot": bid, "port": port}})
                     except Exception:
                         log.error("Auto-restart failed for %s", bid, exc_info=True)
+
+            # Open circuit breaker after repeated failures
+            if fails[bid] >= CIRCUIT_FAILURE_THRESHOLD and not circuit_state[bid]["open"]:
+                circuit_state[bid]["open"] = True
+                circuit_state[bid]["opened_at"] = time.time()
+                log.warning(f"Circuit breaker OPEN for {bid} — skipping polls for {CIRCUIT_COOLDOWN_SECS}s")
 
         _watchdog_state = watchdog_snapshot
         time.sleep(_FC_WATCHDOG_INTERVAL)

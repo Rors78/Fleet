@@ -46,7 +46,7 @@ TRADING_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "trekbot", "trekbot_shor
 MAX_CONCENTRATION_PER_PAIR = 0.40
 MAX_DIRECTION_IMBALANCE = 0.70
 MIN_TRADE_PROFIT_VS_FEES = 2.0
-MIN_TRADE_SIZE_USD = 5.0
+MIN_TRADE_SIZE_USD = 100.0
 
 # ── BOT REGISTRY ──
 # Every bot defined once.  Keys match bot IDs used in CC, event bus, and portfolio.

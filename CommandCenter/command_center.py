@@ -10,6 +10,7 @@ Usage: python command_center.py
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import math
@@ -315,9 +316,16 @@ class PortfolioManager:
             # 8. Fee floor — reject tiny trades where fees dominate
             # At Kraken 0.26% taker, round-trip = 0.52%. A $30 position = $0.156 fee.
             # Minimum profit target ~$0.50 requires fees < 30% of that — enforced here fleet-wide.
-            min_profitable_amount = 30.0  # fleet-wide $30 floor, raised 2026-04-05 from $5
+            min_profitable_amount = 100.0  # fleet-wide $100 floor, raised 2026-04-06 from $30
             if amount < min_profitable_amount:
                 return {"ok": False, "reason": f"Fee floor: ${amount:.2f} trade too small (min ${min_profitable_amount:.0f} fleet-wide)"}
+
+            # 8b. Time-of-day gate — deny reservations during historically unprofitable hours
+            # Data shows hours 1, 9, 11 UTC have sub-15% win rates
+            LOSING_HOURS_UTC = {1, 9, 11}
+            current_hour_utc = datetime.datetime.utcnow().hour
+            if current_hour_utc in LOSING_HOURS_UTC:
+                return {"ok": False, "reason": f"Time gate: hour {current_hour_utc} UTC historically unprofitable (sub-15% WR)"}
 
             # 9. Fleet intelligence gate — check engine risk assessment
             try:

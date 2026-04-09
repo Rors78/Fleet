@@ -16,10 +16,10 @@ Tracks per-bot and fleet-wide:
 - fee burden (total fees paid, fees as % of gross P/L)
 - best_trade, worst_trade
 
-Kraken fee schedule:
-- Taker: 0.26% (0.0026)
-- Maker: 0.16% (0.0016)
-- Round-trip estimate: 0.40% (0.004) for taker/taker
+Kraken fee schedule (2026-04, tier 0: $0-$10K/month):
+- Taker: 0.40% (0.0040)
+- Maker: 0.25% (0.0025)
+- Round-trip estimate: 0.80% (0.008) for taker/taker
 
 Usage:
     from expectancy import ExpectancyTracker
@@ -29,7 +29,7 @@ Usage:
     tracker.record_trade('trekbot', 'BTC/USD', 'LONG',
                          entry_price=84000, exit_price=84500,
                          size_usd=500, duration=3600,
-                         fee_rate=0.0026)
+                         fee_rate=0.0040)
 
     # Get expectancy:
     stats = tracker.get_bot_stats('trekbot')
@@ -42,10 +42,10 @@ import os
 import time
 
 
-# Kraken fee schedule
-KRAKEN_TAKER = 0.0026
-KRAKEN_MAKER = 0.0016
-KRAKEN_ROUNDTRIP_EST = 0.004  # taker both sides
+# Kraken fee schedule (2026-04, tier 0: $0-$10K/month)
+KRAKEN_TAKER = 0.0040
+KRAKEN_MAKER = 0.0025
+KRAKEN_ROUNDTRIP_EST = 0.008  # taker both sides
 
 
 class ExpectancyTracker:

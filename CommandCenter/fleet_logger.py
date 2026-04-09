@@ -275,6 +275,7 @@ class FleetLogger:
 
     def log_portfolio_release(self, bot_id, pair, amount, pnl, reservation_id):
         """Called by command_center when a release happens."""
+        fees = round(amount * 0.0040 * 2, 2)  # Kraken 0.80% RT
         event = {
             "ts": time.time(),
             "type": "PORTFOLIO",
@@ -283,6 +284,8 @@ class FleetLogger:
             "pair": pair,
             "amount": amount,
             "pnl": pnl,
+            "gross_pnl": round(pnl + fees, 2),
+            "fees": fees,
             "reservation_id": reservation_id,
         }
         _append_jsonl(EVENT_DIR, event)
@@ -350,14 +353,27 @@ class FleetLogger:
                             pnl = exit_info["pnl"]
 
                     duration = time.time() - open_time if open_time > 0 else 0
+                    # Fee calculation: Kraken 0.40% taker per side = 0.80% RT
+                    _size = pos.get("total_size", 0) or pos.get("size_usd", 0) or pos.get("amount", 500)
+                    _entry = pos.get("entry_price", 0) or pos.get("avg_entry", 0)
+                    if _entry > 0 and _size > 0:
+                        _size_usd = _size * _entry if _size < 100 else _size  # handle coin qty vs usd
+                    else:
+                        _size_usd = 500  # fallback
+                    _fees = round(_size_usd * 0.0040 * 2, 2)  # 0.80% RT
+                    _gross = round(pnl + _fees, 2)
                     ev = {
                         "ts": time.time(),
                         "bot": bid,
                         "type": "TRADE_CLOSE",
                         "pair": pair_name,
                         "pnl": pnl,
+                        "gross_pnl": _gross,
+                        "fees": _fees,
+                        "size_usd": round(_size_usd, 2),
                         "duration_s": duration,
                         "exit_reason": exit_reason,
+                        "direction": pos.get("direction", exit_info.get("direction", "") if exit_info else ""),
                     }
                     events.append(ev)
                     with self._daily_lock:

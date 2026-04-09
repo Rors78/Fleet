@@ -318,7 +318,7 @@ class BusListener:
 
     def causal_graph(self, max_age=600):
         """Get the latest causal graph update."""
-        return self._latest_data("CAUSAL_GRAPH_UPDATE", max_age=max_age)
+        return self._latest_data("CAUSAL_FLOW", max_age=max_age)
 
     def causal_power(self, source, max_age=600):
         """How much causal influence does this signal source have?"""
@@ -393,7 +393,7 @@ class BusListener:
         state = self.chaos_state(pair, max_age)
         if not state:
             return False
-        return state.get("attractor_departure", 0) > 2
+        return state.get("attractor_departure", 0) > 0.7
 
     def catastrophe_warning(self, pair=None, max_age=300):
         """Get Thom catastrophe early warning signals."""

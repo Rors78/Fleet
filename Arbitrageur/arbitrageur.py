@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """
-ARBITRAGEUR -- Statistical Arbitrage / Pair Trading Bot
-========================================================
+ARBITRAGEUR v2.0 -- Correlation-Alpha Engine (Leader-Follower Catch-Up)
+=========================================================================
 Bot #14. Port 8085. Color: #7c4dff (deep purple).
 
-Trades the spread between highly correlated crypto pairs.
-Fetches correlation matrix from Brainiac, identifies pairs with
-correlation > 0.8, computes log price ratio (spread), and trades
-z-score mean reversion.
+LONG-only. Uses Brainiac correlation data to detect when a leading pair moves
+and the correlated laggard hasn't caught up yet. Buys the laggard expecting
+a catch-up move. Single-leg, 0.80% RT fee (half of the old spread strategy).
 
-Entry:  z > +2.0  -> SHORT pair A, LONG pair B
-        z < -2.0  -> LONG pair A, SHORT pair B
-Exit:   |z| < 0.5 (MEAN_REVERSION), |z| > 3.5 (STOP_LOSS), 48h (TIME_STOP)
+v1 was spread trading (SHORT one leg, LONG the other) — incompatible with
+live LONG-only mode, 1.60% RT fees, and 0% win rate on 4 closed trades.
+
+Signal: leader gained > 2% in 4h while laggard gained < 0.5% → BUY laggard
+Exit:   TP at 50% gap closure, SL at 1.5x ATR, time stop 12h
 
 Max 5 spread positions, 4% per leg, paper balance $10,000.
 Scans every 120 seconds.
@@ -61,6 +62,14 @@ try:
 except Exception:
     _expectancy = None
 try:
+    import fleet_config as _fc
+except ImportError:
+    _fc = None
+try:
+    from kraken_client import KrakenSpotClient as _KrakenSpotClient
+except ImportError:
+    _KrakenSpotClient = None
+try:
     from kraken_ohlc import fetch_ohlc as _fetch_ohlc_canonical
 except ImportError:
     _fetch_ohlc_canonical = None
@@ -74,17 +83,21 @@ BOT_NAME = "Arbitrageur"
 ACCENT = "#7c4dff"
 CC_URL = "http://127.0.0.1:9000"
 
-SCAN_INTERVAL = 120          # seconds between scans
-CORR_THRESHOLD = 0.80        # minimum correlation to consider a pair
-ZSCORE_ENTRY = 2.0           # z-score to open a spread (lowered from 2.5 — $100 min trade reduces fee drag)
-FEE_RATE = 0.0026            # Kraken taker fee per leg (4 legs total per round-trip)
-ZSCORE_EXIT = 0.5            # z-score to close (mean reversion)
-ZSCORE_STOP = 3.5            # z-score stop loss (divergence blowout)
-TIME_STOP_HOURS = 48         # max hours to hold a spread
-LOOKBACK = 20                # rolling window for z-score
-MAX_SPREADS = 5              # max simultaneous spread positions
-LEG_PCT = 0.04               # 4% of equity per leg
-INITIAL_EQUITY = 10_000.0    # paper balance
+# v2 Correlation-Alpha config
+SCAN_INTERVAL = 120           # seconds between scans
+CORR_THRESHOLD = 0.85         # raised from 0.80 — need strong correlation for catch-up thesis
+CATCH_UP_THRESHOLD = 0.020    # 2% return gap minimum to trigger entry
+CATCH_UP_LOOKBACK_H = 4       # hours to measure the gap
+MIN_LEADER_RETURN = 0.015     # leader must have gained at least 1.5%
+MAX_LAGGARD_RETURN = 0.005    # laggard must not have already caught up > 0.5%
+FEE_RATE = 0.0040             # per-side Kraken taker (0.40% tier 0)
+LOOKBACK = 60                 # candle window for correlation and z-score computation
+TRADE_SIZE_PCT = 0.05         # 5% of equity per trade (single leg)
+MAX_POSITIONS = 3             # concurrent positions
+SL_ATR_MULT = 1.5             # stop loss = 1.5x ATR
+TP_CATCHUP_PCT = 0.50         # target 50% gap closure as TP
+TIME_STOP_HOURS = 12          # 12h (was 48h — too generous)
+INITIAL_EQUITY = 10_000.0     # paper balance
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arbitrageur.log")
 
@@ -132,51 +145,50 @@ def pearson(x, y):
 
 
 # ---------------------------------------------------------------------------
-# Spread Position
+# Position — v2 single-leg LONG
 # ---------------------------------------------------------------------------
 
-class SpreadPosition:
-    """Tracks a single spread (pair) trade."""
+class Position:
+    """Single-leg LONG position on the laggard pair."""
 
-    def __init__(self, pair_a, pair_b, direction, z_at_entry,
-                 price_a, price_b, size_a, size_b,
-                 reservation_a=None, reservation_b=None):
-        self.id = str(uuid.uuid4())[:8]
-        self.pair_a = pair_a               # leg A
-        self.pair_b = pair_b               # leg B
-        self.direction = direction         # "SHORT_A_LONG_B" or "LONG_A_SHORT_B"
-        self.z_at_entry = z_at_entry
-        self.entry_price_a = price_a
-        self.entry_price_b = price_b
-        self.size_a = size_a               # USD notional
-        self.size_b = size_b
+    def __init__(self, pair, entry_price, size_usd, stop_loss, take_profit,
+                 catch_up_score, leader_pair, gap_pct, reservation_id=None):
+        self.id = f"ca-{pair.replace('/', '')}-{int(time.time())}"
+        self.pair = pair
+        self.direction = "LONG"
+        self.leader_pair = leader_pair
+        self.entry_price = entry_price
+        self.size_usd = size_usd
+        self.stop_loss = stop_loss
+        self.take_profit = take_profit
+        self.catch_up_score = catch_up_score
+        self.gap_pct = gap_pct
         self.entry_time = time.time()
-        self.reservation_a = reservation_a
-        self.reservation_b = reservation_b
-        self.exit_reason = None
-        self.pnl = 0.0
-
-    def label(self):
-        return f"{self.pair_a}|{self.pair_b}"
+        self.reservation_id = reservation_id
+        self.tp_hit = False
 
     def age_hours(self):
         return (time.time() - self.entry_time) / 3600
 
+    def unrealized_pnl(self, current_price):
+        if self.entry_price <= 0:
+            return 0.0
+        return self.size_usd * (current_price - self.entry_price) / self.entry_price
+
     def to_dict(self):
         return {
             "id": self.id,
-            "pair_key": f"{self.pair_a}|{self.pair_b}",
-            "pair_a": self.pair_a,
-            "pair_b": self.pair_b,
+            "pair": self.pair,
             "direction": self.direction,
-            "z_at_entry": round(self.z_at_entry, 3),
-            "entry_price_a": round(self.entry_price_a, 4),
-            "entry_price_b": round(self.entry_price_b, 4),
-            "size_a": round(self.size_a, 2),
-            "size_b": round(self.size_b, 2),
+            "leader_pair": self.leader_pair,
+            "entry_price": round(self.entry_price, 6),
+            "size_usd": round(self.size_usd, 2),
+            "stop_loss": round(self.stop_loss, 6),
+            "take_profit": round(self.take_profit, 6),
+            "catch_up_score": round(self.catch_up_score, 4),
+            "gap_pct": round(self.gap_pct, 4),
             "age_hours": round(self.age_hours(), 2),
-            "reservation_a": self.reservation_a,
-            "reservation_b": self.reservation_b,
+            "reservation_id": self.reservation_id,
         }
 
 
@@ -185,7 +197,7 @@ class SpreadPosition:
 # ---------------------------------------------------------------------------
 
 class ArbitrageurEngine:
-    """Core stat-arb engine: correlation scanning, spread tracking, z-score trading."""
+    """v2 Correlation-Alpha: leader-follower catch-up, LONG only."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -197,14 +209,19 @@ class ArbitrageurEngine:
         self.equity = INITIAL_EQUITY
         self.realized_pnl = 0.0
 
-        # Positions
-        self.open_spreads: list[SpreadPosition] = []
-        self.closed_spreads: list[dict] = []   # last 50 closed
+        # v2: single-leg positions
+        self.open_positions: list[Position] = []
+        self.closed_trades: list[dict] = []   # last 50 closed
 
         # Market state
-        self.tracked_pairs: dict[str, dict] = {}   # "A|B" -> {corr, z, spread_history}
         self.all_correlations: dict[str, float] = {}  # "A|B" -> corr
         self.price_cache: dict[str, list[float]] = {}  # pair -> [close prices]
+        self.return_cache: dict[str, float] = {}       # pair -> 4h return
+        self.opportunities: list[dict] = []            # current catch-up candidates
+        self.tracked_pairs: dict = {}                    # pair -> z-score tracking data
+
+        # Log buffer for snapshot (must be before _load_positions which calls _log)
+        self._log_buf = deque(maxlen=30)
 
         # Position persistence
         self._positions_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arbitrageur_state.json")
@@ -217,8 +234,15 @@ class ArbitrageurEngine:
         self._publisher = (EventPublisher(CC_URL, "arbitrageur")
                            if EventPublisher else None)
 
-        # Log buffer for snapshot
-        self._log_buf = deque(maxlen=30)
+        # Live Kraken spot execution
+        self._kraken = None
+        if _KrakenSpotClient and _fc and _fc.is_live():
+            self._kraken = _KrakenSpotClient()
+            if self._kraken.has_credentials:
+                self._log("LIVE MODE: Kraken spot client initialized")
+            else:
+                self._log("LIVE MODE: No Kraken API credentials — paper fallback")
+                self._kraken = None
 
     # -----------------------------------------------------------------------
     # Internal log
@@ -233,71 +257,70 @@ class ArbitrageurEngine:
     # -----------------------------------------------------------------------
 
     def _reconcile_positions(self):
-        """On startup, verify reservations are still valid. Try to re-reserve if stale."""
+        """On startup, release stale old-format spread reservations and migrate."""
         if not self._portfolio:
             return
-
+        # Release any old spread reservations that might be lingering
         reservations = self._portfolio.get_reservations()
         if not reservations:
             return
-
-        for pos in list(self.open_spreads):
-            stale = []
-            if pos.reservation_a and pos.reservation_a not in reservations:
-                stale.append("A")
-            if pos.reservation_b and pos.reservation_b not in reservations:
-                stale.append("B")
-            if not stale:
-                continue
-
-            # Try re-reserve both legs
-            ok_a = ok_b = True
-            new_a = new_b = None
-            if "A" in stale:
-                ok_a, new_a = self._portfolio.reserve(pos.pair_a, "buy", pos.size_a)
-            if "B" in stale:
-                ok_b, new_b = self._portfolio.reserve(pos.pair_b, "sell", pos.size_b)
-
-            if ok_a and ok_b:
-                pos.reservation_a = new_a
-                pos.reservation_b = new_b
-                self._save_positions()
-                self._log(f"Re-reserved spread {pos.id}")
-            else:
-                self._log(f"Stale reservation for spread {pos.id} - closing", "WARNING")
-                self._close_spread(pos, "stale_reservation", 0, 0)
+        for pos in list(self.open_positions):
+            if pos.reservation_id and pos.reservation_id not in reservations:
+                self._log(f"Stale reservation for {pos.id} — closing")
+                self._close_position(pos, "stale_reservation", pos.entry_price)
 
     # -----------------------------------------------------------------------
-    # Position Persistence
+    # Position Persistence — v2 single-leg format
     # -----------------------------------------------------------------------
 
     def _load_positions(self):
-        """Load positions from disk on startup."""
+        """Load positions from disk. Handles v1→v2 migration."""
         if not os.path.exists(self._positions_file):
             return
         try:
             with open(self._positions_file, "r") as f:
                 data = json.load(f)
+            # v1 migration: old format has "open_spreads" with pair_a/pair_b
+            if "open_spreads" in data and data["open_spreads"]:
+                self._log(f"Migrating {len(data['open_spreads'])} v1 spread positions → releasing")
+                if self._portfolio:
+                    for pdata in data["open_spreads"]:
+                        for rid_key in ["reservation_a", "reservation_b"]:
+                            rid = pdata.get(rid_key)
+                            if rid:
+                                try:
+                                    self._portfolio.release(rid, pnl=0.0)
+                                except Exception:
+                                    pass
+                # Clear v1 state
+                data = {"positions": [], "saved_at": time.time()}
+                tmp = self._positions_file + ".tmp"
+                with open(tmp, "w") as f:
+                    json.dump(data, f)
+                os.replace(tmp, self._positions_file)
+                self._log("v1 migration complete — state cleared")
+                return
+
+            # v2 format
             loaded = 0
-            for pdata in data.get("open_spreads", []):
-                pos = SpreadPosition(
-                    pdata.get("pair_a"),
-                    pdata.get("pair_b"),
-                    pdata.get("direction"),
-                    pdata.get("z_at_entry"),
-                    pdata.get("entry_price_a"),
-                    pdata.get("entry_price_b"),
-                    pdata.get("size_a"),
-                    pdata.get("size_b"),
-                    pdata.get("reservation_a"),
-                    pdata.get("reservation_b"),
+            for pdata in data.get("positions", []):
+                pos = Position(
+                    pair=pdata["pair"],
+                    entry_price=pdata["entry_price"],
+                    size_usd=pdata["size_usd"],
+                    stop_loss=pdata["stop_loss"],
+                    take_profit=pdata["take_profit"],
+                    catch_up_score=pdata.get("catch_up_score", 0),
+                    leader_pair=pdata.get("leader_pair", ""),
+                    gap_pct=pdata.get("gap_pct", 0),
+                    reservation_id=pdata.get("reservation_id"),
                 )
-                pos.id = pdata.get("id")
+                pos.id = pdata.get("id", pos.id)
                 pos.entry_time = pdata.get("entry_time", time.time())
-                self.open_spreads.append(pos)
+                self.open_positions.append(pos)
                 loaded += 1
             if loaded > 0:
-                self._log(f"Restored {loaded} spread position(s) from disk")
+                self._log(f"Restored {loaded} position(s) from disk")
         except Exception as e:
             log.warning(f"Failed to load positions: {e}")
 
@@ -305,22 +328,22 @@ class ArbitrageurEngine:
         """Atomic save of positions to disk."""
         try:
             data = {
-                "open_spreads": [
+                "positions": [
                     {
                         "id": p.id,
-                        "pair_a": p.pair_a,
-                        "pair_b": p.pair_b,
+                        "pair": p.pair,
                         "direction": p.direction,
-                        "z_at_entry": p.z_at_entry,
-                        "entry_price_a": p.entry_price_a,
-                        "entry_price_b": p.entry_price_b,
-                        "size_a": p.size_a,
-                        "size_b": p.size_b,
+                        "leader_pair": p.leader_pair,
+                        "entry_price": p.entry_price,
+                        "size_usd": p.size_usd,
+                        "stop_loss": p.stop_loss,
+                        "take_profit": p.take_profit,
+                        "catch_up_score": p.catch_up_score,
+                        "gap_pct": p.gap_pct,
                         "entry_time": p.entry_time,
-                        "reservation_a": p.reservation_a,
-                        "reservation_b": p.reservation_b,
+                        "reservation_id": p.reservation_id,
                     }
-                    for p in self.open_spreads
+                    for p in self.open_positions
                 ],
                 "saved_at": time.time(),
             }
@@ -499,184 +522,216 @@ class ArbitrageurEngine:
             return False
 
     # -----------------------------------------------------------------------
-    # Position Management
+    # Position Management — v2 Leader-Follower
     # -----------------------------------------------------------------------
 
-    def _open_spread(self, key, info):
-        """Open a spread position if limits allow."""
-        z = info["z_score"]
-        pa = info["pair_a"]
-        pb = info["pair_b"]
-        price_a = info["current_price_a"]
-        price_b = info["current_price_b"]
+    def _compute_relative_returns(self, pairs):
+        """Compute short-term returns for all pairs from cached OHLC."""
+        self.return_cache.clear()
+        for pair in pairs:
+            closes = self.price_cache.get(pair)
+            if not closes or len(closes) < CATCH_UP_LOOKBACK_H + 1:
+                continue
+            lookback = min(CATCH_UP_LOOKBACK_H, len(closes) - 1)
+            old_price = closes[-(lookback + 1)]
+            new_price = closes[-1]
+            if old_price > 0:
+                self.return_cache[pair] = (new_price - old_price) / old_price
 
-        if len(self.open_spreads) >= MAX_SPREADS:
+    def _find_catch_up_opportunities(self):
+        """Find leader-laggard pairs where laggard hasn't caught up."""
+        self.opportunities = []
+        for key, corr in self.all_correlations.items():
+            if abs(corr) < CORR_THRESHOLD:
+                continue
+            parts = key.split("|")
+            if len(parts) != 2:
+                continue
+            pair_a, pair_b = parts
+
+            ret_a = self.return_cache.get(pair_a)
+            ret_b = self.return_cache.get(pair_b)
+            if ret_a is None or ret_b is None:
+                continue
+
+            # Check both directions: A leads B, or B leads A
+            for leader, laggard, l_ret, lag_ret in [
+                (pair_a, pair_b, ret_a, ret_b),
+                (pair_b, pair_a, ret_b, ret_a),
+            ]:
+                gap = l_ret - lag_ret
+                if gap < CATCH_UP_THRESHOLD:
+                    continue
+                if l_ret < MIN_LEADER_RETURN:
+                    continue  # leader didn't move enough — could be noise
+                if lag_ret > MAX_LAGGARD_RETURN:
+                    continue  # laggard already catching up
+
+                # Blacklist check
+                try:
+                    if _is_blacklisted(laggard):
+                        continue
+                except Exception:
+                    pass
+
+                # PHITEX check
+                if self._phitex_blocked(laggard):
+                    continue
+
+                # Already in this pair?
+                if any(p.pair == laggard for p in self.open_positions):
+                    continue
+
+                self.opportunities.append({
+                    "leader": leader,
+                    "laggard": laggard,
+                    "leader_return": round(l_ret, 4),
+                    "laggard_return": round(lag_ret, 4),
+                    "gap_pct": round(gap, 4),
+                    "correlation": round(corr, 3),
+                })
+
+        # Sort by gap size (biggest opportunity first)
+        self.opportunities.sort(key=lambda x: -x["gap_pct"])
+
+    def _open_position(self, opp):
+        """Open a LONG position on the laggard. Single leg."""
+        if len(self.open_positions) >= MAX_POSITIONS:
             return
 
-        # Check if we already have this spread open
-        for pos in self.open_spreads:
-            if pos.label() == key or pos.label() == f"{pb}|{pa}":
-                return
-
-        # PHITEX check: skip if either leg is in phase transition
-        if self._phitex_blocked(pa) or self._phitex_blocked(pb):
-            self._log(f"BLOCKED by PHITEX: {key}")
+        pair = opp["laggard"]
+        leader = opp["leader"]
+        gap = opp["gap_pct"]
+        price = self.price_cache.get(pair, [0])[-1] if pair in self.price_cache else 0
+        if price <= 0:
             return
 
-        # Determine direction
-        if z > ZSCORE_ENTRY:
-            # Spread too high -> expect reversion down
-            # SHORT A, LONG B
-            direction = "SHORT_A_LONG_B"
-        elif z < -ZSCORE_ENTRY:
-            # Spread too low -> expect reversion up
-            # LONG A, SHORT B
-            direction = "LONG_A_SHORT_B"
-        else:
+        # Size: 5% of equity
+        size_usd = self.equity * TRADE_SIZE_PCT
+        if size_usd < 100:
+            self._log(f"SKIP {pair}: insufficient equity (${self.equity:.2f})")
             return
 
-        # Size: 4% of equity per leg
-        leg_size = self.equity * LEG_PCT
-        if leg_size < 10.0:
-            self._log(f"SKIP {key}: insufficient equity ({self.equity:.2f})")
+        # Fee gate: gap must clear 2x round-trip fees
+        rt_fee_pct = FEE_RATE * 2
+        if gap < rt_fee_pct * 2:
+            self._log(f"SKIP {pair}: gap {gap:.2%} < 2x fees {rt_fee_pct*2:.2%}")
             return
 
-        # Fee awareness: log round-trip cost so it's visible in audit
-        round_trip_fees = leg_size * FEE_RATE * 4  # 4 legs: open A, open B, close A, close B
-        self._log(
-            f"FEE CHECK {key}: round-trip fees ${round_trip_fees:.2f} on ${leg_size:.0f}/leg "
-            f"(z={z:.2f}, need >{round_trip_fees/leg_size*100:.1f}% move to profit)"
-        )
+        # ATR for stop loss
+        closes = self.price_cache.get(pair, [])
+        if len(closes) < 15:
+            return
+        # Simple ATR estimate from closes
+        diffs = [abs(closes[i] - closes[i-1]) for i in range(max(1, len(closes)-14), len(closes))]
+        atr = sum(diffs) / len(diffs) if diffs else price * 0.02
 
-        # Portfolio reservation
-        res_a, res_b = None, None
+        stop_loss = price - SL_ATR_MULT * atr
+        take_profit = price * (1 + gap * TP_CATCHUP_PCT)  # target 50% gap closure
+
+        # Portfolio reservation (LONG only)
+        rid = None
         if self._portfolio:
-            dir_a = "SHORT" if direction == "SHORT_A_LONG_B" else "LONG"
-            dir_b = "LONG" if direction == "SHORT_A_LONG_B" else "SHORT"
-            ok_a, rid_a = self._portfolio.reserve(pa, dir_a, leg_size)
-            if ok_a:
-                res_a = rid_a
+            ok, result = self._portfolio.reserve(pair, "LONG", size_usd)
+            if ok:
+                rid = result
             else:
-                self._log(f"Portfolio reserve FAIL leg A ({pa}): {rid_a}")
-                return
-            ok_b, rid_b = self._portfolio.reserve(pb, dir_b, leg_size)
-            if ok_b:
-                res_b = rid_b
-            else:
-                # Release first leg
-                self._portfolio.release(res_a, pnl=0.0)
-                self._log(f"Portfolio reserve FAIL leg B ({pb}): {rid_b}")
+                self._log(f"Portfolio denied {pair}: {result}")
                 return
 
-        pos = SpreadPosition(
-            pair_a=pa, pair_b=pb, direction=direction,
-            z_at_entry=z, price_a=price_a, price_b=price_b,
-            size_a=leg_size, size_b=leg_size,
-            reservation_a=res_a, reservation_b=res_b,
+        # Live execution: buy on Kraken spot
+        entry_price = price
+        if self._kraken:
+            _kp = pair.replace("/", "")
+            qty = size_usd / price
+            ok, txid = self._kraken.buy(_kp, qty)
+            if ok:
+                time.sleep(1.5)
+                entry_price = self._kraken.get_fill_price(txid, price)
+                self._log(f"LIVE BUY {pair} qty={qty:.6f} @ {entry_price:.4f} txid={txid}")
+            else:
+                self._log(f"LIVE BUY FAILED {pair}: {txid}")
+                if self._portfolio and rid:
+                    self._portfolio.release(rid, pnl=0.0)
+                return
+
+        pos = Position(
+            pair=pair, entry_price=entry_price, size_usd=size_usd,
+            stop_loss=stop_loss, take_profit=take_profit,
+            catch_up_score=gap, leader_pair=leader, gap_pct=gap,
+            reservation_id=rid,
         )
-        self.open_spreads.append(pos)
+        self.open_positions.append(pos)
         self._save_positions()
         self._log(
-            f"OPEN {pos.id} | {key} | {direction} | z={z:.2f} | "
-            f"A={price_a:.4f} B={price_b:.4f} | ${leg_size:.0f}/leg"
+            f"OPEN {pos.id} | {pair} (leader: {leader}) | gap={gap:.2%} | "
+            f"@ {entry_price:.4f} | SL={stop_loss:.4f} TP={take_profit:.4f} | ${size_usd:.0f}"
         )
 
-        # Publish events
         if self._publisher:
-            self._publisher.emit("SPREAD_OPEN", {
-                "spread_id": pos.id,
-                "pair_a": pa,
-                "pair_b": pb,
-                "direction": direction,
-                "z_score": round(z, 3),
-                "size_per_leg": round(leg_size, 2),
-            })
-            # Also publish as TRADE_OPEN for fleet analytics
             self._publisher.emit("TRADE_OPEN", {
-                "pair": f"{pa}|{pb}",
-                "direction": "SHORT" if direction == "SHORT_A_LONG_B" else "LONG",
-                "entry": round(z, 3),
-                "size": round(leg_size * 2, 2),
+                "pair": pair, "direction": "LONG",
+                "entry": round(entry_price, 4), "size": round(size_usd, 2),
+                "leader": leader, "gap_pct": round(gap, 4),
+            })
+            self._publisher.emit("CATCH_UP_SIGNAL", {
+                "leader": leader, "laggard": pair,
+                "gap_pct": round(gap, 4), "correlation": opp.get("correlation", 0),
             })
 
     def _check_exits(self):
-        """Check open spreads for exit conditions."""
+        """Check open positions for exit conditions."""
         to_close = []
-        for pos in self.open_spreads:
-            key = pos.label()
-            rkey = f"{pos.pair_b}|{pos.pair_a}"
+        for pos in self.open_positions:
+            closes = self.price_cache.get(pos.pair, [])
+            current_price = closes[-1] if closes else pos.entry_price
+            if current_price <= 0:
+                continue
 
-            # Get current z-score
-            info = self.tracked_pairs.get(key) or self.tracked_pairs.get(rkey)
-            if info:
-                current_z = info["z_score"]
-                # Flip z-sign if the tracked pair is reversed
-                if rkey in self.tracked_pairs and key not in self.tracked_pairs:
-                    current_z = -current_z
-            else:
-                # Pair fell out of tracked (corr dropped) -- use cached prices
-                if (pos.pair_a in self.price_cache and pos.pair_b in self.price_cache):
-                    _, z, _ = self._compute_log_spread(
-                        self.price_cache[pos.pair_a],
-                        self.price_cache[pos.pair_b],
-                    )
-                    current_z = z if z is not None else pos.z_at_entry
-                else:
-                    current_z = pos.z_at_entry
-
-            # Determine exit reason
             reason = None
-            if abs(current_z) < ZSCORE_EXIT:
-                reason = "MEAN_REVERSION"
-            elif abs(current_z) > ZSCORE_STOP:
+            if current_price <= pos.stop_loss:
                 reason = "STOP_LOSS"
+            elif current_price >= pos.take_profit:
+                reason = "TAKE_PROFIT"
             elif pos.age_hours() >= TIME_STOP_HOURS:
                 reason = "TIME_STOP"
 
+            # Trailing stop after 50% of TP reached
+            if reason is None and not pos.tp_hit:
+                tp_dist = pos.take_profit - pos.entry_price
+                if tp_dist > 0:
+                    progress = (current_price - pos.entry_price) / tp_dist
+                    if progress >= 0.5:
+                        pos.tp_hit = True
+                        pos.stop_loss = max(pos.stop_loss, pos.entry_price)  # breakeven
+
             if reason:
-                # Calculate PnL
-                pnl = self._compute_spread_pnl(pos, current_z)
-                pos.exit_reason = reason
-                pos.pnl = pnl
-                to_close.append((pos, reason, current_z, pnl))
+                to_close.append((pos, reason, current_price))
 
-        for pos, reason, current_z, pnl in to_close:
-            self._close_spread(pos, reason, current_z, pnl)
+        for pos, reason, price in to_close:
+            self._close_position(pos, reason, price)
 
-    def _compute_spread_pnl(self, pos, current_z):
-        """
-        Estimate PnL from z-score movement.
-        If z moved toward zero from entry, the spread trade is profitable.
-        PnL is proportional to the z-score change times the spread volatility.
-        """
-        pa = pos.pair_a
-        pb = pos.pair_b
+    def _close_position(self, pos, reason, current_price):
+        """Close a LONG position and update state."""
+        # Live execution: sell on Kraken
+        exit_price = current_price
+        if self._kraken:
+            _kp = pos.pair.replace("/", "")
+            qty = pos.size_usd / pos.entry_price
+            ok, txid = self._kraken.sell(_kp, qty)
+            if ok:
+                time.sleep(1.5)
+                exit_price = self._kraken.get_fill_price(txid, current_price)
+                self._log(f"LIVE SELL {pos.pair} @ {exit_price:.4f} reason={reason} txid={txid}")
+            else:
+                self._log(f"LIVE SELL FAILED {pos.pair}: {txid}")
 
-        # Get current prices
-        price_a = (self.price_cache.get(pa, [0])[-1]
-                   if pa in self.price_cache else pos.entry_price_a)
-        price_b = (self.price_cache.get(pb, [0])[-1]
-                   if pb in self.price_cache else pos.entry_price_b)
+        # P&L with fees
+        gross_pnl = pos.unrealized_pnl(exit_price)
+        fees = pos.size_usd * FEE_RATE * 2
+        pnl = gross_pnl - fees
 
-        if pos.entry_price_a == 0 or pos.entry_price_b == 0:
-            return 0.0
-
-        # Return on each leg
-        ret_a = (price_a - pos.entry_price_a) / pos.entry_price_a
-        ret_b = (price_b - pos.entry_price_b) / pos.entry_price_b
-
-        if pos.direction == "SHORT_A_LONG_B":
-            # Short A (profit if A falls), Long B (profit if B rises)
-            pnl = pos.size_a * (-ret_a) + pos.size_b * ret_b
-        else:
-            # Long A (profit if A rises), Short B (profit if B falls)
-            pnl = pos.size_a * ret_a + pos.size_b * (-ret_b)
-
-        return round(pnl, 2)
-
-    def _close_spread(self, pos, reason, current_z, pnl):
-        """Close a spread position and update state."""
-        self.open_spreads = [p for p in self.open_spreads if p.id != pos.id]
+        self.open_positions = [p for p in self.open_positions if p.id != pos.id]
         self._save_positions()
         self.realized_pnl += pnl
         self.equity += pnl
@@ -684,88 +739,42 @@ class ArbitrageurEngine:
         if _expectancy:
             try:
                 _expectancy.record_trade(
-                    bot_id='arbitrageur',
-                    pair=pos.label(),
-                    direction=pos.direction,
-                    entry_price=pos.entry_price_a,
-                    exit_price=pos.entry_price_a * (1 + pnl / (pos.size_a + pos.size_b)) if (pos.size_a + pos.size_b) > 0 else pos.entry_price_a,
-                    size_usd=pos.size_a + pos.size_b,
-                    duration=pos.age_hours() * 3600,
+                    bot_id='arbitrageur', pair=pos.pair, direction='LONG',
+                    entry_price=pos.entry_price, exit_price=exit_price,
+                    size_usd=pos.size_usd, duration=pos.age_hours() * 3600,
+                    fee_rate=FEE_RATE,
                 )
             except Exception:
                 pass
 
-        record = {
-            **pos.to_dict(),
-            "exit_reason": reason,
-            "exit_z": round(current_z, 3),
-            "pnl": round(pnl, 2),
-            "exit_time": time.time(),
-            "hold_hours": round(pos.age_hours(), 2),
-        }
-        self.closed_spreads.append(record)
-        if len(self.closed_spreads) > 50:
-            self.closed_spreads = self.closed_spreads[-50:]
+        record = {**pos.to_dict(), "exit_reason": reason, "exit_price": round(exit_price, 6),
+                  "pnl": round(pnl, 2), "fees": round(fees, 2), "exit_time": time.time()}
+        self.closed_trades.append(record)
+        if len(self.closed_trades) > 50:
+            self.closed_trades = self.closed_trades[-50:]
 
-        self._log(
-            f"CLOSE {pos.id} | {pos.label()} | {reason} | "
-            f"z: {pos.z_at_entry:.2f} -> {current_z:.2f} | "
-            f"PnL: ${pnl:+.2f} | held {pos.age_hours():.1f}h"
-        )
+        self._log(f"CLOSE {pos.id} | {pos.pair} | {reason} | PnL: ${pnl:+.2f} (fees ${fees:.2f}) | held {pos.age_hours():.1f}h")
 
-        # Release portfolio reservations
-        if self._portfolio:
-            # Report outcome to signal aggregator for learning
-            try:
-                import urllib.request as urlreq
-                url = f"{CC_URL}/api/signals/outcome"
-                fees = abs(pos.size_a + pos.size_b) * 0.0026 * 2  # Approx round-trip fees
-                data = json.dumps({
-                    "bot_id": "arbitrageur",
-                    "pair": f"{pos.pair_a}/{pos.pair_b}",
-                    "direction": pos.direction,
-                    "won": pnl > 0,
-                    "pnl": float(pnl),
-                    "fees": float(fees)
-                }).encode("utf-8")
-                req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
-                urlreq.urlopen(req, timeout=3)
-            except Exception:
-                pass
-            
-            if pos.reservation_a:
-                self._portfolio.release(pos.reservation_a, pnl=pnl / 2)
-            if pos.reservation_b:
-                self._portfolio.release(pos.reservation_b, pnl=pnl / 2)
+        if self._portfolio and pos.reservation_id:
+            self._portfolio.release(
+                pos.reservation_id, pnl=pnl,
+                entry_price=float(pos.entry_price),
+                exit_price=float(exit_price),
+            )
 
-        # Publish events
         if self._publisher:
-            self._publisher.emit("SPREAD_CLOSE", {
-                "spread_id": pos.id,
-                "pair_a": pos.pair_a,
-                "pair_b": pos.pair_b,
-                "direction": pos.direction,
-                "exit_reason": reason,
-                "z_entry": round(pos.z_at_entry, 3),
-                "z_exit": round(current_z, 3),
-                "pnl": round(pnl, 2),
-                "hold_hours": round(pos.age_hours(), 2),
-            })
-            # Also publish as TRADE_CLOSE for fleet analytics
             self._publisher.emit("TRADE_CLOSE", {
-                "pair": f"{pos.pair_a}|{pos.pair_b}",
-                "direction": "SHORT" if pos.direction == "SHORT_A_LONG_B" else "LONG",
-                "pnl": round(pnl, 2),
-                "exit_reason": reason,
-                "duration_s": round(pos.age_hours() * 3600, 0),
+                "pair": pos.pair, "direction": "LONG", "pnl": round(pnl, 2),
+                "exit_reason": reason, "duration_s": round(pos.age_hours() * 3600, 0),
+                "leader": pos.leader_pair, "gap_pct": round(pos.gap_pct, 4),
             })
 
     # -----------------------------------------------------------------------
-    # Main Scan Cycle
+    # Main Scan Cycle — v2 Leader-Follower
     # -----------------------------------------------------------------------
 
     def scan(self):
-        """One full scan cycle: fetch data, update spreads, trade."""
+        """One full scan cycle: correlations → returns → catch-up opportunities → trade."""
         t0 = time.time()
         self.scan_count += 1
         self._log(f"--- Scan #{self.scan_count} ---")
@@ -778,26 +787,27 @@ class ArbitrageurEngine:
         self._build_correlation_map(pairs)
         high_corr = sum(1 for v in self.all_correlations.values()
                         if abs(v) >= CORR_THRESHOLD)
-        self._log(f"Correlations: {len(self.all_correlations)} pairs, "
+        self._log(f"Correlations: {len(self.all_correlations)} total, "
                   f"{high_corr} above {CORR_THRESHOLD}")
 
-        # 3. Compute z-scores for correlated pairs
-        self._find_tradeable_pairs()
-        self._log(f"Tracked spreads: {len(self.tracked_pairs)}")
+        # 3. Compute relative returns
+        self._compute_relative_returns(pairs)
 
-        # 4. Check exit conditions on open positions
+        # 4. Find catch-up opportunities
+        self._find_catch_up_opportunities()
+        self._log(f"Catch-up opportunities: {len(self.opportunities)}")
+
+        # 5. Check exits on open positions
         self._check_exits()
 
-        # 5. Scan for new entries
-        for key, info in self.tracked_pairs.items():
-            z = info["z_score"]
-            if abs(z) >= ZSCORE_ENTRY:
-                self._open_spread(key, info)
+        # 6. Open positions on best opportunities
+        for opp in self.opportunities[:3]:  # top 3 only
+            self._open_position(opp)
 
         self.scan_duration = time.time() - t0
         self._log(
             f"Scan complete in {self.scan_duration:.1f}s | "
-            f"Open: {len(self.open_spreads)} | "
+            f"Open: {len(self.open_positions)} | "
             f"Equity: ${self.equity:,.2f} | "
             f"PnL: ${self.realized_pnl:+,.2f}"
         )
@@ -808,28 +818,14 @@ class ArbitrageurEngine:
 
     def _win_rate(self):
         """Win rate from closed trades."""
-        if not self.closed_spreads:
+        if not self.closed_trades:
             return 0.0
-        wins = sum(1 for t in self.closed_spreads if t.get("pnl", 0) > 0)
-        return round(wins / len(self.closed_spreads) * 100, 1)
+        wins = sum(1 for t in self.closed_trades if t.get("pnl", 0) > 0)
+        return round(wins / len(self.closed_trades) * 100, 1)
 
-    def _top_spreads(self, n=5):
-        """Top N tracked spreads by absolute z-score."""
-        items = sorted(
-            self.tracked_pairs.values(),
-            key=lambda x: abs(x.get("z_score", 0)),
-            reverse=True,
-        )
-        return [
-            {
-                "pair": f"{it['pair_a']}|{it['pair_b']}",
-                "correlation": it["correlation"],
-                "z_score": it["z_score"],
-                "price_a": round(it["current_price_a"], 4),
-                "price_b": round(it["current_price_b"], 4),
-            }
-            for it in items[:n]
-        ]
+    def _top_trades(self, n=5):
+        """Top N catch-up opportunities by gap size."""
+        return self.opportunities[:n]
 
     # -----------------------------------------------------------------------
     # Snapshot (for HTTP API)
@@ -839,16 +835,14 @@ class ArbitrageurEngine:
         """Full bot state for /api/snapshot."""
         with self._lock:
             positions = {}
-            for pos in self.open_spreads:
+            for pos in self.open_positions:
+                closes = self.price_cache.get(pos.pair, [])
+                cur = closes[-1] if closes else pos.entry_price
                 positions[pos.id] = {
                     **pos.to_dict(),
-                    "current_z": None,
+                    "current_price": round(cur, 6),
+                    "unrealized_pnl": round(pos.unrealized_pnl(cur), 2),
                 }
-                # Inject current z
-                info = (self.tracked_pairs.get(pos.label()) or
-                        self.tracked_pairs.get(f"{pos.pair_b}|{pos.pair_a}"))
-                if info:
-                    positions[pos.id]["current_z"] = info["z_score"]
 
             result = {
                 "bot_name": BOT_NAME,
@@ -859,29 +853,26 @@ class ArbitrageurEngine:
                 "scan_interval": SCAN_INTERVAL,
                 "equity": round(self.equity, 2),
                 "initial_equity": INITIAL_EQUITY,
-                "open_spreads": len(self.open_spreads),
-                "total_trades": len(self.closed_spreads),
+                "open_positions": len(self.open_positions),
+                "total_trades": len(self.closed_trades),
                 "win_rate": self._win_rate(),
                 "pnl": round(self.realized_pnl, 2),
                 "pnl_pct": round(self.realized_pnl / INITIAL_EQUITY * 100, 2),
-                "tracked_pairs": len(self.tracked_pairs),
                 "correlation_pairs": len(self.all_correlations),
+                "high_corr_pairs": sum(1 for v in self.all_correlations.values() if v >= CORR_THRESHOLD),
+                "opportunities": self.opportunities[:5],
                 "positions": positions,
-                "open_spreads_detail": list(positions.values()),
-                "top_spreads": self._top_spreads(5),
-                "closed_recent": self.closed_spreads[-10:],
+                "closed_recent": self.closed_trades[-10:],
                 "strategy": {
-                    "name": "Statistical Arbitrage / Pair Trading",
-                    "entry_z": ZSCORE_ENTRY,
-                    "exit_z": ZSCORE_EXIT,
-                    "stop_z": ZSCORE_STOP,
-                    "time_stop_hours": TIME_STOP_HOURS,
-                    "lookback": LOOKBACK,
+                    "name": "Correlation-Alpha (Leader-Follower Catch-Up)",
+                    "type": "LONG_only",
                     "corr_threshold": CORR_THRESHOLD,
-                    "max_spreads": MAX_SPREADS,
-                    "leg_pct": LEG_PCT,
+                    "catch_up_threshold": CATCH_UP_THRESHOLD,
+                    "lookback_hours": CATCH_UP_LOOKBACK_H,
+                    "time_stop_hours": TIME_STOP_HOURS,
+                    "max_positions": MAX_POSITIONS,
                     "fee_rate": FEE_RATE,
-                    "round_trip_fee_usd": round(self.equity * LEG_PCT * FEE_RATE * 4, 2),
+                    "round_trip_fee_pct": FEE_RATE * 2 * 100,
                 },
                 "regime": self._infer_regime(),
                 "uptime_s": round(time.time() - self._started, 1),
@@ -926,7 +917,12 @@ class ArbitrageurHandler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
         if path == "/api/snapshot":
-            data = json.dumps(_engine.snapshot(), default=str)
+            try:
+                data = json.dumps(_engine.snapshot(), default=str)
+            except Exception as e:
+                import traceback
+                log.error(f"snapshot() crashed: {e}\n{traceback.format_exc()}")
+                data = json.dumps({"error": str(e), "traceback": traceback.format_exc()})
             self._respond(200, data)
         elif path == "/health":
             data = json.dumps({
@@ -935,7 +931,7 @@ class ArbitrageurHandler(BaseHTTPRequestHandler):
                 "port": PORT,
                 "scan_count": _engine.scan_count,
                 "equity": round(_engine.equity, 2),
-                "open_spreads": len(_engine.open_spreads),
+                "open_positions": len(_engine.open_positions),
                 "timestamp": time.time(),
             })
             self._respond(200, data)
@@ -985,14 +981,14 @@ def main():
         print(f"[PORT_GUARD] Warning: {_e}")
 
     print()
-    print(f"  ARBITRAGEUR v1.0 -- Statistical Arbitrage / Pair Trading")
+    print(f"  ARBITRAGEUR v2.0 -- Correlation-Alpha (Leader-Follower Catch-Up)")
     print(f"  Port: {PORT}")
     print(f"  Accent: {ACCENT}")
     print(f"  Equity: ${INITIAL_EQUITY:,.0f} (paper)")
     print(f"  Scan interval: {SCAN_INTERVAL}s")
     print(f"  Correlation threshold: {CORR_THRESHOLD}")
-    print(f"  Z-score entry/exit/stop: {ZSCORE_ENTRY}/{ZSCORE_EXIT}/{ZSCORE_STOP}")
-    print(f"  Max spreads: {MAX_SPREADS}, {LEG_PCT*100:.0f}% per leg")
+    print(f"  Catch-up gap: {CATCH_UP_THRESHOLD:.1%} min, {TP_CATCHUP_PCT:.0%} TP target")
+    print(f"  Max positions: {MAX_POSITIONS}, {TRADE_SIZE_PCT*100:.0f}% per trade, LONG only")
     print(f"  http://localhost:{PORT}/api/snapshot")
     print(f"  http://localhost:{PORT}/health")
     print(f"  Press Ctrl+C to stop")
@@ -1008,7 +1004,7 @@ def main():
     except KeyboardInterrupt:
         # Release all portfolio reservations on shutdown
         if _engine._portfolio:
-            for pos in list(_engine.open_spreads):
+            for pos in list(_engine.open_positions):
                 try:
                     if pos.reservation_a:
                         _engine._portfolio.release(pos.reservation_a, pnl=0.0)

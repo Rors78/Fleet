@@ -1,0 +1,2707 @@
+"""
+Signal Broadcaster — Two-tier Telegram signal service for the trading fleet.
+=============================================================================
+
+Consumes events from Command Center's SSE stream (with polling fallback),
+enriches them with fleet intelligence, routes to free/paid tiers, formats
+as Telegram HTML cards, and delivers via the Telegram Bot API.
+
+Architecture:
+    SSEListener -> IntelligenceBuilder -> TierRouter -> CardFormatter -> ChannelOps
+
+Stdlib + urllib only. No pip installs required.
+"""
+
+import collections
+import copy
+import json
+import logging
+import os
+import signal
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from datetime import datetime, timezone, timedelta
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from pathlib import Path
+from typing import Callable, Optional
+
+# ── Bot display names — internal names never shown to subscribers ────────────
+
+BOT_DISPLAY_NAMES = {
+    'trekbot':       'Vanguard',
+    'turtlesue':     'Stalker',
+    'turtlebot':     'Stalker',
+    'nexusbrain':    'Prism',
+    'nexus_brain':   'Prism',
+    'oracle':        'Atlas',
+    'deepblue':      'Leviathan',
+    'deep_blue':     'Leviathan',
+    'gridzilla':     'Ironweb',
+    'nexus':         'The Council',
+    'aegis':         'Sovereign',
+    'sentinel':      'Watcher',
+    'trinity':       'Trident',
+    'hivemind':      'Chorus',
+    'hive_mind':     'Chorus',
+    'phitex':        'Pulse',
+    'rubberband':    'Slingshot',
+    'contrarian':    'Heretic',
+    'arbitrageur':   'Ghost',
+    'chronos':       'Meridian',
+    'trekbot_short': 'Vanguard-S',
+    'inference':     'Inference',
+}
+
+
+def display_name(internal: str) -> str:
+    """Map internal bot name to public display name."""
+    return BOT_DISPLAY_NAMES.get(internal.lower().replace('-', '_'), internal.title())
+
+
+# ── Logging ──────────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+log = logging.getLogger("signal_broadcaster")
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRANSPORT LAYER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class SSEListener:
+    """Connects to Command Center's SSE event stream and delivers events via callback.
+
+    Reads ``data: {...}`` lines from /api/events/stream. Heartbeat lines
+    (starting with ``:``) are silently consumed. On disconnect: exponential
+    backoff (2^failures seconds, capped at 60s).
+    """
+
+    def __init__(self, cc_url: str, on_event: Callable[[dict], None],
+                 on_disconnect: Optional[Callable] = None,
+                 on_reconnect: Optional[Callable] = None):
+        self._cc_url = cc_url.rstrip("/")
+        self._on_event = on_event
+        self._on_disconnect = on_disconnect or (lambda: None)
+        self._on_reconnect = on_reconnect or (lambda: None)
+        self._shutdown = threading.Event()
+        self._connected = False
+        self._reconnects = 0
+        self._events_received = 0
+        self._last_event_ts: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        t = threading.Thread(target=self._run, daemon=True, name="sse-listener")
+        t.start()
+
+    def stop(self) -> None:
+        self._shutdown.set()
+
+    def is_connected(self) -> bool:
+        with self._lock:
+            return self._connected
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "connected": self._connected,
+                "reconnects": self._reconnects,
+                "events_received": self._events_received,
+                "last_event_ts": self._last_event_ts,
+            }
+
+    def _run(self) -> None:
+        failures = 0
+        url = f"{self._cc_url}/api/events/stream"
+
+        while not self._shutdown.is_set():
+            resp = None
+            try:
+                req = urllib.request.Request(url)
+                resp = urllib.request.urlopen(req, timeout=300)
+
+                with self._lock:
+                    self._connected = True
+                if failures > 0:
+                    with self._lock:
+                        self._reconnects += 1
+                    failures = 0
+                    try:
+                        self._on_reconnect()
+                    except Exception:
+                        log.warning("on_reconnect callback error", exc_info=True)
+                log.info("SSE connected to %s", url)
+
+                for raw_line in resp:
+                    if self._shutdown.is_set():
+                        break
+                    try:
+                        line = raw_line.decode("utf-8", errors="replace").rstrip("\r\n")
+                    except Exception:
+                        continue
+
+                    if line.startswith(":") or not line:
+                        continue
+
+                    if line.startswith("data: "):
+                        payload = line[6:]
+                        try:
+                            event = json.loads(payload)
+                            with self._lock:
+                                self._events_received += 1
+                                self._last_event_ts = time.time()
+                            self._on_event(event)
+                        except json.JSONDecodeError:
+                            log.debug("SSE non-JSON data line: %.100s", payload)
+                        except Exception:
+                            log.warning("on_event callback error", exc_info=True)
+
+            except Exception as e:
+                log.warning("SSE connection lost: %s", e)
+            finally:
+                if resp:
+                    try:
+                        resp.close()
+                    except Exception:
+                        pass
+
+                with self._lock:
+                    was_connected = self._connected
+                    self._connected = False
+
+                if was_connected:
+                    try:
+                        self._on_disconnect()
+                    except Exception:
+                        log.warning("on_disconnect callback error", exc_info=True)
+
+            # Backoff before retry (outside finally)
+            failures += 1
+            backoff = min(2 ** failures, 60)
+            log.info("SSE reconnecting in %ds (failure #%d)", backoff, failures)
+            if self._shutdown.wait(backoff):
+                break
+
+
+class PollingFallback:
+    """Polls /api/events/recent when the SSE stream is down.
+
+    Only polls while ``_active`` is True. Tracks seen event IDs in a bounded
+    deque to avoid re-delivering events.
+    """
+
+    def __init__(self, cc_url: str, on_event: Callable[[dict], None],
+                 poll_interval: int = 30):
+        self._cc_url = cc_url.rstrip("/")
+        self._on_event = on_event
+        self._poll_interval = poll_interval
+        self._active = False
+        self._shutdown = threading.Event()
+        self._seen_ids: collections.deque = collections.deque(maxlen=1000)
+        self._polls = 0
+        self._events_delivered = 0
+        self._last_poll_ts: Optional[float] = None
+        self._lock = threading.Lock()
+
+    def start(self) -> None:
+        t = threading.Thread(target=self._run, daemon=True, name="poll-fallback")
+        t.start()
+
+    def stop(self) -> None:
+        self._shutdown.set()
+
+    def set_active(self, active: bool) -> None:
+        with self._lock:
+            self._active = active
+        if active:
+            log.info("Polling fallback ACTIVATED")
+        else:
+            log.info("Polling fallback deactivated (SSE restored)")
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {
+                "active": self._active,
+                "polls": self._polls,
+                "events_delivered": self._events_delivered,
+                "last_poll_ts": self._last_poll_ts,
+            }
+
+    def _run(self) -> None:
+        failures = 0
+        while not self._shutdown.is_set():
+            wait_time = self._poll_interval if failures == 0 else min(
+                self._poll_interval * (2 ** failures), 120
+            )
+            if self._shutdown.wait(wait_time):
+                break
+
+            with self._lock:
+                active = self._active
+            if not active:
+                failures = 0
+                continue
+
+            url = f"{self._cc_url}/api/events/recent?n=200"
+            try:
+                req = urllib.request.Request(url)
+                resp = urllib.request.urlopen(req, timeout=10)
+                raw = resp.read()
+                events = json.loads(raw)
+
+                if isinstance(events, dict):
+                    events = events.get("events", [])
+                if not isinstance(events, list):
+                    events = []
+
+                with self._lock:
+                    self._polls += 1
+                    self._last_poll_ts = time.time()
+
+                delivered = 0
+                for event in events:
+                    eid = event.get("id")
+                    if not eid:
+                        eid = f"{event.get('source', '')}_{event.get('type', '')}_{event.get('ts', '')}"
+                    if eid in self._seen_ids:
+                        continue
+                    self._seen_ids.append(eid)
+                    try:
+                        self._on_event(event)
+                        delivered += 1
+                    except Exception:
+                        log.warning("on_event callback error (poll)", exc_info=True)
+
+                with self._lock:
+                    self._events_delivered += delivered
+                failures = 0
+
+            except Exception as e:
+                failures += 1
+                if failures <= 3 or failures % 10 == 0:
+                    log.warning("Poll failed (attempt %d): %s", failures, e)
+
+
+class BroadcasterHealthServer:
+    """Minimal HTTP health/stats server on its own port.
+
+    GET /health -> {"status": "ok", "uptime": ..., "sse_connected": ...}
+    GET /stats  -> combined stats from all components
+    POST /reload -> triggers config reload
+    """
+
+    def __init__(self, port: int, get_stats: Callable[[], dict],
+                 on_reload: Callable[[], None],
+                 get_feed: Callable[[int], list] = None):
+        self._port = port
+        self._get_stats = get_stats
+        self._on_reload = on_reload
+        self._get_feed = get_feed or (lambda n: [])
+        self._start_time = time.time()
+        self._server: Optional[HTTPServer] = None
+
+    def start(self) -> None:
+        try:
+            from port_guard import ensure_port
+            ensure_port(self._port, "signal_broadcaster")
+        except ImportError:
+            log.warning("port_guard not available, skipping port cleanup")
+        except Exception as e:
+            log.warning("port_guard failed: %s", e)
+
+        parent = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, fmt, *args):
+                pass
+
+            def do_GET(self):
+                try:
+                    if self.path == "/health":
+                        stats = parent._get_stats()
+                        body = json.dumps({
+                            "status": "ok",
+                            "uptime": round(time.time() - parent._start_time, 1),
+                            "sse_connected": stats.get("sse", {}).get("connected", False),
+                        })
+                        self._respond(200, body)
+                    elif self.path == "/stats":
+                        body = json.dumps(parent._get_stats(), default=str)
+                        self._respond(200, body)
+                    elif self.path.startswith("/feed"):
+                        body = json.dumps(parent._get_feed(50), default=str)
+                        self._respond(200, body)
+                    else:
+                        self._respond(404, json.dumps({"error": "not found"}))
+                except Exception:
+                    self._respond(500, json.dumps({"error": "internal"}))
+
+            def do_POST(self):
+                try:
+                    if self.path == "/reload":
+                        parent._on_reload()
+                        self._respond(200, json.dumps({"status": "reloaded"}))
+                    else:
+                        self._respond(404, json.dumps({"error": "not found"}))
+                except Exception:
+                    self._respond(500, json.dumps({"error": "internal"}))
+
+            def do_OPTIONS(self):
+                self.send_response(200)
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+                self.send_header("Access-Control-Allow-Headers", "Content-Type")
+                self.end_headers()
+
+            def _respond(self, code: int, body: str):
+                self.send_response(code)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body.encode("utf-8"))
+
+        self._server = HTTPServer(("0.0.0.0", self._port), Handler)
+        t = threading.Thread(target=self._server.serve_forever, daemon=True,
+                             name="health-server")
+        t.start()
+        log.info("Health server listening on port %d", self._port)
+
+    def stop(self) -> None:
+        if self._server:
+            self._server.shutdown()
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INTELLIGENCE + ROUTING LAYER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class IntelligenceBuilder:
+    """Enriches raw event-bus events with Command Center API data.
+
+    Each event type triggers specific API lookups. Results are cached with a
+    configurable TTL. Never raises — on failure, returns event copy with
+    enrichment_failed=True.
+    """
+
+    def __init__(self, cc_url: str = "http://localhost:9000",
+                 cache_ttl: int = 15, fetch_timeout: int = 5):
+        self._cc_url = cc_url.rstrip("/")
+        self._cache_ttl = cache_ttl
+        self._fetch_timeout = fetch_timeout
+        self._cache: dict[str, tuple[float, object]] = {}
+
+    def _fetch(self, path: str):
+        url = f"{self._cc_url}{path}"
+        now = time.time()
+        cached = self._cache.get(url)
+        if cached and cached[0] > now:
+            return cached[1]
+        try:
+            req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=self._fetch_timeout) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            self._cache[url] = (now + self._cache_ttl, data)
+            return data
+        except Exception as exc:
+            log.debug("Fetch failed for %s: %s", path, exc)
+            return None
+
+    def _extract_pair(self, event: dict) -> str:
+        data = event.get("data", {})
+        if isinstance(data, dict):
+            return data.get("pair", "unknown")
+        return "unknown"
+
+    def _enrich_high_conviction(self, enriched: dict) -> None:
+        pair = self._extract_pair(enriched)
+        if pair != "unknown":
+            decide = self._fetch(f"/api/signals/decide?pair={pair}")
+            if decide:
+                enriched["ensemble_score"] = decide.get("score", decide.get("confidence"))
+                enriched["ensemble_direction"] = decide.get("direction", decide.get("decision"))
+        decomp = self._fetch("/api/signals/decomposition")
+        if decomp:
+            enriched["signal_attribution"] = decomp if isinstance(decomp, list) else decomp.get("signals", decomp.get("sources", []))
+        decay = self._fetch("/api/signals/decay")
+        if decay:
+            enriched["signal_freshness"] = decay
+
+    def _enrich_trade(self, enriched: dict) -> None:
+        expectancy = self._fetch("/api/expectancy")
+        if expectancy:
+            enriched["fleet_expectancy"] = expectancy.get("fleet_expectancy", expectancy.get("expectancy_per_trade"))
+            data = enriched.get("data", {})
+            bot = data.get("source", data.get("bot", "")) if isinstance(data, dict) else ""
+            bot_stats = expectancy.get("bot_stats", {})
+            if bot and bot in bot_stats:
+                enriched["bot_expectancy"] = bot_stats[bot].get("expectancy_per_trade")
+
+        # Pull live position details from the bot's snapshot (entry, stop, size)
+        if isinstance(data, dict):
+            bot = data.get("source", data.get("bot", ""))
+            pair = data.get("pair", "")
+            if bot and pair:
+                snapshot = self._fetch(f"/api/bot/{bot}")
+                if snapshot and isinstance(snapshot, dict):
+                    # Find position in snapshot — different bots use different formats
+                    positions = snapshot.get("positions", snapshot.get("open_positions", {}))
+                    pos = None
+                    if isinstance(positions, dict):
+                        # TurtleSue: positions keyed by pair (AAVEUSD)
+                        pair_key = pair.replace("/", "")
+                        pos = positions.get(pair_key, positions.get(pair))
+                    elif isinstance(positions, list):
+                        # TrekBot/others: list of position dicts
+                        for p in positions:
+                            if p.get("pair", p.get("symbol", "")) in (pair, pair.replace("/", "")):
+                                pos = p
+                                break
+                    if pos and isinstance(pos, dict):
+                        if "current_stop" in pos:
+                            data["stop_loss"] = pos["current_stop"]
+                        elif "stop" in pos:
+                            data["stop_loss"] = pos["stop"]
+                        if "avg_entry" in pos and "entry_price" not in data:
+                            data["entry_price"] = pos["avg_entry"]
+                        elif "entry_price" in pos and "entry_price" not in data:
+                            data["entry_price"] = pos["entry_price"]
+                        if "total_size" in pos and "size" not in data:
+                            data["size"] = pos["total_size"]
+                        if "unrealized_pnl" in pos:
+                            data["unrealized_pnl"] = pos["unrealized_pnl"]
+
+    def _enrich_trade_close(self, enriched: dict) -> None:
+        self._enrich_trade(enriched)
+        decomp = self._fetch("/api/signals/decomposition")
+        if decomp:
+            enriched["signal_attribution"] = decomp if isinstance(decomp, list) else decomp.get("signals", decomp.get("sources", []))
+
+    def _enrich_emergency_reduce(self, enriched: dict) -> None:
+        portfolio = self._fetch("/api/portfolio")
+        if portfolio:
+            enriched["portfolio_deployed_pct"] = portfolio.get("deployed_pct", 0)
+            enriched["portfolio_cash"] = portfolio.get("available", portfolio.get("cash", 0))
+
+    def _enrich_catastrophe_warning(self, enriched: dict) -> None:
+        pair = self._extract_pair(enriched)
+        if pair != "unknown":
+            intel = self._fetch(f"/api/signals/intel?pair={pair}")
+            if intel:
+                enriched["intel_score"] = intel.get("score", intel.get("intel_score"))
+
+    def _enrich_whale_alert(self, enriched: dict) -> None:
+        data = enriched.get("data", {})
+        if isinstance(data, dict):
+            # Normalize Deep Blue's "tier" field → "magnitude" expected by TierRouter/CardFormatter
+            if "magnitude" not in data and "tier" in data:
+                tier = str(data["tier"]).upper()
+                data["magnitude"] = tier  # HIGH → HIGH, EXTREME → EXTREME
+            # Also normalize volume_usd from score if absent
+            if "volume_usd" not in data and "score" in data:
+                data["volume_usd"] = int(data["score"] * 10000)  # rough estimate
+
+        pair = self._extract_pair(enriched)
+        if pair != "unknown":
+            ticker = self._fetch("/api/market/ticker")
+            if ticker and isinstance(ticker, dict):
+                price_entry = ticker.get(pair, {})
+                if isinstance(price_entry, dict):
+                    enriched["current_price"] = price_entry.get("last", price_entry.get("price"))
+                elif isinstance(price_entry, (int, float)):
+                    enriched["current_price"] = price_entry
+
+    def _enrich_aegis_update(self, enriched: dict) -> None:
+        data = enriched.get("data", {})
+        if isinstance(data, dict):
+            regime = data.get("regime", data.get("fleet_regime", ""))
+            enriched["aegis_defensive"] = "DEFENSIVE" in str(regime).upper()
+        else:
+            enriched["aegis_defensive"] = False
+
+    _ENRICHERS = {
+        "HIGH_CONVICTION": _enrich_high_conviction,
+        "TRADE_OPEN": _enrich_trade,
+        "TRADE_CLOSE": _enrich_trade_close,
+        "EMERGENCY_REDUCE": _enrich_emergency_reduce,
+        "CATASTROPHE_WARNING": _enrich_catastrophe_warning,
+        "WHALE_ALERT": _enrich_whale_alert,
+        "AEGIS_UPDATE": _enrich_aegis_update,
+    }
+
+    def _enrich_universal(self, enriched: dict) -> None:
+        """Add live market + fleet context to every event."""
+        data = enriched.get("data", {})
+        pair = data.get("pair") if isinstance(data, dict) else None
+
+        # Current price for any event with a pair
+        if pair:
+            ticker = self._fetch("/api/market/ticker")
+            if ticker and isinstance(ticker, dict):
+                entry = ticker.get(pair, {})
+                if isinstance(entry, dict):
+                    price = entry.get("price", entry.get("last"))
+                    enriched["_price"] = price
+                    enriched["_high"] = entry.get("high")
+                    enriched["_low"] = entry.get("low")
+                    enriched["_vol"] = entry.get("volume")
+                elif isinstance(entry, (int, float)):
+                    enriched["_price"] = entry
+
+        # Fleet posture
+        master = self._fetch("/api/master")
+        if master:
+            agg = master.get("aggregate", {})
+            enriched["_fleet_pnl"] = agg.get("total_pnl")
+            enriched["_fleet_regime"] = agg.get("regime_consensus")
+            enriched["_bots_alive"] = agg.get("bots_alive")
+            enriched["_open_positions"] = agg.get("total_open_positions")
+            portfolio = master.get("portfolio", {})
+            enriched["_deployed_pct"] = portfolio.get("deployed_pct")
+            enriched["_available"] = portfolio.get("available")
+
+            # AEGIS defensive flag — set on every event so the caution banner
+            # fires on HIGH_CONVICTION, SIGNAL, TRADE_OPEN when fleet is defensive
+            fleet_regime = str(agg.get("regime_consensus", "")).upper()
+            if "DEFENSIVE" in fleet_regime:
+                enriched["aegis_defensive"] = True
+            enriched["_risk_status"] = portfolio.get("risk_status")
+
+    def enrich(self, event: dict) -> dict:
+        try:
+            enriched = copy.deepcopy(event)
+            event_type = event.get("type", "")
+            # Universal enrichment first
+            self._enrich_universal(enriched)
+            # Type-specific enrichment
+            enricher = self._ENRICHERS.get(event_type)
+            if enricher:
+                enricher(self, enriched)
+            enriched["enriched_at"] = time.time()
+            return enriched
+        except Exception as exc:
+            log.warning("Enrichment failed for %s: %s", event.get("type", "?"), exc)
+            try:
+                fallback = copy.deepcopy(event)
+            except Exception:
+                fallback = dict(event)
+            fallback["enrichment_failed"] = True
+            fallback["enriched_at"] = time.time()
+            return fallback
+
+
+class TierRouter:
+    """Pure routing logic. No state, no network calls, no side effects.
+
+    Returns a routing decision dict or None if the event should be suppressed.
+    """
+
+    @staticmethod
+    def route(event: dict, config: dict) -> Optional[dict]:
+        event_type = event.get("type", "")
+        data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+        source = event.get("source", data.get("source", "unknown"))
+        pair = data.get("pair", "fleet")
+
+        min_conviction = config.get("min_conviction_threshold", 0.8)
+        free_delay_s = int(config.get("free_delay_hours", 4) * 3600)
+        overrides = config.get("routing_overrides", {})
+
+        # Structure events: dedup by type only (all pairs share one slot)
+        _FLEET_DEDUP_TYPES = {"CHAOS_STATE", "MANIFOLD_WARNING", "STRUCTURE_FORMING",
+                              "CYCLE_DETECTED", "CAUSAL_FLOW", "EUCLID_LEVEL",
+                              "BOOK_PHASE", "FLEET_ALERT", "REGIME_CHANGE",
+                              "AEGIS_UPDATE"}
+        if event_type in _FLEET_DEDUP_TYPES:
+            dedup_key = event_type
+        else:
+            dedup_key = f"{event_type}_{pair}_{source}"
+        result = None
+
+        if event_type == "TRADE_OPEN":
+            # Trade lifecycle is paid only
+            result = {"free": False, "paid": True, "priority": 2,
+                      "category": "trade", "delay_free_s": 0}
+
+        elif event_type == "TRADE_CLOSE":
+            # Trade lifecycle is paid only
+            result = {"free": False, "paid": True, "priority": 2,
+                      "category": "trade", "delay_free_s": 0}
+
+        elif event_type == "HIGH_CONVICTION":
+            # Free gets it — redacted (no source bots listed)
+            result = {"free": True, "paid": True, "priority": 1,
+                      "category": "trade", "delay_free_s": 0}
+
+        elif event_type == "EMERGENCY_REDUCE":
+            result = {"free": True, "paid": True, "priority": 1,
+                      "category": "risk", "delay_free_s": 0}
+
+        elif event_type == "CATASTROPHE_WARNING":
+            ews = data.get("ews_score", 0) or 0
+            if ews > 0.6:
+                result = {"free": True, "paid": True, "priority": 1,
+                          "category": "risk", "delay_free_s": 0}
+            else:
+                return None
+
+        elif event_type == "REGIME_CHANGE":
+            # Free gets regime changes — macro info, not alpha-sensitive
+            result = {"free": True, "paid": True, "priority": 2,
+                      "category": "regime", "delay_free_s": 0}
+
+        elif event_type == "WHALE_ALERT":
+            magnitude = data.get("magnitude", "")
+            # Free gets HIGH and EXTREME — both signal meaningful flow
+            result = {"free": True, "paid": True, "priority": 2,
+                      "category": "whale", "delay_free_s": 0}
+
+        elif event_type == "AEGIS_UPDATE":
+            # Paid only — AEGIS fires every scan cycle, too noisy for free
+            result = {"free": False, "paid": True, "priority": 3,
+                      "category": "regime", "delay_free_s": 0}
+
+        elif event_type == "BOOK_PHASE":
+            phase = data.get("phase", data.get("state", ""))
+            if str(phase).upper() in ("BOILING", "PLASMA"):
+                # Free gets extreme liquidity warnings
+                result = {"free": True, "paid": True, "priority": 2,
+                          "category": "structure", "delay_free_s": 0}
+            else:
+                return None
+
+        elif event_type == "STRUCTURE_FORMING":
+            score = data.get("structure_formation_score", data.get("score", 0)) or 0
+            if score > 0.4:
+                result = {"free": False, "paid": True, "priority": 2,
+                          "category": "structure", "delay_free_s": 0}
+            else:
+                return None
+
+        elif event_type == "CHAOS_STATE":
+            departure = data.get("departure", data.get("attractor_departure", 0)) or 0
+            if departure > 0.5:
+                result = {"free": False, "paid": True, "priority": 3,
+                          "category": "structure", "delay_free_s": 0}
+            else:
+                return None
+
+        elif event_type == "MANIFOLD_WARNING":
+            prob = data.get("probability", data.get("transition_probability", 0)) or 0
+            if prob >= 1.0:
+                result = {"free": False, "paid": True, "priority": 2,
+                          "category": "structure", "delay_free_s": 0}
+            else:
+                return None
+
+        elif event_type in ("CYCLE_DETECTED", "CAUSAL_FLOW", "EUCLID_LEVEL"):
+            result = {"free": False, "paid": True, "priority": 3,
+                      "category": "structure", "delay_free_s": 0}
+
+        elif event_type == "FLEET_ALERT":
+            result = {"free": False, "paid": True, "priority": 2,
+                      "category": "risk", "delay_free_s": 0}
+
+        elif event_type == "SIGNAL":
+            conf = data.get("confidence", 0) or 0
+            if conf >= 0.8:
+                result = {"free": False, "paid": True, "priority": 3,
+                          "category": "trade", "delay_free_s": 0}
+            else:
+                return None
+
+        elif event_type in ("NEWTON_FORCE", "NEWTON_REACTION", "NEXUS_UPDATE",
+                            "PHITEX_UPDATE"):
+            return None
+
+        else:
+            return None
+
+        # Apply per-type overrides from config
+        type_override = overrides.get(event_type)
+        if type_override and isinstance(type_override, dict):
+            for key in ("free", "paid", "priority", "category", "delay_free_s"):
+                if key in type_override:
+                    result[key] = type_override[key]
+
+        if not result["free"] and not result["paid"]:
+            return None
+
+        result["dedup_key"] = dedup_key
+        result["event"] = event
+        return result
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FORMATTING + DELIVERY LAYER
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Engine display names for paid cards
+_ENGINE_NAMES = {
+    "CATASTROPHE_WARNING": "Thom Catastrophe Theory",
+    "CYCLE_DETECTED": "Persistent Homology",
+    "CAUSAL_FLOW": "Granger Causality",
+    "MANIFOLD_WARNING": "Fisher Information Geometry",
+    "BOOK_PHASE": "Boltzmann Statistical Mechanics",
+    "STRUCTURE_FORMING": "Prigogine Dissipative Structures",
+    "CHAOS_STATE": "Lorenz Strange Attractor",
+    "EUCLID_LEVEL": "Euclid Support/Resistance",
+    "SHANNON_ENTROPY": "Shannon Information Theory",
+    "QUANTUM_COLLAPSE": "Quantum State Collapse",
+}
+
+_FOOTER_PAID = "GoldenEye Intelligence"
+_FOOTER_FREE = "Fleet Pulse"
+_LINE  = "\u2501" * 32   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_LINE2 = "\u2500" * 32   # ────────────────────────────────  (thin divider)
+
+# Color-coded emoji per event type
+_TYPE_EMOJI = {
+    "HIGH_CONVICTION":     "\U0001f7e2",  # 🟢
+    "TRADE_OPEN":          "\U0001f535",  # 🔵
+    "TRADE_CLOSE":         "\u26aa",      # ⚪
+    "WHALE_ALERT":         "\U0001f7e0",  # 🟠
+    "REGIME_CHANGE":       "\U0001f7e3",  # 🟣
+    "AEGIS_UPDATE":        "\U0001f7e3",  # 🟣
+    "CATASTROPHE_WARNING": "\U0001f534",  # 🔴
+    "EMERGENCY_REDUCE":    "\U0001f534",  # 🔴
+    "SIGNAL":              "\U0001f7e2",  # 🟢
+    "BOOK_PHASE":          "\U0001f7e1",  # 🟡
+    "FLEET_ALERT":         "\U0001f534",  # 🔴
+    "STRUCTURE_FORMING":   "\U0001f535",  # 🔵
+    "CHAOS_STATE":         "\U0001f534",  # 🔴
+    "MANIFOLD_WARNING":    "\U0001f7e1",  # 🟡
+    "CYCLE_DETECTED":      "\U0001f7e3",  # 🟣
+    "CAUSAL_FLOW":         "\U0001f7e2",  # 🟢
+    "EUCLID_LEVEL":        "\U0001f7e1",  # 🟡
+}
+
+def _bar(value: float, total: float = 1.0, width: int = 10) -> str:
+    """Render a mini progress bar: ▓▓▓▓▓░░░░░"""
+    if not isinstance(value, (int, float)) or total <= 0:
+        return "─" * width
+    filled = max(0, min(width, round(value / total * width)))
+    return "\u2593" * filled + "\u2591" * (width - filled)
+
+def _pct_bar(value: float, width: int = 10) -> str:
+    """For 0-100 pct values."""
+    return _bar(value, 100.0, width)
+
+def _regime_badge(regime: str) -> str:
+    """Short regime label with indicator char."""
+    r = str(regime).upper()
+    icons = {
+        "BULL": "\u25b2 BULL", "BEAR": "\u25bc BEAR",
+        "RANGING": "\u25a0 RANGING", "RANGE": "\u25a0 RANGING",
+        "VOLATILE": "\u26a1 VOLATILE", "TRANSITIONING": "\u21c4 TRANSITIONING",
+        "CAUTIOUS": "\u26a0 CAUTIOUS", "DEFENSIVE": "\U0001f6e1 DEFENSIVE",
+        "NORMAL": "\u25cf NORMAL",
+    }
+    for key, label in icons.items():
+        if key in r:
+            return label
+    return regime
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).strftime("%H:%M UTC · %d %b %Y")
+
+
+def _v(data: dict, key: str, default: str = "\u2014") -> str:
+    val = data.get(key)
+    if val is None or val == "":
+        return default
+    return str(val)
+
+
+def _header(label: str, event_type: str = "") -> str:
+    emoji = _TYPE_EMOJI.get(event_type, "\u26aa")
+    return f"<code>{_LINE}</code>\n<b>{emoji}  {label}</b>"
+
+
+def _divider() -> str:
+    return f"\n<code>{_LINE2}</code>"
+
+
+def _footer(label: str) -> str:
+    return f"\n<code>{_LINE}\n{label}  {_utc_now()}</code>"
+
+
+class CardFormatter:
+    """Converts routing decisions into Telegram HTML messages.
+
+    Two renderings per event: paid (full detail, engine names, prose)
+    and free (redacted, no pair/direction/bot names).
+    """
+
+    def __init__(self):
+        self._engine_names = dict(_ENGINE_NAMES)
+
+    # ── Public ───────────────────────────────────────────────────────
+
+    @staticmethod
+    def _context_line(event: dict) -> str:
+        """Build a live fleet context footer from enriched event data."""
+        parts = []
+        price = event.get("_price")
+        pair = (event.get("data", {}) or {}).get("pair", "") if isinstance(event.get("data"), dict) else ""
+        if price and pair:
+            parts.append(f"{pair} ${price:,.2f}")
+        regime = event.get("_fleet_regime")
+        if regime:
+            parts.append(_regime_badge(str(regime)))
+        risk = event.get("_risk_status")
+        if risk:
+            risk_icons = {"GREEN": "\u2705", "YELLOW": "\u26a0", "RED": "\U0001f534"}
+            parts.append(f"Risk {risk_icons.get(str(risk).upper(), '')} {risk}")
+        deployed = event.get("_deployed_pct")
+        if isinstance(deployed, (int, float)):
+            parts.append(f"Deployed {deployed:.0f}%")
+        bots = event.get("_bots_alive")
+        if bots:
+            parts.append(f"{bots} bots")
+        if not parts:
+            return ""
+        return "\n<code>" + " · ".join(parts) + "</code>"
+
+    def format_paid(self, decision: dict) -> str:
+        event = decision.get("event", decision)
+        etype = event.get("type", "")
+        data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+
+        prefix = ""
+        if event.get("aegis_defensive") and etype in ("HIGH_CONVICTION", "SIGNAL", "TRADE_OPEN"):
+            prefix = ("<b>\u26a0 FLEET CAUTION \u2014 AEGIS DEFENSIVE</b>\n"
+                       "Signal confidence reduced. Exposure throttled.\n\n")
+
+        handler = self._PAID_HANDLERS.get(etype)
+        if handler:
+            body = handler(self, etype, data)
+        else:
+            body = self._paid_generic(etype, data)
+
+        context = self._context_line(event)
+        return prefix + body + context
+
+    def format_free(self, decision: dict) -> str:
+        event = decision.get("event", decision)
+        etype = event.get("type", "")
+        data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+
+        handler = self._FREE_HANDLERS.get(etype)
+        if handler:
+            body = handler(self, etype, data)
+        else:
+            body = self._free_generic(etype, data)
+
+        return body
+
+    def format_daily_summary(self, stats: dict) -> str:
+        pnl = stats.get("fleet_pnl")
+        pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
+        trades = stats.get("total_trades", 0)
+        wr = stats.get("win_rate")
+        wr_s = f"{wr:.0%}" if isinstance(wr, float) and wr <= 1 else ("\u2014" if wr is None else str(wr))
+        ev = stats.get("expectancy")
+        ev_s = f"${ev:+.2f}" if isinstance(ev, (int, float)) else "\u2014"
+        dep = stats.get("deployed_pct")
+        dep_s = f"{dep:.0f}%" if isinstance(dep, (int, float)) else "\u2014"
+        regime = _regime_badge(str(stats.get("regime", "\u2014")))
+        aegis = stats.get("aegis_score")
+        aegis_s = f"{aegis:.2f}" if isinstance(aegis, (int, float)) else "\u2014"
+        aegis_bar = _bar(aegis or 0, 1.0, 10) if isinstance(aegis, (int, float)) else ""
+        top_bot = display_name(stats.get("top_bot", "\u2014"))
+        top_pair = stats.get("top_pair", "\u2014")
+
+        # Coach voice summary
+        if isinstance(pnl, (int, float)):
+            if pnl > 0:
+                why = f"Good day. Fleet made {pnl_s} across {trades} trades."
+            elif pnl == 0 and trades == 0:
+                why = f"Quiet day \u2014 no trades triggered. The fleet is waiting for conditions to improve before putting capital at risk."
+            elif pnl == 0:
+                why = f"Flat day. {trades} trades but nothing moved the needle."
+            else:
+                why = f"Rough day. Fleet gave back {pnl_s} across {trades} trades. Risk was managed \u2014 no blowups."
+        else:
+            why = "Here's where the fleet stands at the end of the day."
+
+        if isinstance(aegis, (int, float)) and aegis < 0.4:
+            why += " Health score is low so we're being cautious with capital."
+        if top_bot and top_bot != "\u2014":
+            why += f" Best performer: {top_bot}."
+
+        return (
+            f"{_header('END OF DAY REPORT', 'AEGIS_UPDATE')}\n"
+            f"<i>{why}</i>"
+            f"{_divider()}\n"
+            f"<code>"
+            f"P/L Today {pnl_s}\n"
+            f"Trades    {trades}\n"
+            f"Win Rate  {wr_s}\n"
+            f"Avg P/L   {ev_s} per trade\n"
+            f"Deployed  {dep_s}\n"
+            f"Regime    {regime}\n"
+            f"Health    {aegis_bar} {aegis_s}\n"
+            f"Best Bot  {top_bot}\n"
+            f"Best Pair {top_pair}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def format_weekly_report(self, report: dict) -> str:
+        pnl = report.get("total_pnl")
+        pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
+        trades = report.get("total_trades", 0)
+        wr = report.get("avg_win_rate")
+        wr_s = f"{wr:.0%}" if isinstance(wr, float) and wr <= 1 else ("\u2014" if wr is None else str(wr))
+        ev = report.get("avg_expectancy")
+        ev_s = f"${ev:+.2f}" if isinstance(ev, (int, float)) else "\u2014"
+        best_day = report.get("best_day", "\u2014")
+        worst_day = report.get("worst_day", "\u2014")
+        days_pos = report.get("days_positive", "\u2014")
+        days_total = report.get("days_total", 7)
+
+        # Coach voice
+        if isinstance(pnl, (int, float)):
+            if pnl > 0:
+                why = f"Positive week. Fleet banked {pnl_s} total across {trades} trades."
+            elif pnl == 0 and trades == 0:
+                why = f"The fleet was mostly on the sidelines this week \u2014 conditions didn't meet our standards for putting capital to work."
+            else:
+                why = f"Down {pnl_s} this week across {trades} trades. Not the result we wanted, but drawdowns are part of the game. No panic."
+        else:
+            why = "Here's how the fleet performed this week."
+
+        if isinstance(days_pos, (int, float)) and isinstance(days_total, (int, float)):
+            why += f" {int(days_pos)} out of {int(days_total)} days were profitable."
+
+        return (
+            f"{_header('WEEKLY SCORECARD', 'HIGH_CONVICTION')}\n"
+            f"<i>{why}</i>"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Week P/L  {pnl_s}\n"
+            f"Trades    {trades}\n"
+            f"Win Rate  {wr_s}\n"
+            f"Avg P/L   {ev_s} per trade\n"
+            f"Best Day  {best_day}\n"
+            f"Worst Day {worst_day}\n"
+            f"Green Days {days_pos}/{days_total}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    # ── Paid card handlers ───────────────────────────────────────────
+
+    def format_daily_summary_free(self, stats: dict) -> str:
+        pnl = stats.get("fleet_pnl")
+        pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
+        trades = stats.get("total_trades", 0)
+        regime = _regime_badge(str(stats.get("regime", "\u2014")))
+
+        if isinstance(pnl, (int, float)):
+            if pnl > 0:
+                why = f"Good day for the fleet \u2014 {pnl_s} across {trades} trades. We'll take it."
+            elif pnl == 0 and trades == 0:
+                why = f"Quiet day \u2014 no trades triggered. We only trade when conditions are right."
+            else:
+                why = f"Down {pnl_s} today. Part of the process. Risk was managed, no surprises."
+        else:
+            why = "End of day update from the fleet."
+
+        return (
+            f"{_header('END OF DAY', 'AEGIS_UPDATE')}\n"
+            f"<i>{why}</i>"
+            f"{_divider()}\n"
+            f"<code>"
+            f"P/L       {pnl_s}\n"
+            f"Trades    {trades}\n"
+            f"Regime    {regime}\n"
+            f"Breakdown \U0001f512 Full stats for subscribers"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def format_weekly_report_free(self, report: dict) -> str:
+        pnl = report.get("total_pnl")
+        pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
+        trades = report.get("total_trades", 0)
+        days_pos = report.get("days_positive", "\u2014")
+        days_total = report.get("days_total", 7)
+
+        if isinstance(pnl, (int, float)):
+            if pnl > 0:
+                why = f"Winning week \u2014 fleet made {pnl_s} across {trades} trades."
+            elif trades == 0:
+                why = f"Mostly sidelined this week. We don't force trades."
+            else:
+                why = f"Red week at {pnl_s}. Drawdowns happen \u2014 what matters is how we come back."
+        else:
+            why = "Weekly recap from the fleet."
+
+        if isinstance(days_pos, (int, float)):
+            why += f" {int(days_pos)}/{int(days_total)} days in the green."
+
+        return (
+            f"{_header('WEEKLY SCORECARD', 'HIGH_CONVICTION')}\n"
+            f"<i>{why}</i>"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Week P/L  {pnl_s}\n"
+            f"Trades    {trades}\n"
+            f"Green Days {days_pos}/{days_total}\n"
+            f"Details   \U0001f512 Full report for subscribers"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    # ── Paid card handlers ───────────────────────────────────────────
+
+    def _paid_high_conviction(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        direction = str(d.get('direction', '')).upper()
+        dir_glyph = "\u25b2 LONG" if direction in ("LONG", "BUY") else ("\u25bc SHORT" if direction in ("SHORT", "SELL") else direction)
+        regime = _regime_badge(_v(d, 'regime'))
+        conf = d.get("confidence", d.get("score"))
+        conf_s = f"{conf:.2f}" if isinstance(conf, (int, float)) else "\u2014"
+        conf_bar = _bar(conf or 0, 1.0, 12)
+        bots = d.get("bots", d.get("sources", []))
+        bots_list = bots if isinstance(bots, list) else []
+        bots_s = " \u00b7 ".join(display_name(b) for b in bots_list) if bots_list else "Fleet consensus"
+        count = len(bots_list) if bots_list else "?"
+        ev = d.get("expectancy", d.get("ev"))
+        ev_s = f"${ev:+.2f}/trade" if isinstance(ev, (int, float)) else "\u2014"
+        aegis = d.get("aegis_score", d.get("aegis"))
+        aegis_s = f"{aegis:.2f}" if isinstance(aegis, (int, float)) else "\u2014"
+
+        return (
+            f"{_header('HIGH CONVICTION SIGNAL', 'HIGH_CONVICTION')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Pair      {pair}\n"
+            f"Signal    {dir_glyph}\n"
+            f"Regime    {regime}\n"
+            f"Conf      {conf_bar} {conf_s}\n"
+            f"E[V]      {ev_s}\n"
+            f"Sources   {bots_s}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_trade_open(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        direction = str(d.get('direction', '')).upper()
+        dir_glyph = "\u25b2 LONG" if direction in ("LONG", "BUY") else ("\u25bc SHORT" if direction in ("SHORT", "SELL") else _v(d, 'direction'))
+        bot = display_name(_v(d, 'source', _v(d, 'bot')))
+        regime = _regime_badge(_v(d, 'regime'))
+        size = d.get("size", d.get("amount", d.get("total_size")))
+        entry = d.get("entry_price", d.get("entry", d.get("price", d.get("avg_entry"))))
+        stop = d.get("stop_loss", d.get("stop", d.get("current_stop")))
+
+        # Smart formatting — detect decimals needed from price magnitude
+        if isinstance(entry, (int, float)):
+            if entry > 100:
+                entry_s = f"{entry:,.2f}"
+            elif entry > 1:
+                entry_s = f"{entry:,.4f}"
+            else:
+                entry_s = f"{entry:,.6f}"
+        else:
+            entry_s = "\u2014"
+        if isinstance(stop, (int, float)):
+            if stop > 100:
+                stop_s = f"{stop:,.2f}"
+            elif stop > 1:
+                stop_s = f"{stop:,.4f}"
+            else:
+                stop_s = f"{stop:,.6f}"
+        else:
+            stop_s = "\u2014"
+        if isinstance(size, (int, float)):
+            size_s = f"{size:,.2f} units" if size > 1 else f"{size:.6f} units"
+        else:
+            size_s = "\u2014"
+
+        # Risk calc
+        if isinstance(entry, (int, float)) and isinstance(stop, (int, float)) and entry > 0:
+            risk_pct = abs(stop - entry) / entry * 100
+            risk_s = f"{risk_pct:.1f}%"
+        else:
+            risk_s = "\u2014"
+
+        return (
+            f"{_header('TRADE ALERT \u2014 ' + dir_glyph, 'TRADE_OPEN')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f" {pair}\n"
+            f" Entry   {entry_s}\n"
+            f" Stop    {stop_s}\n"
+            f" Risk    {risk_s}\n"
+            f"Direction {dir_glyph}\n"
+            f"Size      {size_s}\n"
+            f"Regime    {regime}\n"
+            f"Bot       {bot}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_trade_close(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        pnl = d.get("pnl")
+        gross_pnl = d.get("gross_pnl")
+        fees = d.get("fees")
+        pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
+        pnl_won = isinstance(pnl, (int, float)) and pnl > 0
+        result_glyph = "\u2714 WIN" if pnl_won else "\u2716 LOSS"
+        bot = display_name(_v(d, 'source', _v(d, 'bot')))
+        direction = str(d.get('direction', '')).upper()
+        dir_glyph = "\u25b2 LONG" if direction in ("LONG", "BUY") else ("\u25bc SHORT" if direction in ("SHORT", "SELL") else _v(d, 'direction'))
+        regime = _regime_badge(_v(d, 'regime'))
+        duration_s = d.get("duration_s", d.get("duration"))
+        exit_reason = d.get("exit_reason", d.get("reason", ""))
+        entry = d.get("entry_price", d.get("entry"))
+        exit_p = d.get("exit_price", d.get("close_price"))
+        size = d.get("size_usd", d.get("size", d.get("amount")))
+
+        # Smart price formatting
+        def _price(v):
+            if not isinstance(v, (int, float)):
+                return "\u2014"
+            if v > 100:
+                return f"{v:,.2f}"
+            elif v > 1:
+                return f"{v:,.4f}"
+            else:
+                return f"{v:,.6f}"
+
+        entry_s = _price(entry)
+        exit_s = _price(exit_p)
+        size_s = f"${size:,.2f}" if isinstance(size, (int, float)) else "\u2014"
+        fees_s = f"${fees:,.2f}" if isinstance(fees, (int, float)) else ""
+
+        # Duration formatting
+        if isinstance(duration_s, (int, float)):
+            hours = duration_s / 3600
+            if hours >= 24:
+                dur_s = f"{hours/24:.1f} days"
+            elif hours >= 1:
+                dur_s = f"{hours:.1f}h"
+            else:
+                dur_s = f"{duration_s/60:.0f}min"
+        elif duration_s:
+            dur_s = str(duration_s)
+        else:
+            dur_s = "\u2014"
+
+        # Return %
+        if isinstance(entry, (int, float)) and isinstance(exit_p, (int, float)) and entry > 0:
+            if direction in ("LONG", "BUY"):
+                ret_pct = (exit_p - entry) / entry * 100
+            else:
+                ret_pct = (entry - exit_p) / entry * 100
+            ret_s = f"{ret_pct:+.2f}%"
+        elif isinstance(pnl, (int, float)) and isinstance(size, (int, float)) and size > 0:
+            ret_pct = pnl / size * 100
+            ret_s = f"{ret_pct:+.2f}%"
+        else:
+            ret_s = ""
+
+        return (
+            f"{_header('TRADE RESULT \u2014 ' + result_glyph, 'TRADE_CLOSE')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f" {pair}\n"
+            f" P/L     {pnl_s}\n"
+            f" Entry   {entry_s}\n"
+            f" Exit    {exit_s}\n"
+            f"Direction {dir_glyph}\n"
+            f"Size      {size_s}\n"
+            f"Duration  {dur_s}\n"
+            + (f"Fees      {fees_s}\n" if fees_s else "")
+            + f"Regime    {regime}\n"
+            f"Bot       {bot}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_signal(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        direction = str(d.get('direction', '')).upper()
+        dir_glyph = "\u25b2 LONG" if direction in ("LONG", "BUY") else ("\u25bc SHORT" if direction in ("SHORT", "SELL") else _v(d, 'direction'))
+        source = display_name(_v(d, 'source'))
+        regime = _regime_badge(_v(d, 'regime'))
+        conf = d.get("confidence")
+        conf_s = f"{conf:.2f}" if isinstance(conf, (int, float)) else "\u2014"
+        conf_bar = _bar(conf or 0, 1.0, 10)
+        reason = d.get("reason", d.get("signal_reason", d.get("suggested_action", d.get("description", ""))))
+        reason_s = str(reason).replace("_", " ") if reason else "\u2014"
+
+        return (
+            f"{_header('SIGNAL', 'SIGNAL')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Pair      {pair}\n"
+            f"Signal    {dir_glyph}\n"
+            f"Conf      {conf_bar} {conf_s}\n"
+            f"Regime    {regime}\n"
+            f"Source    {source}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_regime_change(self, etype: str, d: dict) -> str:
+        from_r = _v(d, 'from', _v(d, 'old_regime'))
+        to_r   = _v(d, 'to',   _v(d, 'new_regime'))
+        raw_src = d.get('source') or ""
+        source = display_name(raw_src) if raw_src and raw_src != "\u2014" else "Fleet consensus"
+        confidence = d.get("confidence", d.get("probability"))
+        conf_s = f"{confidence:.0%}" if isinstance(confidence, float) and confidence <= 1 else ""
+        from_badge = _regime_badge(from_r)
+        to_badge   = _regime_badge(to_r)
+        return (
+            f"{_header('REGIME CHANGE', 'REGIME_CHANGE')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"From      {from_badge}\n"
+            f"To        {to_badge}\n"
+            f"Source    {source}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_aegis_update(self, etype: str, d: dict) -> str:
+        score = d.get("score")
+        score_s = f"{score:.3f}" if isinstance(score, (int, float)) else "\u2014"
+        score_bar = _bar(score or 0, 1.0, 12)
+        regime = _regime_badge(_v(d, 'regime'))
+        deploy_cap = d.get("recommended_max_deployed", d.get("deploy_limit"))
+        cap_s = f"{int(deploy_cap)}%" if isinstance(deploy_cap, (int, float)) else "\u2014"
+        components = d.get("components", {})
+        regime_sources = d.get("regime_sources", {})
+
+        # Translate components into plain English
+        comp_lines = []
+        comp_readable = {
+            "consensus_entropy": ("Bot agreement",     "Are our bots agreeing or fighting each other?"),
+            "signal_coherence":  ("Signal clarity",    "Are signals consistent or noisy?"),
+            "whale_divergence":  ("Whale risk",        "Are big players moving against us?"),
+            "portfolio_stress":  ("Portfolio health",  "How much stress is our book under?"),
+            "phitex_signal":     ("Market temperature","Is the market running hot or cold?"),
+            "correlation":       ("Correlation risk",  "Are all our bets moving together?"),
+        }
+        if isinstance(components, dict):
+            for k, (label, _) in comp_readable.items():
+                v = components.get(k)
+                if v is not None and isinstance(v, (int, float)):
+                    comp_lines.append(f"{label:16s} {_bar(v, 1.0, 8)} {v:.2f}")
+
+        # Regime consensus in plain english
+        reg_votes = ""
+        if isinstance(regime_sources, dict) and regime_sources:
+            votes = " \u00b7 ".join(f"{display_name(k)}:{v}" for k, v in list(regime_sources.items())[:3])
+            reg_votes = f"\nVotes     {votes}"
+
+        comp_block = "\n".join(comp_lines)
+
+        return (
+            f"{_header('FLEET HEALTH CHECK', 'AEGIS_UPDATE')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Health    {score_bar} {score_s}\n"
+            f"Posture   {regime}\n"
+            f"Max Deploy {cap_s}"
+            f"{reg_votes}"
+            f"</code>"
+            f"{_divider()}\n"
+            f"<code>{comp_block}</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_emergency(self, etype: str, d: dict) -> str:
+        reason = _v(d, 'reason', _v(d, 'trigger'))
+        stops = d.get("stop_count", "")
+        window = _v(d, 'window')
+        source = display_name(_v(d, 'source'))
+        stops_s = str(stops) if stops and str(stops) != "\u2014" else "multiple"
+
+        return (
+            f"{_header('EMERGENCY \u2014 REDUCING ALL EXPOSURE', 'EMERGENCY_REDUCE')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Trigger   {reason}\n"
+            f"Stops     {stops_s}\n"
+            f"Window    {window}\n"
+            f"Action    \u25bc Going to cash"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_fleet_alert(self, etype: str, d: dict) -> str:
+        alert = _v(d, 'description', _v(d, 'message'))
+        source = display_name(_v(d, 'source'))
+        severity = _v(d, 'severity')
+        reason = d.get("reason", d.get("suggested_action", ""))
+        reason_clean = str(reason).replace("_", " ") if reason else ""
+        return (
+            f"{_header('FLEET ALERT', 'FLEET_ALERT')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Source    {source}\n"
+            f"Severity  {severity}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_whale(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        side = _v(d, 'side', _v(d, 'direction'))
+        magnitude = _v(d, 'magnitude')
+        volume = d.get("volume_usd", d.get("volume", d.get("amount")))
+        vol_s = f"${volume:,.0f}" if isinstance(volume, (int, float)) else "\u2014"
+        score = d.get("score")
+        score_s = f"{score:.1f}" if isinstance(score, (int, float)) else "\u2014"
+        score_bar = _bar(score or 0, 100.0, 10) if isinstance(score, (int, float)) else ""
+        reliability = d.get("reliability")
+        rel_s = f"{reliability:.0f}%" if isinstance(reliability, (int, float)) else "\u2014"
+        side_str = str(side).upper()
+        side_glyph = ("\u25b2 BUY pressure" if side_str in ("BUY", "LONG") else
+                      "\u25bc SELL pressure" if side_str in ("SELL", "SHORT") else side)
+        return (
+            f"{_header('WHALE ALERT', 'WHALE_ALERT')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Pair      {pair}\n"
+            f"Side      {side_glyph}\n"
+            f"Magnitude {magnitude}\n"
+            f"Volume    {vol_s}"
+            f"</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_structure(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+
+        if etype == "CATASTROPHE_WARNING":
+            ews = d.get("ews_score")
+            ews_s = f"{ews:.2f}" if isinstance(ews, (int, float)) else "\u2014"
+            ews_bar = _bar(ews or 0, 1.0, 10)
+            severity = _v(d, 'severity')
+            label = "SUDDEN MOVE WARNING"
+            data = (f"Pair      {pair}\n"
+                    f"Risk      {ews_bar} {ews_s}\n"
+                    f"Severity  {severity}")
+
+        elif etype == "CYCLE_DETECTED":
+            cyclicality = d.get("cyclicality")
+            cyc_s = f"{cyclicality:.2f}" if isinstance(cyclicality, (int, float)) else "\u2014"
+            cyc_bar = _bar(cyclicality or 0, 1.0, 10)
+            label = "REPEATING PATTERN"
+            data = (f"Pair      {pair}\n"
+                    f"Pattern   {cyc_bar} {cyc_s}")
+
+        elif etype == "BOOK_PHASE":
+            phase = _v(d, 'phase', _v(d, 'state'))
+            temp = d.get("temperature")
+            temp_s = f"{temp:,.0f}" if isinstance(temp, (int, float)) else "\u2014"
+            entropy = d.get("entropy")
+            ent_s = f"{entropy:.2f}" if isinstance(entropy, (int, float)) else "\u2014"
+            ent_bar = _bar(entropy or 0, 1.0, 10)
+            phase_str = str(phase).upper()
+            if phase_str == "PLASMA":
+                label = "LIQUIDITY CRISIS"
+            elif phase_str == "BOILING":
+                label = "LIQUIDITY WARNING"
+            else:
+                label = "LIQUIDITY UPDATE"
+            data = (f"Pair      {pair}\n"
+                    f"Phase     {phase_str}\n"
+                    f"Disorder  {ent_bar} {ent_s}\n"
+                    f"Activity  {temp_s}")
+
+        elif etype == "STRUCTURE_FORMING":
+            score = d.get("formation_score", d.get("structure_formation_score", d.get("score")))
+            score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "\u2014"
+            score_bar = _bar(score or 0, 1.0, 10)
+            label = "NEW TREND FORMING"
+            data = (f"Pair      {pair}\n"
+                    f"Strength  {score_bar} {score_s}")
+
+        elif etype == "CHAOS_STATE":
+            departure = d.get("attractor_departure")
+            dep_s = f"{departure:.2f}" if isinstance(departure, (int, float)) else "\u2014"
+            dep_bar = _bar(departure or 0, 1.0, 10)
+            horizon = d.get("predictability_horizon")
+            hor_s = f"{horizon:.0f}h" if isinstance(horizon, (int, float)) else _v(d, 'predictability_horizon')
+            label = "UNPREDICTABLE MARKET"
+            data = (f"Pair      {pair}\n"
+                    f"Chaos     {dep_bar} {dep_s}\n"
+                    f"Lookahead {hor_s}")
+
+        elif etype == "MANIFOLD_WARNING":
+            prob = d.get("regime_change_probability")
+            prob_s = f"{prob:.0%}" if isinstance(prob, float) and prob <= 1 else str(prob) if prob else "\u2014"
+            prob_bar = _bar((prob or 0), 1.0, 10)
+            label = "REGIME SHIFT WARNING"
+            data = (f"Pair        {pair}\n"
+                    f"Probability {prob_bar} {prob_s}")
+
+        elif etype == "CAUSAL_FLOW":
+            source_node = d.get("source", d.get("cause", d.get("from", "\u2014")))
+            target_node = d.get("target", d.get("effect", d.get("to", "\u2014")))
+            strength = d.get("strength")
+            str_s = f"{strength:.2f}" if isinstance(strength, (int, float)) else "\u2014"
+            str_bar = _bar(strength or 0, 1.0, 10) if isinstance(strength, (int, float)) else ""
+            lag = d.get("lag")
+            lag_s = f"{lag}" if isinstance(lag, (int, float)) else "\u2014"
+            label = "LEAD-LAG DETECTED"
+            src_clean = str(source_node).replace("_price", "").replace("_volume", " volume")
+            tgt_clean = str(target_node).replace("_price", "").replace("_volume", " volume")
+            data = (f"Leader    {src_clean}\n"
+                    f"Follower  {tgt_clean}\n"
+                    f"Link      {str_bar} {str_s}\n"
+                    f"Delay     {lag_s} bars")
+
+        elif etype == "EUCLID_LEVEL":
+            level = d.get("level", d.get("price"))
+            lev_s = f"${level:,.5f}" if isinstance(level, (int, float)) else "\u2014"
+            ltype = _v(d, 'type', _v(d, 'level_type'))
+            strength = d.get("strength")
+            str_s = f"{strength:.2f}" if isinstance(strength, (int, float)) else "\u2014"
+            str_bar = _bar(strength or 0, 1.0, 10) if isinstance(strength, (int, float)) else ""
+            dist = d.get("distance_pct")
+            dist_s = f"{dist*100:.1f}%" if isinstance(dist, (int, float)) else "\u2014"
+            ltype_clean = str(ltype).replace("_", " ").lower()
+            label = "KEY PRICE LEVEL"
+            data = (f"Pair      {pair}\n"
+                    f"Level     {lev_s}\n"
+                    f"Type      {ltype_clean}\n"
+                    f"Strength  {str_bar} {str_s}\n"
+                    f"Distance  {dist_s}")
+
+        else:
+            label = etype.replace("_", " ")
+            data = f"Pair  {pair}"
+
+        return (
+            f"{_header(label, etype)}\n"
+            f"{_divider()}\n"
+            f"<code>{data}</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    def _paid_generic(self, etype: str, d: dict) -> str:
+        label = etype.replace("_", " ") if etype else "EVENT"
+        fields = []
+        for k, v in d.items():
+            if k not in ("id", "timestamp", "ts", "category", "type"):
+                fields.append(f"{k:12s}{v}")
+        block = "\n".join(fields[:8]) if fields else "No additional data"
+        return (
+            f"{_header(label, etype)}\n"
+            f"<code>{block}</code>"
+            f"{_footer(_FOOTER_PAID)}"
+        )
+
+    # ── Free card handlers ───────────────────────────────────────────
+
+    def _free_high_conviction(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        direction = str(d.get('direction', '')).upper()
+        dir_glyph = "\u25b2 LONG" if direction in ("LONG", "BUY") else ("\u25bc SHORT" if direction in ("SHORT", "SELL") else _v(d, 'direction'))
+        regime = _regime_badge(_v(d, 'regime'))
+        bots = d.get("bots", d.get("sources", []))
+        count = len(bots) if isinstance(bots, list) else "Multiple"
+        return (
+            f"{_header('HIGH CONVICTION SIGNAL', 'HIGH_CONVICTION')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Pair      {pair}\n"
+            f"Signal    {dir_glyph}\n"
+            f"Regime    {regime}\n"
+            f"Detail    \U0001f512 Full analysis for subscribers"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def _free_trade(self, etype: str, d: dict) -> str:
+        is_close = "CLOSE" in etype
+        pair = _v(d, 'pair')
+        direction = str(d.get('direction', '')).upper()
+        dir_glyph = "\u25b2 LONG" if direction in ("LONG", "BUY") else ("\u25bc SHORT" if direction in ("SHORT", "SELL") else _v(d, 'direction'))
+        regime = _regime_badge(_v(d, 'regime'))
+        if is_close:
+            pnl = d.get("pnl")
+            pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
+            pnl_won = isinstance(pnl, (int, float)) and pnl > 0
+            result_glyph = "\u2714 WIN" if pnl_won else "\u2716 LOSS"
+            return (
+                f"{_header('POSITION CLOSED', 'TRADE_CLOSE')}\n"
+                f"{_divider()}\n"
+                f"<code>"
+                f"Pair      {pair}\n"
+                f"Result    {result_glyph}  {pnl_s}\n"
+                f"Regime    {regime}\n"
+                f"Bot/Entry \U0001f512 Full details for subscribers"
+                f"</code>"
+                f"{_footer(_FOOTER_FREE)}"
+            )
+        return (
+            f"{_header('POSITION OPENED', 'TRADE_OPEN')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Pair      {pair}\n"
+            f"Signal    {dir_glyph}\n"
+            f"Regime    {regime}\n"
+            f"Size/Bot  \U0001f512 Full details for subscribers"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def _free_emergency(self, etype: str, d: dict) -> str:
+        return (
+            f"{_header('EMERGENCY \u2014 GOING TO CASH', 'EMERGENCY_REDUCE')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Action    \u25bc All positions closing\n"
+            f"Severity  HIGH"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def _free_whale(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        magnitude = _v(d, 'magnitude')
+        side = _v(d, 'side', _v(d, 'direction'))
+        volume = d.get("volume_usd", d.get("volume", d.get("amount")))
+        vol_s = f"${volume:,.0f}" if isinstance(volume, (int, float)) else ""
+        side_str = str(side).upper()
+        side_word = "buying" if side_str in ("BUY", "LONG") else ("selling" if side_str in ("SELL", "SHORT") else "moving")
+        side_glyph = ("\u25b2 BUY" if side_str in ("BUY", "LONG") else
+                      "\u25bc SELL" if side_str in ("SELL", "SHORT") else side)
+        return (
+            f"{_header('WHALE ALERT', 'WHALE_ALERT')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Pair      {pair}\n"
+            f"Side      {side_glyph}\n"
+            f"Magnitude {magnitude}"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def _free_regime(self, etype: str, d: dict) -> str:
+        from_r = _v(d, 'from', _v(d, 'old_regime'))
+        to_r   = _v(d, 'to',   _v(d, 'new_regime'))
+        raw_src = d.get('source') or ""
+        source = display_name(raw_src) if raw_src and raw_src != "\u2014" else "Fleet consensus"
+        from_badge = _regime_badge(from_r)
+        to_badge   = _regime_badge(to_r)
+        implications = {
+            "BULL":          "Market looks strong. We're leaning into buys.",
+            "BEAR":          "Turning defensive. We're pulling back.",
+            "RANGING":       "No clear trend. We're playing the range.",
+            "RANGE":         "No clear trend. We're playing the range.",
+            "VOLATILE":      "Getting choppy. We're cutting risk.",
+            "TRANSITIONING": "Trend is breaking down. We're waiting it out.",
+            "CAUTIOUS":      "Something feels off. Less capital at risk.",
+            "DEFENSIVE":     "High alert. Mostly cash right now.",
+        }
+        to_key = str(to_r).upper().split("_")[0]
+        meaning = implications.get(str(to_r).upper(), implications.get(to_key, "Adjusting our approach."))
+        return (
+            f"{_header('MARKET SHIFT', 'REGIME_CHANGE')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Before    {from_badge}\n"
+            f"Now       {to_badge}\n"
+            f"Source    {source}"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def _free_aegis(self, etype: str, d: dict) -> str:
+        score = d.get("score")
+        score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "\u2014"
+        score_bar = _bar(score or 0, 1.0, 12)
+        regime = _regime_badge(_v(d, 'regime'))
+        deploy_cap = d.get("recommended_max_deployed")
+        cap_s = f"{int(deploy_cap)}%" if isinstance(deploy_cap, (int, float)) else "\u2014"
+        return (
+            f"{_header('FLEET HEALTH CHECK', 'AEGIS_UPDATE')}\n"
+            f"{_divider()}\n"
+            f"<code>"
+            f"Health    {score_bar} {score_s}\n"
+            f"Posture   {regime}\n"
+            f"Max Deploy {cap_s}"
+            f"</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def _free_structure(self, etype: str, d: dict) -> str:
+        pair = _v(d, 'pair')
+        if etype == "CATASTROPHE_WARNING":
+            ews = d.get("ews_score")
+            ews_bar = _bar(ews or 0, 1.0, 10)
+            ews_s = f"{ews:.2f}" if isinstance(ews, (int, float)) else "\u2014"
+            label = "SUDDEN MOVE WARNING"
+            data_block = f"Pair      {pair}\nRisk      {ews_bar} {ews_s}\nDetail    \U0001f512 Full analysis for subscribers"
+        elif etype == "BOOK_PHASE":
+            phase = _v(d, 'phase', _v(d, 'state'))
+            phase_str = str(phase).upper()
+            label = "LIQUIDITY CRISIS" if phase_str == "PLASMA" else "LIQUIDITY WARNING"
+            data_block = f"Pair      {pair}\nPhase     {phase_str}\nDetail    \U0001f512 Full analysis for subscribers"
+        else:
+            label = "MARKET SIGNAL"
+            data_block = f"Pair      {pair}\nDetail    \U0001f512 Full analysis for subscribers"
+        return (
+            f"{_header(label, etype)}\n"
+            f"{_divider()}\n"
+            f"<code>{data_block}</code>"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    def _free_generic(self, etype: str, d: dict) -> str:
+        return (
+            f"{_header('FLEET UPDATE', etype)}\n"
+            f"{_footer(_FOOTER_FREE)}"
+        )
+
+    # ── Dispatch tables ──────────────────────────────────────────────
+
+    _PAID_HANDLERS = {
+        "HIGH_CONVICTION": _paid_high_conviction,
+        "SIGNAL": _paid_signal,
+        "TRADE_OPEN": _paid_trade_open,
+        "TRADE_CLOSE": _paid_trade_close,
+        "REGIME_CHANGE": _paid_regime_change,
+        "AEGIS_UPDATE": _paid_aegis_update,
+        "EMERGENCY_REDUCE": _paid_emergency,
+        "FLEET_ALERT": _paid_fleet_alert,
+        "WHALE_ALERT": _paid_whale,
+        "CATASTROPHE_WARNING": _paid_structure,
+        "CYCLE_DETECTED": _paid_structure,
+        "BOOK_PHASE": _paid_structure,
+        "STRUCTURE_FORMING": _paid_structure,
+        "CHAOS_STATE": _paid_structure,
+        "MANIFOLD_WARNING": _paid_structure,
+        "CAUSAL_FLOW": _paid_structure,
+        "EUCLID_LEVEL": _paid_structure,
+    }
+
+    _FREE_HANDLERS = {
+        "HIGH_CONVICTION": _free_high_conviction,
+        "SIGNAL": _free_high_conviction,
+        "TRADE_OPEN": _free_trade,
+        "TRADE_CLOSE": _free_trade,
+        "EMERGENCY_REDUCE": _free_emergency,
+        "FLEET_ALERT": _free_emergency,
+        "WHALE_ALERT": _free_whale,
+        "AEGIS_UPDATE": _free_aegis,
+        "REGIME_CHANGE": _free_regime,
+        "CATASTROPHE_WARNING": _free_structure,
+        "CYCLE_DETECTED": _free_structure,
+        "BOOK_PHASE": _free_structure,
+        "STRUCTURE_FORMING": _free_structure,
+        "CHAOS_STATE": _free_structure,
+        "MANIFOLD_WARNING": _free_structure,
+        "CAUSAL_FLOW": _free_structure,
+        "EUCLID_LEVEL": _free_structure,
+    }
+
+
+# ── AlertGate (from notifier.py) ────────────────────────────────────────────
+
+class AlertGate:
+    """Deduplication + rate limiting for outbound alerts.
+    Copied from notifier.py lines 109-146."""
+
+    def __init__(self, dedup_window_s: int = 300, max_seen: int = 1000,
+                 max_per_min: int = 30):
+        self._dedup_window = dedup_window_s
+        self._seen_ids: collections.deque = collections.deque(maxlen=max_seen)
+        self._last_sent: dict[str, float] = {}
+        self._minute_log: collections.deque = collections.deque()
+        self._max_per_min = max_per_min
+        self._prune_counter = 0
+
+    def seen_event(self, event_id: str) -> bool:
+        if event_id in self._seen_ids:
+            return True
+        self._seen_ids.append(event_id)
+        return False
+
+    def should_send(self, dedup_key: str) -> bool:
+        now = time.time()
+        if dedup_key in self._last_sent:
+            if now - self._last_sent[dedup_key] < self._dedup_window:
+                return False
+        while self._minute_log and now - self._minute_log[0] > 60:
+            self._minute_log.popleft()
+        if len(self._minute_log) >= self._max_per_min:
+            log.warning("Rate limit hit (%d msgs/min), dropping: %s",
+                        self._max_per_min, dedup_key)
+            return False
+        return True
+
+    def record_sent(self, dedup_key: str):
+        now = time.time()
+        self._last_sent[dedup_key] = now
+        self._minute_log.append(now)
+        self._prune_counter += 1
+        if self._prune_counter >= 100:
+            self._prune_counter = 0
+            cutoff = now - 3600
+            self._last_sent = {k: v for k, v in self._last_sent.items()
+                               if v > cutoff}
+
+
+# ── ChannelOps ───────────────────────────────────────────────────────────────
+
+class ChannelOps:
+    """Sends formatted messages to Telegram channels via urllib.request."""
+
+    def __init__(self, bot_token: str, free_chat_id: str, paid_chat_id: str,
+                 personal_chat_id: str = "",
+                 log_path: str = "signals_sent.log"):
+        self._token = bot_token
+        self._free_chat = free_chat_id
+        self._paid_chat = paid_chat_id
+        self._personal_chat = personal_chat_id
+        self._log_path = log_path
+        self._file_lock = threading.Lock()
+        self._stats_lock = threading.Lock()
+        self._daily_stats = {
+            "free_sent": 0, "paid_sent": 0, "failed": 0,
+            "last_free_ts": "", "last_paid_ts": "",
+            "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+        }
+
+    def send_free(self, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        ok = self._send(self._free_chat, message)
+        self._log_attempt("free", event_type, event_id, ok)
+        with self._stats_lock:
+            self._reset_if_new_day()
+            if ok:
+                self._daily_stats["free_sent"] += 1
+                self._daily_stats["last_free_ts"] = datetime.now(timezone.utc).isoformat()
+            else:
+                self._daily_stats["failed"] += 1
+        return ok
+
+    def send_paid(self, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        ok = self._send(self._paid_chat, message)
+        self._log_attempt("paid", event_type, event_id, ok)
+        with self._stats_lock:
+            self._reset_if_new_day()
+            if ok:
+                self._daily_stats["paid_sent"] += 1
+                self._daily_stats["last_paid_ts"] = datetime.now(timezone.utc).isoformat()
+            else:
+                self._daily_stats["failed"] += 1
+        return ok
+
+    def send_paid_image(self, png_bytes: bytes, caption: str = "",
+                        event_id: str = "", event_type: str = "",
+                        copyable_block: str = "",
+                        text_fallback: str = "") -> bool:
+        """Send a PNG image card to the paid channel via sendPhoto.
+
+        Falls back to text sendMessage if the photo upload fails.
+        Uses *text_fallback* for the fallback message (not caption).
+        If *copyable_block* is provided, sends it as a follow-up after the image.
+        """
+        ok = self._send_photo(self._paid_chat, png_bytes, caption)
+        if not ok:
+            # Fallback to text — never drop a signal
+            fallback = text_fallback or caption
+            log.warning("sendPhoto failed, falling back to text for %s", event_type)
+            ok = self._send(self._paid_chat, fallback)
+        self._log_attempt("paid_image", event_type, event_id, ok)
+        with self._stats_lock:
+            self._reset_if_new_day()
+            if ok:
+                self._daily_stats["paid_sent"] += 1
+                self._daily_stats["last_paid_ts"] = datetime.now(timezone.utc).isoformat()
+            else:
+                self._daily_stats["failed"] += 1
+        # Send copyable code block as follow-up
+        if ok and copyable_block:
+            self._send_code_block(self._paid_chat, copyable_block)
+        return ok
+
+    def send_free_image(self, png_bytes: bytes, caption: str = "",
+                        event_id: str = "", event_type: str = "") -> bool:
+        """Send a PNG image card to the free channel via sendPhoto."""
+        ok = self._send_photo(self._free_chat, png_bytes, caption)
+        if not ok:
+            log.warning("sendPhoto (free) failed, falling back to text for %s", event_type)
+            ok = self._send(self._free_chat, caption)
+        self._log_attempt("free_image", event_type, event_id, ok)
+        with self._stats_lock:
+            self._reset_if_new_day()
+            if ok:
+                self._daily_stats["free_sent"] += 1
+                self._daily_stats["last_free_ts"] = datetime.now(timezone.utc).isoformat()
+            else:
+                self._daily_stats["failed"] += 1
+        return ok
+
+    def send_personal(self, message: str) -> bool:
+        if not self._personal_chat:
+            return False
+        ok = self._send(self._personal_chat, message)
+        self._log_attempt("personal", "DIAGNOSTIC", "", ok)
+        return ok
+
+    def stats(self) -> dict:
+        with self._stats_lock:
+            self._reset_if_new_day()
+            return {
+                "free_sent_today": self._daily_stats["free_sent"],
+                "paid_sent_today": self._daily_stats["paid_sent"],
+                "failed_today": self._daily_stats["failed"],
+                "last_free_ts": self._daily_stats["last_free_ts"],
+                "last_paid_ts": self._daily_stats["last_paid_ts"],
+            }
+
+    def _reset_if_new_day(self):
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if self._daily_stats["date"] != today:
+            self._daily_stats = {
+                "free_sent": 0, "paid_sent": 0, "failed": 0,
+                "last_free_ts": "", "last_paid_ts": "", "date": today,
+            }
+
+    def _send(self, chat_id: str, message: str) -> bool:
+        if not self._token or not chat_id:
+            log.error("Missing bot_token or chat_id")
+            return False
+
+        url = f"https://api.telegram.org/bot{self._token}/sendMessage"
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": message,
+            "parse_mode": "HTML",
+            "disable_web_page_preview": True,
+        }).encode("utf-8")
+
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(
+                    url, data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=10) as resp:
+                    if resp.status == 200:
+                        log.info("Sent to chat …%s OK", str(chat_id)[-4:])
+                        return True
+                    log.warning("Telegram returned status %s", resp.status)
+                    return False
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt == 0:
+                    try:
+                        body = json.loads(e.read().decode("utf-8"))
+                        wait = body.get("parameters", {}).get("retry_after", 5)
+                    except Exception:
+                        wait = 5
+                    log.warning("Telegram 429, retrying after %ds", wait)
+                    time.sleep(wait)
+                    continue
+                elif e.code in (400, 403):
+                    log.error("Telegram permanent error %d: %s", e.code, e.reason)
+                    return False
+                else:
+                    log.warning("Telegram HTTP error %d", e.code)
+                    return False
+            except Exception as e:
+                log.warning("Telegram send error: %s", e)
+                return False
+
+        return False
+
+    def _send_photo(self, chat_id: str, png_bytes: bytes,
+                    caption: str = "") -> bool:
+        """Upload a PNG via Telegram sendPhoto (multipart/form-data)."""
+        if not self._token or not chat_id:
+            log.error("Missing bot_token or chat_id for sendPhoto")
+            return False
+
+        url = f"https://api.telegram.org/bot{self._token}/sendPhoto"
+        boundary = "----GoldenEyeBoundary"
+
+        # Build multipart body
+        parts = []
+        parts.append(f"--{boundary}\r\n"
+                     f'Content-Disposition: form-data; name="chat_id"\r\n\r\n'
+                     f"{chat_id}\r\n")
+        if caption:
+            # Truncate caption to Telegram's 1024-char limit for photos
+            cap = caption[:1024]
+            parts.append(f"--{boundary}\r\n"
+                         f'Content-Disposition: form-data; name="caption"\r\n\r\n'
+                         f"{cap}\r\n")
+            parts.append(f"--{boundary}\r\n"
+                         f'Content-Disposition: form-data; name="parse_mode"\r\n\r\n'
+                         f"HTML\r\n")
+        parts.append(f"--{boundary}\r\n"
+                     f'Content-Disposition: form-data; name="photo"; '
+                     f'filename="signal.png"\r\n'
+                     f"Content-Type: image/png\r\n\r\n")
+
+        body = b""
+        for p in parts:
+            body += p.encode("utf-8")
+        body += png_bytes
+        body += f"\r\n--{boundary}--\r\n".encode("utf-8")
+
+        for attempt in range(2):
+            try:
+                req = urllib.request.Request(
+                    url, data=body,
+                    headers={
+                        "Content-Type": f"multipart/form-data; boundary={boundary}",
+                    },
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    if resp.status == 200:
+                        log.info("sendPhoto to chat …%s OK", str(chat_id)[-4:])
+                        return True
+                    log.warning("sendPhoto returned status %s", resp.status)
+                    return False
+            except urllib.error.HTTPError as e:
+                if e.code == 429 and attempt == 0:
+                    try:
+                        body_json = json.loads(e.read().decode("utf-8"))
+                        wait = body_json.get("parameters", {}).get("retry_after", 5)
+                    except Exception:
+                        wait = 5
+                    log.warning("sendPhoto 429, retrying after %ds", wait)
+                    time.sleep(wait)
+                    continue
+                elif e.code in (400, 403):
+                    log.error("sendPhoto permanent error %d: %s", e.code, e.reason)
+                    return False
+                else:
+                    log.warning("sendPhoto HTTP error %d", e.code)
+                    return False
+            except Exception as e:
+                log.warning("sendPhoto error: %s", e)
+                return False
+
+        return False
+
+    def _send_code_block(self, chat_id: str, markdown_text: str) -> bool:
+        """Send a Markdown code block message (for one-tap copy on mobile)."""
+        if not self._token or not chat_id:
+            return False
+
+        url = f"https://api.telegram.org/bot{self._token}/sendMessage"
+        payload = json.dumps({
+            "chat_id": chat_id,
+            "text": markdown_text,
+            "parse_mode": "Markdown",
+            "disable_web_page_preview": True,
+            "disable_notification": True,
+        }).encode("utf-8")
+
+        try:
+            req = urllib.request.Request(
+                url, data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                if resp.status == 200:
+                    log.info("Code block sent to chat …%s OK", str(chat_id)[-4:])
+                    return True
+                log.warning("Code block send returned status %s", resp.status)
+                return False
+        except Exception as e:
+            log.warning("Code block send error: %s", e)
+            return False
+
+    def _log_attempt(self, tier: str, event_type: str, event_id: str,
+                     success: bool):
+        record = {
+            "ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "tier": tier, "event_type": event_type,
+            "event_id": event_id, "success": success,
+        }
+        line = json.dumps(record) + "\n"
+        with self._file_lock:
+            try:
+                with open(self._log_path, "a", encoding="utf-8") as f:
+                    f.write(line)
+            except Exception as e:
+                log.error("Failed to write to %s: %s", self._log_path, e)
+
+
+# ── Scheduled Jobs ───────────────────────────────────────────────────────────
+
+def _http_get_json(url: str, timeout: float = 10.0):
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except Exception as e:
+        log.warning("HTTP GET %s failed: %s", url, e)
+        return None
+
+
+def _seconds_until(hour: int, minute: int = 0) -> float:
+    now = datetime.now(timezone.utc)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if target <= now:
+        target += timedelta(days=1)
+    return (target - now).total_seconds()
+
+
+def _seconds_until_weekday(weekday: int, hour: int, minute: int = 0) -> float:
+    now = datetime.now(timezone.utc)
+    target = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    days_ahead = weekday - now.weekday()
+    if days_ahead < 0 or (days_ahead == 0 and target <= now):
+        days_ahead += 7
+    target += timedelta(days=days_ahead)
+    return (target - now).total_seconds()
+
+
+class DailySummaryJob:
+    """Sends a daily summary at 08:00 UTC to both channels."""
+
+    def __init__(self, cc_url: str, channel_ops: ChannelOps,
+                 formatter: CardFormatter):
+        self._cc_url = cc_url.rstrip("/")
+        self._channel = channel_ops
+        self._formatter = formatter
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        self._stop.clear()
+        t = threading.Thread(target=self._loop, daemon=True, name="daily-summary")
+        t.start()
+        log.info("DailySummaryJob started, next in %.0fs", _seconds_until(8, 0))
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run_now(self) -> None:
+        self._execute()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            if self._stop.wait(timeout=_seconds_until(8, 0)):
+                break
+            self._execute()
+
+    def _execute(self):
+        log.info("DailySummaryJob executing")
+        try:
+            daily = _http_get_json(f"{self._cc_url}/api/fleet/daily") or {}
+            expectancy = _http_get_json(f"{self._cc_url}/api/expectancy") or {}
+            portfolio = _http_get_json(f"{self._cc_url}/api/portfolio") or {}
+
+            stats = {
+                "fleet_pnl": daily.get("fleet_pnl", daily.get("pnl", "\u2014")),
+                "total_trades": daily.get("total_trades", "\u2014"),
+                "win_rate": daily.get("win_rate", "\u2014"),
+                "expectancy": expectancy.get("fleet_expectancy", "\u2014"),
+                "deployed_pct": portfolio.get("deployed_pct", "\u2014"),
+                "regime": daily.get("regime", "\u2014"),
+                "aegis_score": daily.get("aegis_score", "\u2014"),
+                "top_bot": daily.get("top_bot", "\u2014"),
+                "top_pair": daily.get("top_pair", "\u2014"),
+            }
+            msg_paid = self._formatter.format_daily_summary(stats)
+            msg_free = self._formatter.format_daily_summary_free(stats)
+            self._channel.send_paid(msg_paid, event_type="DAILY_SUMMARY")
+            self._channel.send_free(msg_free, event_type="DAILY_SUMMARY")
+            log.info("Daily summary sent")
+        except Exception:
+            log.exception("DailySummaryJob failed")
+
+
+class WeeklyReportJob:
+    """Sends a weekly report every Sunday at 08:00 UTC."""
+
+    def __init__(self, cc_url: str, channel_ops: ChannelOps,
+                 formatter: CardFormatter):
+        self._cc_url = cc_url.rstrip("/")
+        self._channel = channel_ops
+        self._formatter = formatter
+        self._stop = threading.Event()
+        self._logs_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "logs", "daily")
+
+    def start(self) -> None:
+        self._stop.clear()
+        t = threading.Thread(target=self._loop, daemon=True, name="weekly-report")
+        t.start()
+        log.info("WeeklyReportJob started")
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run_now(self) -> None:
+        self._execute()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            if self._stop.wait(timeout=_seconds_until_weekday(6, 8, 0)):
+                break
+            self._execute()
+
+    def _execute(self):
+        log.info("WeeklyReportJob executing")
+        try:
+            today = datetime.now(timezone.utc).date()
+            total_pnl = 0.0
+            total_trades = 0
+            win_rates = []
+            expectancies = []
+            best_day = None
+            best_pnl = float("-inf")
+            worst_day = None
+            worst_pnl = float("inf")
+            days_positive = 0
+            days_loaded = 0
+
+            for i in range(7):
+                day = today - timedelta(days=i)
+                day_str = day.strftime("%Y-%m-%d")
+                path = os.path.join(self._logs_dir, f"{day_str}.json")
+                if not os.path.exists(path):
+                    continue
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                except Exception:
+                    continue
+
+                days_loaded += 1
+                day_pnl = data.get("fleet_pnl", data.get("pnl", 0))
+                if isinstance(day_pnl, (int, float)):
+                    total_pnl += day_pnl
+                    if day_pnl > best_pnl:
+                        best_pnl = day_pnl
+                        best_day = f"{day_str} (${day_pnl:+.2f})"
+                    if day_pnl < worst_pnl:
+                        worst_pnl = day_pnl
+                        worst_day = f"{day_str} (${day_pnl:+.2f})"
+                    if day_pnl > 0:
+                        days_positive += 1
+
+                dt = data.get("total_trades", 0)
+                if isinstance(dt, int):
+                    total_trades += dt
+                wr = data.get("win_rate")
+                if isinstance(wr, (int, float)):
+                    win_rates.append(wr)
+                ev = data.get("expectancy")
+                if isinstance(ev, (int, float)):
+                    expectancies.append(ev)
+
+            report = {
+                "total_pnl": total_pnl if days_loaded else "\u2014",
+                "total_trades": total_trades if days_loaded else "\u2014",
+                "avg_win_rate": (f"{sum(win_rates) / len(win_rates):.0%}"
+                                 if win_rates else "\u2014"),
+                "avg_expectancy": (sum(expectancies) / len(expectancies)
+                                   if expectancies else "\u2014"),
+                "best_day": best_day or "\u2014",
+                "worst_day": worst_day or "\u2014",
+                "days_positive": days_positive,
+                "days_total": days_loaded or 7,
+            }
+            msg_paid = self._formatter.format_weekly_report(report)
+            msg_free = self._formatter.format_weekly_report_free(report)
+            self._channel.send_paid(msg_paid, event_type="WEEKLY_REPORT")
+            self._channel.send_free(msg_free, event_type="WEEKLY_REPORT")
+            log.info("Weekly report sent")
+        except Exception:
+            log.exception("WeeklyReportJob failed")
+
+
+class EndOfDayJob:
+    """Sends visual End of Day card at configurable UTC time (default 23:59)."""
+
+    def __init__(self, cc_url: str, channel_ops: ChannelOps,
+                 card_renderer, hour: int = 23, minute: int = 59):
+        self._cc_url = cc_url.rstrip("/")
+        self._channel = channel_ops
+        self._renderer = card_renderer  # CardRenderer instance or None
+        self._hour = hour
+        self._minute = minute
+        self._stop = threading.Event()
+
+    def start(self) -> None:
+        self._stop.clear()
+        t = threading.Thread(target=self._loop, daemon=True, name="end-of-day")
+        t.start()
+        log.info("EndOfDayJob started, fires at %02d:%02d UTC (next in %.0fs)",
+                 self._hour, self._minute,
+                 _seconds_until(self._hour, self._minute))
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def run_now(self) -> None:
+        """Manual trigger for testing."""
+        self._execute()
+
+    def _loop(self):
+        while not self._stop.is_set():
+            if self._stop.wait(timeout=_seconds_until(self._hour, self._minute)):
+                break
+            self._execute()
+
+    def _execute(self):
+        log.info("EndOfDayJob executing")
+        try:
+            data = self._gather_data()
+            if not self._renderer:
+                log.warning("EndOfDayJob: no CardRenderer, skipping image cards")
+                return
+
+            # Paid card
+            try:
+                png_paid = self._renderer.render_end_of_day(data, tier="paid")
+                self._channel.send_paid_image(
+                    png_paid, caption="End of Day — GoldenEye Intelligence",
+                    event_type="END_OF_DAY")
+            except Exception:
+                log.exception("EOD paid image failed")
+
+            # Free card
+            try:
+                png_free = self._renderer.render_end_of_day(data, tier="free")
+                self._channel.send_free_image(
+                    png_free, caption="End of Day — GoldenEye Intelligence",
+                    event_type="END_OF_DAY")
+            except Exception:
+                log.exception("EOD free image failed")
+
+            log.info("End of Day cards sent")
+        except Exception:
+            log.exception("EndOfDayJob failed")
+
+    def _gather_data(self) -> dict:
+        """Pull live fleet data and build the EOD data dict."""
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_display = datetime.now(timezone.utc).strftime("%d %b %Y")
+
+        # Get today's trade events
+        events = _http_get_json(
+            f"{self._cc_url}/api/events/recent?n=500&type=TRADE_CLOSE") or []
+        today_trades = []
+        for ev in events:
+            ts = ev.get("timestamp", ev.get("ts", ""))
+            if not ts.startswith(today):
+                continue
+            d = ev.get("data", {}) if isinstance(ev.get("data"), dict) else {}
+            pnl = d.get("pnl")
+            fees = d.get("fees", 0)
+            net = (pnl - fees) if isinstance(pnl, (int, float)) and isinstance(fees, (int, float)) else pnl
+            # Parse hour from timestamp
+            hour = 0
+            try:
+                hour = int(ts[11:13])
+            except (ValueError, IndexError):
+                pass
+            today_trades.append({
+                "bot": d.get("source", d.get("bot", "")),
+                "pair": d.get("pair", ""),
+                "side": str(d.get("direction", "")).upper(),
+                "net": net if isinstance(net, (int, float)) else 0,
+                "hour": hour,
+                "exit_reason": d.get("exit_reason", d.get("reason", "")),
+                "gross_pnl": pnl,
+                "fees": fees,
+            })
+
+        # Compute aggregates
+        gross = sum(t.get("gross_pnl", 0) or 0 for t in today_trades
+                    if isinstance(t.get("gross_pnl"), (int, float)))
+        fees = sum(t.get("fees", 0) or 0 for t in today_trades
+                   if isinstance(t.get("fees"), (int, float)))
+        net = gross - fees if isinstance(gross, (int, float)) and isinstance(fees, (int, float)) else None
+
+        # Get expectancy data for additional context
+        expectancy = _http_get_json(f"{self._cc_url}/api/expectancy") or {}
+
+        return {
+            "date": date_display,
+            "trades": today_trades,
+            "gross": gross if gross else None,
+            "fees": fees if fees else None,
+            "net": net,
+            "timestamp": f"{self._hour:02d}:{self._minute:02d} UTC",
+        }
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BROADCASTER — MAIN ORCHESTRATOR
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_DEFAULT_CONFIG = {
+    "cc_url": "http://localhost:9000",
+    "broadcaster_port": 9002,
+    "telegram_bot_token": "",
+    "telegram_free_chat_id": "",
+    "telegram_paid_chat_id": "",
+    "telegram_personal_chat_id": "",
+    "dedup_window_s": 300,
+    "seen_ids_max": 1000,
+    "rate_limit_per_minute": 30,
+    "free_delay_hours": 4,
+    "min_conviction_threshold": 0.8,
+    "daily_summary_utc_hour": 8,
+    "weekly_report_utc_day": 6,
+    "weekly_report_utc_hour": 8,
+    "poll_fallback_interval_s": 30,
+    "enrichment_cache_ttl_s": 15,
+    "enrichment_timeout_s": 5,
+    "routing_overrides": {},
+    "enabled": True,
+}
+
+
+class Broadcaster:
+    """Main orchestrator. Wires all components, runs the event pipeline."""
+
+    def __init__(self, config_path: str = "signal_config.json"):
+        self._config_path = config_path
+        self._config = self._load_config()
+        self._shutdown = threading.Event()
+        self._gate_lock = threading.Lock()
+        self._signals_log: list[dict] = []  # last 200 signals for /api/signals/feed
+        self._signals_log_lock = threading.Lock()
+        self._delayed_queue: list[dict] = []
+        self._delayed_lock = threading.Lock()
+
+        cc_url = self._config["cc_url"]
+
+        # Components
+        self._gate = AlertGate(
+            dedup_window_s=self._config["dedup_window_s"],
+            max_seen=self._config["seen_ids_max"],
+            max_per_min=self._config["rate_limit_per_minute"],
+        )
+        self._channel = ChannelOps(
+            bot_token=self._config["telegram_bot_token"],
+            free_chat_id=self._config["telegram_free_chat_id"],
+            paid_chat_id=self._config["telegram_paid_chat_id"],
+            personal_chat_id=self._config.get("telegram_personal_chat_id", ""),
+        )
+        self._formatter = CardFormatter()
+        self._intel = IntelligenceBuilder(
+            cc_url=cc_url,
+            cache_ttl=self._config["enrichment_cache_ttl_s"],
+            fetch_timeout=self._config["enrichment_timeout_s"],
+        )
+        self._sse = SSEListener(
+            cc_url=cc_url,
+            on_event=self._on_event,
+            on_disconnect=lambda: self._poller.set_active(True),
+            on_reconnect=lambda: self._poller.set_active(False),
+        )
+        self._poller = PollingFallback(
+            cc_url=cc_url,
+            on_event=self._on_event,
+            poll_interval=self._config["poll_fallback_interval_s"],
+        )
+        self._daily = DailySummaryJob(cc_url, self._channel, self._formatter)
+        self._weekly = WeeklyReportJob(cc_url, self._channel, self._formatter)
+
+        # Visual card renderer (Pillow) — lazy import, degrades to text-only
+        self._card_renderer = None
+        try:
+            from card_renderer import CardRenderer
+            self._card_renderer = CardRenderer()
+            log.info("CardRenderer loaded — paid tier gets image cards")
+        except Exception as e:
+            log.warning("CardRenderer not available (%s) — text-only mode", e)
+
+        self._eod = EndOfDayJob(
+            cc_url, self._channel, self._card_renderer,
+            hour=self._config.get("end_of_day_hour_utc", 23),
+            minute=self._config.get("end_of_day_minute_utc", 59),
+        )
+        self._health = BroadcasterHealthServer(
+            port=self._config["broadcaster_port"],
+            get_stats=self.stats,
+            on_reload=self._reload_config,
+            get_feed=self.get_signals_log,
+        )
+
+    def _load_config(self) -> dict:
+        config = dict(_DEFAULT_CONFIG)
+        if os.path.exists(self._config_path):
+            try:
+                with open(self._config_path, "r", encoding="utf-8") as f:
+                    user = json.load(f)
+                config.update(user)
+                log.info("Config loaded from %s", self._config_path)
+            except Exception as e:
+                log.warning("Failed to load config: %s, using defaults", e)
+        else:
+            log.info("No config file at %s, using defaults", self._config_path)
+        return config
+
+    def _reload_config(self):
+        self._config = self._load_config()
+        self._gate = AlertGate(
+            dedup_window_s=self._config["dedup_window_s"],
+            max_seen=self._config["seen_ids_max"],
+            max_per_min=self._config["rate_limit_per_minute"],
+        )
+        log.info("Config reloaded")
+
+    def start(self) -> None:
+        cc_url = self._config["cc_url"]
+        log.info("Probing Command Center at %s...", cc_url)
+        for i in range(15):
+            try:
+                urllib.request.urlopen(f"{cc_url}/api/master", timeout=3)
+                log.info("Command Center is up")
+                break
+            except Exception:
+                if i < 14:
+                    time.sleep(2)
+        else:
+            log.critical("Command Center unreachable after 30s, exiting")
+            sys.exit(1)
+
+        self._health.start()
+        self._sse.start()
+        self._poller.start()
+        self._daily.start()
+        self._weekly.start()
+        self._eod.start()
+
+        # Delayed sender thread
+        t = threading.Thread(target=self._delayed_sender, daemon=True,
+                             name="delayed-sender")
+        t.start()
+
+        token_status = "configured" if self._config["telegram_bot_token"] else "NOT SET"
+        log.info("Signal Broadcaster online (Telegram token: %s)", token_status)
+
+        # Startup notification disabled — too noisy during development
+        log.info("Signal Broadcaster online (Telegram token: configured)")
+
+    def stop(self) -> None:
+        log.info("Shutting down...")
+        self._shutdown.set()
+        self._sse.stop()
+        self._poller.stop()
+        self._daily.stop()
+        self._weekly.stop()
+        self._eod.stop()
+        self._health.stop()
+        log.info("Shutdown complete")
+
+    def stats(self) -> dict:
+        return {
+            "sse": self._sse.stats(),
+            "polling": self._poller.stats(),
+            "channel": self._channel.stats(),
+            "config": {
+                "enabled": self._config.get("enabled", True),
+                "free_delay_hours": self._config.get("free_delay_hours", 4),
+                "min_conviction": self._config.get("min_conviction_threshold", 0.8),
+                "rate_limit": self._config.get("rate_limit_per_minute", 30),
+            },
+            "delayed_queue_size": len(self._delayed_queue),
+            "signals_log_size": len(self._signals_log),
+        }
+
+    def config(self) -> dict:
+        return dict(self._config)
+
+    def get_signals_log(self, n: int = 50) -> list[dict]:
+        with self._signals_log_lock:
+            return list(self._signals_log[-n:])
+
+    def preview(self, event: dict) -> dict:
+        enriched = self._intel.enrich(event)
+        decision = TierRouter.route(enriched, self._config)
+        if decision is None:
+            return {"suppressed": True, "reason": "no routing rule matched"}
+        return {
+            "suppressed": False,
+            "free": decision["free"],
+            "paid": decision["paid"],
+            "priority": decision["priority"],
+            "category": decision["category"],
+            "free_message": self._formatter.format_free(decision) if decision["free"] else "",
+            "paid_message": self._formatter.format_paid(decision) if decision["paid"] else "",
+        }
+
+    def _on_event(self, event: dict) -> None:
+        if not self._config.get("enabled", True):
+            return
+
+        try:
+            event_id = event.get("id", "")
+            if not event_id:
+                event_id = f"{event.get('source', '')}_{event.get('type', '')}_{event.get('ts', '')}"
+
+            with self._gate_lock:
+                if self._gate.seen_event(event_id):
+                    return
+
+            enriched = self._intel.enrich(event)
+            decision = TierRouter.route(enriched, self._config)
+            if decision is None:
+                return
+
+            etype = event.get("type", "")
+            dedup_key = decision["dedup_key"]
+
+            # Suppress empty HIGH_CONVICTION / SIGNAL cards — no pair + no signal = no send
+            if etype in ("HIGH_CONVICTION", "SIGNAL"):
+                edata = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+                pair = edata.get("pair") or ""
+                direction = edata.get("direction") or ""
+                if (not pair or pair == "\u2014") and not direction:
+                    log.info("Suppressed empty %s — no pair or signal data", etype)
+                    return
+
+            # Record in signals log
+            with self._signals_log_lock:
+                self._signals_log.append({
+                    "ts": _utc_now(),
+                    "type": etype,
+                    "pair": event.get("data", {}).get("pair", "") if isinstance(event.get("data"), dict) else "",
+                    "free": decision["free"],
+                    "paid": decision["paid"],
+                    "priority": decision["priority"],
+                    "category": decision["category"],
+                })
+                if len(self._signals_log) > 200:
+                    self._signals_log = self._signals_log[-200:]
+
+            # Send to paid tier (immediate)
+            if decision["paid"]:
+                with self._gate_lock:
+                    if self._gate.should_send(f"paid_{dedup_key}"):
+                        msg = self._formatter.format_paid(decision)
+                        sent = False
+                        # Image cards for trade events
+                        if self._card_renderer and etype in ("TRADE_OPEN", "TRADE_CLOSE"):
+                            try:
+                                edata = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+                                if etype == "TRADE_OPEN":
+                                    png = self._card_renderer.render_trade_open(edata)
+                                    copyable = self._card_renderer.copyable_trade_open(edata)
+                                else:
+                                    png = self._card_renderer.render_trade_close(edata)
+                                    copyable = self._card_renderer.copyable_trade_close(edata)
+                                sent = self._channel.send_paid_image(
+                                    png, caption="", event_id=event_id,
+                                    event_type=etype,
+                                    copyable_block=copyable or "",
+                                    text_fallback=msg)
+                            except Exception:
+                                log.warning("Image card failed for %s, using text", etype,
+                                            exc_info=True)
+                        if not sent:
+                            sent = self._channel.send_paid(msg, event_id, etype)
+                        if sent:
+                            self._gate.record_sent(f"paid_{dedup_key}")
+
+            # Send to free tier (immediate or delayed)
+            if decision["free"]:
+                delay = decision.get("delay_free_s", 0)
+                if delay > 0:
+                    with self._delayed_lock:
+                        self._delayed_queue.append({
+                            "send_after": time.time() + delay,
+                            "decision": decision,
+                            "event_id": event_id,
+                            "event_type": etype,
+                            "dedup_key": dedup_key,
+                        })
+                else:
+                    with self._gate_lock:
+                        if self._gate.should_send(f"free_{dedup_key}"):
+                            msg = self._formatter.format_free(decision)
+                            if self._channel.send_free(msg, event_id, etype):
+                                self._gate.record_sent(f"free_{dedup_key}")
+
+        except Exception:
+            log.exception("Pipeline error for event %s", event.get("type", "?"))
+
+    def _delayed_sender(self) -> None:
+        while not self._shutdown.is_set():
+            self._shutdown.wait(60)
+            now = time.time()
+            to_send = []
+            with self._delayed_lock:
+                remaining = []
+                for item in self._delayed_queue:
+                    if item["send_after"] <= now:
+                        to_send.append(item)
+                    else:
+                        remaining.append(item)
+                self._delayed_queue = remaining
+
+            for item in to_send:
+                try:
+                    with self._gate_lock:
+                        dk = f"free_{item['dedup_key']}"
+                        if self._gate.should_send(dk):
+                            msg = self._formatter.format_free(item["decision"])
+                            if self._channel.send_free(msg, item["event_id"],
+                                                       item["event_type"]):
+                                self._gate.record_sent(dk)
+                except Exception:
+                    log.warning("Delayed send failed", exc_info=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ENTRY POINT
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def main():
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "signal_config.json")
+
+    # Create default config if missing
+    if not os.path.exists(config_path):
+        with open(config_path, "w", encoding="utf-8") as f:
+            json.dump(_DEFAULT_CONFIG, f, indent=2)
+        log.info("Created default config at %s", config_path)
+        log.info("Edit signal_config.json with your Telegram bot token and channel IDs, then restart.")
+        sys.exit(0)
+
+    broadcaster = Broadcaster(config_path)
+
+    def shutdown_handler(signum, frame):
+        broadcaster.stop()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGTERM, shutdown_handler)
+
+    broadcaster.start()
+
+    # Block main thread
+    try:
+        broadcaster._shutdown.wait()
+    except KeyboardInterrupt:
+        broadcaster.stop()
+
+
+if __name__ == "__main__":
+    main()

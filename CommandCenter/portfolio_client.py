@@ -77,11 +77,15 @@ class PortfolioClient:
             return True, result["reservation_id"]
         return False, result.get("reason", "Unknown rejection")
 
-    def release(self, reservation_id, pnl=0.0):
-        """Return capital after trade closes."""
+    def release(self, reservation_id, pnl=0.0, entry_price=0.0, exit_price=0.0):
+        """Return capital after trade closes.
+        entry_price and exit_price enable accurate expectancy recording at Command Center.
+        """
         result = self._post("/api/portfolio/release", {
             "reservation_id": reservation_id,
             "pnl": pnl,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
         })
         if result is None:
             return False, "Command Center unreachable"

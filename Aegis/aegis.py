@@ -271,7 +271,9 @@ def compute_aegis(H, C, W, S, phi, rho=0.5):
     confidence = (W + 1.0) / 2.0 if W != 0 else 1.0  # no whale data = neutral, not penalty
     # Safety: high correlation reduces diversification benefit
     corr_penalty = rho * 0.3  # 30% weight on correlation
-    safety = (1.0 - S) * (1.0 - phi * 0.5) * (1.0 - corr_penalty)
+    # Cap PHITEX drag: no single component gets more than 0.05 negative influence
+    phi_penalty = min(phi * 0.5, 0.05)
+    safety = (1.0 - S) * (1.0 - phi_penalty) * (1.0 - corr_penalty)
     return round(max(0.0, min(1.0, tradability * confidence * safety)), 4)
 
 
@@ -374,21 +376,31 @@ class AegisEngine:
         recent = [e for e in events if e.get("ts", 0) > cutoff]
 
         # 1. Regime Consensus Entropy
-        # Exclude AEGIS itself (circular) and PHITEX (thermodynamic, not market regime)
+        # Only accept sources reporting actual market regimes (not moods/states).
+        # EXTREME_FEAR, STRESSED, MIXED, session_overlap, TRANSITIONING_BULL,
+        # EQUILIBRIUM etc. are not regimes — they inject noise into consensus.
+        _VALID_REGIME_INPUTS = {
+            "bull", "bear", "range", "chop",
+            "trending", "ranging", "defensive", "cautious",
+            "BULL", "BEAR", "RANGE", "CHOP",
+            "TRENDING", "RANGING", "DEFENSIVE", "CAUTIOUS",
+            "TREND_UP", "TREND_DOWN", "VOLATILE", "MEAN_REVERTING",
+            "mean_reverting", "NEUTRAL", "neutral", "NORMAL", "normal",
+        }
         _exclude_from_consensus = {"aegis", "phitex"}
         regimes = {}
         for bot in master.get("bots", []):
             if bot.get("alive") and bot["id"] not in _exclude_from_consensus:
                 n = bot.get("normalized", {}) or {}
                 regime = n.get("regime")
-                if regime:
+                if regime and regime in _VALID_REGIME_INPUTS:
                     regimes[bot["id"]] = dampen_regime(bot["id"], regime)
         # Also check recent regime change events
         for e in recent:
             src = e.get("source", "")
             if e.get("type") == "REGIME_CHANGE" and src not in _exclude_from_consensus:
                 raw = e.get("data", {}).get("to", "")
-                if raw:
+                if raw and raw in _VALID_REGIME_INPUTS:
                     regimes[src] = dampen_regime(src, raw)
 
         self.H = regime_consensus_entropy(regimes)

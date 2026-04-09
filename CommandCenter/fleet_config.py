@@ -17,10 +17,19 @@ CC_URL = f"http://localhost:{CC_PORT}"
 INFERENCE_PORT = 9001
 INFERENCE_URL = f"http://localhost:{INFERENCE_PORT}"
 
+# ── FLEET MODE ──
+# "paper" = simulated fills only, no exchange orders (safe default)
+# "live"  = real Kraken orders will be placed
+# Toggle via: POST http://localhost:9000/api/fleet/mode  {"mode": "paper"|"live"}
+# Bots check this at trade time, not just at startup.
+FLEET_MODE = "paper"
+
 # ── KRAKEN ──
 KRAKEN_REST = "https://api.kraken.com/0/public"
-KRAKEN_FEE_TAKER = 0.0026
-KRAKEN_FEE_MAKER = 0.0016
+# Fee schedule as of 2026-04: tier 0 ($0-$10K/month volume)
+# Taker 0.40%, Maker 0.25%, Round-trip (taker both sides) 0.80%
+KRAKEN_FEE_TAKER = 0.0040
+KRAKEN_FEE_MAKER = 0.0025
 
 # ── TIMING ──
 POLL_INTERVAL = 10            # CC poll cycle (seconds) — raised from 4s to cut 429s (240→96 req/min)
@@ -38,7 +47,7 @@ PORTFOLIO_LIMITS = {
     "max_per_bot_pct": 30,
     "max_per_pair_pct": 20,
     "max_directional_pct": 60,
-    "max_per_trade_pct": 5,
+    "max_per_trade_pct": 20,
 }
 TRADING_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "trekbot", "trekbot_short", "rubberband", "arbitrageur"}
 
@@ -46,7 +55,7 @@ TRADING_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "trekbot", "trekbot_shor
 MAX_CONCENTRATION_PER_PAIR = 0.40
 MAX_DIRECTION_IMBALANCE = 0.70
 MIN_TRADE_PROFIT_VS_FEES = 2.0
-MIN_TRADE_SIZE_USD = 100.0
+MIN_TRADE_SIZE_USD = 0
 
 # ── BOT REGISTRY ──
 # Every bot defined once.  Keys match bot IDs used in CC, event bus, and portfolio.
@@ -59,7 +68,7 @@ BOTS = {
     "sentinel":    {"port": 8071, "dir": os.path.join(DATA_DRIVE, "Sentinel"),                               "role": "support", "display": "Sentinel",   "color": "#00bfa5", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "sentinel.py"],                               "phase": 2, "slow": True},   # needs CC market data
     "trinity":     {"port": 8072, "dir": os.path.join(DATA_DRIVE, "Trinity"),                                "role": "support", "display": "Trinity",    "color": "#00b0ff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "overwatch.py", "--auto"],                    "phase": 1, "slow": False},
     "hivemind":    {"port": 8073, "dir": os.path.join(DATA_DRIVE, "HiveMind"),                               "role": "support", "display": "HiveMind",   "color": "#ffab00", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "cli.py", "dashboard", "--synthetic"],        "phase": 1, "slow": True},
-    "nexusbrain":  {"port": 8074, "dir": os.path.join(DATA_DRIVE, "NexusBrain"),                             "role": "trader",  "display": "NexusBrain", "color": "#d500f9", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus_brain.py", "dashboard", "--auto"],     "phase": 1, "slow": False},
+    "nexusbrain":  {"port": 8074, "dir": os.path.join(DATA_DRIVE, "NexusBrain"),                             "role": "trader",  "display": "NexusBrain", "color": "#d500f9", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus_brain.py", "run-sim", "--auto"],       "phase": 1, "slow": False},
     "oracle":      {"port": 8075, "dir": os.path.join(DATA_DRIVE, "Oracle"),                                 "role": "intel",   "display": "Oracle",     "color": "#76ff03", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "server.py"],                                 "phase": 1, "slow": True},
     "deepblue":    {"port": 8076, "dir": os.path.join(DATA_DRIVE, "Whale Watcher", "apex_whale_finder.dir"), "role": "intel",   "display": "Deep Blue",  "color": "#18ffff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "main.py", "--headless"],                       "phase": 1, "slow": False},
     "gridzilla":   {"port": 8077, "dir": os.path.join(DATA_DRIVE, "Gridzilla"),                              "role": "trader",  "display": "Gridzilla",  "color": "#ffd600", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "gridzilla.py", "--auto"],                    "phase": 1, "slow": False},
@@ -73,6 +82,8 @@ BOTS = {
     "contrarian":  {"port": 8084, "dir": os.path.join(DATA_DRIVE, "Contrarian"),                             "role": "support", "display": "Contrarian", "color": "#ff1744", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "contrarian.py"],                             "phase": 2, "slow": False},
     "arbitrageur": {"port": 8085, "dir": os.path.join(DATA_DRIVE, "Arbitrageur"),                            "role": "trader",  "display": "Arbitrageur","color": "#7c4dff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "arbitrageur.py"],                            "phase": 2, "slow": False},
     "chronos":     {"port": 8086, "dir": os.path.join(DATA_DRIVE, "Chronos"),                                "role": "support", "display": "Chronos",    "color": "#ff9100", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "chronos.py"],                                "phase": 2, "slow": False},
+    "signal_broadcaster": {"port": 9002, "dir": CC_DIR,                                                        "role": "support", "display": "Broadcaster","color": "#c8a96e", "endpoints": ["/health"],                              "cmd": ["python", "signal_broadcaster.py"],                     "phase": 2, "slow": False},
+    "bot_responder":      {"port": None, "dir": CC_DIR,                                                        "role": "support", "display": "Bot Responder","color": "#c8a96e", "endpoints": [],                                     "cmd": ["python", "bot_responder.py"],                          "phase": 2, "slow": False},
 }
 
 # ── PATHS ──
@@ -81,7 +92,8 @@ AUDITS_DIR = os.path.join(CC_DIR, "audits")
 BACKUPS_DIR = os.path.join(CC_DIR, "backups")
 LOGS_DIR = os.path.join(CC_DIR, "logs")
 BRAINIAC_DIR = os.path.join(CC_DIR, "brainiac")
-PORTFOLIO_FILE = os.path.join(CC_DIR, "portfolio.json")
+PORTFOLIO_FILE = os.path.join(CC_DIR, "portfolio.json")       # paper (legacy compat)
+PORTFOLIO_LIVE_FILE = os.path.join(CC_DIR, "portfolio_live.json")
 
 # Create dirs if missing
 for _d in [PIDS_DIR, AUDITS_DIR, BACKUPS_DIR, LOGS_DIR]:
@@ -147,11 +159,13 @@ def get_support() -> dict:
     return {k: v for k, v in BOTS.items() if v["role"] == "support"}
 
 def bot_registry_list() -> list[dict]:
-    """Return BOT_REGISTRY in the list-of-dicts format CC expects."""
+    """Return BOT_REGISTRY in the list-of-dicts format CC expects.
+    Excludes bots with no port (e.g. bot_responder) since CC cannot poll them."""
     return [
         {"id": bid, "name": cfg["display"], "port": cfg["port"],
          "color": cfg["color"], "endpoints": cfg["endpoints"]}
         for bid, cfg in BOTS.items()
+        if cfg["port"] is not None and cfg["endpoints"]
     ]
 
 
@@ -168,3 +182,62 @@ def get_deployment_limits(cc_unreachable: bool = False) -> dict:
         "max_pairs": 10,
         "max_daily_trades": 10,
     }
+
+
+def is_live() -> bool:
+    """True when fleet is in live trading mode. Bots call this before placing exchange orders."""
+    return FLEET_MODE == "live"
+
+
+# Live mode: LONG positions only. Shorts allowed in paper only.
+# Shorting on Kraken spot requires margin (different fees, borrowing costs, liquidation risk)
+# and the fleet has near-zero data in bear/range regimes to validate short strategies.
+LIVE_LONG_ONLY = True
+
+
+def live_direction_allowed(direction: str) -> bool:
+    """Check if a trade direction is allowed in the current fleet mode.
+    Paper mode: both LONG and SHORT. Live mode: LONG only (unless LIVE_LONG_ONLY disabled)."""
+    if FLEET_MODE == "paper":
+        return True
+    if LIVE_LONG_ONLY and direction.upper() == "SHORT":
+        return False
+    return True
+
+
+# 3-state engage model: paper → live_armed → live_engaged
+# paper: all bots on paper portfolio, normal operation
+# live_armed: live portfolio is display, but no trading until ENGAGE
+# live_engaged: live bots trade on live portfolio, paper bots continue on paper
+FLEET_ENGAGE_STATE = "paper"
+
+# Bots that can execute real Kraken orders
+LIVE_CAPABLE_BOTS = {"turtlesue", "trekbot", "trekbot_short", "nexusbrain", "gridzilla", "rubberband", "arbitrageur"}
+
+
+def set_fleet_mode(mode: str) -> str:
+    """Set fleet mode. Accepts: paper, live, engage, disengage. Returns new engage state."""
+    global FLEET_MODE, FLEET_ENGAGE_STATE
+    mode = mode.lower().strip()
+    if mode == "paper":
+        FLEET_MODE = "paper"
+        FLEET_ENGAGE_STATE = "paper"
+    elif mode == "live":
+        FLEET_MODE = "live"
+        FLEET_ENGAGE_STATE = "live_armed"
+    elif mode == "engage":
+        if FLEET_MODE != "live":
+            raise ValueError("Cannot engage: not in live mode")
+        FLEET_ENGAGE_STATE = "live_engaged"
+    elif mode == "disengage":
+        if FLEET_MODE != "live":
+            raise ValueError("Cannot disengage: not in live mode")
+        FLEET_ENGAGE_STATE = "live_armed"
+    else:
+        raise ValueError(f"Invalid mode: {mode!r} — must be 'paper', 'live', 'engage', or 'disengage'")
+    return FLEET_ENGAGE_STATE
+
+
+def is_engaged() -> bool:
+    """True when fleet is live AND engaged (trades executing)."""
+    return FLEET_ENGAGE_STATE == "live_engaged"

@@ -42,7 +42,7 @@ python evolution.py --days 7
 ## Architecture
 
 ### Core Files
-- `command_center.py` — Single-file backend (~3100 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration.
+- `command_center.py` — Single-file backend (~3170 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration. Imports `signal_aggregator`, `signal_decomposition`, `expectancy`, `signal_decay`, and `fleet_intel_score` directly — these are NOT standalone-only.
 - `command_center_v4.html` — Current active dashboard (single-file, all CSS/JS inline). Served at `/`.
 - `backups/` — Archived older dashboard versions (v3, etc.).
 
@@ -64,16 +64,18 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 ### Shared Libraries
 - `standards.py` — Canonical regime labels (`BULL`, `BEAR`, `RANGING`, `VOLATILE`, `TRANSITIONING`), `REGIME_MAP` for normalizing any bot's regime label, `normalize_pair()` for Kraken pair formats.
 - `portfolio_client.py` — Thin stdlib-only client for bots to reserve/release capital from the central pool.
-- `fleet_config.py` — Python module single-source-of-truth for bot ports/paths (distinct from `fleet_config.json`). Bots and `launch_fleet.py` import this instead of hardcoding.
+- `fleet_config.py` — Python module single-source-of-truth for bot ports/paths (distinct from `fleet_config.json`). Bots and `launch_fleet.py` import this instead of hardcoding. Key helpers: `get_bot()`, `get_traders()`, `get_intel()`, `is_blacklisted()`, `get_deployment_limits()`.
+- `indicators.py` — Fleet-wide shared technical indicator library (stdlib only, no deps). Single source of truth for EMA, SMA, RSI, StochRSI, MACD, Bollinger Bands, ATR, ADX, Donchian, VWAP, volume momentum, Pearson correlation. Extracted from Trinity. Bots should import from here rather than reimplementing.
+- `kraken_ohlc.py` — Canonical OHLC fetch (stdlib only). Tries CC proxy first (`/api/market/ohlc`), falls back to direct Kraken REST. Returns `[timestamp, open, high, low, close, volume, count]`. Never raises — returns `[]` on failure.
 - `port_guard.py` — Call `ensure_port(port, bot_name)` on startup; kills zombie processes occupying the port before the HTTP server binds.
-- `notifier.py` — Independent external watchdog (no fleet imports). Monitors CC health via Telegram alerts. Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- `notifier.py` — Independent external watchdog (no fleet imports). Monitors CC health via Telegram alerts. Config in `notifier_config.json`. Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
 
 ### Advanced Analytics Engines
 Standalone modules that read event logs / live bot data and return structured insights. None are imported by `command_center.py` — they run independently or are called by `evolution.py` / `weekly_analysis.py`.
 
-**Signal quality:**
+**Signal quality** (all imported directly by `command_center.py`; also exposed via `/api/signals/*`):
 - `expectancy.py` — Tracks per-bot and fleet-wide E[V] = (WinRate × AvgWin) − (LossRate × AvgLoss) net of fees. The primary profitability signal.
-- `signal_aggregator.py` — Ensemble engine: collects proposals from all bots, weights by historical accuracy, outputs a single BUY/SELL/HOLD score per pair.
+- `signal_aggregator.py` — Ensemble engine: collects proposals from all bots, weights by historical accuracy, outputs a single BUY/SELL/HOLD score per pair. State persisted to `aggregator_state.json`.
 - `signal_decomposition.py` — Attributes unique P/L contribution to each signal source (marginal value, accuracy, cost-adjusted expectancy).
 - `signal_decay.py` — Applies empirical half-life decay to signals before consumption; tracks per-type half-lives.
 - `fleet_intel_score.py` — Synthesizes all engine outputs into per-pair intelligence scores by polling NEXUS snapshot + event bus.
@@ -119,6 +121,7 @@ Standalone modules that read event logs / live bot data and return structured in
 - Daemon thread 2: `FleetLogger._run()` (60s interval)
 - Daemon thread 3: `_universe_worker()` (6h interval)
 - Daemon threads 4-8: Brainiac collectors (depth 30s, trades 60s, global 5min, correlations 15min, funding 5min)
+- Daemon thread 9: `_health_monitor()` (30s interval) — detects crashed bots, auto-restarts from `fleet_config.json`, publishes `BOT_DOWN`/`BOT_RECOVERED`/`BOT_RESTARTED` events after 3 consecutive failures
 - Per-event daemon threads: `EventBus._check_reactions()` (spawned per published event)
 - All shared state protected by `_lock` (bots/aggregate/feed), `PortfolioManager._lock` (instance-level), `_universe_lock`
 
@@ -155,6 +158,8 @@ Standalone modules that read event logs / live bot data and return structured in
 - `/api/portfolio/available` — free capital
 - `/api/portfolio/exposure` — breakdown by bot/pair/direction
 - `/api/fleet/daily` — today's daily stats from FleetLogger
+- `/api/trades?bot=trekbot&limit=50` — persistent trade history from event logs (survives bot restarts)
+- `/api/expectancy` — fleet-wide and per-bot expectancy stats (alias for `/api/signals/expectancy`)
 - `/api/bot/<id>` — raw passthrough to individual bot
 - `/api/market/ohlc?pair=BTC/USD&interval=60&limit=100` — OHLC proxy
 - `/api/market/ohlc/bulk?pairs=BTC/USD,ETH/USD&interval=60` — bulk OHLC
@@ -163,11 +168,21 @@ Standalone modules that read event logs / live bot data and return structured in
 - `/api/events/recent?n=50&type=TRADE_OPEN` — recent events (catch-up)
 - `/api/events/stats` — bus statistics
 - `/api/brainiac/{depth|trades|correlations|funding|metrics}` — Brainiac data
+- `/api/signals/decide?pair=BTC/USD` — ensemble BUY/SELL/HOLD decision from `SignalAggregator`
+- `/api/signals/rankings` — per-source accuracy rankings
+- `/api/signals/decomposition` — per-signal P/L attribution from `SignalDecomposition`
+- `/api/signals/decay` — per-signal type half-life data from `SignalDecay`
+- `/api/signals/expectancy` — fleet and per-bot expectancy from `ExpectancyTracker`
+- `/api/signals/intel?pair=BTC/USD` — composite intelligence score from `FleetIntelScore`
+- `/api/fleet/mode` — current fleet trading mode (paper/live)
 
 **POST endpoints:**
 - `/api/portfolio/reserve` — bot requests capital `{bot_id, pair, direction, amount}`
 - `/api/portfolio/release` — bot returns capital `{reservation_id, pnl}`
 - `/api/events/publish` — bot pushes event `{source, type, data}`
+- `/api/signals/propose` — bot submits signal proposal to ensemble `{source, pair, direction, confidence, ...}`
+- `/api/signals/outcome` — bot reports trade outcome for ensemble learning `{pair, direction, won, pnl}`
+- `/api/fleet/mode` — set fleet mode `{mode: "paper"|"live"}` (requires API keys for live)
 
 **Inference API (Port 9001):**
 - `POST /api/ai/trade-journal` — AI journal entry for a trade
@@ -246,12 +261,24 @@ Reaction rules from `reactions.json` spawn in separate daemon threads to avoid b
 ### Brainiac Collection
 Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
 
+## Fleet Mode (Paper/Live Toggle)
+`fleet_config.FLEET_MODE` is the single source of truth for paper vs live trading. Default: `"paper"`.
+
+- **Paper mode** (default): all trades simulated, no Kraken orders placed even if API keys are present
+- **Live mode**: real Kraken orders via ccxt (TrekBot) and raw REST (TurtleSue)
+- Toggle via: `POST http://localhost:9000/api/fleet/mode {"mode": "paper"|"live"}`
+- Read via: `GET http://localhost:9000/api/fleet/mode` or the `fleet_mode` field in `/api/master`
+- Dashboard: red pulsing LIVE button in header, header border turns red
+- Bots check `fleet_config.is_live()` dynamically at trade time (no restart needed to switch modes)
+- Going live requires `KRAKEN_API_KEY` set as environment variable; the API rejects live mode without it
+- Gridzilla, NexusBrain, Rubberband, Arbitrageur are paper-only (no live execution code)
+
 ## Key Metrics to Watch
-- **Expectancy** (the primary health signal): Fleet at -$1.27/trade as of 2026-04-04 (107 trades), improving from -$1.45. Fee ratio compressing: was 650%, then 385%, now 272%. Bots have alpha but fees still erode it — target is sub-100% fee ratio.
-- **Fee floor:** $30 minimum trade size enforced in portfolio manager (raised from $5 on 2026-04-04). NexusBrain min_confluence raised to 0.80.
-- **Gridzilla spacing floor:** 1.2% minimum grid spacing (raised from 0.5% on 2026-04-04). Max 5 grid lines. $0.50 net profit floor per level.
+- **Expectancy** (the primary health signal): Target positive E[V] per trade net of fees. Fee ratio was 650% → 385% → 272% as of 2026-04-04. Run `python expectancy.py` or hit `/api/signals/expectancy` for current state.
+- **Fee floor:** $30 minimum trade size enforced in portfolio manager. NexusBrain min_confluence at 0.80.
+- **Gridzilla spacing floor:** 1.2% minimum grid spacing. Max 5 grid lines. $0.50 net profit floor per level.
 - **Trade frequency governor:** 10-min per-pair cooldown in portfolio manager after any trade closes. Adaptive: 5 min when AEGIS score > 0.7. Gridzilla exempt (fee gate handles its frequency).
-- **AEGIS score:** Controls deployment limit. Score ~0.008 → DEFENSIVE → 30% max deployment (2026-04-04, EXTREME_FEAR market).
+- **AEGIS score:** Controls deployment limit. Low score → DEFENSIVE → reduced max deployment.
 - **Concentration limit:** Max 40% of deployed capital in any single pair.
 
 ## Working Rules

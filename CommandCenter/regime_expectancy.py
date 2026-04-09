@@ -10,7 +10,7 @@ Joined on (pair match, timestamp within 120s) when available.
 For factor records that have no expectancy match (because the expectancy
 tracker was not running for some TrekBot sessions — it was installed
 2026-03-30 and has session gaps), fees are estimated from the Kraken taker
-fee schedule (0.26% per side, 0.52% round-trip) applied to the trade's
+fee schedule (0.40% per side, 0.80% round-trip, tier 0) applied to the trade's
 implied size.
 
 Produces: per-regime expectancy net of fees.
@@ -34,9 +34,9 @@ FACTOR_LOG = os.path.join(TREKBOT_DIR, "goldeneye_factors.log")
 EXPECTANCY_LOG = os.path.join(os.path.dirname(__file__), "logs", "expectancy.json")
 MATCH_WINDOW_SEC = 120
 
-# Kraken taker fee (per side). Used to estimate fees when expectancy record is missing.
-KRAKEN_TAKER = 0.0026
-KRAKEN_ROUNDTRIP = KRAKEN_TAKER * 2  # 0.52%
+# Kraken taker fee (per side, tier 0: $0-$10K/month, 2026-04).
+KRAKEN_TAKER = 0.0040
+KRAKEN_ROUNDTRIP = KRAKEN_TAKER * 2  # 0.80%
 
 
 def _load_factors():

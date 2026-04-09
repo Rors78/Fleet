@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 
 CC_URL = "http://localhost:9000"
 EVENTS_DIR = os.path.join(os.path.dirname(__file__), "logs", "events")
-FEE_RATE = 0.0026  # Kraken taker 0.26% each side = 0.52% round trip
+FEE_RATE = 0.0040  # Kraken taker 0.40% each side = 0.80% round trip (tier 0, 2026-04)
 DEFAULT_HOLD_MINUTES = 240  # fleet avg ~3-4 hours
 DEFAULT_DAYS = 3
 

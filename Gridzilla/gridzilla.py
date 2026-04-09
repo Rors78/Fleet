@@ -57,6 +57,14 @@ try:
     from fleet_config import is_blacklisted as _is_blacklisted
 except ImportError:
     _is_blacklisted = lambda pair: False
+try:
+    import fleet_config as _fc
+except ImportError:
+    _fc = None
+try:
+    from kraken_client import KrakenSpotClient as _KrakenSpotClient
+except ImportError:
+    _KrakenSpotClient = None
 
 from indicators import (
     rsi as _ind_rsi,
@@ -92,9 +100,9 @@ CONFIG = {
 
     # Risk
     "max_total_exposure_pct": 0.30,  # max 30% of portfolio in grids
-    "max_per_pair_pct": 0.048,       # 4.8% per pair — stays under portfolio's 5% max_per_trade cap with float headroom
+    "max_per_pair_pct": 0.05,        # 5% per pair — aligned with pool floor
     "max_drawdown_pct": 0.05,        # kill grid if DD > 5% of allocation
-    "fee_rate": 0.001,               # Kraken taker fee (0.10%) — applied per fill, both legs
+    "fee_rate": 0.0040,              # Kraken taker fee (0.40%) tier 0 — applied per fill, both legs
 
     # Regime thresholds
     "adx_trend_threshold": 25,       # ADX > 25 = trending, no grid
@@ -600,7 +608,7 @@ class GridArchitect:
         # Avg net per level = (spacing% - fee_rate*2) * level_size
         # If spacing% < fee breakeven this is always negative — hard reject.
         MIN_NET_PROFIT_PER_CYCLE = 0.50
-        fee_rate = self.config.get("fee_rate", 0.0026)
+        fee_rate = self.config.get("fee_rate", 0.0040)  # Kraken tier 0 taker
         avg_level_size = allocation_usd / max(len(levels), 1)
         spacing_pct = grid_spacing / (current_price + 1e-10)
         net_pct_per_cycle = spacing_pct - fee_rate * 2
@@ -847,8 +855,20 @@ class GridExecutor:
                 # Check if price has crossed this level
                 if level["side"] == "BUY" and current_price <= level["price"]:
                     # Buy level hit — fill it
+                    fill_price = current_price
+                    _kp = pair.replace("/", "")
+                    if self._kraken_spot:
+                        qty = level["size_usd"] / current_price
+                        ok, txid = self._kraken_spot.buy(_kp, qty)
+                        if ok:
+                            import time as _t; _t.sleep(1.5)
+                            fill_price = self._kraken_spot.get_fill_price(txid, current_price)
+                            logging.info(f"LIVE GRID BUY {pair} qty={qty:.6f} @ {fill_price:.4f} txid={txid}")
+                        else:
+                            logging.warning(f"LIVE GRID BUY FAILED {pair}: {txid} — using paper fill")
+
                     level["filled"] = True
-                    level["fill_price"] = current_price
+                    level["fill_price"] = fill_price
                     level["fill_time"] = time.time()
 
                     fee = level["size_usd"] * self.config["fee_rate"]
@@ -856,7 +876,7 @@ class GridExecutor:
                     fill = {
                         "pair": pair,
                         "side": "BUY",
-                        "price": current_price,
+                        "price": fill_price,
                         "level_price": level["price"],
                         "size_usd": level["size_usd"],
                         "fee": round(fee, 4),
@@ -870,14 +890,26 @@ class GridExecutor:
                     fills.append(fill)
 
                     logging.info(
-                        f"Grid BUY filled: {pair} @ {current_price:.6f} "
+                        f"Grid BUY filled: {pair} @ {fill_price:.6f} "
                         f"(level {level['price']:.6f})"
                     )
 
                 elif level["side"] == "SELL" and current_price >= level["price"]:
                     # Sell level hit — check if this closes a buy
+                    fill_price_sell = current_price
+                    _kp = pair.replace("/", "")
+                    if self._kraken_spot:
+                        qty = level["size_usd"] / current_price
+                        ok, txid = self._kraken_spot.sell(_kp, qty)
+                        if ok:
+                            import time as _t; _t.sleep(1.5)
+                            fill_price_sell = self._kraken_spot.get_fill_price(txid, current_price)
+                            logging.info(f"LIVE GRID SELL {pair} qty={qty:.6f} @ {fill_price_sell:.4f} txid={txid}")
+                        else:
+                            logging.warning(f"LIVE GRID SELL FAILED {pair}: {txid} — using paper fill")
+
                     level["filled"] = True
-                    level["fill_price"] = current_price
+                    level["fill_price"] = fill_price_sell
                     level["fill_time"] = time.time()
 
                     fee = level["size_usd"] * self.config["fee_rate"]
@@ -1197,9 +1229,20 @@ class GridzillaEngine:
         except Exception as e:
             logging.warning(f"ExpectancyTracker init failed: {e}")
 
+        # Live Kraken spot execution
+        self._kraken_spot = None
+        if _KrakenSpotClient and _fc and _fc.is_live():
+            self._kraken_spot = _KrakenSpotClient()
+            if self._kraken_spot.has_credentials:
+                logging.info("LIVE MODE: Kraken spot client initialized for Gridzilla")
+            else:
+                logging.warning("LIVE MODE: No Kraken API credentials — paper fallback")
+                self._kraken_spot = None
+
         self.regime_detector = RegimeDetector(config)
         self.grid_architect = GridArchitect(config)
         self.executor = GridExecutor(config, self.kraken, self.publisher)
+        self.executor._kraken_spot = self._kraken_spot  # live spot execution
         self.intel = BusIntelligence(self.bus_listener)
 
         # State
@@ -1367,7 +1410,7 @@ class GridzillaEngine:
                     max_exposure - current_exposure,
                 )
 
-                if per_pair_alloc < 50:  # minimum allocation (raised from $20 on 2026-04-06)
+                if per_pair_alloc < 500:  # minimum allocation — must clear 5% pool floor (raised from $300 on 2026-04-07)
                     continue
 
                 design = self.grid_architect.design(pair, candles, regime, per_pair_alloc)

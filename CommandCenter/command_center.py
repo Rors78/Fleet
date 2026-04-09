@@ -54,6 +54,7 @@ from fleet_config import (
     WATCHDOG_INTERVAL as _FC_WATCHDOG_INTERVAL, WATCHDOG_FAILURES as _FC_WATCHDOG_FAILURES,
     bot_registry_list,
 )
+import fleet_config as _fleet_config
 
 # ---------------------------------------------------------------------------
 # Bot Registry — sourced from fleet_config.py (single source of truth)
@@ -139,11 +140,12 @@ class PortfolioManager:
     PAIR_COOLDOWN_AGGRESSIVE = 300  # 5 min when AEGIS score > 0.7 (fast market)
     COOLDOWN_EXEMPT_BOTS = {"gridzilla"}  # grid bots manage their own frequency via fee gate
 
-    def __init__(self, total: float, limits: dict[str, int], filepath: str):
+    def __init__(self, total: float, limits: dict[str, int], filepath: str, mode_tag: str = "paper"):
         self._lock = threading.Lock()
         self.total = total
         self.limits = limits
         self.filepath = filepath
+        self.mode_tag = mode_tag  # "paper" or "live"
         self.reservations: dict[str, dict] = {}
         self.history: list[dict] = []
         self._pair_cooldowns: dict[str, dict] = {}  # pair -> {ts, bot_id}
@@ -262,6 +264,10 @@ class PortfolioManager:
             if is_blacklisted(pair):
                 return {"ok": False, "reason": f"Pair {pair} is blacklisted (0% WR across fleet)"}
 
+            # Live direction gate — LONG only in live mode
+            if not _fleet_config.live_direction_allowed(direction):
+                return {"ok": False, "reason": f"LIVE_LONG_ONLY: SHORT positions blocked in live mode"}
+
             # Validate bot is a trading bot
             if bot_id not in TRADING_BOTS:
                 return {"ok": False, "reason": f"Bot '{bot_id}' is not a trading bot"}
@@ -313,12 +319,10 @@ class PortfolioManager:
             if dir_after > self.total * 0.60:
                 return {"ok": False, "reason": f"Directional cap: {direction} would be ${dir_after:.0f} ({dir_after/self.total:.0%} of pool, max 60%)"}
 
-            # 8. Fee floor — reject tiny trades where fees dominate
-            # At Kraken 0.26% taker, round-trip = 0.52%. A $30 position = $0.156 fee.
-            # Minimum profit target ~$0.50 requires fees < 30% of that — enforced here fleet-wide.
-            min_profitable_amount = 100.0  # fleet-wide $100 floor, raised 2026-04-06 from $30
-            if amount < min_profitable_amount:
-                return {"ok": False, "reason": f"Fee floor: ${amount:.2f} trade too small (min ${min_profitable_amount:.0f} fleet-wide)"}
+            # 8. Size floor — minimum 5% of pool to keep fees proportional
+            min_trade = self.total * 0.05
+            if amount < min_trade:
+                return {"ok": False, "reason": f"Size floor: ${amount:.2f} < 5% of pool (${min_trade:.2f})"}
 
             # 8b. Time-of-day gate — deny reservations during historically unprofitable hours
             # Data shows hours 1, 9, 11 UTC have sub-15% win rates
@@ -338,8 +342,8 @@ class PortfolioManager:
                     # Scale position down proportionally to risk
                     original = amount
                     amount = round(amount * risk_mult, 2)
-                    if amount < min_profitable_amount:
-                        return {"ok": False, "reason": f"Fleet intel scaled ${original:.2f} -> ${amount:.2f} (risk={risk_mult:.2f}), below fee floor"}
+                    if amount < min_trade:
+                        return {"ok": False, "reason": f"Fleet intel scaled ${original:.2f} -> ${amount:.2f} (risk={risk_mult:.2f}), below size floor"}
                     log.info("Intel scaled %s %s: $%.2f -> $%.2f (risk=%.2f)", bot_id, pair, original, amount, risk_mult)
             except Exception:
                 pass  # don't let intel failure block trading
@@ -377,9 +381,9 @@ class PortfolioManager:
             if not res:
                 return {"ok": False, "reason": f"Reservation '{reservation_id}' not found"}
 
-            # Calculate and log fee impact (Kraken taker 0.26% × 2 = 0.52% round-trip)
+            # Calculate and log fee impact (Kraken taker 0.40% × 2 = 0.80% round-trip, tier 0)
             amount = res["amount"]
-            KRAKEN_TAKER = 0.0026
+            KRAKEN_TAKER = 0.0040
             round_trip_fees = amount * KRAKEN_TAKER * 2
             fee_pct = (round_trip_fees / amount * 100) if amount > 0 else 0
             
@@ -409,11 +413,15 @@ class PortfolioManager:
             return {"ok": True, "released": res["amount"], "pnl": pnl, "new_total": self.total,
                     "available": self.available(), "reservation": res}
 
-    def force_release_stale(self, max_age_hours: int = 24) -> int:
-        """Release reservations older than max_age_hours. Returns count released."""
+    def force_release_stale(self, max_age_hours: int = 24) -> list:
+        """Release reservations older than max_age_hours.
+        Returns list of released reservation dicts (each has bot_id, pair, amount, direction, reserved_at).
+        Callers should record these to the expectancy tracker so P&L attribution is not lost.
+        """
         with self._lock:
             cutoff = time.time() - max_age_hours * 3600
             stale = [rid for rid, r in self.reservations.items() if r["reserved_at"] < cutoff]
+            released = []
             for rid in stale:
                 res = self.reservations.pop(rid)
                 self.history.append({
@@ -425,9 +433,10 @@ class PortfolioManager:
                     "reason": "stale",
                     "timestamp": time.time(),
                 })
+                released.append({"reservation_id": rid, **res})
             if stale:
                 self._save()
-            return len(stale)
+            return released
 
     def state(self) -> dict:
         """Return full portfolio state for API response."""
@@ -477,6 +486,7 @@ class PortfolioManager:
             ]
 
             return {
+                "mode": self.mode_tag,
                 "total": self.total,
                 "deployed": round(deployed, 2),
                 "available": round(avail, 2),
@@ -502,8 +512,38 @@ class PortfolioManager:
 
 
 # Module-level instances (initialized in main())
-_portfolio_mgr = None
+_portfolio_paper = None
+_portfolio_live = None
 _fleet_logger = None
+
+
+def _active_portfolio():
+    """Return the portfolio that the dashboard should display (based on engage state)."""
+    if _fleet_config.FLEET_ENGAGE_STATE == "paper":
+        return _portfolio_paper
+    return _portfolio_live  # live_armed or live_engaged → show live
+
+
+def _alt_portfolio():
+    """Return the OTHER portfolio (for the compact status display)."""
+    if _fleet_config.FLEET_ENGAGE_STATE == "paper":
+        return _portfolio_live
+    return _portfolio_paper
+
+
+def _get_portfolio_for_bot(bot_id: str):
+    """Route a bot to the correct portfolio based on fleet state."""
+    state = _fleet_config.FLEET_ENGAGE_STATE
+    if state == "paper":
+        return _portfolio_paper
+    elif state == "live_armed":
+        # All bots blocked from trading — live not engaged yet
+        return None
+    elif state == "live_engaged":
+        return _portfolio_live
+    return _portfolio_paper
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -1069,25 +1109,33 @@ def _normalize_deepblue(raw: dict) -> dict:
 
 
 def _normalize_gridzilla(raw: dict) -> dict:
-    perf = raw.get("performance") or raw
-    eq = perf.get("equity") or raw.get("equity")
-    pnl = perf.get("pnl") or raw.get("pnl")
-    open_pos = raw.get("open_positions") or []
+    # Gridzilla v2 schema: total_pnl, net_pnl, total_fees, active_grids, n_active_grids,
+    # pair_analysis, expectancy, trade_history, scan_count, uptime_hours
+    exp = raw.get("expectancy") or {}
+    active_grids = raw.get("active_grids") or {}
+    n_grids = raw.get("n_active_grids", len(active_grids))
+    net_pnl = raw.get("net_pnl")
+    pnl = net_pnl if net_pnl is not None else raw.get("total_pnl")
+    wr = exp.get("win_rate")
+    total_trades = exp.get("total_trades") or raw.get("total_cycles", 0)
     return {
-        "equity": float(eq) if eq else None,
-        "pnl": float(pnl) if pnl else None,
-        "pnl_pct": float(raw.get("pnl_pct", 0)) if raw.get("pnl_pct") else None,
-        "win_rate": float(raw.get("win_rate", 0)) if raw.get("win_rate") else None,
-        "drawdown_pct": float(raw.get("drawdown_pct", 0)) if raw.get("drawdown_pct") else None,
+        "equity": None,
+        "pnl": float(pnl) if pnl is not None else None,
+        "pnl_pct": None,
+        "win_rate": float(wr) if wr is not None else None,
+        "drawdown_pct": None,
         "sharpe": None,
-        "open_positions": len(open_pos) if isinstance(open_pos, list) else 0,
-        "total_trades": raw.get("total_trades", 0),
+        "open_positions": n_grids,
+        "total_trades": total_trades,
         "regime": raw.get("regime"),
         "signals_count": None,
-        "uptime": None,
-        # Gridzilla specifics
-        "grid_levels_active": len(raw.get("grid_levels", {})),
-        "pairs_count": raw.get("pairs_count"),
+        "uptime": raw.get("uptime_hours"),
+        # Gridzilla v2 specifics
+        "grid_levels_active": n_grids,
+        "pairs_count": len(raw.get("pair_analysis") or {}),
+        "total_fees": raw.get("total_fees", 0),
+        "scan_count": raw.get("scan_count", 0),
+        "aegis_score": raw.get("aegis_score"),
     }
 
 
@@ -1676,17 +1724,17 @@ def _compute_performance_attribution(bots_data: dict) -> dict:
 
     # Estimate deployed capital from portfolio manager
     deployed_capital = 0.0
-    if _portfolio_mgr:
-        with _portfolio_mgr._lock:
-            deployed_capital = _portfolio_mgr.deployed()
+    if _active_portfolio():
+        with _active_portfolio()._lock:
+            deployed_capital = _active_portfolio().deployed()
 
     # Beta = market_return_pct * deployed_capital / 100
     # This approximates what passive market exposure would have returned
     beta_pnl = market_return_pct * deployed_capital / 100.0 if deployed_capital > 0 else 0.0
 
-    # Cost estimate: assume 0.26% round-trip fee (Kraken taker) per trade
+    # Cost estimate: 0.40% per side Kraken taker fee (tier 0) per trade
     # plus 0.05% slippage estimate
-    FEE_RATE = 0.0026
+    FEE_RATE = 0.0040
     SLIPPAGE_RATE = 0.0005
     # Estimate average trade size from portfolio
     avg_trade_size = deployed_capital / max(fleet_open_positions, 1) if deployed_capital > 0 else 0
@@ -1761,7 +1809,7 @@ def _generate_briefing() -> dict:
             aggregate = dict(_state["aggregate"])
             feed = list(_state["feed"][:10])
 
-        portfolio_state = _portfolio_mgr.state() if _portfolio_mgr else {}
+        portfolio_state = _active_portfolio().state() if _active_portfolio() else {}
 
         with _fleet_exposure_lock:
             exposure = dict(_fleet_exposure) if _fleet_exposure else {}
@@ -1981,11 +2029,11 @@ def _get_fleet_fee_ratio():
     Returns: fee_ratio (total_fees / abs(total_gross_pnl))
     Returns None if insufficient data.
     """
-    if not _portfolio_mgr:
+    if not _active_portfolio():
         return None
     try:
-        with _portfolio_mgr._lock:
-            history = _portfolio_mgr.reservations.get("history", [])
+        with _active_portfolio()._lock:
+            history = _active_portfolio().reservations.get("history", [])
         if not history:
             return None
         # Get last 100 trades for recent fee ratio
@@ -2005,7 +2053,7 @@ def _apply_aegis_adjustment():
     now = time.time()
     if now - _last_aegis_adjust < _AEGIS_COOLDOWN:
         return
-    if not _portfolio_mgr:
+    if not _active_portfolio():
         return
 
     with _lock:
@@ -2059,11 +2107,15 @@ def _apply_aegis_adjustment():
         new_limit = base_limit
         throttle_reason = None
 
-    with _portfolio_mgr._lock:
-        old_limit = _portfolio_mgr.limits.get("max_deployed_pct", 80)
-        if old_limit != new_limit:
-            _portfolio_mgr.limits["max_deployed_pct"] = new_limit
-        _portfolio_mgr.aegis_score = float(score)  # cooldown governor reads this
+    # Apply AEGIS adjustment to BOTH portfolios
+    for _pm in [_portfolio_paper, _portfolio_live]:
+        if not _pm:
+            continue
+        with _pm._lock:
+            old_limit = _pm.limits.get("max_deployed_pct", 80)
+            if old_limit != new_limit:
+                _pm.limits["max_deployed_pct"] = new_limit
+            _pm.aegis_score = float(score)
 
     if old_limit != new_limit:
         throttle_info = f" (fee_ratio={fee_ratio:.1%})" if fee_ratio else ""
@@ -2098,11 +2150,20 @@ def _poll_loop():
             _fleet_intel.poll()
         except Exception:
             pass
-        # Hourly stale reservation cleanup (catches bots killed without clean shutdown)
-        if _portfolio_mgr and time.time() - _last_stale_cleanup > 3600:
-            released = _portfolio_mgr.force_release_stale(max_age_hours=2)
-            if released:
-                log.info("Auto-released %d stale reservation(s) (>2h old)", released)
+        # Hourly stale reservation cleanup on BOTH portfolios
+        if time.time() - _last_stale_cleanup > 3600:
+            for _pm_label, _pm in [("paper", _portfolio_paper), ("live", _portfolio_live)]:
+                if _pm:
+                    released_list = _pm.force_release_stale(max_age_hours=2)
+                    if released_list:
+                        log.info("Auto-released %d stale %s reservation(s) (>2h old)", len(released_list), _pm_label)
+                        for _sr in released_list:
+                            log.warning(
+                                "Stale reservation force-released: bot=%s pair=%s amount=$%.0f "
+                                "(held %.1fh — bot likely crashed before calling release)",
+                                _sr["bot_id"], _sr["pair"], _sr["amount"],
+                                (time.time() - _sr.get("reserved_at", time.time())) / 3600,
+                            )
             _last_stale_cleanup = time.time()
         time.sleep(POLL_INTERVAL)
 
@@ -2123,8 +2184,8 @@ def _get_logger_state():
 
 def _get_logger_portfolio():
     """Return current portfolio state for the fleet logger."""
-    if _portfolio_mgr:
-        return _portfolio_mgr.state()
+    if _active_portfolio():
+        return _active_portfolio().state()
     return None
 
 
@@ -2146,6 +2207,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/portfolio/exposure":  "_serve_portfolio_exposure",
         "/api/portfolio/reservations": "_serve_portfolio_reservations",
         "/api/fleet/daily":         "_serve_fleet_daily",
+        "/api/fleet/promotions":    "_serve_promotions",
         "/api/market/ohlc":         "_serve_market_ohlc",
         "/api/market/ohlc/bulk":    "_serve_market_ohlc_bulk",
         "/api/market/ticker":       "_serve_market_ticker",
@@ -2166,6 +2228,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/fleet/briefing":      "_serve_fleet_briefing",
         "/api/fleet/intel_score":   "_serve_fleet_intel_score",
         "/api/watchdog":            "_serve_watchdog",
+        "/api/fleet/mode":          "_serve_fleet_mode",
+        # Signal Broadcaster dashboard + APIs
+        "/signals":                 "_serve_signal_dashboard",
+        "/api/signals/feed":        "_serve_signals_feed",
+        "/api/signals/broadcaster/config": "_serve_broadcaster_config",
+        "/api/signals/broadcaster/stats":  "_serve_broadcaster_stats",
     }
 
     # -- Prefix-match GET routes (checked after exact miss) -------------------
@@ -2173,6 +2241,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         ("/api/bot/",         "_serve_bot_prefix"),
         ("/api/expectancy/",  "_serve_expectancy_prefix"),
         ("/audio/",           "_serve_audio_file"),
+        ("/static/",          "_serve_static_file"),
     ]
 
     # -- Exact-match POST route table -----------------------------------------
@@ -2183,6 +2252,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/signals/propose":    "_handle_signals_propose",
         "/api/signals/outcome":    "_handle_signals_outcome",
         "/api/expectancy/record":  "_handle_expectancy_record",
+        "/api/fleet/mode":         "_handle_fleet_mode",
     }
 
     def log_message(self, fmt, *args):
@@ -2229,6 +2299,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if path.startswith(prefix):
                 getattr(self, method_name)(parsed, path)
                 return
+
+        # Serve root-level static assets (.js, .css, .png, etc.)
+        if path.endswith(('.js', '.css', '.png', '.ico', '.jpg', '.svg')):
+            self._serve_root_asset(parsed, path)
+            return
 
         self.send_error(404, "Not Found")
 
@@ -2324,14 +2399,38 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         "normalized": None,
                     })
 
+            # Derive Kraken connection status from TrekBot's raw health
+            _tb = _state["bots"].get("trekbot")
+            _tb_health = ((_tb or {}).get("raw") or {}).get("health") or {} if _tb else {}
+            _kraken_status = _tb_health.get("kraken_api", "unknown") if _tb and _tb.get("alive") else "offline"
+
             payload = {
                 "timestamp": time.time(),
+                "fleet_mode": _fleet_config.FLEET_MODE,
+                "kraken": {
+                    "api_keys": bool(os.environ.get("KRAKEN_API_KEY")),
+                    "connection": _kraken_status,
+                },
                 "bots": bots_list,
                 "aggregate": _state["aggregate"],
                 "feed": _state["feed"],
-                "portfolio": _portfolio_mgr.state() if _portfolio_mgr else None,
+                "fleet_engage_state": _fleet_config.FLEET_ENGAGE_STATE,
+                "portfolio": _active_portfolio().state() if _active_portfolio() else None,
+                "portfolio_alt": _alt_portfolio().state() if _alt_portfolio() else None,
                 "daily_24h": _fleet_logger.get_daily_accumulator() if _fleet_logger else None,
             }
+
+            # Attach active promotions (lightweight — only active with deadlines)
+            try:
+                _promo_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kraken_promotions.json")
+                with open(_promo_file, "r") as _pf:
+                    _promos = json.load(_pf).get("promotions", [])
+                _today = time.strftime("%Y-%m-%d")
+                _active = [p for p in _promos if p.get("status") == "active" and (not p.get("deadline") or p["deadline"] >= _today)]
+                if _active:
+                    payload["promotions"] = _active
+            except Exception:
+                pass
 
         self._send_json(payload)
 
@@ -2357,6 +2456,53 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Accept-Ranges", "bytes")
             self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as e:
+            self.send_error(500, str(e))
+
+    def _serve_static_file(self, parsed, path: str) -> None:
+        """Serve files from the static/ directory."""
+        filename = path.split("/static/", 1)[1].strip("/")
+        if "/" in filename or "\\" in filename or ".." in filename:
+            self.send_error(400, "Bad Request")
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(here, "static", filename)
+        if not os.path.isfile(file_path):
+            self.send_error(404, "Not Found")
+            return
+        self._send_file(file_path)
+
+    def _serve_root_asset(self, parsed, path: str) -> None:
+        """Serve root-level static assets (.js, .css, .png)."""
+        filename = path.lstrip("/")
+        if "/" in filename or "\\" in filename or ".." in filename:
+            self.send_error(400, "Bad Request")
+            return
+        here = os.path.dirname(os.path.abspath(__file__))
+        file_path = os.path.join(here, filename)
+        if not os.path.isfile(file_path):
+            self.send_error(404, "Not Found")
+            return
+        self._send_file(file_path)
+
+    def _send_file(self, file_path: str) -> None:
+        """Send a file with proper MIME type."""
+        ext = file_path.rsplit(".", 1)[-1].lower()
+        mime = {
+            "js": "application/javascript", "css": "text/css",
+            "png": "image/png", "jpg": "image/jpeg", "svg": "image/svg+xml",
+            "ico": "image/x-icon", "json": "application/json",
+        }.get(ext, "application/octet-stream")
+        try:
+            with open(file_path, "rb") as f:
+                data = f.read()
+            self.send_response(200)
+            self.send_header("Content-Type", mime)
+            self.send_header("Content-Length", str(len(data)))
+            self.send_header("Cache-Control", "public, max-age=3600")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(data)
@@ -2398,29 +2544,29 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         })
 
     def _serve_portfolio(self, parsed) -> None:
-        if not _portfolio_mgr:
+        if not _active_portfolio():
             self._send_json({"error": "Portfolio manager not initialized"}, 503)
             return
-        self._send_json(_portfolio_mgr.state())
+        self._send_json(_active_portfolio().state())
 
     def _serve_portfolio_available(self, parsed) -> None:
-        if not _portfolio_mgr:
+        if not _active_portfolio():
             self._send_json({"error": "Portfolio manager not initialized"}, 503)
             return
-        self._send_json(_portfolio_mgr.available_snapshot())
+        self._send_json(_active_portfolio().available_snapshot())
 
     def _serve_portfolio_exposure(self, parsed) -> None:
-        if not _portfolio_mgr:
+        if not _active_portfolio():
             self._send_json({"error": "Portfolio manager not initialized"}, 503)
             return
-        self._send_json(_portfolio_mgr.exposure_snapshot())
+        self._send_json(_active_portfolio().exposure_snapshot())
 
     def _serve_portfolio_reservations(self, parsed) -> None:
         """GET /api/portfolio/reservations — return all active reservations."""
-        if not _portfolio_mgr:
+        if not _active_portfolio():
             self._send_json({"error": "Portfolio manager not initialized"}, 503)
             return
-        with _portfolio_mgr._lock:
+        with _active_portfolio()._lock:
             reservations = {
                 rid: {
                     "bot_id": r["bot_id"],
@@ -2429,7 +2575,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     "direction": r.get("direction"),
                     "reserved_at": r["reserved_at"],
                 }
-                for rid, r in _portfolio_mgr.reservations.items()
+                for rid, r in _active_portfolio().reservations.items()
             }
         self._send_json({"reservations": reservations})
 
@@ -2438,6 +2584,205 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Fleet logger not initialized"}, 503)
             return
         self._send_json(_fleet_logger.get_daily_accumulator())
+
+    def _serve_promotions(self, parsed) -> None:
+        """GET /api/fleet/promotions — active Kraken promotions with deadlines."""
+        promo_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "kraken_promotions.json")
+        try:
+            with open(promo_file, "r") as f:
+                data = json.load(f)
+            today = time.strftime("%Y-%m-%d")
+            for p in data.get("promotions", []):
+                dl = p.get("deadline")
+                if dl and dl < today:
+                    p["status"] = "expired"
+                elif dl:
+                    from datetime import datetime
+                    days_left = (datetime.strptime(dl, "%Y-%m-%d") - datetime.strptime(today, "%Y-%m-%d")).days
+                    p["days_left"] = days_left
+            self._send_json(data)
+        except FileNotFoundError:
+            self._send_json({"promotions": []})
+
+    def _serve_fleet_mode(self, parsed) -> None:
+        """GET /api/fleet/mode — current trading mode + engage state."""
+        has_keys = bool(os.environ.get("KRAKEN_API_KEY"))
+        self._send_json({
+            "mode": _fleet_config.FLEET_MODE,
+            "engage_state": _fleet_config.FLEET_ENGAGE_STATE,
+            "has_api_keys": has_keys,
+            "effective": "live" if (_fleet_config.FLEET_MODE == "live" and has_keys) else "paper",
+            "paper_total": _portfolio_paper.total if _portfolio_paper else 0,
+            "live_total": _portfolio_live.total if _portfolio_live else 0,
+        })
+
+    def _handle_fleet_mode(self, data: dict) -> None:
+        """POST /api/fleet/mode — paper/live/engage/disengage."""
+        new_mode = data.get("mode", "").lower().strip()
+        if new_mode not in ("paper", "live", "engage", "disengage"):
+            self._send_json({"error": "mode must be 'paper', 'live', 'engage', or 'disengage'"}, 400)
+            return
+        has_keys = bool(os.environ.get("KRAKEN_API_KEY"))
+        if new_mode == "live" and not has_keys:
+            self._send_json({"error": "Cannot go live: KRAKEN_API_KEY not set"}, 400)
+            return
+
+        # When switching to live, optionally set the live portfolio balance
+        if new_mode == "live":
+            live_total = data.get("live_total")
+            if live_total is not None:
+                _portfolio_live.total = float(live_total)
+                _portfolio_live.reservations.clear()
+                _portfolio_live._save()
+                log.info("Live portfolio balance set to $%.2f", float(live_total))
+            elif _portfolio_live and _portfolio_live.total == 0:
+                # Try to pull from Kraken balance
+                try:
+                    from kraken_client import KrakenSpotClient
+                    _kc = KrakenSpotClient()
+                    bal = _kc.get_trade_balance()
+                    equity = float(bal.get("e", 0))  # 'e' = equity
+                    if equity > 0:
+                        _portfolio_live.total = equity
+                        _portfolio_live._save()
+                        log.info("Live portfolio seeded from Kraken balance: $%.2f", equity)
+                except Exception as e:
+                    log.warning("Could not fetch Kraken balance: %s", e)
+
+        old_state = _fleet_config.FLEET_ENGAGE_STATE
+        try:
+            new_state = _fleet_config.set_fleet_mode(new_mode)
+        except ValueError as e:
+            self._send_json({"error": str(e)}, 400)
+            return
+
+        log.warning("Fleet state changed: %s -> %s", old_state, new_state)
+        if _event_bus:
+            _event_bus.publish({
+                "source": "command_center",
+                "type": "FLEET_MODE_CHANGE",
+                "data": {"old": old_state, "new": new_state, "action": new_mode},
+            })
+        self._send_json({
+            "engage_state": new_state,
+            "mode": _fleet_config.FLEET_MODE,
+            "paper_total": _portfolio_paper.total if _portfolio_paper else 0,
+            "live_total": _portfolio_live.total if _portfolio_live else 0,
+        })
+
+    # -- Signal Broadcaster handlers ------------------------------------------
+
+    def _serve_signal_dashboard(self, parsed) -> None:
+        self._serve_html("signal_dashboard.html")
+
+    def _serve_signals_feed(self, parsed) -> None:
+        """GET /api/signals/feed — recent signals sent by broadcaster."""
+        qs = parse_qs(parsed.query)
+        n = int(qs.get("n", [50])[0])
+        try:
+            import http.client
+            conn = http.client.HTTPConnection("localhost", 9002, timeout=3)
+            conn.request("GET", "/stats")
+            resp = conn.getresponse()
+            stats = json.loads(resp.read().decode("utf-8"))
+            conn.close()
+            # Also get feed
+            conn2 = http.client.HTTPConnection("localhost", 9002, timeout=3)
+            conn2.request("GET", "/feed")
+            resp2 = conn2.getresponse()
+            feed = json.loads(resp2.read().decode("utf-8"))
+            conn2.close()
+            self._send_json({"feed": feed, "stats": stats})
+        except Exception:
+            # Broadcaster not running — fall back to log file
+            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals_sent.log")
+            entries = []
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        lines = f.readlines()
+                    for line in lines[-n:]:
+                        try:
+                            entries.append(json.loads(line.strip()))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
+            self._send_json({"feed": entries, "stats": {}, "error": "broadcaster not reachable"})
+
+    def _serve_broadcaster_config(self, parsed) -> None:
+        """GET /api/signals/broadcaster/config — current broadcaster config."""
+        config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signal_config.json")
+        try:
+            with open(config_path, "r", encoding="utf-8") as f:
+                config = json.load(f)
+            # Redact token
+            if "telegram_bot_token" in config:
+                token = config["telegram_bot_token"]
+                config["telegram_bot_token"] = f"{token[:8]}..." if len(token) > 8 else "***"
+            self._send_json(config)
+        except FileNotFoundError:
+            self._send_json({"error": "signal_config.json not found"}, 404)
+
+    def _serve_broadcaster_stats(self, parsed) -> None:
+        """GET /api/signals/broadcaster/stats — broadcaster stats from log file + health check."""
+        stats = {"sse": {"connected": False}, "channel": {}, "config": {}}
+        # Check if broadcaster is alive (simple socket test)
+        broadcaster_alive = False
+        try:
+            import socket
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.settimeout(1)
+            s.connect(("localhost", 9002))
+            s.close()
+            broadcaster_alive = True
+        except Exception:
+            pass
+        if False:  # http.client proxy disabled — Python 3.14 HTTP/1.0 bug
+            pass
+        else:
+            # Broadcaster not reachable via network — build stats from log file
+            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals_sent.log")
+            free_today = 0
+            paid_today = 0
+            failed = 0
+            last_free = ""
+            last_paid = ""
+            today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+            if os.path.exists(log_path):
+                try:
+                    with open(log_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            try:
+                                entry = json.loads(line.strip())
+                                ts = entry.get("ts", "")
+                                if not ts.startswith(today_str):
+                                    continue
+                                if entry.get("tier") == "paid":
+                                    paid_today += 1
+                                    last_paid = ts
+                                elif entry.get("tier") == "free":
+                                    free_today += 1
+                                    last_free = ts
+                                if not entry.get("success"):
+                                    failed += 1
+                            except Exception:
+                                pass
+                except Exception:
+                    pass
+            stats = {
+                "sse": {"connected": broadcaster_alive, "events_received": 0},
+                "channel": {
+                    "paid_sent_today": paid_today,
+                    "free_sent_today": free_today,
+                    "failed_today": failed,
+                    "last_paid_ts": last_paid,
+                    "last_free_ts": last_free,
+                },
+                "config": {"enabled": True, "rate_limit": 30},
+                "source": "log_fallback",
+            }
+        self._send_json(stats)
 
     def _serve_market_ohlc(self, parsed) -> None:
         qs = parse_qs(parsed.query)
@@ -2751,7 +3096,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 sigs = open_info["signals"]
                 contrib = [f"{source}:{s}" for s in sigs] if isinstance(sigs, list) else [source]
                 _signal_decomposition.log_trade(
-                    pair, direction, gross_pnl=pnl, fees=0,
+                    pair, direction, gross_pnl=pnl, fees=edata.get("fees", 0),
                     duration=edata.get("duration_h", 0) * 3600 if edata.get("duration_h") else edata.get("duration_s", 0),
                     contributing_signals=contrib,
                 )
@@ -2759,10 +3104,6 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     def _handle_reserve(self, data: dict) -> None:
         """POST /api/portfolio/reserve — bot requests capital."""
-        if not _portfolio_mgr:
-            self._send_json({"error": "Portfolio manager not initialized"}, 503)
-            return
-
         missing = [f for f in ("bot_id", "pair", "direction", "amount") if f not in data]
         if missing:
             self._send_json({"error": f"Missing fields: {', '.join(missing)}"}, 400)
@@ -2774,7 +3115,15 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Invalid amount"}, 400)
             return
 
-        result = _portfolio_mgr.reserve(
+        mgr = _get_portfolio_for_bot(data["bot_id"])
+        if mgr is None:
+            self._send_json({
+                "ok": False,
+                "reason": f"LIVE_ARMED: trading paused until ENGAGE ({_fleet_config.FLEET_ENGAGE_STATE})",
+            }, 403)
+            return
+
+        result = mgr.reserve(
             bot_id=data["bot_id"],
             pair=data["pair"],
             direction=data["direction"],
@@ -2808,23 +3157,44 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     def _handle_release(self, data: dict) -> None:
         """POST /api/portfolio/release — bot returns capital."""
-        if not _portfolio_mgr:
-            self._send_json({"error": "Portfolio manager not initialized"}, 503)
-            return
-
         rid = data.get("reservation_id")
         if not rid:
             self._send_json({"error": "Missing reservation_id"}, 400)
             return
 
         pnl = float(data.get("pnl", 0))
-        result = _portfolio_mgr.release(rid, pnl=pnl)
+        # Search both portfolios for this reservation
+        result = None
+        for mgr in [_portfolio_paper, _portfolio_live]:
+            if mgr and rid in mgr.reservations:
+                result = mgr.release(rid, pnl=pnl)
+                break
+        if result is None:
+            result = {"ok": False, "reason": f"Reservation '{rid}' not found in either portfolio"}
 
-        if _fleet_logger and result["ok"]:
+        if result["ok"]:
             res_info = result["reservation"]
-            _fleet_logger.log_portfolio_release(
-                res_info["bot_id"], res_info["pair"],
-                res_info["amount"], pnl, rid)
+            if _fleet_logger:
+                _fleet_logger.log_portfolio_release(
+                    res_info["bot_id"], res_info["pair"],
+                    res_info["amount"], pnl, rid)
+
+            # Record to expectancy tracker for fleet analytics
+            if _expectancy_tracker:
+                try:
+                    _duration = time.time() - res_info.get("reserved_at", time.time())
+                    _expectancy_tracker.record_trade(
+                        bot_id=res_info["bot_id"],
+                        pair=res_info["pair"],
+                        direction=res_info.get("direction", "LONG"),
+                        entry_price=data.get("entry_price", 0),
+                        exit_price=data.get("exit_price", 0),
+                        size_usd=res_info["amount"],
+                        duration=_duration,
+                        fee_rate=_fleet_config.KRAKEN_FEE_TAKER,
+                    )
+                except Exception:
+                    pass
 
         # Don't leak internal reservation data to the API caller
         result.pop("reservation", None)
@@ -2858,7 +3228,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             exit_price=data.get("exit_price", 0),
             size_usd=data.get("size_usd", 0),
             duration=data.get("duration", 0),
-            fee_rate=data.get("fee_rate", 0.0026),
+            fee_rate=data.get("fee_rate", 0.0040),
         )
         self._send_json({"status": "recorded"})
 
@@ -3040,7 +3410,7 @@ def _health_monitor() -> None:
 
 
 def main():
-    global _portfolio_mgr, _fleet_logger
+    global _portfolio_paper, _portfolio_live, _fleet_logger
 
     print(BANNER)
     print(f"  Fleet: {len(BOT_REGISTRY)} bots registered")
@@ -3048,15 +3418,33 @@ def main():
         print(f"    {bot['name']:12s}  :{bot['port']}  {bot['endpoints']}")
     print()
 
-    # Initialize portfolio manager
-    _portfolio_mgr = PortfolioManager(PORTFOLIO_TOTAL, PORTFOLIO_LIMITS, PORTFOLIO_FILE)
-    stale = _portfolio_mgr.force_release_stale(max_age_hours=2)
+    # Initialize dual portfolio managers
+    _portfolio_paper = PortfolioManager(PORTFOLIO_TOTAL, PORTFOLIO_LIMITS, PORTFOLIO_FILE, mode_tag="paper")
+    stale = _portfolio_paper.force_release_stale(max_age_hours=2)
     if stale:
-        print(f"  Portfolio: released {stale} stale reservation(s) (>2h old)")
-    print(f"  Portfolio: ${_portfolio_mgr.available():,.2f} available of ${_portfolio_mgr.total:,.2f}")
+        print(f"  Paper Portfolio: released {len(stale)} stale reservation(s) (>2h old)")
+    print(f"  Paper Portfolio: ${_portfolio_paper.available():,.2f} available of ${_portfolio_paper.total:,.2f}")
+
+    _live_file = _fleet_config.PORTFOLIO_LIVE_FILE
+    if os.path.exists(_live_file):
+        _portfolio_live = PortfolioManager(0, PORTFOLIO_LIMITS, _live_file, mode_tag="live")
+        _portfolio_live.force_release_stale(max_age_hours=2)
+        print(f"  Live Portfolio:  ${_portfolio_live.available():,.2f} available of ${_portfolio_live.total:,.2f}")
+    else:
+        _portfolio_live = PortfolioManager(0, PORTFOLIO_LIMITS, _live_file, mode_tag="live")
+        print(f"  Live Portfolio:  $0.00 (set balance when switching to live)")
+
     print(f"  Portfolio API: http://localhost:9000/api/portfolio")
     print()
 
+    _has_keys = bool(os.environ.get("KRAKEN_API_KEY"))
+    _mode_label = _fleet_config.FLEET_MODE.upper()
+    if _fleet_config.FLEET_MODE == "live" and _has_keys:
+        print(f"  Fleet Mode: \033[91m*** {_mode_label} — REAL KRAKEN ORDERS ***\033[0m")
+    elif _has_keys:
+        print(f"  Fleet Mode: {_mode_label} (API keys present, toggle via POST /api/fleet/mode)")
+    else:
+        print(f"  Fleet Mode: {_mode_label} (no API keys set)")
     print(f"  Polling every {POLL_INTERVAL}s, timeout {REQUEST_TIMEOUT}s per request")
     print(f"  Dashboard:  http://localhost:9000/")
     print(f"  Master API: http://localhost:9000/api/master")
@@ -3119,7 +3507,7 @@ def main():
                 sigs = open_info["signals"]
                 contrib = [f"{bot}:{s}" for s in sigs] if isinstance(sigs, list) else [bot]
                 _signal_decomposition.log_trade(
-                    pair, direction, gross_pnl=pnl, fees=0,
+                    pair, direction, gross_pnl=pnl, fees=data.get("fees", 0),
                     duration=data.get("duration_s", 0),
                     contributing_signals=contrib,
                     metadata=open_info.get("factors", {}),

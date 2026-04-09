@@ -1,7 +1,7 @@
 """
 DENIAL COST — Portfolio Denial Opportunity Cost
 
-Reads PORTFOLIO_RESERVE_DENIED events from logs/events/*.jsonl.
+Reads PORTFOLIO_DENIAL events from logs/events/*.jsonl.
 For each denied trade, looks up the price N minutes later
 (using fleet's average hold time) and computes what the trade
 would have netted after fees.
@@ -135,7 +135,7 @@ def main():
 
     if not denials:
         print("No denial events found. Either no denials occurred or event logs are empty.")
-        print(f"Expected events with type containing 'DENIED' in {EVENTS_DIR}")
+        print(f"Expected events of type PORTFOLIO_DENIAL in {EVENTS_DIR}")
         sys.exit(0)
 
     print(f"Found {len(denials)} denials (excluding config errors). Simulating outcomes...\n")

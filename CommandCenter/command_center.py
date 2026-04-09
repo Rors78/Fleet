@@ -217,6 +217,7 @@ class PortfolioManager:
 
     PAIR_COOLDOWN_SECS = 600        # 10 min base cooldown after any trade closes
     PAIR_COOLDOWN_AGGRESSIVE = 300  # 5 min when AEGIS score > 0.7 (fast market)
+    PAIR_OPEN_COOLDOWN_SECS = 90    # 90 s cooldown after any OPEN on a pair (prevents burst re-entry before first close)
     COOLDOWN_EXEMPT_BOTS = {"gridzilla"}  # grid bots manage their own frequency via fee gate
 
     def __init__(self, total: float, limits: dict[str, int], filepath: str, mode_tag: str = "paper"):
@@ -227,7 +228,8 @@ class PortfolioManager:
         self.mode_tag = mode_tag  # "paper" or "live"
         self.reservations: dict[str, dict] = {}
         self.history: list[dict] = []
-        self._pair_cooldowns: dict[str, dict] = {}  # pair -> {ts, bot_id}
+        self._pair_cooldowns: dict[str, dict] = {}  # pair -> {ts, bot_id} — stamped on CLOSE
+        self._pair_opens: dict[str, dict] = {}     # pair -> {ts, bot_id} — stamped on OPEN
         self.aegis_score: float = 0.0  # updated by _apply_aegis_adjustment each cycle
         self._load()
 
@@ -309,10 +311,30 @@ class PortfolioManager:
         from fleet_config import is_blacklisted
         pair = normalize_pair(pair) or pair  # canonical format for per-pair limits
         with self._lock:
-            # 0. Per-pair cooldown — first check, before all capital arithmetic and blacklist
-            #    lookups (no point running any of that for a pair still cooling down).
-            #    Gridzilla exempt — fee gate handles its frequency.
-            #    Duration adapts to AEGIS: 5 min when aggressive, 10 min otherwise.
+            # 0a. Per-pair OPEN-time cooldown — blocks burst re-entry on the same pair before
+            #     any trade has closed (the CLOSE cooldown can't fire if nothing closed yet).
+            #     Catches e.g. 4×ENJ/USD opens in 60 s — entry 1 allowed, entries 2-4 blocked.
+            #     Gridzilla exempt — grid bots legitimately open multiple levels on the same pair.
+            # FEE_SLAYER: added OPEN-gate cooldown — prevents burst same-pair entries before first close
+            if bot_id.lower() not in self.COOLDOWN_EXEMPT_BOTS:
+                op = self._pair_opens.get(pair)
+                if op:
+                    elapsed = time.time() - op["ts"]
+                    remaining = self.PAIR_OPEN_COOLDOWN_SECS - elapsed
+                    if remaining > 0:
+                        log.info(
+                            "OPEN_COOLDOWN DENIED: %s requested %s, %.0fs remaining after %s's open",
+                            bot_id, pair, remaining, op["bot_id"],
+                        )
+                        return {
+                            "ok": False,
+                            "reason": f"pair_open_cooldown:{remaining:.0f}s (last open: {op['bot_id']} on {pair})",
+                        }
+
+            # 0b. Per-pair CLOSE-time cooldown — first check, before all capital arithmetic and
+            #     blacklist lookups (no point running any of that for a pair still cooling down).
+            #     Gridzilla exempt — fee gate handles its frequency.
+            #     Duration adapts to AEGIS: 5 min when aggressive, 10 min otherwise.
             if bot_id.lower() not in self.COOLDOWN_EXEMPT_BOTS:
                 cooldown_secs = (
                     self.PAIR_COOLDOWN_AGGRESSIVE
@@ -449,6 +471,13 @@ class PortfolioManager:
                 "amount": amount,
                 "timestamp": time.time(),
             })
+
+            # Stamp open-time cooldown so subsequent same-pair requests within 90 s are blocked.
+            # Not tied to close — expires naturally via timestamp comparison in the gate above.
+            # Gridzilla is exempt from the check, so skip the stamp too — a Gridzilla open
+            # should not inadvertently block other bots from entering the same pair.
+            if bot_id.lower() not in self.COOLDOWN_EXEMPT_BOTS:
+                self._pair_opens[pair] = {"ts": time.time(), "bot_id": bot_id}
 
             self._save()
             return {"ok": True, "reservation_id": rid, "amount": amount, "available": self.available()}

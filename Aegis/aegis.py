@@ -46,6 +46,7 @@ COMMAND_CENTER = "http://127.0.0.1:9000"
 SCAN_INTERVAL = 30          # seconds between AEGIS computations
 ACCENT = "#e0e0e0"
 EVENT_WINDOW = 300          # look at last 5 minutes of events
+MAX_THROTTLE_PCT = 0.25     # Phase 1: max deployment reduction from whale overlap
 
 # ---------------------------------------------------------------------------
 # Regime Dampening — filter out flip-flopping bots
@@ -96,6 +97,8 @@ _REGIME_NORMALIZE = {
     "EXTREME_GREED": "BULL", "extreme_greed": "BULL",
     "MIXED": "RANGING", "mixed": "RANGING",
     "high_activity": "RANGING", "HIGH_ACTIVITY": "RANGING",
+    "CAUTIOUS": "RANGING", "cautious": "RANGING",
+    "trending": "BULL",
 }
 
 
@@ -126,10 +129,13 @@ def regime_consensus_entropy(regimes: dict) -> float:
 # Component 2: Signal Temporal Coherence
 # ---------------------------------------------------------------------------
 
-def signal_coherence(signal_events: list) -> float:
-    """Measure temporal stability of bot signals. 0=flickering, 1=stable."""
+def signal_coherence(signal_events: list, H: float = 0.5) -> float:
+    """Measure temporal stability of bot signals. 0=flickering, 1=stable.
+    When insufficient data, bootstrap from entropy: clean consensus → higher coherence."""
     if len(signal_events) < 2:
-        return 0.5
+        # Dynamic bootstrap: high entropy → lower coherence, low entropy → higher coherence
+        # This breaks the feedback loop where no trades → C=0.5 → low score → no trades
+        return 0.6 + 0.2 * (1.0 - H)
 
     # Group signals by bot
     by_bot = {}
@@ -153,7 +159,7 @@ def signal_coherence(signal_events: list) -> float:
                     stable += 1
         coherence_scores.append(stable / total if total > 0 else 0.5)
 
-    return sum(coherence_scores) / len(coherence_scores) if coherence_scores else 0.5
+    return sum(coherence_scores) / len(coherence_scores) if coherence_scores else (0.6 + 0.2 * (1.0 - H))
 
 
 # ---------------------------------------------------------------------------
@@ -267,10 +273,21 @@ def get_phitex_signal(events: list) -> float:
 def compute_aegis(H, C, W, S, phi, rho=0.5):
     """AEGIS = Tradability × Confidence × Safety."""
     H = max(0.0, min(1.0, H))  # clamp — no upstream bug can kill the score
-    tradability = max(0.20, (1.0 - H) * C)  # floor raised 0.10→0.20: let bots trade in disagreement
-    confidence = (W + 1.0) / 2.0 if W != 0 else 1.0  # no whale data = neutral, not penalty
-    # Safety: high correlation reduces diversification benefit
-    corr_penalty = rho * 0.3  # 30% weight on correlation
+    # Soften entropy response: H**0.7 flattens the penalty curve so partial disagreement doesn't crush tradability
+    tradability = max(0.25, (1.0 - H**0.7) * C)
+    # Agreement boost (capped): when bots agree, lean in — but cap at 1.12 to avoid runaway amplification
+    agreement_boost = 1.0 + 0.15 * (1.0 - H)
+    tradability *= min(agreement_boost, 1.12)
+    # Honest confidence: blind = neutral-positive (0.75), not perfect (1.0).
+    # Monotonic in W: W=-1 → 0.25, W=0 → 0.75 (default), W=+1 → 1.0.
+    # This removes the "blindness is optimal" inversion where any whale data
+    # previously reduced score. Formula: baseline 0.75 + 0.25*W.
+    if W == 0:
+        confidence = 0.75
+    else:
+        confidence = max(0.0, min(1.0, 0.75 + 0.25 * W))
+    # Safety: high correlation reduces diversification benefit — but crypto is naturally correlated, so weight gently
+    corr_penalty = rho * 0.15  # reduced from 0.30 — correlation ≠ danger, just ≠ diversification
     # Cap PHITEX drag: no single component gets more than 0.05 negative influence
     phi_penalty = min(phi * 0.5, 0.05)
     safety = (1.0 - S) * (1.0 - phi_penalty) * (1.0 - corr_penalty)
@@ -321,7 +338,18 @@ class AegisEngine:
         self._score_history = deque(maxlen=200)
         self._prev_portfolio = None
         self._regime_sources = {}
+        self._normalized_regime_sources = {}
         self._event_pub = EventPublisher(COMMAND_CENTER, "aegis") if EventPublisher else None
+        self._last_whale_overlap = {
+            "W_position": 0.0,
+            "raw_overlap": 0.0,
+            "overlapping_pairs": [],
+            "whale_pair_count": 0,
+            "portfolio_pair_count": 0,
+            "activation_threshold_met": False,
+            "throttle_pct": 0.0,
+        }
+        self._adjusted_max_deployed = recommended_max_deployed(self.score)
 
     def _log(self, msg):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -333,6 +361,76 @@ class AegisEngine:
             return resp.json()
         except Exception:
             return None
+
+    def compute_exposure_whale_overlap(self, whale_events, portfolio_exposure, portfolio_total):
+        """Phase 1: W_position_magnitude — exposure-weighted whale attention overlap.
+        Returns (w_position, overlap_data_dict).
+        w_position is scalar 0.0-1.0, magnitude only (no direction until Phase 2).
+        """
+        TIER_WEIGHT = {"EXTREME": 1.0, "HIGH": 0.4}
+        WHALE_LOOKBACK = 1800.0  # 30 min
+        ACTIVATION_THRESHOLD = 0.15
+
+        now = time.time()
+
+        # Step 1: whale pressure map — max() per pair, not sum
+        whale_pairs = {}
+        for e in whale_events:
+            if e.get("type") != "WHALE_ALERT":
+                continue
+            data = e.get("data", {}) or {}
+            tier = str(data.get("tier", "")).upper()
+            if tier not in TIER_WEIGHT:
+                continue
+            pair = data.get("pair", "")
+            if not pair:
+                continue
+            ts = e.get("ts", 0) or 0
+            age = now - ts
+            if age > WHALE_LOOKBACK or age < 0:
+                continue
+            recency = max(0.0, 1.0 - (age / WHALE_LOOKBACK))
+            weight = TIER_WEIGHT[tier] * recency
+            whale_pairs[pair] = max(whale_pairs.get(pair, 0.0), weight)
+
+        # Step 2: portfolio exposure map (fraction of total)
+        by_pair = portfolio_exposure.get("by_pair", {}) if portfolio_exposure else {}
+        total = max(portfolio_total, 1.0)  # avoid div by zero
+        portfolio_pairs = {}
+        for pair, info in by_pair.items():
+            amount = info.get("amount", 0) if isinstance(info, dict) else float(info)
+            if amount > 0:
+                portfolio_pairs[pair] = amount / total
+
+        # Step 3: overlap
+        overlapping = []
+        raw_overlap = 0.0
+        for pair in set(whale_pairs.keys()) & set(portfolio_pairs.keys()):
+            contribution = whale_pairs[pair] * portfolio_pairs[pair]
+            raw_overlap += contribution
+            overlapping.append({
+                "pair": pair,
+                "whale_weight": round(whale_pairs[pair], 4),
+                "exposure_frac": round(portfolio_pairs[pair], 4),
+                "contribution": round(contribution, 4),
+            })
+        raw_overlap = min(1.0, raw_overlap)
+
+        # Step 4: activation threshold rescale
+        if raw_overlap < ACTIVATION_THRESHOLD:
+            w_position = 0.0
+        else:
+            w_position = (raw_overlap - ACTIVATION_THRESHOLD) / (1.0 - ACTIVATION_THRESHOLD)
+
+        overlap_data = {
+            "W_position": round(w_position, 4),
+            "raw_overlap": round(raw_overlap, 4),
+            "overlapping_pairs": overlapping,
+            "whale_pair_count": len(whale_pairs),
+            "portfolio_pair_count": len(portfolio_pairs),
+            "activation_threshold_met": w_position > 0.0,
+        }
+        return w_position, overlap_data
 
     def compute(self):
         """Run one AEGIS computation cycle."""
@@ -405,10 +503,15 @@ class AegisEngine:
 
         self.H = regime_consensus_entropy(regimes)
         self._regime_sources = regimes
+        # Parallel dict showing normalized labels (what entropy actually sees)
+        self._normalized_regime_sources = {
+            bot_id: _REGIME_NORMALIZE.get(r, r.upper())
+            for bot_id, r in regimes.items()
+        }
 
         # 2. Signal Temporal Coherence
         signal_events = [e for e in events if e.get("type") in ("TRADE_OPEN", "SIGNAL")]
-        self.C = signal_coherence(signal_events)
+        self.C = signal_coherence(signal_events, self.H)
 
         # 3. Whale-Flow Divergence
         whale_events = [e for e in recent if e.get("type") == "WHALE_ALERT"]
@@ -430,6 +533,18 @@ class AegisEngine:
         self.score = compute_aegis(self.H, self.C, self.W, self.S, self.phi, self.rho)
         self.regime = aegis_regime(self.score)
         self._score_history.append(self.score)
+
+        # 7. Phase 1: W_position_magnitude — deployment throttle (snapshot-only, no bus events)
+        exposure = self._fetch_json("/api/portfolio/exposure") or {}
+        port_full = self._fetch_json("/api/portfolio") or {}
+        w_pos, overlap_data = self.compute_exposure_whale_overlap(
+            events, exposure, port_full.get("total", 10000)
+        )
+        throttle_pct = w_pos * MAX_THROTTLE_PCT
+        overlap_data["throttle_pct"] = round(throttle_pct, 4)
+        self._last_whale_overlap = overlap_data
+        base_max = recommended_max_deployed(self.score)
+        self._adjusted_max_deployed = int(base_max * (1.0 - throttle_pct))
 
         self.scan_duration = time.time() - t0
         self.status = "running"
@@ -466,7 +581,7 @@ class AegisEngine:
             "cycle": self.cycle,
             "score": self.score,
             "regime": self.regime,
-            "recommended_max_deployed": recommended_max_deployed(self.score),
+            "recommended_max_deployed": self._adjusted_max_deployed,
             "components": {
                 "consensus_entropy": round(self.H, 4),
                 "signal_coherence": round(self.C, 4),
@@ -476,9 +591,11 @@ class AegisEngine:
                 "correlation": round(self.rho, 4),
             },
             "regime_sources": self._regime_sources,
+            "normalized_regime_sources": self._normalized_regime_sources,
             "score_history": list(self._score_history)[-50:],
             "scan_duration_s": round(self.scan_duration, 2),
             "logs": list(self._log_buf)[-20:],
+            "whale_overlap": self._last_whale_overlap,
         }
 
 

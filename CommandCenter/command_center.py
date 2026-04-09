@@ -122,6 +122,85 @@ _fleet_briefing_lock = threading.Lock()
 BRIEFING_INTERVAL = 300  # 5 minutes
 INFERENCE_URL = _FC_INFERENCE_URL
 
+# E. Open-trade signal attribution linkage.
+# When a bot publishes TRADE_OPEN with a list of contributing signals, we stash
+# {signals, factors} keyed by f"{source}:{pair}". On TRADE_CLOSE we pop it and
+# feed the signal attribution pipeline. This dict MUST survive restarts — if CC
+# restarts while a bot has an open position, the close event would otherwise
+# arrive with no signal context, and that trade becomes invisible to decomposition.
+_open_trade_signals: dict = {}
+_open_trade_signals_lock = threading.Lock()
+_OPEN_TRADE_SIGNALS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        "logs", "open_trade_signals.json")
+
+# F. Small-state persistence (AEGIS cooldown, health-monitor restart cooldowns,
+# and anything else that needs to survive reboot but isn't worth its own file).
+# Shared cc_state.json with atomic write.
+_CC_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                              "logs", "cc_state.json")
+_cc_state_lock = threading.Lock()
+
+
+def _load_cc_state() -> dict:
+    """Load the small-state dict from disk. Returns {} on any failure."""
+    try:
+        if os.path.exists(_CC_STATE_PATH):
+            with open(_CC_STATE_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def _save_cc_state(updates: dict) -> None:
+    """Merge updates into cc_state.json atomically.
+
+    Callers pass only the keys they want to update; everything else is preserved.
+    This keeps multiple independent small-state consumers (AEGIS, health monitor,
+    future additions) from stomping each other's keys.
+    """
+    try:
+        os.makedirs(os.path.dirname(_CC_STATE_PATH), exist_ok=True)
+        with _cc_state_lock:
+            current = _load_cc_state()
+            current.update(updates)
+            tmp = _CC_STATE_PATH + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(current, fh, default=str)
+            os.replace(tmp, _CC_STATE_PATH)
+    except Exception:
+        pass
+
+
+def _save_open_trade_signals() -> None:
+    """Atomic write of the open-trade signal linkage map."""
+    try:
+        os.makedirs(os.path.dirname(_OPEN_TRADE_SIGNALS_PATH), exist_ok=True)
+        tmp = _OPEN_TRADE_SIGNALS_PATH + ".tmp"
+        with _open_trade_signals_lock:
+            snap = dict(_open_trade_signals)
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(snap, fh)
+        os.replace(tmp, _OPEN_TRADE_SIGNALS_PATH)
+    except Exception:
+        pass  # Disk errors must not break live event routing.
+
+
+def _load_open_trade_signals() -> None:
+    """Rehydrate the open-trade signal linkage map on startup."""
+    global _open_trade_signals
+    try:
+        if os.path.exists(_OPEN_TRADE_SIGNALS_PATH):
+            with open(_OPEN_TRADE_SIGNALS_PATH, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            if isinstance(data, dict):
+                with _open_trade_signals_lock:
+                    _open_trade_signals = data
+    except Exception:
+        pass
+
 
 # ---------------------------------------------------------------------------
 # Portfolio Manager — Central Capital Pool
@@ -1269,6 +1348,24 @@ def _compute_aggregate(bots_data: dict) -> dict:
     trades = _collect("total_trades")
     regimes = [n["regime"] for n in norms.values() if n.get("regime")]
 
+    # Global fleet WR = total_wins / total_trades across bots that have traded.
+    # Reconstruct wins from (win_rate, total_trades) per bot and sum. Bots with
+    # zero trades contribute 0 wins AND 0 to the denominator, so they drop out
+    # cleanly. This is the only aggregation that means what "fleet WR" says.
+    _total_wins = 0
+    _total_trades_for_wr = 0
+    for n in norms.values():
+        wr = n.get("win_rate")
+        tc = n.get("total_trades") or 0
+        if wr is None or tc <= 0:
+            continue
+        # Normalize scale: TurtleSue/Gridzilla raw passthrough may be 0-1,
+        # NexusBrain is already scaled to 0-100. Anything > 1 is assumed %.
+        wr_pct = wr if wr > 1 else wr * 100
+        _total_wins += round(wr_pct / 100.0 * tc)
+        _total_trades_for_wr += tc
+    global_wr = (_total_wins / _total_trades_for_wr * 100.0) if _total_trades_for_wr > 0 else None
+
     # Best / worst performer by pnl_pct first, then pnl
     def _perf_score(bid):
         n = norms.get(bid, {})
@@ -1299,7 +1396,7 @@ def _compute_aggregate(bots_data: dict) -> dict:
         "bots_total": len(bots_data),  # polled bots only, not all registered
         "total_equity": sum(v for _, v in equities) if equities else None,
         "total_pnl": sum(v for _, v in pnls) if pnls else None,
-        "avg_win_rate": (sum(v for _, v in win_rates) / len(win_rates)) if win_rates else None,
+        "avg_win_rate": global_wr,  # Global WR = total_wins / total_trades (not an unweighted mean)
         "total_open_positions": sum(v for _, v in open_pos) if open_pos else None,
         "total_trades": sum(v for _, v in trades) if trades else None,
         "best_performer": best,
@@ -2020,8 +2117,13 @@ def _poll_all_bots() -> None:
         log.debug("Performance attribution computation failed", exc_info=True)
 
 
-_last_aegis_adjust = 0
 _AEGIS_COOLDOWN = 300  # 5 minutes between adjustments
+# Rehydrate from cc_state.json so a reboot within the cooldown window doesn't
+# trigger an immediate (unwanted) re-adjustment of deployment limits.
+try:
+    _last_aegis_adjust = float(_load_cc_state().get("last_aegis_adjust", 0) or 0)
+except Exception:
+    _last_aegis_adjust = 0
 
 
 def _get_fleet_fee_ratio():
@@ -2134,6 +2236,7 @@ def _apply_aegis_adjustment():
         log.info(f"AEGIS: {regime} -> {new_limit}% (base={base_limit}){throttle_info}")
 
     _last_aegis_adjust = now
+    _save_cc_state({"last_aegis_adjust": now})
 
 
 def _poll_loop():
@@ -2864,7 +2967,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self._send_json(_expectancy_tracker.get_fleet_stats())
 
     def _serve_trades(self, parsed) -> None:
-        """Return per-bot trade history from event logs. Survives restarts.
+        """Return per-bot trade history from the durable event bus log.
+        Survives restarts via logs/event_bus/*.jsonl (written by EventBus.publish).
         Query params: ?bot=trekbot&limit=50
         """
         import glob as _glob
@@ -2881,37 +2985,57 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             limit = 100
 
         trades: list[dict] = []
-        log_dir = os.path.join(os.path.dirname(__file__), "logs", "events")
-        for fpath in sorted(_glob.glob(os.path.join(log_dir, "*.jsonl"))):
-            try:
-                with open(fpath, encoding="utf-8") as fh:
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            ev = json.loads(line)
-                        except Exception:
-                            continue
-                        if ev.get("type") != "TRADE_CLOSE":
-                            continue
-                        bot = ev.get("bot") or ev.get("source") or ""
-                        if bot_filter and bot.lower() != bot_filter:
-                            continue
-                        trades.append({
-                            "ts":         ev.get("ts", 0),
-                            "bot":        bot,
-                            "pair":       ev.get("pair", ""),
-                            "pnl":        ev.get("pnl", 0),
-                            "gross_pnl":  ev.get("gross_pnl", ev.get("pnl", 0)),
-                            "fees":       ev.get("fees", 0),
-                            "duration_s": ev.get("duration_s", 0),
-                            "exit_reason":ev.get("exit_reason", ""),
-                            "direction":  ev.get("direction", ev.get("side", "")),
-                            "won":        (ev.get("pnl", 0) or 0) > 0,
-                        })
-            except Exception:
-                pass
+        # Prefer the durable event-bus log (new canonical source). Fall back to
+        # the legacy fleet_logger events dir so older TRADE_CLOSE rows are still
+        # visible during the transition.
+        log_dirs = [
+            os.path.join(os.path.dirname(__file__), "logs", "event_bus"),
+            os.path.join(os.path.dirname(__file__), "logs", "events"),
+        ]
+        seen_ids: set[str] = set()  # dedupe by event id if present
+        for log_dir in log_dirs:
+            if not os.path.isdir(log_dir):
+                continue
+            for fpath in sorted(_glob.glob(os.path.join(log_dir, "*.jsonl"))):
+                try:
+                    with open(fpath, encoding="utf-8") as fh:
+                        for line in fh:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                ev = json.loads(line)
+                            except Exception:
+                                continue
+                            if ev.get("type") != "TRADE_CLOSE":
+                                continue
+                            ev_id = ev.get("id")
+                            if ev_id and ev_id in seen_ids:
+                                continue
+                            if ev_id:
+                                seen_ids.add(ev_id)
+                            bot = ev.get("source") or ev.get("bot") or ""
+                            if bot_filter and bot.lower() != bot_filter:
+                                continue
+                            # Event bus events nest trade fields under "data".
+                            # Legacy fleet_logger events kept them flat. Try nested
+                            # first, fall back to flat so both formats work.
+                            d = ev.get("data") if isinstance(ev.get("data"), dict) else ev
+                            pnl_val = d.get("pnl", ev.get("pnl", 0))
+                            trades.append({
+                                "ts":          ev.get("ts", 0),
+                                "bot":         bot,
+                                "pair":        d.get("pair", ev.get("pair", "")),
+                                "pnl":         pnl_val,
+                                "gross_pnl":   d.get("gross_pnl", ev.get("gross_pnl", pnl_val)),
+                                "fees":        d.get("fees", ev.get("fees", 0)),
+                                "duration_s":  d.get("duration_s", ev.get("duration_s", 0)),
+                                "exit_reason": d.get("exit_reason", ev.get("exit_reason", "")),
+                                "direction":   d.get("direction", ev.get("direction", ev.get("side", ""))),
+                                "won":         (pnl_val or 0) > 0,
+                            })
+                except Exception:
+                    pass
 
         # newest first, capped
         trades.sort(key=lambda t: t["ts"], reverse=True)
@@ -3067,10 +3191,13 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         source = data.get("source", "")
         pair = edata.get("pair", "")
         if etype == "TRADE_OPEN" and edata.get("signals"):
-            _open_trade_signals[f"{source}:{pair}"] = {
-                "signals": edata["signals"],
-                "factors": edata.get("factors", {}),
-            }
+            with _open_trade_signals_lock:
+                _open_trade_signals[f"{source}:{pair}"] = {
+                    "signals": edata["signals"],
+                    "factors": edata.get("factors", {}),
+                    "opened_at": time.time(),
+                }
+            _save_open_trade_signals()
             # Also submit each signal to the aggregator
             for sig in edata["signals"]:
                 _signal_aggregator.submit_proposal(
@@ -3087,7 +3214,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 )
         elif etype == "TRADE_CLOSE" and pair:
             key = f"{source}:{pair}"
-            open_info = _open_trade_signals.pop(key, None)
+            with _open_trade_signals_lock:
+                open_info = _open_trade_signals.pop(key, None)
+            if open_info is not None:
+                _save_open_trade_signals()
             pnl = edata.get("pnl", 0)
             direction = edata.get("direction", "LONG").upper()
             won = pnl > 0
@@ -3180,9 +3310,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     res_info["amount"], pnl, rid)
 
             # Record to expectancy tracker for fleet analytics
+            _duration = time.time() - res_info.get("reserved_at", time.time())
             if _expectancy_tracker:
                 try:
-                    _duration = time.time() - res_info.get("reserved_at", time.time())
                     _expectancy_tracker.record_trade(
                         bot_id=res_info["bot_id"],
                         pair=res_info["pair"],
@@ -3195,6 +3325,34 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     )
                 except Exception:
                     pass
+
+            # Publish TRADE_CLOSE to the event bus so /api/trades and downstream
+            # consumers (signal aggregator, decomposition, dashboards) see this
+            # trade the same way they see bot-emitted closes. Without this,
+            # portfolio-flow trades are invisible to /api/trades which filters
+            # for type=TRADE_CLOSE. The event also gets durably logged by the
+            # bus itself (logs/event_bus/*.jsonl) so it survives reboots.
+            try:
+                _size = float(res_info.get("amount") or 0)
+                _fees = round(_size * _fleet_config.KRAKEN_FEE_TAKER * 2, 4)  # round-trip
+                _event_bus.publish({
+                    "source": res_info.get("bot_id", "portfolio"),
+                    "type": "TRADE_CLOSE",
+                    "data": {
+                        "pair": res_info.get("pair", ""),
+                        "direction": res_info.get("direction", "LONG"),
+                        "entry_price": data.get("entry_price", 0),
+                        "exit_price": data.get("exit_price", 0),
+                        "size_usd": _size,
+                        "pnl": round(float(pnl), 4),
+                        "fees": _fees,
+                        "duration_s": round(_duration),
+                        "reservation_id": rid,
+                        "via": "portfolio_release",
+                    },
+                })
+            except Exception:
+                pass
 
         # Don't leak internal reservation data to the API caller
         result.pop("reservation", None)
@@ -3253,7 +3411,16 @@ class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
 
 
 _watchdog_state: dict = {}  # shared state for /api/watchdog endpoint
-_restart_cooldowns: dict[str, float] = {}  # bot_id -> last restart timestamp
+# bot_id -> last restart timestamp. Rehydrated from cc_state.json so the health
+# monitor doesn't re-restart a bot that was just restarted before CC rebooted.
+_restart_cooldowns: dict[str, float] = {}
+try:
+    _cd = _load_cc_state().get("restart_cooldowns", {})
+    if isinstance(_cd, dict):
+        _restart_cooldowns = {k: float(v) for k, v in _cd.items()
+                              if isinstance(v, (int, float, str))}
+except Exception:
+    _restart_cooldowns = {}
 _RESTART_COOLDOWN_S = _FC_WATCHDOG_COOLDOWN
 
 
@@ -3393,6 +3560,7 @@ def _health_monitor() -> None:
                             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if sys.platform == "win32" else 0,
                         )
                         _restart_cooldowns[bid] = time.time()
+                        _save_cc_state({"restart_cooldowns": _restart_cooldowns})
                         log.info("Auto-restarted %s (port %s)", bid, port)
                         _event_bus.publish({"source": "health_monitor", "type": "BOT_RESTARTED",
                                             "data": {"bot": bid, "port": port}})
@@ -3482,8 +3650,11 @@ def main():
     threading.Thread(target=_health_monitor, daemon=True, name="HealthMonitor").start()
     print(f"  Health:     monitoring {len(BOT_REGISTRY)} bots every 30s (auto-restart on 3 fails)")
 
-    # Bridge fleet logger events to event bus + measurement infrastructure
-    _open_trade_signals = {}  # track signals at open for attribution at close
+    # Bridge fleet logger events to event bus + measurement infrastructure.
+    # Uses the module-level _open_trade_signals dict (not a local) so that both
+    # this bridge AND _handle_event_publish share the same attribution map.
+    # The map is persisted to disk on every mutation so it survives reboots.
+    _load_open_trade_signals()
 
     def _on_logger_event(event):
         _event_bus.publish(event)
@@ -3492,13 +3663,19 @@ def main():
         bot = data.get("bot", event.get("source", ""))
         pair = data.get("pair", "")
         if etype == "TRADE_OPEN" and data.get("signals"):
-            _open_trade_signals[f"{bot}:{pair}"] = {
-                "signals": data["signals"],
-                "factors": data.get("factors", {}),
-            }
+            with _open_trade_signals_lock:
+                _open_trade_signals[f"{bot}:{pair}"] = {
+                    "signals": data["signals"],
+                    "factors": data.get("factors", {}),
+                    "opened_at": time.time(),
+                }
+            _save_open_trade_signals()
         elif etype == "TRADE_CLOSE" and pair:
             key = f"{bot}:{pair}"
-            open_info = _open_trade_signals.pop(key, None)
+            with _open_trade_signals_lock:
+                open_info = _open_trade_signals.pop(key, None)
+            if open_info is not None:
+                _save_open_trade_signals()
             pnl = data.get("pnl", 0)
             direction = data.get("direction", "LONG")
             won = pnl > 0

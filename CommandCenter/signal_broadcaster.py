@@ -433,48 +433,99 @@ class IntelligenceBuilder:
             enriched["signal_freshness"] = decay
 
     def _enrich_trade(self, enriched: dict) -> None:
+        data = enriched.get("data", {})
+        if not isinstance(data, dict):
+            data = {}
+
         expectancy = self._fetch("/api/expectancy")
         if expectancy:
             enriched["fleet_expectancy"] = expectancy.get("fleet_expectancy", expectancy.get("expectancy_per_trade"))
-            data = enriched.get("data", {})
-            bot = data.get("source", data.get("bot", "")) if isinstance(data, dict) else ""
+            bot = data.get("source", data.get("bot", ""))
             bot_stats = expectancy.get("bot_stats", {})
             if bot and bot in bot_stats:
                 enriched["bot_expectancy"] = bot_stats[bot].get("expectancy_per_trade")
 
+        # Pull intelligence: conviction score + top signals from /api/signals/intel
+        pair = data.get("pair", "")
+        if pair:
+            intel = self._fetch(f"/api/signals/intel?pair={pair}")
+            if intel and isinstance(intel, dict):
+                enriched["intel_score"] = intel.get("score", intel.get("intel_score"))
+                enriched["conviction"] = intel.get("conviction", intel.get("score"))
+                # Extract top contributing signals if present
+                signals = intel.get("signals", intel.get("top_signals", intel.get("contributors", [])))
+                if isinstance(signals, list) and signals:
+                    enriched["top_signals"] = signals[:3]
+                elif isinstance(signals, dict):
+                    enriched["top_signals"] = list(signals.keys())[:3]
+
+            # Ensemble decision — direction confirmation + score
+            decide = self._fetch(f"/api/signals/decide?pair={pair}")
+            if decide and isinstance(decide, dict):
+                enriched["ensemble_score"] = decide.get("score", decide.get("confidence"))
+                enriched["ensemble_direction"] = decide.get("direction", decide.get("decision"))
+
+        # AEGIS regime context — pull from /api/master
+        master = self._fetch("/api/master")
+        if master and isinstance(master, dict):
+            agg = master.get("aggregate", {})
+            enriched["fleet_regime"] = agg.get("regime_consensus", enriched.get("_fleet_regime"))
+            enriched["bots_alive"] = agg.get("bots_alive", enriched.get("_bots_alive"))
+            portfolio = master.get("portfolio", {})
+            enriched["deployed_pct"] = portfolio.get("deployed_pct", enriched.get("_deployed_pct"))
+            # AEGIS score — bots is a list in /api/master, search for aegis entry
+            bots_list = master.get("bots", [])
+            if isinstance(bots_list, list):
+                for _b in bots_list:
+                    if isinstance(_b, dict) and _b.get("id", "").lower() == "aegis":
+                        enriched["aegis_score"] = _b.get("score", _b.get("aegis_score"))
+                        break
+            elif isinstance(bots_list, dict):
+                aegis_data = bots_list.get("aegis", {})
+                if isinstance(aegis_data, dict):
+                    enriched["aegis_score"] = aegis_data.get("score", aegis_data.get("aegis_score"))
+
         # Pull live position details from the bot's snapshot (entry, stop, size)
-        if isinstance(data, dict):
-            bot = data.get("source", data.get("bot", ""))
-            pair = data.get("pair", "")
-            if bot and pair:
-                snapshot = self._fetch(f"/api/bot/{bot}")
-                if snapshot and isinstance(snapshot, dict):
-                    # Find position in snapshot — different bots use different formats
-                    positions = snapshot.get("positions", snapshot.get("open_positions", {}))
-                    pos = None
-                    if isinstance(positions, dict):
-                        # TurtleSue: positions keyed by pair (AAVEUSD)
-                        pair_key = pair.replace("/", "")
-                        pos = positions.get(pair_key, positions.get(pair))
-                    elif isinstance(positions, list):
-                        # TrekBot/others: list of position dicts
-                        for p in positions:
-                            if p.get("pair", p.get("symbol", "")) in (pair, pair.replace("/", "")):
-                                pos = p
-                                break
-                    if pos and isinstance(pos, dict):
-                        if "current_stop" in pos:
-                            data["stop_loss"] = pos["current_stop"]
-                        elif "stop" in pos:
-                            data["stop_loss"] = pos["stop"]
-                        if "avg_entry" in pos and "entry_price" not in data:
-                            data["entry_price"] = pos["avg_entry"]
-                        elif "entry_price" in pos and "entry_price" not in data:
-                            data["entry_price"] = pos["entry_price"]
-                        if "total_size" in pos and "size" not in data:
-                            data["size"] = pos["total_size"]
-                        if "unrealized_pnl" in pos:
-                            data["unrealized_pnl"] = pos["unrealized_pnl"]
+        bot = data.get("source", data.get("bot", ""))
+        if bot and pair:
+            snapshot = self._fetch(f"/api/bot/{bot}")
+            if snapshot and isinstance(snapshot, dict):
+                # Find position in snapshot — different bots use different formats
+                positions = snapshot.get("positions", snapshot.get("open_positions", {}))
+                pos = None
+                if isinstance(positions, dict):
+                    # TurtleSue: positions keyed by pair (AAVEUSD)
+                    pair_key = pair.replace("/", "")
+                    pos = positions.get(pair_key, positions.get(pair))
+                elif isinstance(positions, list):
+                    # TrekBot/others: list of position dicts
+                    for p in positions:
+                        if p.get("pair", p.get("symbol", "")) in (pair, pair.replace("/", "")):
+                            pos = p
+                            break
+                if pos and isinstance(pos, dict):
+                    if "current_stop" in pos:
+                        data["stop_loss"] = pos["current_stop"]
+                    elif "stop" in pos:
+                        data["stop_loss"] = pos["stop"]
+                    if "avg_entry" in pos and "entry_price" not in data:
+                        data["entry_price"] = pos["avg_entry"]
+                    elif "entry_price" in pos and "entry_price" not in data:
+                        data["entry_price"] = pos["entry_price"]
+                    if "total_size" in pos and "size" not in data:
+                        data["size"] = pos["total_size"]
+                    if "unrealized_pnl" in pos:
+                        data["unrealized_pnl"] = pos["unrealized_pnl"]
+                    # Conviction from position if bot exposes it
+                    if "conviction" in pos and "conviction" not in enriched:
+                        enriched["conviction"] = pos["conviction"]
+                    # Top signals from position
+                    if "signals" in pos and "top_signals" not in enriched:
+                        pos_signals = pos["signals"]
+                        if isinstance(pos_signals, list):
+                            enriched["top_signals"] = pos_signals[:3]
+                        elif isinstance(pos_signals, dict):
+                            enriched["top_signals"] = list(pos_signals.keys())[:3]
 
     def _enrich_trade_close(self, enriched: dict) -> None:
         self._enrich_trade(enriched)
@@ -759,6 +810,204 @@ _FOOTER_PAID = "GoldenEye Intelligence"
 _FOOTER_FREE = "Fleet Pulse"
 _LINE  = "\u2501" * 32   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 _LINE2 = "\u2500" * 32   # ────────────────────────────────  (thin divider)
+
+
+def _human_regime(regime) -> str:
+    """Translate internal regime labels to human-readable prose.
+    Source of truth is card_renderer._human_regime — keep in sync.
+    """
+    return {
+        "TRENDING":       "Trending (bullish bias)",
+        "TRENDING_UP":    "Strong uptrend",
+        "TRENDING_DOWN":  "Downtrend",
+        "BULL":           "Bullish",
+        "BEAR":           "Bearish",
+        "RANGING":        "Range-bound (sideways)",
+        "NORMAL":         "Neutral",
+        "DEFENSIVE":      "Defensive (risk-off)",
+        "CAUTIOUS":       "Cautious",
+        "EQUILIBRIUM":    "Balanced",
+        "MIXED":          "Mixed signals",
+        "EXTREME_FEAR":   "Extreme fear",
+        "EXTREME_GREED":  "Extreme greed",
+        "HIGH_ACTIVITY":  "High activity",
+    }.get((regime or "").upper().replace(" ", "_"), (regime or "Unknown").replace("_", " ").title())
+
+
+def format_whale_narrator(data: dict):
+    """GoldenEye narrator voice for WHALE_ALERT events.
+    Returns (pulse_text, intel_text) tuple.
+    pulse_text  — plain narrator for Fleet Pulse (simple channel).
+    intel_text  — narrator + structured detail block for Fleet Intelligence.
+    """
+    pair = data.get("pair", "Unknown")
+    tier = str(data.get("tier", "")).upper()
+    volume = data.get("volume", 0) or 0
+    price = data.get("price", 0) or 0
+    regime = data.get("regime", "")
+    risk_level = data.get("risk_level", "GREEN")
+    deployed_pct = data.get("deployed_pct", 0) or 0
+    bot_count = data.get("bot_count", 0) or 0
+
+    # Volume formatter
+    if volume >= 1_000_000:
+        vol_str = f"${volume / 1_000_000:.1f}M"
+    elif volume > 0:
+        vol_str = f"${volume:,.0f}"
+    else:
+        vol_str = "significant volume"
+
+    # Risk word
+    risk_word = {"GREEN": "low", "YELLOW": "elevated", "RED": "high"}.get(risk_level, "unknown")
+
+    # Magnitude-specific narrator
+    if tier == "EXTREME":
+        header = f"\U0001f40b Whale Activity \u2014 {pair}"
+        narrator = f"Very large capital movement detected \u2014 {vol_str} flowing through {pair}."
+        reg_up = (regime or "").upper()
+        if reg_up in ("TRENDING", "TRENDING_UP", "BULL"):
+            narrator += " In the current uptrend, this suggests institutional players building momentum positions."
+        elif reg_up in ("BEAR", "TRENDING_DOWN"):
+            narrator += " With the market trending down, this could be capitulation or smart money accumulating at lower prices."
+        elif reg_up in ("RANGING", "NORMAL", "EQUILIBRIUM"):
+            narrator += " In a ranging market, moves this size can trigger breakouts. Worth watching closely."
+        else:
+            narrator += " The fleet is tracking this for potential impact."
+        narrator += f"\n\nFleet status: risk is {risk_word}, {deployed_pct:.0f}% of capital deployed."
+    else:  # HIGH or fallback
+        header = f"\U0001f40b Whale Activity \u2014 {pair}"
+        narrator = f"Large players are moving {vol_str} in {pair}"
+        if price > 0:
+            narrator += f" at ${price:g}"
+        narrator += "."
+        reg_up = (regime or "").upper()
+        if reg_up in ("TRENDING", "TRENDING_UP", "BULL"):
+            narrator += " Trending market \u2014 likely momentum positioning rather than a reversal signal."
+        elif reg_up in ("BEAR", "TRENDING_DOWN"):
+            narrator += " Bearish conditions \u2014 could be profit-taking or a new short building."
+        elif reg_up in ("RANGING", "NORMAL", "EQUILIBRIUM"):
+            narrator += " In this range-bound market, whale activity often precedes direction."
+        else:
+            narrator += " The fleet is monitoring for follow-through."
+        narrator += f"\n\n{bot_count} bots online, risk {risk_word}. No action needed."
+
+    ts = datetime.now(timezone.utc).strftime("%H:%M UTC \u00b7 %d %b %Y")
+
+    pulse_text = f"{header}\n\n{narrator}\n\nFleet Pulse \u00b7 {ts}"
+
+    # Intelligence detail block
+    risk_emoji = {"GREEN": "\u2705", "YELLOW": "\u26a0\ufe0f", "RED": "\U0001f534"}.get(risk_level, "")
+    available = data.get("available_capital", 0) or 0
+    intel_details = [
+        f"\u25b8 Regime: {_human_regime(regime)}",
+        f"\u25b8 Risk: {risk_level} {risk_emoji}",
+        f"\u25b8 Fleet: {bot_count} bots \u00b7 {deployed_pct:.0f}% deployed \u00b7 ${available:,.0f} available",
+        f"\u25b8 Magnitude: {tier} \u00b7 Volume: {vol_str}",
+    ]
+    intel_text = (f"{header}\n\n{narrator}\n\n"
+                  + "\n".join(intel_details)
+                  + f"\n\nFleet Intelligence \u00b7 {ts}")
+
+    return pulse_text, intel_text
+
+
+def format_regime_or_aegis_narrator(data: dict, event_type: str):
+    """Single method handling both REGIME_CHANGE and AEGIS_UPDATE narrator cards.
+    Branches narrator content at the paragraph level.
+    Returns (pulse_text, intel_text).
+    AEGIS_UPDATE: pulse_text is None (Intelligence-only event).
+    REGIME_CHANGE: both channels receive a message.
+    """
+    ts = datetime.now(timezone.utc).strftime("%H:%M UTC \u00b7 %d %b %Y")
+    risk_level = data.get("risk_level", "GREEN")
+    deployed_pct = data.get("deployed_pct", 0) or 0
+    bot_count = data.get("bot_count", 0) or 0
+    risk_emoji = {"GREEN": "\u2705", "YELLOW": "\u26a0\ufe0f", "RED": "\U0001f534"}.get(risk_level, "")
+    risk_word = {"GREEN": "low", "YELLOW": "elevated", "RED": "high"}.get(risk_level, "unknown")
+
+    if event_type == "AEGIS_UPDATE":
+        # AEGIS health update — Intelligence only
+        score = data.get("score", 0) or 0
+        regime_label = data.get("regime", "UNKNOWN")
+        max_deploy = data.get("max_deploy") or data.get("recommended_max_deployed", 0) or 0
+        h_entropy = data.get("h_entropy") or data.get("consensus_entropy", 0) or 0
+        what_would_help = data.get("what_would_help") or []
+
+        header = "\U0001f6e1\ufe0f Fleet Health Update"
+
+        if score >= 0.5:
+            health_word = "strong"
+        elif score >= 0.35:
+            health_word = "healthy"
+        elif score >= 0.25:
+            health_word = "cautious"
+        else:
+            health_word = "defensive"
+
+        narrator = f"Fleet health is {health_word} at {score:.3f} ({regime_label})."
+        narrator += f" Currently {deployed_pct:.0f}% deployed with a {max_deploy:.0f}% cap."
+
+        if what_would_help:
+            first_help = (str(what_would_help[0]).lower()
+                          if isinstance(what_would_help, list)
+                          else str(what_would_help).lower())
+            narrator += f"\n\nTo improve: {first_help}"
+
+        intel_details = [
+            f"\u25b8 Score: {score:.3f} \u00b7 Regime: {regime_label}",
+            f"\u25b8 Consensus: {h_entropy:.3f} \u00b7 Deploy cap: {max_deploy:.0f}%",
+            f"\u25b8 Deployed: {deployed_pct:.0f}%",
+        ]
+        intel_text = (f"{header}\n\n{narrator}\n\n"
+                      + "\n".join(intel_details)
+                      + f"\n\nFleet Intelligence \u00b7 {ts}")
+        return None, intel_text  # None = do not send to Fleet Pulse
+
+    else:  # REGIME_CHANGE
+        pair = data.get("pair") or "FLEET"
+        source_bot = data.get("source_bot") or data.get("source") or "The fleet"
+        old_regime = data.get("old_regime") or data.get("from") or ""
+        new_regime = data.get("new_regime") or data.get("to") or ""
+        confidence = data.get("confidence", 0) or 0
+
+        old_h = _human_regime(old_regime).lower()
+        new_h = _human_regime(new_regime).lower()
+
+        pair_label = pair if pair != "FLEET" else "Fleet-Wide"
+        header = f"\U0001f504 Market Shift \u2014 {pair_label}"
+        narrator = f"Market conditions are shifting from {old_h} to {new_h}."
+
+        bullish_regimes = {"TRENDING", "TRENDING_UP", "BULL", "AGGRESSIVE"}
+        bearish_regimes = {"BEAR", "TRENDING_DOWN", "EXTREME_FEAR", "DEFENSIVE"}
+        neutral_regimes = {"RANGING", "NORMAL", "EQUILIBRIUM", "MIXED", "CAUTIOUS"}
+
+        new_up = (new_regime or "").upper()
+        old_up = (old_regime or "").upper()
+
+        if new_up in bullish_regimes and old_up not in bullish_regimes:
+            narrator += " The trend is turning positive \u2014 the fleet may increase exposure."
+        elif new_up in bearish_regimes and old_up not in bearish_regimes:
+            narrator += " Conditions are deteriorating \u2014 the fleet is tightening risk."
+        elif new_up in neutral_regimes:
+            narrator += " Things are settling into a range. Grid and mean-reversion strategies tend to perform well here."
+        else:
+            narrator += f" {source_bot} detected the shift \u2014 the fleet is adjusting."
+
+        narrator += f"\n\nRisk {risk_word}, {deployed_pct:.0f}% deployed."
+
+        pulse_text = f"{header}\n\n{narrator}\n\nFleet Pulse \u00b7 {ts}"
+
+        intel_details = [
+            f"\u25b8 Detected by: {source_bot}",
+            f"\u25b8 Shift: {old_regime} \u2192 {new_regime}",
+            f"\u25b8 Confidence: {confidence:.0%}",
+            f"\u25b8 Fleet: {bot_count} bots \u00b7 {deployed_pct:.0f}% deployed \u00b7 Risk {risk_level} {risk_emoji}",
+        ]
+        intel_text = (f"{header}\n\n{narrator}\n\n"
+                      + "\n".join(intel_details)
+                      + f"\n\nFleet Intelligence \u00b7 {ts}")
+
+        return pulse_text, intel_text
 
 # Color-coded emoji per event type
 _TYPE_EMOJI = {
@@ -2591,6 +2840,47 @@ class Broadcaster:
                 if len(self._signals_log) > 200:
                     self._signals_log = self._signals_log[-200:]
 
+            # ── Narrator dual-channel routing (WHALE_ALERT, REGIME_CHANGE, AEGIS_UPDATE) ──
+            # These events use the GoldenEye narrator voice and route to both channels
+            # via module-level format_whale_narrator / format_regime_or_aegis_narrator.
+            # AEGIS_UPDATE is Intelligence-only (pulse_text=None). Trade cards bypass this.
+            _NARRATOR_TYPES = ("WHALE_ALERT", "REGIME_CHANGE", "AEGIS_UPDATE")
+            if etype in _NARRATOR_TYPES:
+                edata = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+                # Merge enriched fleet context into edata for narrator
+                for _fld in ("deployed_pct", "bot_count", "risk_level", "available_capital",
+                             "_deployed_pct", "_bots_alive"):
+                    if _fld in enriched and _fld not in edata:
+                        edata[_fld] = enriched[_fld]
+                if "deployed_pct" not in edata and "_deployed_pct" in edata:
+                    edata["deployed_pct"] = edata["_deployed_pct"]
+                if "bot_count" not in edata and "_bots_alive" in edata:
+                    edata["bot_count"] = edata["_bots_alive"]
+
+                try:
+                    if etype == "WHALE_ALERT":
+                        pulse_text, intel_text = format_whale_narrator(edata)
+                    else:
+                        pulse_text, intel_text = format_regime_or_aegis_narrator(edata, etype)
+                except Exception:
+                    log.warning("Narrator format failed for %s, falling through to legacy", etype,
+                                exc_info=True)
+                    pulse_text, intel_text = None, None
+
+                if intel_text:
+                    with self._gate_lock:
+                        if self._gate.should_send(f"paid_{dedup_key}"):
+                            if self._channel.send_paid(intel_text, event_id, etype):
+                                self._gate.record_sent(f"paid_{dedup_key}")
+
+                if pulse_text and self._channel._free_chat:
+                    with self._gate_lock:
+                        if self._gate.should_send(f"free_{dedup_key}"):
+                            if self._channel.send_free(pulse_text, event_id, etype):
+                                self._gate.record_sent(f"free_{dedup_key}")
+                # Narrator path handled — skip legacy routing below
+                return
+
             # Send to paid tier (immediate)
             if decision["paid"]:
                 with self._gate_lock:
@@ -2600,7 +2890,27 @@ class Broadcaster:
                         # Image cards for trade events
                         if self._card_renderer and etype in ("TRADE_OPEN", "TRADE_CLOSE"):
                             try:
-                                edata = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+                                edata = dict(event.get("data", {}) if isinstance(event.get("data"), dict) else {})
+                                # Merge enriched top-level intelligence fields into edata
+                                # so the CardRenderer has conviction, signals, regime context
+                                _INTEL_FIELDS = (
+                                    "conviction", "intel_score", "ensemble_score",
+                                    "ensemble_direction", "top_signals", "fleet_regime",
+                                    "deployed_pct", "bots_alive", "aegis_score",
+                                    "fleet_expectancy", "bot_expectancy",
+                                    # universal enrichment fields
+                                    "_fleet_regime", "_deployed_pct", "_bots_alive",
+                                )
+                                for _fld in _INTEL_FIELDS:
+                                    if _fld in event and _fld not in edata:
+                                        edata[_fld] = event[_fld]
+                                # Normalise fleet_regime from universal enrichment fallback
+                                if "fleet_regime" not in edata and "_fleet_regime" in edata:
+                                    edata["fleet_regime"] = edata["_fleet_regime"]
+                                if "deployed_pct" not in edata and "_deployed_pct" in edata:
+                                    edata["deployed_pct"] = edata["_deployed_pct"]
+                                if "bots_alive" not in edata and "_bots_alive" in edata:
+                                    edata["bots_alive"] = edata["_bots_alive"]
                                 if etype == "TRADE_OPEN":
                                     png = self._card_renderer.render_trade_open(edata)
                                     copyable = self._card_renderer.copyable_trade_open(edata)

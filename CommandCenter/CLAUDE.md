@@ -3,7 +3,9 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What This Is
-Unified mission control for a 17-bot crypto trading fleet (16 original + TrekBot SHORT). Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), and self-evolution analysis (Ultron).
+Unified mission control for a 17-bot crypto trading fleet (16 original + TrekBot SHORT). Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), self-evolution analysis (Ultron), and a Telegram signal broadcaster (port 9002).
+
+See `README.md` for the high-level fleet overview and engine table. This file is the operational reference.
 
 ## Run
 ```bash
@@ -42,8 +44,10 @@ python evolution.py --days 7
 ## Architecture
 
 ### Core Files
-- `command_center.py` — Single-file backend (~3170 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration. Imports `signal_aggregator`, `signal_decomposition`, `expectancy`, `signal_decay`, and `fleet_intel_score` directly — these are NOT standalone-only.
-- `command_center_v4.html` — Current active dashboard (single-file, all CSS/JS inline). Served at `/`.
+- `command_center.py` — Single-file backend (~3550 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration. Imports `signal_aggregator`, `signal_decomposition`, `expectancy`, `signal_decay`, and `fleet_intel_score` directly — these are NOT standalone-only.
+- `command_center_v4.html` — Current active dashboard (single-file, all CSS/JS inline, ~16k lines). Served at `/`.
+- `signal_broadcaster.py` — Standalone Telegram signal service on port 9002. Subscribes to CC event bus via SSE, formats alerts, pushes to Telegram. Runs as Phase 2 support bot. Dashboard at `signal_dashboard.html` (served via CC at `/signals`).
+- `bot_responder.py` — Telegram bot command responder (paired with signal_broadcaster).
 - `backups/` — Archived older dashboard versions (v3, etc.).
 
 ### Event Bus System
@@ -261,6 +265,16 @@ Reaction rules from `reactions.json` spawn in separate daemon threads to avoid b
 ### Brainiac Collection
 Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
 
+### Dashboard v4 Editing Convention
+`command_center_v4.html` is ~16k lines of inline HTML/CSS/JS. When adding or upgrading bot panels:
+1. Canvas elements must be injected **after** the panel HTML is in the DOM (post-inject pattern — referencing the canvas in the same template string where it's declared will fail because the element doesn't exist yet at script parse time).
+2. After any edit, do a brace-balance check on the `<script>` block — unbalanced braces silently break the whole dashboard with no console error.
+3. Match existing v4 conventions (color palette, panel structure, data-binding pattern) rather than inventing new ones. Copy a working panel and modify it.
+4. Test by reloading the browser and checking that **all** bot panels still render — a single syntax error in one panel blacks out the whole page.
+
+### Portfolio Reservation Leaks on Bot Restart
+When a bot crashes or is restarted mid-trade, its in-flight reservations in `portfolio.json` are orphaned (the bot has no memory of them after restart). Defense: bots must call `/api/portfolio/release` for any stale reservations on startup, or the portfolio manager will leak capital until manually cleared. Known offender was TrekBot — fixed in milestone v3. When wiring a new bot to the pool, verify restart hygiene.
+
 ## Fleet Mode (Paper/Live Toggle)
 `fleet_config.FLEET_MODE` is the single source of truth for paper vs live trading. Default: `"paper"`.
 
@@ -286,3 +300,5 @@ Collector threads silently swallow network errors. If data stops flowing, check 
 - ALWAYS read existing code before modifying
 - No fake stats — ever
 - A module is only "done" when: (1) import appears in the running bot file, (2) API endpoint responds, (3) event bus shows expected event type
+- **Prefer specialized agents over general-purpose.** Six domain agents are available (fee-slayer, fleet-wire-master, fleet-auditor, nexus-council-physicist, simons-fleet-philosopher, cosmos-dashboard-alchemist). Each owns a specific slice of the fleet and has internalized the conventions for that slice. Use `general-purpose` only when nothing else fits.
+- **Event bus is the ground truth for wiring verification, not file grep.** A file existing or even an import line is not proof that an engine is firing. The only definitive check is seeing the expected event type land on `/api/events/recent`.

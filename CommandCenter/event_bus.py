@@ -22,14 +22,28 @@ Usage from bots:
 """
 
 import json
+import os
 import threading
 import time
 from collections import deque
 from typing import List, Optional
 
 
+# Durable event log (append-only JSONL, one file per day).
+# Every published event is appended here before any in-memory routing so that
+# reboots never lose history. Dashboards and /api/trades read from these files.
+EVENT_LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                             "logs", "event_bus")
+
+
+def _event_log_path_for(ts: float) -> str:
+    """Return the JSONL path for the UTC date of a given timestamp."""
+    day = time.strftime("%Y-%m-%d", time.gmtime(ts))
+    return os.path.join(EVENT_LOG_DIR, f"{day}.jsonl")
+
+
 class EventBus:
-    """In-process event bus with SSE broadcast and reaction rules."""
+    """In-process event bus with SSE broadcast, reaction rules, and durable JSONL log."""
 
     def __init__(self, max_history: int = 500):
         self._subscribers: List[dict] = []  # [{"queue": deque, "filter": dict|None}]
@@ -39,13 +53,75 @@ class EventBus:
         self._reaction_lock = threading.Lock()
         # Rolling window for condition evaluation
         self._recent_events = deque(maxlen=2000)
+        # Durable log write serialization (separate from state lock)
+        self._disk_lock = threading.Lock()
+        try:
+            os.makedirs(EVENT_LOG_DIR, exist_ok=True)
+        except Exception:
+            pass
+        # Rehydrate in-memory history from today's log so /api/events/recent
+        # returns useful data immediately after a restart instead of going blank.
+        self._rehydrate_history()
+
+    def _rehydrate_history(self) -> None:
+        """Load today's JSONL file into self._history on startup.
+
+        Silent on failure — a missing or corrupt file should not prevent CC from
+        starting. Subscribers created after rehydration start with clean queues.
+        """
+        path = _event_log_path_for(time.time())
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as fh:
+                # Only load the tail — max_history caps what we keep in RAM anyway.
+                lines = fh.readlines()
+            # Walk from the end so we fill self._history with the most recent events
+            # up to its maxlen, preserving chronological order.
+            maxlen = self._history.maxlen or 500
+            tail = lines[-maxlen:]
+            for line in tail:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    ev = json.loads(line)
+                except Exception:
+                    continue
+                self._history.append(ev)
+                self._recent_events.append(ev)
+        except Exception:
+            # Never block startup on a damaged log file.
+            pass
+
+    def _append_to_disk(self, event: dict) -> None:
+        """Append an event to today's JSONL file. Safe to call from any thread."""
+        try:
+            line = json.dumps(event, default=str) + "\n"
+        except Exception:
+            return  # Unserializable event; don't crash the publish path.
+        path = _event_log_path_for(event.get("ts", time.time()))
+        with self._disk_lock:
+            try:
+                # Ensure directory exists even if it was deleted mid-run.
+                os.makedirs(os.path.dirname(path), exist_ok=True)
+                with open(path, "a", encoding="utf-8") as fh:
+                    fh.write(line)
+            except Exception:
+                # Swallow — disk errors must not break live trading signal flow.
+                pass
 
     # ── Publishing ──
 
     MAX_REACTION_DEPTH = 3
 
     def publish(self, event: dict):
-        """Publish an event to all subscribers and check reaction rules."""
+        """Publish an event to all subscribers, check reactions, and durably log.
+
+        Disk write happens AFTER in-memory routing so subscriber latency is not
+        affected by I/O. If CC crashes between the in-memory append and the disk
+        append, we lose at most one event — acceptable.
+        """
         event.setdefault("ts", time.time())
         event.setdefault("id", f"{event.get('source', 'unknown')}_{int(event['ts'] * 1000)}")
 
@@ -57,6 +133,9 @@ class EventBus:
                 if sub["filter"] and etype not in sub["filter"]:
                     continue  # pre-filter: don't waste queue space
                 sub["queue"].append(event)
+
+        # Durable append (outside the state lock — disk I/O must not block routing).
+        self._append_to_disk(event)
 
         # Check reactions in a separate thread to avoid blocking publish
         depth = event.get("_reaction_depth", 0)

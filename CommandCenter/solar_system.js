@@ -44,7 +44,7 @@ var CELESTIAL_HIERARCHY={
   rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.007,  mass:10, sz:25, grp:"trader", pt:"elastic",     pers:"bouncy"},
   arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.004,  mass:10, sz:25, grp:"trader", pt:"binary_pair", pers:"paired"},
   /* MOONS — Small support bots ×1.2, orbital radii ×1.3 */
-  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.00057, mass:14, sz:24, grp:"novel",    pt:"magnetar",   pers:"guardian"},
+  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.00057, mass:14, sz:36, grp:"novel",    pt:"magnetar",   pers:"guardian"},
   phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.00085, mass:12, sz:16, grp:"novel",    pt:"variable",   pers:"pulsing"},
   sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.00043, mass:10, sz:14, grp:"intel",    pt:"nebula",     pers:"watchful"},
   contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.00115, mass:10, sz:14, grp:"intel",    pt:"dark_nebula",pers:"contrarian",ecc:0.22},
@@ -487,105 +487,228 @@ function drawSun(ctx, x, y, baseRadius, now, eventRate) {
 var PLANET_VISUALS = {
 
     oracle: {
-        baseColor: [190, 160, 80],
-        atmosphere: [220, 190, 110],
+        /* Jupiter — NASA Juno palette: rich amber, ochre, cream, russet cloud bands */
+        baseColor: [200, 158, 90],
+        atmosphere: [230, 195, 115],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Jupiter-style banded atmosphere — 12 bands with varied colors */
+            /* NASA Juno-accurate band palette — 18 alternating zones and belts */
             var bands=[
-              {y:-0.85,h:0.14,c:[210,185,120],a:0.2},{y:-0.71,h:0.12,c:[170,130,70],a:0.18},
-              {y:-0.59,h:0.15,c:[220,195,130],a:0.22},{y:-0.44,h:0.11,c:[155,115,55],a:0.16},
-              {y:-0.33,h:0.14,c:[210,180,110],a:0.2},{y:-0.19,h:0.13,c:[180,140,75],a:0.18},
-              {y:-0.06,h:0.12,c:[225,200,140],a:0.22},{y:0.06,h:0.14,c:[160,120,60],a:0.16},
-              {y:0.20,h:0.13,c:[215,185,115],a:0.2},{y:0.33,h:0.15,c:[175,135,70],a:0.18},
-              {y:0.48,h:0.12,c:[220,190,125],a:0.22},{y:0.60,h:0.25,c:[165,125,65],a:0.16}
+              /* North polar region */
+              {y:-0.92,h:0.09,c:[165,128,82],a:0.30},
+              /* North North Temperate Belt */
+              {y:-0.83,h:0.10,c:[140,100,55],a:0.32},
+              /* North North Temperate Zone */
+              {y:-0.73,h:0.09,c:[215,190,135],a:0.28},
+              /* North Temperate Belt */
+              {y:-0.64,h:0.11,c:[155,112,60],a:0.35},
+              /* North Temperate Zone */
+              {y:-0.53,h:0.10,c:[228,200,140],a:0.30},
+              /* North Equatorial Belt — darkest, richest */
+              {y:-0.43,h:0.14,c:[148,95,42],a:0.40},
+              /* North Tropical Zone */
+              {y:-0.29,h:0.10,c:[235,208,148],a:0.28},
+              /* Equatorial Belt */
+              {y:-0.19,h:0.09,c:[172,128,68],a:0.35},
+              /* Equatorial Zone — cream */
+              {y:-0.10,h:0.10,c:[242,220,165],a:0.25},
+              /* Equatorial Belt south */
+              {y:0.00,h:0.09,c:[168,122,62],a:0.33},
+              /* South Equatorial Belt — where GRS lives */
+              {y:0.09,h:0.16,c:[152,98,45],a:0.42},
+              /* South Tropical Zone */
+              {y:0.25,h:0.10,c:[230,205,142],a:0.28},
+              /* South Temperate Belt */
+              {y:0.35,h:0.11,c:[145,102,52],a:0.35},
+              /* South Temperate Zone */
+              {y:0.46,h:0.09,c:[220,192,130],a:0.28},
+              /* South South Temperate Belt */
+              {y:0.55,h:0.10,c:[138,95,48],a:0.32},
+              /* South polar region */
+              {y:0.65,h:0.18,c:[162,122,72],a:0.30},
+              /* Polar cap tint */
+              {y:0.83,h:0.17,c:[148,118,80],a:0.22}
             ];
             for(var bi=0;bi<bands.length;bi++){
               var b=bands[bi];
-              var drift=Math.sin(now/15000+bi*1.1)*2+(bi%2?-1:1)*Math.sin(now/8000+bi)*1.5;
-              var bG=ctx.createLinearGradient(x-r+drift,0,x+r+drift,0);
-              bG.addColorStop(0,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.5)+')');
-              bG.addColorStop(0.3,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
-              bG.addColorStop(0.7,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
-              bG.addColorStop(1,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.5)+')');
+              /* Each band drifts at slightly different speed — differential rotation */
+              var drift=(bi%2===0?1:-1)*Math.sin(now/18000+bi*0.9)*r*0.04
+                       +(bi<8?1:-1)*Math.sin(now/11000+bi*1.7)*r*0.02;
+              var bG=ctx.createLinearGradient(x-r,y+b.y*r,x+r,y+(b.y+b.h)*r);
+              bG.addColorStop(0,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.45)+')');
+              bG.addColorStop(0.15,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
+              bG.addColorStop(0.85,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
+              bG.addColorStop(1,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.45)+')');
+              ctx.save();
+              ctx.translate(drift,0);
               ctx.fillStyle=bG;
-              ctx.fillRect(x-r+drift,y+b.y*r,r*2,b.h*r);
+              ctx.fillRect(x-r-Math.abs(drift)-2,y+b.y*r,r*2+Math.abs(drift)*2+4,b.h*r+1);
+              ctx.restore();
             }
-            /* Swirl/turbulence between bands */
-            ctx.strokeStyle='rgba(200,170,100,0.06)';ctx.lineWidth=0.8;
-            for(var si=0;si<6;si++){
-              var sy2=y-r*0.5+si*r*0.2;
+            /* Inter-band turbulence: festoon waves at belt/zone boundaries */
+            ctx.lineWidth=0.7;
+            var turbBands=[-0.43,-0.29,0.09,0.25];
+            for(var ti=0;ti<turbBands.length;ti++){
+              var ty=y+turbBands[ti]*r;
+              ctx.strokeStyle='rgba(200,165,95,0.09)';
               ctx.beginPath();
-              for(var sx=x-r;sx<x+r;sx+=3){
-                var sw=Math.sin((sx-x)/12+now/4000+si*2)*2.5+Math.sin((sx-x)/6+now/2000)*1.2;
-                if(sx===x-r) ctx.moveTo(sx,sy2+sw);else ctx.lineTo(sx,sy2+sw);
+              for(var tx=x-r;tx<=x+r;tx+=2){
+                var tw=Math.sin((tx-x)/r*8+now/5000+ti*2.1)*r*0.025
+                      +Math.sin((tx-x)/r*14+now/3200+ti)*r*0.012;
+                if(tx===x-r) ctx.moveTo(tx,ty+tw); else ctx.lineTo(tx,ty+tw);
               }
               ctx.stroke();
+              /* Festoon wisps: short curved filaments dipping south */
+              for(var fi=0;fi<5;fi++){
+                var fx=x-r*0.7+fi*r*0.35+Math.sin(now/8000+fi+ti)*r*0.05;
+                var festA=now/12000+fi*0.8+ti;
+                ctx.strokeStyle='rgba(175,130,65,0.08)';
+                ctx.lineWidth=0.5;
+                ctx.beginPath();
+                ctx.moveTo(fx,ty);
+                ctx.bezierCurveTo(fx+r*0.04,ty+r*0.05,fx+r*0.07,ty+r*0.06,fx+r*0.08,ty+r*0.04);
+                ctx.stroke();
+              }
             }
-            /* Great Red Spot — larger, more detailed */
-            var spotX=x+Math.cos(now/10000)*r*0.25;
-            var spotY=y+r*0.18;
-            /* Outer haze */
-            var spOuter=ctx.createRadialGradient(spotX,spotY,0,spotX,spotY,r*0.2);
-            spOuter.addColorStop(0,'rgba(190,80,40,0.3)');spOuter.addColorStop(0.6,'rgba(170,70,35,0.12)');spOuter.addColorStop(1,'rgba(0,0,0,0)');
-            ctx.fillStyle=spOuter;ctx.beginPath();ctx.ellipse(spotX,spotY,r*0.2,r*0.12,0,0,Math.PI*2);ctx.fill();
-            /* Core */
-            var spCore=ctx.createRadialGradient(spotX,spotY,0,spotX,spotY,r*0.1);
-            spCore.addColorStop(0,'rgba(210,90,30,0.35)');spCore.addColorStop(1,'rgba(180,70,25,0)');
-            ctx.fillStyle=spCore;ctx.beginPath();ctx.ellipse(spotX,spotY,r*0.1,r*0.06,0.1,0,Math.PI*2);ctx.fill();
-            /* Spot swirl */
-            ctx.strokeStyle='rgba(220,100,40,0.1)';ctx.lineWidth=0.6;
-            ctx.beginPath();ctx.ellipse(spotX,spotY,r*0.08,r*0.045,now/5000,0,Math.PI*1.5);ctx.stroke();
-            /* Scanner beam — narrow cone of light rotating */
-            var scA=now/6000;
-            var scG=ctx.createRadialGradient(x,y,r*0.3,x+Math.cos(scA)*r*1.5,y+Math.sin(scA)*r*1.5,r*0.08);
-            scG.addColorStop(0,'rgba(220,190,110,0.04)');scG.addColorStop(1,'rgba(0,0,0,0)');
+            /* Great Red Spot — oval storm, 1.5x planet-width, south equatorial belt */
+            var grsPhase=now/18000; /* slow westward drift */
+            var spotX=x+Math.cos(grsPhase)*r*0.28;
+            var spotY=y+r*0.17;
+            var grsA=r*0.22, grsB=r*0.135; /* semi-axes */
+            /* GRS outer wake — oval halo before the storm */
+            var grsWake=ctx.createRadialGradient(spotX,spotY,grsA*0.7,spotX,spotY,grsA*1.5);
+            grsWake.addColorStop(0,'rgba(180,70,30,0.06)');
+            grsWake.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=grsWake;
+            ctx.beginPath();ctx.ellipse(spotX,spotY,grsA*1.5,grsB*1.5,0,0,Math.PI*2);ctx.fill();
+            /* Outer ring — reddish-brown */
+            var grsOuter=ctx.createRadialGradient(spotX,spotY,grsA*0.55,spotX,spotY,grsA);
+            grsOuter.addColorStop(0,'rgba(200,80,35,0.32)');
+            grsOuter.addColorStop(0.5,'rgba(188,68,28,0.22)');
+            grsOuter.addColorStop(1,'rgba(170,58,22,0.05)');
+            ctx.fillStyle=grsOuter;
+            ctx.beginPath();ctx.ellipse(spotX,spotY,grsA,grsB,-0.05,0,Math.PI*2);ctx.fill();
+            /* Inner core — deeper brick red */
+            var grsCore=ctx.createRadialGradient(spotX-grsA*0.08,spotY-grsB*0.1,0,spotX,spotY,grsA*0.55);
+            grsCore.addColorStop(0,'rgba(215,90,38,0.38)');
+            grsCore.addColorStop(0.35,'rgba(195,72,28,0.28)');
+            grsCore.addColorStop(0.7,'rgba(172,58,22,0.15)');
+            grsCore.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=grsCore;
+            ctx.beginPath();ctx.ellipse(spotX,spotY,grsA*0.55,grsB*0.55,0,0,Math.PI*2);ctx.fill();
+            /* GRS rotation swirls — 3 concentric oval arcs rotating CCW */
+            for(var sw=0;sw<3;sw++){
+              var swA=grsA*(0.85-sw*0.22), swB=grsB*(0.85-sw*0.22);
+              var swRot=-now/8000-sw*0.5; /* CCW */
+              ctx.strokeStyle='rgba(210,85,35,'+(0.12-sw*0.03)+')';
+              ctx.lineWidth=0.8-sw*0.18;
+              ctx.beginPath();
+              ctx.ellipse(spotX,spotY,swA,swB,swRot,0,Math.PI*1.7);
+              ctx.stroke();
+            }
+            /* White oval storms — smaller BTB ovals in south temperate belt */
+            var baSeed=[[0.3,0.40],[0.68,0.43],[-0.35,0.38]];
+            for(var ba=0;ba<baSeed.length;ba++){
+              var baX=x+baSeed[ba][0]*r+Math.sin(now/25000+ba)*r*0.03;
+              var baY=y+baSeed[ba][1]*r;
+              var baG=ctx.createRadialGradient(baX,baY,0,baX,baY,r*0.07);
+              baG.addColorStop(0,'rgba(240,232,210,0.22)');
+              baG.addColorStop(0.6,'rgba(220,210,185,0.08)');
+              baG.addColorStop(1,'rgba(0,0,0,0)');
+              ctx.fillStyle=baG;
+              ctx.beginPath();ctx.ellipse(baX,baY,r*0.07,r*0.045,0,0,Math.PI*2);ctx.fill();
+            }
+            /* Scanner beam — oracle's 93-pair scanning pulse */
+            var scA=now/7000;
+            var scLen=r*1.3;
+            var scG=ctx.createLinearGradient(x,y,x+Math.cos(scA)*scLen,y+Math.sin(scA)*scLen);
+            scG.addColorStop(0,'rgba(228,195,110,0.05)');
+            scG.addColorStop(0.7,'rgba(228,195,110,0.02)');
+            scG.addColorStop(1,'rgba(0,0,0,0)');
             ctx.fillStyle=scG;ctx.beginPath();ctx.moveTo(x,y);
-            ctx.arc(x,y,r*1.2,scA-0.08,scA+0.08);ctx.closePath();ctx.fill();
+            ctx.arc(x,y,scLen,scA-0.06,scA+0.06);ctx.closePath();ctx.fill();
         }
     },
 
     deepblue: {
-        baseColor: [20, 60, 150],
-        atmosphere: [55, 130, 225],
+        /* Neptune — deep cobalt blue, NASA Voyager 2 palette: saturated azure/ultramarine */
+        baseColor: [15, 50, 168],
+        atmosphere: [45, 118, 235],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Neptune-style deep blue with cloud streaks */
-            /* Atmospheric bands — subtle, horizontal */
+            /* Neptune atmospheric bands — very subtle, high-contrast streaks */
             var dbBands=[
-              {y:-0.7,h:0.2,c:[35,90,180],a:0.12},{y:-0.5,h:0.15,c:[25,70,150],a:0.1},
-              {y:-0.35,h:0.2,c:[40,100,190],a:0.14},{y:-0.15,h:0.15,c:[28,75,155],a:0.1},
-              {y:0.0,h:0.2,c:[45,105,195],a:0.12},{y:0.2,h:0.18,c:[30,80,160],a:0.1},
-              {y:0.38,h:0.2,c:[38,95,185],a:0.14},{y:0.58,h:0.22,c:[25,70,145],a:0.1}
+              {y:-0.78,h:0.13,c:[22,80,185],a:0.18},
+              {y:-0.65,h:0.10,c:[12,55,158],a:0.22},
+              {y:-0.55,h:0.13,c:[28,92,198],a:0.16},
+              {y:-0.42,h:0.09,c:[18,65,172],a:0.20},
+              {y:-0.33,h:0.12,c:[32,100,210],a:0.15},
+              {y:-0.21,h:0.10,c:[15,60,165],a:0.22},
+              {y:-0.11,h:0.12,c:[35,108,218],a:0.14},
+              {y:0.01,h:0.10,c:[20,72,178],a:0.20},
+              {y:0.11,h:0.12,c:[30,95,205],a:0.16},
+              {y:0.23,h:0.10,c:[16,62,168],a:0.22},
+              {y:0.33,h:0.13,c:[26,88,195],a:0.15},
+              {y:0.46,h:0.10,c:[14,55,158],a:0.20},
+              {y:0.56,h:0.14,c:[22,78,182],a:0.18},
+              {y:0.70,h:0.15,c:[18,65,170],a:0.16}
             ];
             for(var bi=0;bi<dbBands.length;bi++){
               var b=dbBands[bi];
-              var drift=Math.sin(now/18000+bi*0.8)*1.5;
+              /* Neptune has fastest winds in solar system — strong differential rotation */
+              var drift=(bi%2===0?1.2:-0.8)*Math.sin(now/10000+bi*0.7)*r*0.06;
               ctx.fillStyle='rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')';
               ctx.fillRect(x-r+drift,y+b.y*r,r*2,b.h*r);
             }
-            /* Cloud streaks — thin white wisps */
-            ctx.strokeStyle='rgba(180,210,240,0.08)';ctx.lineWidth=1;
-            for(var ci=0;ci<4;ci++){
-              var cy2=y-r*0.3+ci*r*0.2;
-              var cdrift=Math.sin(now/10000+ci*3)*r*0.1;
+            /* Bright cloud streaks — methane ice high-altitude cirrus */
+            for(var ci=0;ci<6;ci++){
+              var cy2=y+(-0.6+ci*0.22)*r;
+              var cdrift=Math.sin(now/6000+ci*2.8)*r*0.15; /* fast wind drift */
+              /* Streak length varies — wispy and discontinuous */
+              var cLen=r*(0.3+0.4*((ci*7+13)%5/5));
+              var cxStart=x-cLen*0.5+Math.cos(ci*1.4)*r*0.2;
+              ctx.strokeStyle='rgba(195,220,252,'+(0.12+0.06*Math.sin(now/3000+ci))+')';
+              ctx.lineWidth=Math.max(0.5,1.5-ci*0.15);
               ctx.beginPath();
-              for(var cx2=x-r*0.6;cx2<x+r*0.4;cx2+=2){
-                var cw=Math.sin((cx2-x)/15+now/3000+ci)*1.5;
-                if(cx2===x-r*0.6)ctx.moveTo(cx2+cdrift,cy2+cw);else ctx.lineTo(cx2+cdrift,cy2+cw);
+              for(var cx2=cxStart;cx2<cxStart+cLen;cx2+=1.5){
+                var cw=Math.sin((cx2-x)/r*12+now/2500+ci)*r*0.012;
+                if(cx2===cxStart)ctx.moveTo(cx2+cdrift,cy2+cw);
+                else ctx.lineTo(cx2+cdrift,cy2+cw);
               }
               ctx.stroke();
             }
-            /* Great Dark Spot */
-            var gdX=x+Math.cos(now/12000)*r*0.15;
-            var gdY=y-r*0.1;
-            var gdG=ctx.createRadialGradient(gdX,gdY,0,gdX,gdY,r*0.15);
-            gdG.addColorStop(0,'rgba(10,40,100,0.4)');gdG.addColorStop(0.7,'rgba(15,50,120,0.15)');gdG.addColorStop(1,'rgba(0,0,0,0)');
-            ctx.fillStyle=gdG;ctx.beginPath();ctx.ellipse(gdX,gdY,r*0.15,r*0.09,0.15,0,Math.PI*2);ctx.fill();
-            /* Sonar pulses — concentric expanding rings */
+            /* Great Dark Spot — deep anticyclone (Voyager discovered, later disappeared) */
+            var gdX=x+Math.cos(now/14000)*r*0.18;
+            var gdY=y-r*0.12;
+            /* Outer ring — dark blue oval depression */
+            var gdOuter=ctx.createRadialGradient(gdX,gdY,r*0.08,gdX,gdY,r*0.19);
+            gdOuter.addColorStop(0,'rgba(8,30,95,0.35)');
+            gdOuter.addColorStop(0.5,'rgba(10,38,110,0.18)');
+            gdOuter.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=gdOuter;ctx.beginPath();ctx.ellipse(gdX,gdY,r*0.19,r*0.12,0.2,0,Math.PI*2);ctx.fill();
+            /* Core */
+            var gdCore=ctx.createRadialGradient(gdX,gdY,0,gdX,gdY,r*0.09);
+            gdCore.addColorStop(0,'rgba(5,20,75,0.45)');
+            gdCore.addColorStop(0.6,'rgba(8,28,90,0.20)');
+            gdCore.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=gdCore;ctx.beginPath();ctx.ellipse(gdX,gdY,r*0.09,r*0.055,0.2,0,Math.PI*2);ctx.fill();
+            /* Companion bright cloud — "scooter" feature just south, moving faster */
+            var scootX=x+Math.cos(now/8000)*r*0.22;
+            var scootY=gdY+r*0.14;
+            var scootG=ctx.createRadialGradient(scootX,scootY,0,scootX,scootY,r*0.055);
+            scootG.addColorStop(0,'rgba(210,228,252,0.25)');
+            scootG.addColorStop(0.5,'rgba(185,215,250,0.10)');
+            scootG.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=scootG;ctx.beginPath();ctx.ellipse(scootX,scootY,r*0.055,r*0.032,0,0,Math.PI*2);ctx.fill();
+            /* Triton teal glow — atmospheric influence from largest moon */
+            var tritonG=ctx.createRadialGradient(x+r*0.35,y-r*0.55,0,x+r*0.35,y-r*0.55,r*0.28);
+            tritonG.addColorStop(0,'rgba(80,210,195,0.06)');
+            tritonG.addColorStop(1,'rgba(0,0,0,0)');
+            ctx.fillStyle=tritonG;ctx.beginPath();ctx.arc(x+r*0.35,y-r*0.55,r*0.28,0,Math.PI*2);ctx.fill();
+            /* Sonar/whale-detection pulses */
             for(var sp=0;sp<3;sp++){
-              var spProg=((now/2000+sp*0.33)%1);
-              var spR=r*0.2+spProg*r*1.2;
-              var spA=(1-spProg)*(1-spProg)*0.12;
-              ctx.strokeStyle='rgba(60,180,255,'+spA+')';ctx.lineWidth=1;
+              var spProg=((now/2200+sp*0.33)%1);
+              var spR=Math.max(0.1,r*0.15+spProg*r*1.0);
+              var spA=(1-spProg)*(1-spProg)*0.10;
+              ctx.strokeStyle='rgba(75,185,255,'+spA+')';ctx.lineWidth=0.8;
               ctx.beginPath();ctx.arc(x,y,spR,0,Math.PI*2);ctx.stroke();
             }
             /* Bioluminescent patches on dark side */
@@ -1009,90 +1132,201 @@ var PLANET_VISUALS = {
     },
 
     nexus: {
-        /* ═══ MINI BLACK HOLE — event horizon + tilted accretion disk ═══
-           NEXUS is the math council — everything flows into it.
-           No planet surface: the base gradient is painted near-black.
-           The overlay draws the disk AFTER the sphere, straddling it. */
-        baseColor: [8, 4, 16],
-        atmosphere: null,
+        /* ═══ PULSAR — rapidly spinning neutron star, The Council's 14-engine core ═══
+           NEXUS is the math council. Rendered as a pulsar: dense bright core,
+           twin lighthouse beams sweeping at 1500ms rotation period, dipole
+           field lines, equatorial radiation belt, ejected beam particles,
+           and expanding radio-pulse rings. */
+        baseColor: [20, 40, 120],
+        atmosphere: [80, 140, 255],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Surface is clipped to r — paint the event horizon black disc here.
-               The photon ring and accretion disk are in overlay (unclipped). */
-            /* Dark gradient — deepest black at center, slightly less at edge */
-            var ehG = ctx.createRadialGradient(x, y, 0, x, y, r);
-            ehG.addColorStop(0,   'rgb(1,0,2)');
-            ehG.addColorStop(0.7, 'rgb(2,1,4)');
-            ehG.addColorStop(1,   'rgb(3,1,6)');
-            ctx.fillStyle = ehG;
+            /* ═══ COMPACT CORE — intense blue-white neutron star ═══
+               Core is only 35% of allocated radius — this thing is DENSE. */
+            var cr = Math.max(0.1, r * 0.35);
+            /* Outer halo — diffuse glow extends to full r */
+            var haloG = ctx.createRadialGradient(x, y, Math.max(0.1, cr * 0.8), x, y, r);
+            haloG.addColorStop(0,   'rgba(160,200,255,0.22)');
+            haloG.addColorStop(0.4, 'rgba(80,140,255,0.10)');
+            haloG.addColorStop(1,   'rgba(20,40,120,0)');
+            ctx.fillStyle = haloG;
             ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+            /* Mid glow ring */
+            var midG = ctx.createRadialGradient(x, y, 0, x, y, Math.max(0.1, cr * 1.6));
+            midG.addColorStop(0,   'rgba(220,235,255,0.85)');
+            midG.addColorStop(0.35,'rgba(140,185,255,0.55)');
+            midG.addColorStop(0.7, 'rgba(60,120,255,0.22)');
+            midG.addColorStop(1,   'rgba(20,40,200,0)');
+            ctx.fillStyle = midG;
+            ctx.beginPath(); ctx.arc(x, y, Math.max(0.1, cr * 1.6), 0, Math.PI * 2); ctx.fill();
+            /* Hard bright core — the neutron star surface */
+            var coreG = ctx.createRadialGradient(x, y, 0, x, y, cr);
+            coreG.addColorStop(0,   'rgba(255,255,255,1)');
+            coreG.addColorStop(0.25,'rgba(220,235,255,0.98)');
+            coreG.addColorStop(0.6, 'rgba(140,185,255,0.90)');
+            coreG.addColorStop(1,   'rgba(60,120,255,0.70)');
+            ctx.fillStyle = coreG;
+            ctx.beginPath(); ctx.arc(x, y, cr, 0, Math.PI * 2); ctx.fill();
+            /* Specular hotspot */
+            var specG = ctx.createRadialGradient(
+                x - cr * 0.2, y - cr * 0.2,
+                0,
+                x - cr * 0.2, y - cr * 0.2,
+                Math.max(0.1, cr * 0.55)
+            );
+            specG.addColorStop(0,   'rgba(255,255,255,0.9)');
+            specG.addColorStop(0.5, 'rgba(220,240,255,0.3)');
+            specG.addColorStop(1,   'rgba(255,255,255,0)');
+            ctx.fillStyle = specG;
+            ctx.beginPath(); ctx.arc(x, y, cr, 0, Math.PI * 2); ctx.fill();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
-            /* ═══ ACCRETION DISK + PHOTON RING — all in overlay (unclipped) ═══ */
-            var diskRot  = now / 22000;
-            var tilt     = 0.28;
-            /* Photon sphere ring — very thin, bright orange just outside event horizon */
-            var photonRingR = r * 1.08;
-            var photonG = ctx.createRadialGradient(x, y, r * 0.90, x, y, photonRingR * 1.22);
-            photonG.addColorStop(0,   'rgba(0,0,0,0)');
-            photonG.addColorStop(0.28,'rgba(255,220,120,0.18)');
-            photonG.addColorStop(0.50,'rgba(255,180, 50,0.42)');
-            photonG.addColorStop(0.68,'rgba(230,140, 25,0.20)');
-            photonG.addColorStop(1,   'rgba(0,0,0,0)');
-            ctx.fillStyle = photonG;
-            ctx.beginPath(); ctx.arc(x, y, photonRingR * 1.22, 0, Math.PI * 2); ctx.fill();
-            /* ═══ ACCRETION DISK — tilted ellipse, back half first ═══ */
-            var diskDefs = [
-                {inner:1.18,outer:1.44,c:[255,200, 80],a:0.28},
-                {inner:1.44,outer:1.76,c:[255,130, 30],a:0.20},
-                {inner:1.76,outer:2.14,c:[200, 70, 20],a:0.13},
-                {inner:2.14,outer:2.58,c:[120, 30, 10],a:0.07}
-            ];
+            /* ═══ PULSAR OVERLAY — beams, field lines, disk, particles, rings ═══ */
             ctx.save();
-            /* Back half */
-            for(var di=0;di<diskDefs.length;di++){
-                var dd=diskDefs[di];
-                ctx.strokeStyle='rgba('+dd.c[0]+','+dd.c[1]+','+dd.c[2]+','+dd.a+')';
-                ctx.lineWidth=(dd.outer-dd.inner)*r;
-                var midR=(dd.inner+dd.outer)/2*r;
+            var beamAngle = now / 1500;          /* fast rotation ~1.5s period  */
+            var diskAngle = now / 18000;          /* equatorial belt slow drift   */
+            var cr        = Math.max(0.1, r * 0.35);
+            var beamLen   = r * 3.5;
+            var halfAng   = Math.PI / 12;         /* 15 degrees half-angle        */
+
+            /* ── 1. MAGNETIC FIELD LINES (dipole, very faint, rotate with beam) ── */
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(beamAngle);
+            var numLines = 5;
+            for (var li = 0; li < numLines; li++) {
+                var lt  = li / (numLines - 1);           /* 0..1                 */
+                var lAlpha = 0.06 + lt * 0.06;           /* faint at poles, mid  */
+                /* Spread control points outward; lines bow symmetrically */
+                var spread = 0.5 + lt * 1.4;             /* 0.5r..1.9r spread    */
+                var cpx    = cr * 1.6 * spread;
+                /* North pole arc */
+                ctx.strokeStyle = 'rgba(80,120,255,' + lAlpha.toFixed(3) + ')';
+                ctx.lineWidth   = 0.6;
                 ctx.beginPath();
-                ctx.ellipse(x,y,midR,Math.max(0.1,midR*tilt),diskRot,Math.PI*0.05,Math.PI*0.95);
+                ctx.moveTo(0, -cr);
+                ctx.quadraticCurveTo( cpx, 0,  0,  cr);
+                ctx.stroke();
+                /* South-side mirror (negative cpx) */
+                ctx.beginPath();
+                ctx.moveTo(0, -cr);
+                ctx.quadraticCurveTo(-cpx, 0,  0,  cr);
                 ctx.stroke();
             }
-            /* Event horizon re-drawn to occlude back disk half */
-            ctx.fillStyle='rgb(2,1,4)';
-            ctx.beginPath();ctx.arc(x,y,r*1.05,0,Math.PI*2);ctx.fill();
-            /* Front half */
-            for(var di2=0;di2<diskDefs.length;di2++){
-                var dd2=diskDefs[di2];
-                var litB=Math.max(0,lx*Math.cos(diskRot)+ly*Math.sin(diskRot))*0.09;
-                ctx.strokeStyle='rgba('+dd2.c[0]+','+dd2.c[1]+','+dd2.c[2]+','+(dd2.a+litB)+')';
-                ctx.lineWidth=(dd2.outer-dd2.inner)*r;
-                var midR2=(dd2.inner+dd2.outer)/2*r;
-                ctx.beginPath();
-                ctx.ellipse(x,y,midR2,Math.max(0.1,midR2*tilt),diskRot,Math.PI*1.05,Math.PI*1.95);
-                ctx.stroke();
-            }
-            /* Hot inner glow corona */
-            var innerGlow=ctx.createRadialGradient(x,y,r*0.95,x,y,r*1.55);
-            innerGlow.addColorStop(0,'rgba(255,220,100,0.18)');
-            innerGlow.addColorStop(0.35,'rgba(255,150, 40,0.08)');
-            innerGlow.addColorStop(1,'rgba(0,0,0,0)');
-            ctx.fillStyle=innerGlow;
-            ctx.beginPath();ctx.arc(x,y,r*1.55,0,Math.PI*2);ctx.fill();
-            /* Final event horizon overdraw — absolute black, guarantees no bleed */
-            ctx.fillStyle='rgb(1,0,2)';
-            ctx.beginPath();ctx.arc(x,y,r*0.96,0,Math.PI*2);ctx.fill();
             ctx.restore();
-            /* Infalling data particles — dim dots spiraling inward */
-            for(var pi=0;pi<6;pi++){
-                var pa=(pi/6)*Math.PI*2+now/4500+pi*0.7;
-                var pr=r*(1.52+0.55*((pi%3)/3));
-                var ppx=x+Math.cos(pa)*pr;
-                var ppy=y+Math.sin(pa)*pr*tilt;
-                var pA=0.09+0.07*Math.sin(now/800+pi*2);
-                ctx.fillStyle='rgba(255,175,55,'+pA.toFixed(3)+')';
-                ctx.beginPath();ctx.arc(ppx,ppy,Math.max(0.4,1.0-pi*0.09),0,Math.PI*2);ctx.fill();
+
+            /* ── 2. EQUATORIAL RADIATION BELT — thin ellipse, slow independent spin ── */
+            ctx.save();
+            ctx.translate(x, y);
+            ctx.rotate(diskAngle);
+            var beltA = r * 1.8;
+            var beltB = Math.max(0.1, beltA * 0.18);   /* flat disk, viewed at angle */
+            var beltG = ctx.createLinearGradient(-beltA, 0, beltA, 0);
+            beltG.addColorStop(0,   'rgba(40,160,255,0)');
+            beltG.addColorStop(0.2, 'rgba(60,180,255,0.18)');
+            beltG.addColorStop(0.5, 'rgba(100,210,255,0.28)');
+            beltG.addColorStop(0.8, 'rgba(60,180,255,0.18)');
+            beltG.addColorStop(1,   'rgba(40,160,255,0)');
+            ctx.strokeStyle = beltG;
+            ctx.lineWidth   = beltB * 0.9;
+            ctx.beginPath();
+            ctx.ellipse(0, 0, beltA, Math.max(0.1, beltB * 0.5), 0, 0, Math.PI * 2);
+            ctx.stroke();
+            ctx.restore();
+
+            /* ── 3. SWEEPING LIGHTHOUSE BEAMS (two opposing, north/south poles) ── */
+            var beamColors = [
+                /* outer pass  */ { w: halfAng * 2.8, a: 0.07, r:80,  g:160, b:255 },
+                /* mid pass    */ { w: halfAng * 1.6, a: 0.18, r:140, g:200, b:255 },
+                /* core pass   */ { w: halfAng * 0.7, a: 0.55, r:210, g:235, b:255 }
+            ];
+            for (var pole = 0; pole < 2; pole++) {
+                var poleBase = beamAngle + pole * Math.PI; /* 180 degrees apart */
+                for (var bp = 0; bp < beamColors.length; bp++) {
+                    var bc = beamColors[bp];
+                    var hw = bc.w;                         /* half-angle of cone  */
+                    ctx.save();
+                    /* Clip cone to a triangle path */
+                    ctx.beginPath();
+                    ctx.moveTo(x, y);
+                    ctx.lineTo(
+                        x + Math.cos(poleBase - hw) * beamLen,
+                        y + Math.sin(poleBase - hw) * beamLen
+                    );
+                    ctx.lineTo(
+                        x + Math.cos(poleBase + hw) * beamLen,
+                        y + Math.sin(poleBase + hw) * beamLen
+                    );
+                    ctx.closePath();
+                    ctx.clip();
+                    /* Radial gradient fills the clipped cone */
+                    var bgx = x + Math.cos(poleBase) * beamLen;
+                    var bgy = y + Math.sin(poleBase) * beamLen;
+                    var beamG = ctx.createRadialGradient(x, y, Math.max(0.1, cr), bgx, bgy, Math.max(0.1, beamLen * 0.1));
+                    beamG.addColorStop(0,   'rgba(' + bc.r + ',' + bc.g + ',' + bc.b + ',' + bc.a + ')');
+                    beamG.addColorStop(0.4, 'rgba(' + bc.r + ',' + bc.g + ',' + bc.b + ',' + (bc.a * 0.5).toFixed(3) + ')');
+                    beamG.addColorStop(1,   'rgba(' + bc.r + ',' + bc.g + ',' + bc.b + ',0)');
+                    ctx.fillStyle = beamG;
+                    ctx.fillRect(x - beamLen, y - beamLen, beamLen * 2, beamLen * 2);
+                    ctx.restore();
+                }
             }
+
+            /* ── 4. BEAM PARTICLES — energetic dots ejected along beam path ── */
+            var numPart = 7;
+            for (var pole2 = 0; pole2 < 2; pole2++) {
+                var pBase2 = beamAngle + pole2 * Math.PI;
+                for (var pi = 0; pi < numPart; pi++) {
+                    /* Each particle travels along the beam axis at different depths */
+                    var phase  = ((pi / numPart) + now / 2200) % 1;  /* 0..1 along beam  */
+                    var dist   = Math.max(0.1, cr * 1.2 + phase * beamLen * 0.85);
+                    var spread = (pi % 3 - 1) * halfAng * 0.4;       /* slight scatter    */
+                    var angle  = pBase2 + spread;
+                    var px     = x + Math.cos(angle) * dist;
+                    var py     = y + Math.sin(angle) * dist;
+                    var pAlpha = Math.max(0, (1 - phase) * 0.7);      /* fade as it travels */
+                    var pSize  = Math.max(0.4, (1 - phase) * 2.2);
+                    ctx.fillStyle = 'rgba(180,220,255,' + pAlpha.toFixed(3) + ')';
+                    ctx.beginPath();
+                    ctx.arc(px, py, pSize, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            /* ── 5. RADIO PULSE RINGS — 3 expanding concentric rings ── */
+            var ringPeriod = 3000;                       /* ms per pulse cycle    */
+            for (var ri = 0; ri < 3; ri++) {
+                var rPhase  = ((now / ringPeriod) + ri / 3) % 1;   /* stagger by 1/3   */
+                var rRadius = Math.max(0.1, cr + rPhase * r * 2.8);
+                var rAlpha  = Math.max(0, (1 - rPhase) * 0.35);
+                ctx.strokeStyle = 'rgba(100,180,255,' + rAlpha.toFixed(3) + ')';
+                ctx.lineWidth   = Math.max(0.3, (1 - rPhase) * 1.8);
+                ctx.beginPath();
+                ctx.arc(x, y, rRadius, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+
+            /* ── 6. LIGHTHOUSE FLASH — brief bright flare when beam faces viewer ── */
+            /* Beam faces viewer when beamAngle ≈ 0 or π (mod 2π)                  */
+            for (var pole3 = 0; pole3 < 2; pole3++) {
+                var faceAngle = (beamAngle + pole3 * Math.PI) % (Math.PI * 2);
+                /* How close to facing forward (angle 0 = rightward) */
+                var facing = Math.cos(faceAngle);       /* 1 = direct, -1 = away  */
+                if (facing > 0.92) {
+                    var flashStrength = (facing - 0.92) / 0.08;  /* 0..1           */
+                    var fAlpha = flashStrength * 0.45;
+                    var fRadius = Math.max(0.1, cr * (1.8 + flashStrength * 1.4));
+                    var flashG = ctx.createRadialGradient(x, y, 0, x, y, fRadius);
+                    flashG.addColorStop(0,   'rgba(255,255,255,' + (fAlpha * 0.9).toFixed(3) + ')');
+                    flashG.addColorStop(0.4, 'rgba(180,220,255,' + (fAlpha * 0.5).toFixed(3) + ')');
+                    flashG.addColorStop(1,   'rgba(80,160,255,0)');
+                    ctx.fillStyle = flashG;
+                    ctx.beginPath();
+                    ctx.arc(x, y, fRadius, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+            }
+
+            ctx.restore();
         }
     },
 

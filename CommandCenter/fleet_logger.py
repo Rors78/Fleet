@@ -32,6 +32,10 @@ LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 SNAPSHOT_DIR = os.path.join(LOG_DIR, "snapshots")
 EVENT_DIR = os.path.join(LOG_DIR, "events")
 DAILY_DIR = os.path.join(LOG_DIR, "daily")
+# In-progress daily accumulator checkpoint — persisted on every mutation so a
+# mid-day reboot does not lose the day's running counters. Distinct from
+# DAILY_DIR which holds finalized midnight-flush summaries.
+DAILY_STATE_FILE = os.path.join(LOG_DIR, "daily_state.json")
 
 SNAPSHOT_INTERVAL = 60      # seconds between snapshots
 RETENTION_SNAPSHOTS = 90    # days
@@ -187,6 +191,10 @@ class FleetLogger:
 
         _ensure_dirs()
 
+        # Rehydrate in-progress daily state from disk. Done last so any
+        # persisted values override the blank defaults above.
+        self._load_daily_state()
+
     # ── Daily accumulator ──
 
     def _empty_daily(self):
@@ -198,6 +206,63 @@ class FleetLogger:
             "status_changes": [],   # bot online/offline transitions
             "pnl_by_bot": {},       # bot_id -> running pnl
         }
+
+    def _save_daily_state(self):
+        """Atomic write of the in-progress daily accumulator.
+
+        Called after every mutation so a reboot mid-day picks up exactly where
+        we left off. Uses tmp+os.replace for atomicity. Disk errors are
+        silently swallowed — daily-stats persistence is best-effort and must
+        not break live event routing.
+        """
+        try:
+            os.makedirs(os.path.dirname(DAILY_STATE_FILE), exist_ok=True)
+            with self._daily_lock:
+                snap = {
+                    "date": self._daily_date,
+                    "daily": self._daily,
+                    "starting_equity": self._starting_equity,
+                }
+            tmp = DAILY_STATE_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(snap, fh, default=str)
+            os.replace(tmp, DAILY_STATE_FILE)
+        except Exception:
+            pass
+
+    def _load_daily_state(self):
+        """Rehydrate the daily accumulator on startup if the state file is from today.
+
+        If the persisted date is older than today, ignore it — the day has
+        rolled over during the downtime and a fresh accumulator is correct.
+        """
+        try:
+            if not os.path.exists(DAILY_STATE_FILE):
+                return
+            with open(DAILY_STATE_FILE, "r", encoding="utf-8") as fh:
+                snap = json.load(fh)
+            if not isinstance(snap, dict):
+                return
+            persisted_date = snap.get("date")
+            today = _today_str()
+            if persisted_date != today:
+                # Day rolled over while we were down; leave fresh state in place.
+                return
+            daily = snap.get("daily")
+            if isinstance(daily, dict):
+                # Merge keys from persisted state, keeping schema stable if the
+                # persisted file is from an older schema version.
+                merged = self._empty_daily()
+                for k in merged:
+                    if k in daily:
+                        merged[k] = daily[k]
+                self._daily = merged
+                self._daily_date = persisted_date
+                se = snap.get("starting_equity")
+                if se is not None:
+                    self._starting_equity = se
+        except Exception:
+            pass
 
     def _check_day_rollover(self):
         """If the UTC date changed, finalize yesterday and reset."""
@@ -213,6 +278,9 @@ class FleetLogger:
             self._starting_equity = None
         # Write summary outside the lock using the snapshot
         self._write_daily_summary(old_date, old_daily, old_trades)
+        # Checkpoint the fresh accumulator so a reboot right after rollover
+        # picks up today's blank state, not yesterday's stale file.
+        self._save_daily_state()
 
     def get_daily_accumulator(self):
         """Return current daily stats for the dashboard sidebar."""
@@ -258,6 +326,7 @@ class FleetLogger:
         _append_jsonl(EVENT_DIR, event)
         with self._daily_lock:
             self._daily["portfolio_denials"] += 1
+        self._save_daily_state()
 
     def log_portfolio_reserve(self, bot_id, pair, direction, amount, reservation_id):
         """Called by command_center when a reserve succeeds."""
@@ -458,6 +527,13 @@ class FleetLogger:
                     })
                 except Exception:
                     pass  # never let bus errors break logging
+
+        # Checkpoint the daily accumulator once per detection pass. Any of the
+        # blocks above (status_changes, trades, regime_changes, whale_alerts)
+        # may have mutated self._daily — persist the result so a mid-day reboot
+        # preserves today's running counters instead of losing them.
+        if events:
+            self._save_daily_state()
 
         return events
 

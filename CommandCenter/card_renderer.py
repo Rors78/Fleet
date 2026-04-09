@@ -84,6 +84,26 @@ def _hex(color: str) -> Tuple[int, int, int]:
     return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
 
 
+def _human_regime(regime) -> str:
+    """Translate internal regime labels to human-readable prose. Single source of truth."""
+    return {
+        "TRENDING":       "Trending (bullish bias)",
+        "TRENDING_UP":    "Strong uptrend",
+        "TRENDING_DOWN":  "Downtrend",
+        "BULL":           "Bullish",
+        "BEAR":           "Bearish",
+        "RANGING":        "Range-bound (sideways)",
+        "NORMAL":         "Neutral",
+        "DEFENSIVE":      "Defensive (risk-off)",
+        "CAUTIOUS":       "Cautious",
+        "EQUILIBRIUM":    "Balanced",
+        "MIXED":          "Mixed signals",
+        "EXTREME_FEAR":   "Extreme fear",
+        "EXTREME_GREED":  "Extreme greed",
+        "HIGH_ACTIVITY":  "High activity",
+    }.get((regime or "").upper().replace(" ", "_"), (regime or "Unknown").replace("_", " ").title())
+
+
 class CardRenderer:
     """Renders signal cards as PNG bytes for Telegram."""
 
@@ -561,22 +581,124 @@ class CardRenderer:
 
         return self._to_png(img, y)
 
+    @staticmethod
+    def _trade_open_voice(direction: str, regime: str, deployed_pct,
+                          bot_name, conviction, top_signals) -> str:
+        """GoldenEye narrator voice for TRADE_OPEN image cards.
+        Returns a 1-2 sentence paragraph in plain language. Max ~160 chars.
+        """
+        dir_word = "buying" if str(direction).upper() in ("LONG", "BUY") else "shorting"
+        reg_human = _human_regime(regime)
+
+        # Bot personality fragment
+        bot_intros = {
+            "trekbot":       "TrekBot spotted a multi-signal alignment",
+            "trekbotshort":  "TrekBot's short-side scanner found a setup",
+            "gridzilla":     "Gridzilla is opening a grid",
+            "turtlesue":     "TurtleSue's turtle system triggered an entry",
+            "nexusbrain":    "NexusBrain found multi-timeframe confluence",
+            "rubberband":    "Rubberband caught a mean-reversion dip",
+            "contrarian":    "Contrarian detected extreme sentiment",
+            "arbitrageur":   "Arbitrageur found a statistical edge",
+            "chronos":       "Chronos identified a session-timing opportunity",
+        }
+        bot_key = (bot_name or "").lower().replace(" ", "").replace("_", "").replace("-", "")
+        bot_intro = bot_intros.get(bot_key, f"{bot_name or 'The fleet'} identified an entry")
+
+        # Conviction modifier
+        try:
+            conv_val = float(conviction or 0)
+        except Exception:
+            conv_val = 0
+        if conv_val >= 0.8:
+            conv_tail = "with high confidence"
+        elif conv_val >= 0.5:
+            conv_tail = "with moderate conviction"
+        else:
+            conv_tail = "on lower conviction — small position"
+
+        # Regime interpretation fragment
+        reg_up = (regime or "").upper()
+        if reg_up in ("TRENDING", "TRENDING_UP", "BULL"):
+            regime_hint = f"{reg_human.lower()} conditions favor the move"
+        elif reg_up in ("BEAR", "TRENDING_DOWN"):
+            if str(direction).upper() in ("LONG", "BUY"):
+                regime_hint = "trading against the bearish tape"
+            else:
+                regime_hint = "riding the downtrend"
+        elif reg_up in ("RANGING", "NORMAL", "EQUILIBRIUM", "MIXED"):
+            regime_hint = f"market is {reg_human.lower()} — watch for follow-through"
+        else:
+            regime_hint = f"fleet adjusting to {reg_human.lower()}"
+
+        return f"{bot_intro} {conv_tail}. {regime_hint.capitalize()}."
+
     def render_trade_open(self, data: dict) -> bytes:
-        """Render POSITION OPENED card."""
+        """Render POSITION OPENED card with GoldenEye intelligence voice."""
         pair = data.get("pair", "\u2014")
         direction = str(data.get("direction", "")).upper()
         entry = data.get("entry_price", data.get("entry"))
         size = data.get("size", data.get("amount"))
         stop = data.get("stop_loss", data.get("stop"))
-        regime = data.get("regime", "\u2014")
+        regime = data.get("regime", data.get("fleet_regime", "\u2014"))
         bot = display_name(data.get("source", data.get("bot", "\u2014")))
         timestamp = data.get("timestamp")
+
+        # Intelligence fields (enriched by IntelligenceBuilder)
+        conviction = data.get("conviction", data.get("intel_score"))
+        intel_score = data.get("intel_score", data.get("conviction"))
+        ensemble_score = data.get("ensemble_score")
+        ensemble_direction = data.get("ensemble_direction", "")
+        top_signals = data.get("top_signals", [])
+        deployed_pct = data.get("deployed_pct", data.get("_deployed_pct"))
+        bots_alive = data.get("bots_alive", data.get("_bots_alive"))
 
         entry_s = self._smart_price(entry)
         size_s = f"{size:,.2f} units" if isinstance(size, (int, float)) else "\u2014"
         stop_s = self._smart_price(stop) if stop else "\u2014"
 
-        h = 380
+        # Risk % from entry to stop
+        risk_s = "\u2014"
+        if isinstance(entry, (int, float)) and isinstance(stop, (int, float)) and entry > 0:
+            risk_pct = abs(stop - entry) / entry * 100
+            risk_s = f"{risk_pct:.1f}%"
+
+        # Conviction bar (visual)
+        conv_val = conviction if isinstance(conviction, (int, float)) else (
+            ensemble_score if isinstance(ensemble_score, (int, float)) else None)
+        if isinstance(conv_val, (int, float)):
+            filled = max(0, min(12, round(conv_val * 12)))
+            conv_bar = "\u2593" * filled + "\u2591" * (12 - filled)
+            conv_s = f"{conv_val:.2f}"
+        else:
+            conv_bar = ""
+            conv_s = "\u2014"
+
+        # GoldenEye voice line
+        bot_name_raw = data.get("source", data.get("bot", ""))
+        voice = self._trade_open_voice(
+            direction, regime, deployed_pct, bot_name_raw,
+            conviction, top_signals)
+
+        # Top signals string
+        signals_s = ""
+        if top_signals:
+            signals_s = " \u00b7 ".join(str(s).replace("_", " ") for s in top_signals[:3])
+
+        # Deployed + bots context line
+        ctx_parts = []
+        if isinstance(deployed_pct, (int, float)):
+            ctx_parts.append(f"Deployed {deployed_pct:.0f}%")
+        if bots_alive:
+            ctx_parts.append(f"{bots_alive} bots")
+        ctx_s = " \u00b7 ".join(ctx_parts) if ctx_parts else ""
+
+        # Dynamic height: base + extra rows for intelligence section
+        h = 420
+        if signals_s:
+            h += 26
+        if ctx_s:
+            h += 26
         img, draw = self._new_canvas(h)
 
         draw.rectangle([MARGIN - 2, MARGIN - 2, COL_RIGHT + 2, h - MARGIN + 2],
@@ -588,20 +710,106 @@ class CardRenderer:
         subtitle = f"{bot} \u00b7 {pair}"
         y = self._draw_header(draw, y, "POSITION OPENED", subtitle, timestamp)
 
+        # GoldenEye voice line — italic style via secondary color
+        if voice:
+            vf = self._f("sans_13")
+            # Wrap at ~90 chars
+            words = voice.split()
+            lines_v = []
+            current = ""
+            for w in words:
+                if len(current) + len(w) + 1 > 88:
+                    lines_v.append(current.strip())
+                    current = w + " "
+                else:
+                    current += w + " "
+            if current.strip():
+                lines_v.append(current.strip())
+            for line in lines_v[:2]:
+                draw.text((COL_LEFT + 14, y), line, fill=_hex(ACCENT), font=vf)
+                y += 20
+            y += 4
+
+        y = self._draw_separator(draw, y)
+
         y = self._draw_kv(draw, y, "Direction", direction,
                           value_color=self._direction_color(direction))
         y = self._draw_kv(draw, y, "Entry", entry_s)
         y = self._draw_kv(draw, y, "Size", size_s)
         y = self._draw_kv(draw, y, "Stop", stop_s)
+        if risk_s != "\u2014":
+            y = self._draw_kv(draw, y, "Risk", risk_s)
         y = self._draw_kv(draw, y, "Regime", str(regime).upper())
+
+        # Intelligence section
+        y = self._draw_separator(draw, y)
+        if conv_bar:
+            y = self._draw_kv(draw, y, "Conviction", f"{conv_bar} {conv_s}",
+                              value_color=ACCENT)
+        else:
+            y = self._draw_kv(draw, y, "Conviction", conv_s)
+        if signals_s:
+            y = self._draw_kv(draw, y, "Signals", signals_s, value_color=TEXT_SEC,
+                              val_font="sans_13")
+        if ctx_s:
+            y = self._draw_kv(draw, y, "Fleet", ctx_s, value_color=TEXT_SEC,
+                              val_font="sans_13")
 
         y += 6
         y = self._draw_footer(draw, y, timestamp)
 
         return self._to_png(img, y)
 
+    @staticmethod
+    def _trade_close_voice(pnl, exit_reason: str, duration_s, regime: str,
+                           direction: str = "", pair: str = "") -> str:
+        """GoldenEye narrator voice for TRADE_CLOSE image cards.
+        Returns a 1-2 sentence paragraph in plain language. Max ~180 chars.
+        """
+        try:
+            pnl_val = float(pnl or 0)
+        except Exception:
+            pnl_val = 0
+        won = pnl_val > 0
+
+        # Exit reason in plain language
+        exit_reasons_human = {
+            "take_profit":   "Hit the profit target",
+            "tp":            "Hit the profit target",
+            "stop_loss":     "Stopped out for protection",
+            "sl":            "Stopped out for protection",
+            "trailing_stop": "Trailing stop locked in the move",
+            "manual":        "Manually closed",
+            "timeout":       "Held too long without movement",
+            "signal_decay":  "Original signal lost strength",
+            "grid_cycle":    "Completed a grid cycle",
+        }
+        reason_key = (exit_reason or "").lower()
+        reason_text = exit_reasons_human.get(reason_key, "Closed")
+
+        # Duration in human form
+        try:
+            d = int(duration_s or 0)
+        except Exception:
+            d = 0
+        if d >= 3600:
+            dur_human = f"{d // 3600}h {(d % 3600) // 60}m"
+        elif d >= 60:
+            dur_human = f"{d // 60}m"
+        else:
+            dur_human = f"{d}s"
+
+        # Outcome line
+        pair_label = pair or "this trade"
+        if won:
+            outcome = f"Profitable exit on {pair_label} — earned ${abs(pnl_val):.2f} net"
+        else:
+            outcome = f"Closed {pair_label} at a ${abs(pnl_val):.2f} loss"
+
+        return f"{outcome}. {reason_text} after {dur_human}."
+
     def render_trade_close(self, data: dict) -> bytes:
-        """Render POSITION CLOSED card."""
+        """Render POSITION CLOSED card with GoldenEye voice and R-multiple."""
         pair = data.get("pair", "\u2014")
         direction = str(data.get("direction", "")).upper()
         pnl = data.get("pnl")
@@ -610,10 +818,11 @@ class CardRenderer:
         size = data.get("size_usd", data.get("size"))
         duration_s = data.get("duration_s", data.get("duration"))
         fees = data.get("fees")
-        regime = data.get("regime", "\u2014")
+        regime = data.get("regime", data.get("fleet_regime", "\u2014"))
         bot = display_name(data.get("source", data.get("bot", "\u2014")))
         exit_reason = data.get("exit_reason", data.get("reason", ""))
         timestamp = data.get("timestamp")
+        stop = data.get("stop_loss", data.get("stop"))
 
         pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
         pnl_won = isinstance(pnl, (int, float)) and pnl > 0
@@ -645,7 +854,23 @@ class CardRenderer:
                 ret_pct = (entry - exit_p) / entry * 100
             ret_s = f"  ({ret_pct:+.2f}%)"
 
-        h = 460
+        # R-multiple: how many R units captured vs initial risk
+        r_multiple_s = ""
+        if (isinstance(pnl, (int, float)) and isinstance(entry, (int, float))
+                and isinstance(stop, (int, float)) and entry > 0 and stop != entry):
+            risk_per_unit = abs(stop - entry)
+            if isinstance(size, (int, float)) and size > 0 and entry > 0:
+                units = size / entry
+                initial_risk = risk_per_unit * units
+                if initial_risk > 0:
+                    r_mult = pnl / initial_risk
+                    r_multiple_s = f"{r_mult:+.2f}R"
+
+        # GoldenEye voice
+        voice = self._trade_close_voice(pnl, exit_reason, duration_s, regime,
+                                        direction=direction, pair=pair)
+
+        h = 520
         img, draw = self._new_canvas(h)
 
         draw.rectangle([MARGIN - 2, MARGIN - 2, COL_RIGHT + 2, h - MARGIN + 2],
@@ -658,7 +883,30 @@ class CardRenderer:
         title = f"POSITION CLOSED \u2014 {result}"
         y = self._draw_header(draw, y, title, subtitle, timestamp)
 
-        y = self._draw_kv(draw, y, "P/L", pnl_s + ret_s, value_color=result_color)
+        # GoldenEye voice line — word-wrapped to prevent right-edge overflow
+        if voice:
+            vf = self._f("sans_13")
+            words = voice.split()
+            lines_v = []
+            current = ""
+            for w in words:
+                if len(current) + len(w) + 1 > 88:
+                    lines_v.append(current.strip())
+                    current = w + " "
+                else:
+                    current += w + " "
+            if current.strip():
+                lines_v.append(current.strip())
+            for line in lines_v[:2]:
+                draw.text((COL_LEFT + 14, y), line, fill=_hex(ACCENT), font=vf)
+                y += 20
+            y += 4
+            y = self._draw_separator(draw, y)
+
+        pnl_display = pnl_s + ret_s
+        if r_multiple_s:
+            pnl_display += f"  {r_multiple_s}"
+        y = self._draw_kv(draw, y, "P/L", pnl_display, value_color=result_color)
         y = self._draw_kv(draw, y, "Direction", direction,
                           value_color=self._direction_color(direction))
         y = self._draw_kv(draw, y, "Entry", entry_s)
@@ -668,7 +916,8 @@ class CardRenderer:
         if fees_s:
             y = self._draw_kv(draw, y, "Fees", fees_s)
         if exit_reason:
-            y = self._draw_kv(draw, y, "Reason", str(exit_reason))
+            reason_clean = str(exit_reason).replace("_", " ").title()
+            y = self._draw_kv(draw, y, "Reason", reason_clean)
         y = self._draw_kv(draw, y, "Regime", str(regime).upper())
 
         y += 6

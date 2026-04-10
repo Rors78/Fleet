@@ -14970,6 +14970,51 @@ function renderOvPortfolioSummary(){
     +'Stale reservations: <span style="font-weight:700">'+staleCount+'</span>'
   +'</div>';
 
+  /* Kraken sync health — only render when fleet is in live mode */
+  var ks = ovData.krakenSync;
+  if(ks && (ks.fleet_state === "live_armed" || ks.fleet_state === "live_engaged")){
+    var ageOk = ks.seconds_since_ok;
+    var fails = ks.consecutive_failures || 0;
+    var lastErr = ks.last_error;
+    var dotColor, dotPulse, label, ageStr;
+
+    if(fails > 0){
+      dotColor = "#ef4444"; dotPulse = true;
+      label = "KRAKEN SYNC FAIL";
+      ageStr = (lastErr ? String(lastErr).slice(0, 28) : (fails + " consecutive failures"));
+    } else if(ageOk == null){
+      dotColor = "#64748b"; dotPulse = false;
+      label = "KRAKEN SYNC";
+      ageStr = "awaiting first sync";
+    } else if(ageOk > 120){
+      dotColor = "#f59e0b"; dotPulse = true;
+      label = "KRAKEN SYNC STALE";
+      ageStr = ageOk + "s ago";
+    } else {
+      dotColor = "var(--ov-cyan)"; dotPulse = false;
+      label = "KRAKEN SYNC OK";
+      ageStr = "synced " + ageOk + "s ago";
+    }
+
+    var liveTotalStr = ks.live_total != null ? fmt$(ks.live_total) : "--";
+    var liveAvailStr = ks.live_available != null ? fmt$(ks.live_available) : "--";
+
+    var dotShadow = dotPulse ? '0 0 6px '+dotColor+',0 0 12px '+dotColor : '0 0 3px '+dotColor;
+    h += '<div style="margin-top:6px;padding-top:5px;border-top:1px solid rgba(30,41,59,0.4);">'
+      +'<div style="display:flex;align-items:center;gap:5px;margin-bottom:2px;">'
+        +'<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:'+dotColor+';box-shadow:'+dotShadow+';"></span>'
+        +'<span style="font-family:\'Orbitron\',sans-serif;font-size:0.55rem;letter-spacing:1px;color:'+dotColor+';">'+label+'</span>'
+      +'</div>'
+      +'<div style="font-size:0.58rem;font-family:var(--font-mono,monospace);color:var(--ov-muted);padding-left:11px;">'
+        +'Equity: <span style="color:#e2e8f0;font-weight:700;">'+liveTotalStr+'</span>'
+        +' &nbsp;Free: <span style="color:var(--ov-cyan);">'+liveAvailStr+'</span>'
+      +'</div>'
+      +'<div style="font-size:0.55rem;font-family:var(--font);color:var(--ov-dim);padding-left:11px;margin-top:1px;">'
+        +escHtml(ageStr)
+      +'</div>'
+    +'</div>';
+  }
+
   el.innerHTML = h;
 }
 
@@ -16318,6 +16363,15 @@ function fetchOverviewData(){
     .then(function(d){
       if(d){ ovData.portfolio = d; }
       if(activeTab===0){ renderOvPositions(); renderOvPortfolioSummary(); renderOvCooldowns(); renderOvSignalQuality(); }
+    })
+    .catch(function(){});
+
+  /* 2b. Kraken sync status (live mode only — shows last refresh, failures) */
+  fetch("/api/portfolio/sync")
+    .then(function(r){ return r.ok ? r.json() : null; })
+    .then(function(d){
+      if(d){ ovData.krakenSync = d; }
+      if(activeTab===0){ renderOvPortfolioSummary(); }
     })
     .catch(function(){});
 

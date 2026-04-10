@@ -87,8 +87,13 @@ _universe = {
 }
 _universe_lock = threading.Lock()
 
-# Event bus — real-time pub/sub for fleet communication
-_event_bus = EventBus(max_history=1000)
+# Event bus — real-time pub/sub for fleet communication.
+# Ring buffer sized for ~3h of headroom at current fleet emission rate
+# (~600 physics-engine events/h from Nexus + trade events). The EOD card
+# falls back to disk-backed /api/trades if TRADE_CLOSE rotates out, but a
+# larger buffer keeps dashboard + SSE consumers from seeing empty recent
+# history during quiet trading periods.
+_event_bus = EventBus(max_history=5000)
 
 # Jim's measurement infrastructure
 _signal_aggregator = SignalAggregator()
@@ -2301,6 +2306,133 @@ def _poll_loop():
 
 
 # ---------------------------------------------------------------------------
+# Kraken live portfolio sync
+# ---------------------------------------------------------------------------
+
+KRAKEN_SYNC_INTERVAL = 30  # seconds — match the bot poll cadence
+_kraken_sync_state = {
+    "last_ok_ts": 0,
+    "last_attempt_ts": 0,
+    "last_error": None,
+    "last_equity": None,
+    "consecutive_failures": 0,
+}
+_kraken_sync_lock = threading.Lock()
+
+
+def _sync_kraken_balance(force: bool = False) -> dict:
+    """Pull current equity from Kraken and update _portfolio_live.total.
+
+    Returns a dict describing the outcome (always — never raises). Loud on
+    failure: logs a warning AND emits a KRAKEN_SYNC_FAIL event so the dashboard
+    can show sync health. On success, emits KRAKEN_SYNC_OK.
+
+    Reservations are preserved across syncs — only `total` is updated. The
+    `available()` calculation re-derives from total minus active reservations.
+    """
+    if not _portfolio_live:
+        return {"ok": False, "reason": "live_portfolio_not_initialized"}
+
+    if not os.environ.get("KRAKEN_API_KEY") or not os.environ.get("KRAKEN_API_SECRET"):
+        return {"ok": False, "reason": "no_credentials"}
+
+    with _kraken_sync_lock:
+        _kraken_sync_state["last_attempt_ts"] = time.time()
+        try:
+            from kraken_client import KrakenSpotClient
+            kc = KrakenSpotClient()
+            tb = kc.get_trade_balance()
+        except Exception as e:
+            _kraken_sync_state["last_error"] = f"exception:{e}"
+            _kraken_sync_state["consecutive_failures"] += 1
+            log.warning("Kraken balance sync raised: %s", e, exc_info=True)
+            if _event_bus:
+                _event_bus.publish({
+                    "source": "command_center",
+                    "type": "KRAKEN_SYNC_FAIL",
+                    "data": {"reason": "exception", "error": str(e),
+                             "consecutive_failures": _kraken_sync_state["consecutive_failures"]},
+                })
+            return {"ok": False, "reason": "exception", "error": str(e)}
+
+        # Empty dict = Kraken-side error (auth, rate limit, server). Loud.
+        if not tb:
+            _kraken_sync_state["last_error"] = "kraken_returned_empty"
+            _kraken_sync_state["consecutive_failures"] += 1
+            log.warning("Kraken balance sync returned empty dict (auth/rate-limit/server error?)")
+            if _event_bus:
+                _event_bus.publish({
+                    "source": "command_center",
+                    "type": "KRAKEN_SYNC_FAIL",
+                    "data": {"reason": "empty_response",
+                             "consecutive_failures": _kraken_sync_state["consecutive_failures"]},
+                })
+            return {"ok": False, "reason": "empty_response"}
+
+        # 'e' = equity (string). Parse defensively.
+        try:
+            equity = float(tb.get("e", 0))
+        except (ValueError, TypeError) as e:
+            _kraken_sync_state["last_error"] = f"parse:{e}"
+            _kraken_sync_state["consecutive_failures"] += 1
+            log.warning("Kraken balance sync: failed to parse equity from %s: %s", tb, e)
+            if _event_bus:
+                _event_bus.publish({
+                    "source": "command_center",
+                    "type": "KRAKEN_SYNC_FAIL",
+                    "data": {"reason": "parse_error", "raw": tb, "error": str(e)},
+                })
+            return {"ok": False, "reason": "parse_error", "raw": tb}
+
+        if equity < 0:
+            _kraken_sync_state["last_error"] = f"negative_equity:{equity}"
+            log.warning("Kraken balance sync: refusing negative equity %.4f", equity)
+            return {"ok": False, "reason": "negative_equity", "equity": equity}
+
+        old_total = _portfolio_live.total
+        with _portfolio_live._lock:
+            _portfolio_live.total = equity
+            _portfolio_live._save()
+
+        _kraken_sync_state["last_ok_ts"] = time.time()
+        _kraken_sync_state["last_equity"] = equity
+        _kraken_sync_state["last_error"] = None
+        _kraken_sync_state["consecutive_failures"] = 0
+
+        delta = equity - old_total
+        log.info("Kraken sync: equity=$%.4f (was $%.4f, delta %+.4f)", equity, old_total, delta)
+        if _event_bus:
+            _event_bus.publish({
+                "source": "command_center",
+                "type": "KRAKEN_SYNC_OK",
+                "data": {
+                    "equity": round(equity, 4),
+                    "old_total": round(old_total, 4),
+                    "delta": round(delta, 4),
+                    "raw": tb,
+                },
+            })
+        return {"ok": True, "equity": equity, "old_total": old_total, "delta": delta, "raw": tb}
+
+
+def _kraken_sync_loop():
+    """Background daemon: periodically sync _portfolio_live.total from Kraken.
+
+    Only runs when the fleet is in live_armed or live_engaged state. In paper
+    mode the loop sleeps without hitting Kraken (no rate-limit cost).
+    """
+    log.info("Kraken sync loop started (interval=%ds)", KRAKEN_SYNC_INTERVAL)
+    while True:
+        try:
+            state = getattr(_fleet_config, "FLEET_ENGAGE_STATE", "paper")
+            if state in ("live_armed", "live_engaged"):
+                _sync_kraken_balance()
+        except Exception:
+            log.warning("Kraken sync loop iteration failed", exc_info=True)
+        time.sleep(KRAKEN_SYNC_INTERVAL)
+
+
+# ---------------------------------------------------------------------------
 # Fleet Logger state helpers (called by FleetLogger from its thread)
 # ---------------------------------------------------------------------------
 
@@ -2338,6 +2470,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/portfolio/available": "_serve_portfolio_available",
         "/api/portfolio/exposure":  "_serve_portfolio_exposure",
         "/api/portfolio/reservations": "_serve_portfolio_reservations",
+        "/api/portfolio/sync":      "_serve_portfolio_sync_status",
         "/api/fleet/daily":         "_serve_fleet_daily",
         "/api/fleet/promotions":    "_serve_promotions",
         "/api/market/ohlc":         "_serve_market_ohlc",
@@ -2380,6 +2513,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
     _POST_ROUTES: dict[str, str] = {
         "/api/portfolio/reserve":  "_handle_reserve",
         "/api/portfolio/release":  "_handle_release",
+        "/api/portfolio/sync":     "_handle_portfolio_sync",
         "/api/events/publish":     "_handle_event_publish",
         "/api/signals/propose":    "_handle_signals_propose",
         "/api/signals/outcome":    "_handle_signals_outcome",
@@ -2759,27 +2893,22 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self._send_json({"error": "Cannot go live: KRAKEN_API_KEY not set"}, 400)
             return
 
-        # When switching to live, optionally set the live portfolio balance
+        # When switching to live, set the live portfolio balance.
+        # Manual override (data.live_total) wins; otherwise always re-sync from
+        # Kraken — no gate on total==0, so toggling live always pulls fresh.
         if new_mode == "live":
             live_total = data.get("live_total")
             if live_total is not None:
                 _portfolio_live.total = float(live_total)
                 _portfolio_live.reservations.clear()
                 _portfolio_live._save()
-                log.info("Live portfolio balance set to $%.2f", float(live_total))
-            elif _portfolio_live and _portfolio_live.total == 0:
-                # Try to pull from Kraken balance
-                try:
-                    from kraken_client import KrakenSpotClient
-                    _kc = KrakenSpotClient()
-                    bal = _kc.get_trade_balance()
-                    equity = float(bal.get("e", 0))  # 'e' = equity
-                    if equity > 0:
-                        _portfolio_live.total = equity
-                        _portfolio_live._save()
-                        log.info("Live portfolio seeded from Kraken balance: $%.2f", equity)
-                except Exception as e:
-                    log.warning("Could not fetch Kraken balance: %s", e)
+                log.info("Live portfolio balance manually set to $%.2f", float(live_total))
+            elif _portfolio_live:
+                sync_result = _sync_kraken_balance(force=True)
+                if sync_result.get("ok"):
+                    log.info("Live portfolio synced from Kraken: $%.4f", sync_result["equity"])
+                else:
+                    log.warning("Kraken sync on live transition failed: %s", sync_result.get("reason"))
 
         old_state = _fleet_config.FLEET_ENGAGE_STATE
         try:
@@ -2999,6 +3128,13 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         """Return per-bot trade history from the durable event bus log.
         Survives restarts via logs/event_bus/*.jsonl (written by EventBus.publish).
         Query params: ?bot=trekbot&limit=50
+
+        Two-stage dedup:
+          1. By event id (catches the same event written twice to disk)
+          2. By reservation_id (the canonical trade key — same trade emitted
+             via the release path AND the snapshot-diff bridge)
+          3. By heuristic (bot, pair, round(pnl), 5min window) for legacy
+             snapshot-diff entries that have no reservation_id
         """
         import glob as _glob
         qs = parsed.query or ""
@@ -3013,15 +3149,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 100
 
-        trades: list[dict] = []
-        # Prefer the durable event-bus log (new canonical source). Fall back to
-        # the legacy fleet_logger events dir so older TRADE_CLOSE rows are still
-        # visible during the transition.
+        raw_trades: list[dict] = []
         log_dirs = [
             os.path.join(os.path.dirname(__file__), "logs", "event_bus"),
             os.path.join(os.path.dirname(__file__), "logs", "events"),
         ]
-        seen_ids: set[str] = set()  # dedupe by event id if present
+        seen_ids: set[str] = set()
         for log_dir in log_dirs:
             if not os.path.isdir(log_dir):
                 continue
@@ -3046,25 +3179,89 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                             bot = ev.get("source") or ev.get("bot") or ""
                             if bot_filter and bot.lower() != bot_filter:
                                 continue
-                            # Event bus events nest trade fields under "data".
-                            # Legacy fleet_logger events kept them flat. Try nested
-                            # first, fall back to flat so both formats work.
                             d = ev.get("data") if isinstance(ev.get("data"), dict) else ev
                             pnl_val = d.get("pnl", ev.get("pnl", 0))
-                            trades.append({
-                                "ts":          ev.get("ts", 0),
-                                "bot":         bot,
-                                "pair":        d.get("pair", ev.get("pair", "")),
-                                "pnl":         pnl_val,
-                                "gross_pnl":   d.get("gross_pnl", ev.get("gross_pnl", pnl_val)),
-                                "fees":        d.get("fees", ev.get("fees", 0)),
-                                "duration_s":  d.get("duration_s", ev.get("duration_s", 0)),
-                                "exit_reason": d.get("exit_reason", ev.get("exit_reason", "")),
-                                "direction":   d.get("direction", ev.get("direction", ev.get("side", ""))),
-                                "won":         (pnl_val or 0) > 0,
+                            rid = d.get("reservation_id") or ev.get("reservation_id")
+                            via = d.get("via") or ev.get("via", "")
+                            raw_trades.append({
+                                "ts":             ev.get("ts", 0),
+                                "bot":            bot,
+                                "pair":           d.get("pair", ev.get("pair", "")),
+                                "pnl":            pnl_val,
+                                "gross_pnl":      d.get("gross_pnl", ev.get("gross_pnl", pnl_val)),
+                                "fees":           d.get("fees", ev.get("fees", 0)),
+                                "duration_s":     d.get("duration_s", ev.get("duration_s", 0)),
+                                "exit_reason":    d.get("exit_reason", ev.get("exit_reason", "")),
+                                "direction":      d.get("direction", ev.get("direction", ev.get("side", ""))),
+                                "won":            (pnl_val or 0) > 0,
+                                "reservation_id": rid,
+                                "via":            via,
                             })
                 except Exception:
                     pass
+
+        # ── Stage 2 dedup: by reservation_id ──
+        # Same trade can land on disk twice — once from _handle_release
+        # (via=portfolio_release, has reservation_id) and once from
+        # fleet_logger._detect_events (snapshot diff, no reservation_id).
+        # Prefer the release-path entry — it has accurate fees and uppercase
+        # direction. Fall back to the snapshot-diff entry only when it's the
+        # only one we have for that trade.
+        by_rid: dict[str, dict] = {}
+        no_rid: list[dict] = []
+        for t in raw_trades:
+            rid = t.get("reservation_id")
+            if rid:
+                # First one wins; release-path entries always carry rid so
+                # they will populate by_rid before any duplicate could.
+                if rid not in by_rid:
+                    by_rid[rid] = t
+            else:
+                no_rid.append(t)
+
+        # ── Stage 3 dedup: heuristic for snapshot-diff entries ──
+        # The snapshot-diff path emits TRADE_CLOSE from fleet_logger by
+        # observing positions disappearing between polls. It can capture a
+        # stale unrealized_pnl number that doesn't match the realized pnl
+        # the release path records. So we cannot dedup by PnL match.
+        #
+        # Instead: drop a no-rid entry if there's a by_rid entry for the
+        # same (bot, pair) within 600s. Same pair, same bot, within 10
+        # minutes, with a release record in hand → it's the same trade,
+        # and the release record is canonical (real fees, real direction
+        # casing, real reservation_id). The 90s same-pair OPEN cooldown in
+        # PortfolioManager makes faster legitimate turnover impossible.
+        rid_lookup: list[tuple[str, str, float]] = [
+            (t.get("bot", ""), t.get("pair", ""), float(t.get("ts") or 0))
+            for t in by_rid.values()
+        ]
+        deduped_no_rid: list[dict] = []
+        for t in no_rid:
+            tb = t.get("bot", "")
+            tp = t.get("pair", "")
+            try:
+                tts = float(t.get("ts") or 0)
+            except (ValueError, TypeError):
+                tts = 0.0
+            is_dup = False
+            for (rb, rp, rts) in rid_lookup:
+                if rb == tb and rp == tp and abs(rts - tts) < 600:
+                    is_dup = True
+                    break
+            if not is_dup:
+                # Dedup no-rid entries against each other too. Two snapshot
+                # diffs for the same trade (60s apart from successive polls)
+                # would otherwise both survive.
+                already = False
+                for kept in deduped_no_rid:
+                    if (kept.get("bot") == tb and kept.get("pair") == tp
+                            and abs(float(kept.get("ts") or 0) - tts) < 600):
+                        already = True
+                        break
+                if not already:
+                    deduped_no_rid.append(t)
+
+        trades = list(by_rid.values()) + deduped_no_rid
 
         # newest first, capped
         trades.sort(key=lambda t: t["ts"], reverse=True)
@@ -3338,7 +3535,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     res_info["bot_id"], res_info["pair"],
                     res_info["amount"], pnl, rid)
 
-            # Record to expectancy tracker for fleet analytics
+            # Record to expectancy tracker for fleet analytics.
+            # PNL-driven mode: pass realized pnl directly so trades from bots
+            # that don't report entry/exit prices (Gridzilla, Rubberband, etc.)
+            # don't divide-by-zero in the legacy formula path. trade_id=rid
+            # dedups against the snapshot-diff bridge so the same close
+            # can't be recorded twice.
             _duration = time.time() - res_info.get("reserved_at", time.time())
             if _expectancy_tracker:
                 try:
@@ -3351,9 +3553,12 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         size_usd=res_info["amount"],
                         duration=_duration,
                         fee_rate=_fleet_config.KRAKEN_FEE_TAKER,
+                        realized_pnl=pnl,
+                        trade_id=rid,
                     )
                 except Exception:
-                    pass
+                    log.warning("expectancy.record_trade failed for %s", rid,
+                                exc_info=True)
 
             # Publish TRADE_CLOSE to the event bus so /api/trades and downstream
             # consumers (signal aggregator, decomposition, dashboards) see this
@@ -3386,6 +3591,34 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         # Don't leak internal reservation data to the API caller
         result.pop("reservation", None)
         self._send_json(result, 200 if result["ok"] else 404)
+
+    def _handle_portfolio_sync(self, data: dict) -> None:
+        """POST /api/portfolio/sync — force a Kraken balance refresh.
+
+        Pulls live equity from Kraken (TradeBalance), updates _portfolio_live.total,
+        and returns the result. Reservations are preserved. Available balance is
+        recomputed from total minus active reservations.
+        """
+        result = _sync_kraken_balance(force=True)
+        if result.get("ok"):
+            result["available"] = _portfolio_live.available() if _portfolio_live else 0
+            self._send_json(result, 200)
+        else:
+            self._send_json(result, 502)
+
+    def _serve_portfolio_sync_status(self, parsed) -> None:
+        """GET /api/portfolio/sync — last sync status (no Kraken call)."""
+        with _kraken_sync_lock:
+            state = dict(_kraken_sync_state)
+        state["interval_secs"] = KRAKEN_SYNC_INTERVAL
+        state["fleet_state"] = getattr(_fleet_config, "FLEET_ENGAGE_STATE", "paper")
+        state["live_total"] = _portfolio_live.total if _portfolio_live else 0
+        state["live_available"] = _portfolio_live.available() if _portfolio_live else 0
+        if state["last_ok_ts"]:
+            state["seconds_since_ok"] = round(time.time() - state["last_ok_ts"])
+        else:
+            state["seconds_since_ok"] = None
+        self._send_json(state)
 
     def _handle_signals_propose(self, data: dict) -> None:
         _signal_aggregator.submit_proposal(
@@ -3678,6 +3911,10 @@ def main():
     # Health monitor
     threading.Thread(target=_health_monitor, daemon=True, name="HealthMonitor").start()
     print(f"  Health:     monitoring {len(BOT_REGISTRY)} bots every 30s (auto-restart on 3 fails)")
+
+    # Kraken live portfolio sync (only hits Kraken when fleet is in live state)
+    threading.Thread(target=_kraken_sync_loop, daemon=True, name="KrakenSync").start()
+    print(f"  Kraken Sync: live portfolio refresh every {KRAKEN_SYNC_INTERVAL}s (live mode only)")
 
     # Bridge fleet logger events to event bus + measurement infrastructure.
     # Uses the module-level _open_trade_signals dict (not a local) so that both

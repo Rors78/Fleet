@@ -61,29 +61,71 @@ class ExpectancyTracker:
 
     def record_trade(self, bot_id, pair, direction, entry_price, exit_price,
                      size_usd, duration, fee_rate=KRAKEN_TAKER,
-                     risk_per_trade=None):
+                     risk_per_trade=None, realized_pnl=None,
+                     realized_fees=None, trade_id=None):
         """
         Record a completed trade with full cost accounting.
 
-        fee_rate: per-side fee rate (applied twice for round-trip)
-        risk_per_trade: optional initial risk in USD (for R-multiple calc)
+        Two recording modes:
+
+        1. PRICE-DRIVEN (entry_price + exit_price > 0): the legacy path.
+           Computes gross_pnl from price movement, applies fee_rate to both
+           sides. Use when the bot reports prices but not realized PnL.
+
+        2. PNL-DRIVEN (realized_pnl is not None): bypasses the formula and
+           uses the broker-reported PnL directly. Use this for bots that
+           report PnL net of fees (most central-portfolio bots). Avoids the
+           ZeroDivisionError that silently dropped every trade where the
+           bot omitted prices.
+
+        Args:
+            entry_price/exit_price: required for PRICE-DRIVEN mode
+            realized_pnl: gross PnL (before fees) — triggers PNL-DRIVEN mode
+            realized_fees: actual fees paid (defaults to size_usd * fee_rate * 2)
+            trade_id: optional dedup key (e.g. reservation_id) — if a trade
+                with the same trade_id already exists for this bot, the new
+                call is a no-op. Prevents the snapshot-diff vs release
+                double-recording bug.
+            fee_rate: per-side fee rate (applied twice in PRICE-DRIVEN mode,
+                or used as fallback for fees in PNL-DRIVEN mode)
+            risk_per_trade: optional initial risk in USD (for R-multiple calc)
         """
         if bot_id not in self.trades:
             self.trades[bot_id] = []
 
-        # Gross P/L
-        if direction == 'LONG':
-            gross_pnl = (exit_price - entry_price) / entry_price * size_usd
+        # Dedup by trade_id (typically reservation_id) — same trade can hit
+        # this method twice when both _handle_release and the snapshot-diff
+        # bridge fire. The dedup key has to be inside the bot's trade list
+        # so we can find it without a global index.
+        if trade_id is not None:
+            for existing in self.trades[bot_id]:
+                if existing.get('trade_id') == trade_id:
+                    return existing  # already recorded — silent no-op
+
+        if realized_pnl is not None:
+            # PNL-DRIVEN: use the broker number directly. Most live bots
+            # land here because pnl is what they actually know.
+            gross_pnl = float(realized_pnl)
+            if realized_fees is not None:
+                total_fees = float(realized_fees)
+            else:
+                # Fallback: estimate fees from size and rate (round-trip)
+                total_fees = size_usd * fee_rate * 2
+            net_pnl = gross_pnl - total_fees
         else:
-            gross_pnl = (entry_price - exit_price) / entry_price * size_usd
-
-        # Fees (both legs)
-        entry_fee = size_usd * fee_rate
-        exit_fee = size_usd * fee_rate
-        total_fees = entry_fee + exit_fee
-
-        # Net P/L
-        net_pnl = gross_pnl - total_fees
+            # PRICE-DRIVEN: legacy path. Guard divide-by-zero — if entry
+            # is 0/missing, this caller has a bug; record a zero trade
+            # instead of silently raising and losing the trade entirely.
+            if not entry_price or entry_price == 0:
+                gross_pnl = 0.0
+            elif direction == 'LONG':
+                gross_pnl = (exit_price - entry_price) / entry_price * size_usd
+            else:
+                gross_pnl = (entry_price - exit_price) / entry_price * size_usd
+            entry_fee = size_usd * fee_rate
+            exit_fee = size_usd * fee_rate
+            total_fees = entry_fee + exit_fee
+            net_pnl = gross_pnl - total_fees
 
         # R-multiple (if risk is known)
         if risk_per_trade and risk_per_trade > 0:
@@ -105,6 +147,8 @@ class ExpectancyTracker:
             'won': net_pnl > 0,
             'timestamp': time.time(),
         }
+        if trade_id is not None:
+            trade['trade_id'] = trade_id
 
         self.trades[bot_id].append(trade)
         self.trades[bot_id] = self.trades[bot_id][-self.max_trades_per_bot:]

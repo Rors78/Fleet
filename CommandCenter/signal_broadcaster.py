@@ -663,11 +663,35 @@ class TierRouter:
         free_delay_s = int(config.get("free_delay_hours", 4) * 3600)
         overrides = config.get("routing_overrides", {})
 
-        # Structure events: dedup by type only (all pairs share one slot)
-        _FLEET_DEDUP_TYPES = {"CHAOS_STATE", "MANIFOLD_WARNING", "STRUCTURE_FORMING",
-                              "CYCLE_DETECTED", "CAUSAL_FLOW", "EUCLID_LEVEL",
-                              "BOOK_PHASE", "FLEET_ALERT", "REGIME_CHANGE",
-                              "AEGIS_UPDATE"}
+        # ═══════════════════════════════════════════════════════════════
+        # STRICT TELEGRAM WHITELIST — "is this worth a pocket pull?"
+        # ═══════════════════════════════════════════════════════════════
+        # A signal reaches Telegram only if a human would *act* on it:
+        # open a trade, close a trade, rebalance, or stop the fleet.
+        # Everything else — physics council chatter, AEGIS heartbeats,
+        # "the system detected X" updates — stays on the internal event
+        # bus for the dashboard and is silent on Telegram.
+        #
+        # Whitelist:
+        #   TRADE_OPEN          — a bot just opened a real position
+        #   TRADE_CLOSE         — a bot just closed a real position
+        #   HIGH_CONVICTION     — confidence >= 0.85 AND not a duplicate
+        #   EMERGENCY_REDUCE    — fleet-wide risk-off
+        #   REGIME_CHANGE       — AEGIS regime actually flipped (deduped)
+        #   WHALE_ALERT         — only EXTREME magnitude on a held pair
+        #   CATASTROPHE_WARNING — ews_score >= 0.75 (was 0.6)
+        #
+        # Blacklist (returns None, never fires):
+        #   CHAOS_STATE, MANIFOLD_WARNING, STRUCTURE_FORMING,
+        #   CYCLE_DETECTED, CAUSAL_FLOW, EUCLID_LEVEL, BOOK_PHASE,
+        #   FLEET_ALERT, AEGIS_UPDATE, SHANNON_ENTROPY, QUANTUM_COLLAPSE,
+        #   BOLTZMANN, THOM, NEWTON_FORCE, NEWTON_REACTION, NEXUS_UPDATE,
+        #   PHITEX_UPDATE, SIGNAL (raw bot proposals), and everything
+        #   else not explicitly listed above.
+        #
+        # Override the whitelist per-event via reactions.json → routing_overrides.
+
+        _FLEET_DEDUP_TYPES = {"REGIME_CHANGE"}
         if event_type in _FLEET_DEDUP_TYPES:
             dedup_key = event_type
         else:
@@ -675,102 +699,77 @@ class TierRouter:
         result = None
 
         if event_type == "TRADE_OPEN":
-            # Trade lifecycle is paid only
             result = {"free": False, "paid": True, "priority": 2,
                       "category": "trade", "delay_free_s": 0}
 
         elif event_type == "TRADE_CLOSE":
-            # Trade lifecycle is paid only
             result = {"free": False, "paid": True, "priority": 2,
                       "category": "trade", "delay_free_s": 0}
 
         elif event_type == "HIGH_CONVICTION":
-            # Free gets it — redacted (no source bots listed)
-            result = {"free": True, "paid": True, "priority": 1,
-                      "category": "trade", "delay_free_s": 0}
+            # Raise the bar: 0.80 was too loose and tripped often.
+            conf = data.get("confidence", data.get("conviction", 0)) or 0
+            if conf >= 0.85:
+                result = {"free": True, "paid": True, "priority": 1,
+                          "category": "trade", "delay_free_s": 0}
+            else:
+                return None
 
         elif event_type == "EMERGENCY_REDUCE":
             result = {"free": True, "paid": True, "priority": 1,
                       "category": "risk", "delay_free_s": 0}
 
+        elif event_type == "REGIME_CHANGE":
+            # Only fires when AEGIS actually flips — deduped by type so
+            # downstream gate's per-type cooldown prevents flood.
+            result = {"free": True, "paid": True, "priority": 2,
+                      "category": "regime", "delay_free_s": 0}
+
+        elif event_type == "WHALE_ALERT":
+            # Strict: EXTREME magnitude AND the fleet must actually hold
+            # the pair. A whale dumping something we don't own is news-
+            # paper reading; a whale hitting our position is a decision.
+            #
+            # If the event carries no held_pairs list (which will be the
+            # common case because the whale emitter doesn't know fleet
+            # state), we read the live deployment from CC and only fire
+            # when deployed_pct > 0 AND the pair is in the by_pair map.
+            # If we can't verify either way, we SUPPRESS — "unknown" =
+            # "don't page the phone."
+            magnitude = str(data.get("magnitude", "")).upper()
+            if magnitude != "EXTREME":
+                return None
+            held_pairs = {str(p).upper() for p in
+                          (data.get("held_pairs") or
+                           data.get("fleet_held_pairs") or [])}
+            pair_u = str(pair).upper()
+            if held_pairs and pair_u in held_pairs:
+                result = {"free": False, "paid": True, "priority": 1,
+                          "category": "whale", "delay_free_s": 0}
+            else:
+                # No held_pairs in the event → suppress by default.
+                # (Runtime enrichment can override this in the main
+                # handler by adding held_pairs to the event data before
+                # routing, using a live /api/portfolio read.)
+                return None
+
         elif event_type == "CATASTROPHE_WARNING":
+            # Raised threshold from 0.6 to 0.75 — fewer false alarms.
             ews = data.get("ews_score", 0) or 0
-            if ews > 0.6:
+            if ews >= 0.75:
                 result = {"free": True, "paid": True, "priority": 1,
                           "category": "risk", "delay_free_s": 0}
             else:
                 return None
 
-        elif event_type == "REGIME_CHANGE":
-            # Free gets regime changes — macro info, not alpha-sensitive
-            result = {"free": True, "paid": True, "priority": 2,
-                      "category": "regime", "delay_free_s": 0}
-
-        elif event_type == "WHALE_ALERT":
-            magnitude = data.get("magnitude", "")
-            # Free gets HIGH and EXTREME — both signal meaningful flow
-            result = {"free": True, "paid": True, "priority": 2,
-                      "category": "whale", "delay_free_s": 0}
-
-        elif event_type == "AEGIS_UPDATE":
-            # Paid only — AEGIS fires every scan cycle, too noisy for free
-            result = {"free": False, "paid": True, "priority": 3,
-                      "category": "regime", "delay_free_s": 0}
-
-        elif event_type == "BOOK_PHASE":
-            phase = data.get("phase", data.get("state", ""))
-            if str(phase).upper() in ("BOILING", "PLASMA"):
-                # Free gets extreme liquidity warnings
-                result = {"free": True, "paid": True, "priority": 2,
-                          "category": "structure", "delay_free_s": 0}
-            else:
-                return None
-
-        elif event_type == "STRUCTURE_FORMING":
-            score = data.get("structure_formation_score", data.get("score", 0)) or 0
-            if score > 0.4:
-                result = {"free": False, "paid": True, "priority": 2,
-                          "category": "structure", "delay_free_s": 0}
-            else:
-                return None
-
-        elif event_type == "CHAOS_STATE":
-            departure = data.get("departure", data.get("attractor_departure", 0)) or 0
-            if departure > 0.5:
-                result = {"free": False, "paid": True, "priority": 3,
-                          "category": "structure", "delay_free_s": 0}
-            else:
-                return None
-
-        elif event_type == "MANIFOLD_WARNING":
-            prob = data.get("probability", data.get("transition_probability", 0)) or 0
-            if prob >= 1.0:
-                result = {"free": False, "paid": True, "priority": 2,
-                          "category": "structure", "delay_free_s": 0}
-            else:
-                return None
-
-        elif event_type in ("CYCLE_DETECTED", "CAUSAL_FLOW", "EUCLID_LEVEL"):
-            result = {"free": False, "paid": True, "priority": 3,
-                      "category": "structure", "delay_free_s": 0}
-
-        elif event_type == "FLEET_ALERT":
-            result = {"free": False, "paid": True, "priority": 2,
-                      "category": "risk", "delay_free_s": 0}
-
-        elif event_type == "SIGNAL":
-            conf = data.get("confidence", 0) or 0
-            if conf >= 0.8:
-                result = {"free": False, "paid": True, "priority": 3,
-                          "category": "trade", "delay_free_s": 0}
-            else:
-                return None
-
-        elif event_type in ("NEWTON_FORCE", "NEWTON_REACTION", "NEXUS_UPDATE",
-                            "PHITEX_UPDATE"):
-            return None
-
         else:
+            # Everything not explicitly whitelisted above is silent.
+            # Physics council, AEGIS heartbeats, fleet alerts, raw SIGNAL
+            # proposals, Newton/Nexus/Phitex updates, book phase shifts,
+            # manifold warnings, chaos state, cycle detections, causal
+            # flow, Shannon entropy, structure forming — all stay on the
+            # internal event bus for the dashboard and do not page the
+            # user's phone.
             return None
 
         # Apply per-type overrides from config
@@ -2063,14 +2062,26 @@ class ChannelOps:
                         text_fallback: str = "") -> bool:
         """Send a PNG image card to the paid channel via sendPhoto.
 
+        If *copyable_block* is provided, it is placed in the photo caption
+        using Markdown parse mode so backtick code spans render as native
+        tap-to-copy buttons on mobile — including when the user opens the
+        image fullscreen (separate follow-up messages are hidden in that
+        view, captions are not).
+
         Falls back to text sendMessage if the photo upload fails.
-        Uses *text_fallback* for the fallback message (not caption).
-        If *copyable_block* is provided, sends it as a follow-up after the image.
+        Uses *text_fallback* for the fallback message.
         """
-        ok = self._send_photo(self._paid_chat, png_bytes, caption)
+        if copyable_block:
+            # Caption carries the copy values in Markdown so backticks
+            # render as tap-to-copy in the fullscreen image view.
+            ok = self._send_photo(self._paid_chat, png_bytes,
+                                  caption=copyable_block,
+                                  parse_mode="Markdown")
+        else:
+            ok = self._send_photo(self._paid_chat, png_bytes, caption)
         if not ok:
             # Fallback to text — never drop a signal
-            fallback = text_fallback or caption
+            fallback = text_fallback or copyable_block or caption
             log.warning("sendPhoto failed, falling back to text for %s", event_type)
             ok = self._send(self._paid_chat, fallback)
         self._log_attempt("paid_image", event_type, event_id, ok)
@@ -2081,9 +2092,6 @@ class ChannelOps:
                 self._daily_stats["last_paid_ts"] = datetime.now(timezone.utc).isoformat()
             else:
                 self._daily_stats["failed"] += 1
-        # Send copyable code block as follow-up
-        if ok and copyable_block:
-            self._send_code_block(self._paid_chat, copyable_block)
         return ok
 
     def send_free_image(self, png_bytes: bytes, caption: str = "",
@@ -2178,8 +2186,13 @@ class ChannelOps:
         return False
 
     def _send_photo(self, chat_id: str, png_bytes: bytes,
-                    caption: str = "") -> bool:
-        """Upload a PNG via Telegram sendPhoto (multipart/form-data)."""
+                    caption: str = "", parse_mode: str = "HTML") -> bool:
+        """Upload a PNG via Telegram sendPhoto (multipart/form-data).
+
+        *parse_mode* controls how the caption is rendered. Use "Markdown"
+        when the caption contains backtick code blocks that need to render
+        as tap-to-copy on mobile.
+        """
         if not self._token or not chat_id:
             log.error("Missing bot_token or chat_id for sendPhoto")
             return False
@@ -2200,7 +2213,7 @@ class ChannelOps:
                          f"{cap}\r\n")
             parts.append(f"--{boundary}\r\n"
                          f'Content-Disposition: form-data; name="parse_mode"\r\n\r\n'
-                         f"HTML\r\n")
+                         f"{parse_mode}\r\n")
         parts.append(f"--{boundary}\r\n"
                      f'Content-Disposition: form-data; name="photo"; '
                      f'filename="signal.png"\r\n'
@@ -2544,56 +2557,147 @@ class EndOfDayJob:
             log.exception("EndOfDayJob failed")
 
     def _gather_data(self) -> dict:
-        """Pull live fleet data and build the EOD data dict."""
+        """Pull live fleet data and build the EOD data dict.
+
+        Data sourcing strategy (multi-tier fallback):
+          1. Primary:  /api/events/recent?type=TRADE_CLOSE (volatile RAM ring buffer)
+          2. Fallback: /api/trades?limit=200 (persistent disk-backed event log)
+          3. Sanity:   /api/expectancy for cross-check stats
+
+        The bus ring buffer (max_history=1000) can rotate today's trades out
+        before 23:59 UTC when physics engines flood the bus. Disk-backed
+        /api/trades reads from logs/events/YYYY-MM-DD.jsonl and never loses data.
+        """
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         date_display = datetime.now(timezone.utc).strftime("%d %b %Y")
+        today_start_unix = datetime.strptime(today, "%Y-%m-%d").replace(
+            tzinfo=timezone.utc).timestamp()
+        today_end_unix = today_start_unix + 86400
 
-        # Get today's trade events
-        events = _http_get_json(
-            f"{self._cc_url}/api/events/recent?n=500&type=TRADE_CLOSE") or []
-        today_trades = []
-        for ev in events:
-            ts = ev.get("timestamp", ev.get("ts", ""))
-            if not ts.startswith(today):
-                continue
-            d = ev.get("data", {}) if isinstance(ev.get("data"), dict) else {}
-            pnl = d.get("pnl")
-            fees = d.get("fees", 0)
-            net = (pnl - fees) if isinstance(pnl, (int, float)) and isinstance(fees, (int, float)) else pnl
-            # Parse hour from timestamp
-            hour = 0
+        today_trades: list[dict] = []
+        source_used = "none"
+
+        # ── Primary source: bus ring buffer ──
+        try:
+            events = _http_get_json(
+                f"{self._cc_url}/api/events/recent?n=500&type=TRADE_CLOSE") or []
+            for ev in events:
+                # Bus events store ts as a float Unix timestamp, not an ISO string
+                ts_raw = ev.get("ts", ev.get("timestamp", 0))
+                try:
+                    ts_float = float(ts_raw)
+                except (ValueError, TypeError):
+                    continue
+                if not (today_start_unix <= ts_float < today_end_unix):
+                    continue
+                d = ev.get("data", {}) if isinstance(ev.get("data"), dict) else {}
+                pnl = d.get("pnl")
+                fees = d.get("fees", 0)
+                if not isinstance(pnl, (int, float)):
+                    continue
+                if not isinstance(fees, (int, float)):
+                    fees = 0
+                hour = int(time.strftime("%H", time.gmtime(ts_float)))
+                today_trades.append({
+                    "bot": ev.get("source") or d.get("bot", ""),
+                    "pair": d.get("pair", ""),
+                    "side": str(d.get("direction", "")).upper(),
+                    "net": pnl - fees,
+                    "hour": hour,
+                    "exit_reason": d.get("exit_reason", d.get("reason", "")),
+                    "gross_pnl": pnl,
+                    "fees": fees,
+                })
+            if today_trades:
+                source_used = "events_recent"
+                log.info("EOD data: %d trades from /api/events/recent",
+                         len(today_trades))
+        except Exception:
+            log.exception("EOD primary source (events/recent) failed")
+
+        # ── Fallback: /api/trades reads from disk-backed event log ──
+        if not today_trades:
             try:
-                hour = int(ts[11:13])
-            except (ValueError, IndexError):
-                pass
-            today_trades.append({
-                "bot": d.get("source", d.get("bot", "")),
-                "pair": d.get("pair", ""),
-                "side": str(d.get("direction", "")).upper(),
-                "net": net if isinstance(net, (int, float)) else 0,
-                "hour": hour,
-                "exit_reason": d.get("exit_reason", d.get("reason", "")),
-                "gross_pnl": pnl,
-                "fees": fees,
-            })
+                trades_resp = _http_get_json(
+                    f"{self._cc_url}/api/trades?limit=500") or {}
+                trade_list = trades_resp.get("trades", []) if isinstance(
+                    trades_resp, dict) else []
+                seen_keys = set()  # dedup the snapshot-diff vs release double-emit
+                for t in trade_list:
+                    ts_float = t.get("ts", 0)
+                    try:
+                        ts_float = float(ts_float)
+                    except (ValueError, TypeError):
+                        continue
+                    if not (today_start_unix <= ts_float < today_end_unix):
+                        continue
+                    pair = t.get("pair", "")
+                    bot = t.get("bot", "")
+                    pnl = t.get("pnl")
+                    if not isinstance(pnl, (int, float)):
+                        continue
+                    # Dedup key: same bot + pair + rounded pnl + 60s window
+                    # collapses the snapshot-diff TRADE_CLOSE and the
+                    # _handle_release TRADE_CLOSE for the same underlying trade
+                    dkey = (bot, pair, round(float(pnl), 2),
+                            int(ts_float / 60))
+                    if dkey in seen_keys:
+                        continue
+                    seen_keys.add(dkey)
+                    fees = t.get("fees", 0)
+                    if not isinstance(fees, (int, float)):
+                        fees = 0
+                    gross = t.get("gross_pnl", pnl + fees)
+                    if not isinstance(gross, (int, float)):
+                        gross = pnl + fees
+                    hour = int(time.strftime("%H", time.gmtime(ts_float)))
+                    today_trades.append({
+                        "bot": bot,
+                        "pair": pair,
+                        "side": str(t.get("direction", "")).upper(),
+                        "net": pnl,
+                        "hour": hour,
+                        "exit_reason": t.get("exit_reason", ""),
+                        "gross_pnl": gross,
+                        "fees": fees,
+                    })
+                if today_trades:
+                    source_used = "api_trades_disk"
+                    log.warning(
+                        "EOD data: bus ring empty for today, fell back to "
+                        "/api/trades disk log — recovered %d trades",
+                        len(today_trades))
+            except Exception:
+                log.exception("EOD fallback source (api/trades) failed")
 
-        # Compute aggregates
+        # ── Compute aggregates ──
         gross = sum(t.get("gross_pnl", 0) or 0 for t in today_trades
                     if isinstance(t.get("gross_pnl"), (int, float)))
         fees = sum(t.get("fees", 0) or 0 for t in today_trades
                    if isinstance(t.get("fees"), (int, float)))
-        net = gross - fees if isinstance(gross, (int, float)) and isinstance(fees, (int, float)) else None
+        net = sum(t.get("net", 0) or 0 for t in today_trades
+                  if isinstance(t.get("net"), (int, float)))
 
-        # Get expectancy data for additional context
-        expectancy = _http_get_json(f"{self._cc_url}/api/expectancy") or {}
+        # Cross-check: pull expectancy stats but don't use them as primary
+        # numbers (they're lifetime, not today-only)
+        try:
+            expectancy = _http_get_json(f"{self._cc_url}/api/expectancy") or {}
+        except Exception:
+            expectancy = {}
+
+        if not today_trades:
+            log.warning("EOD: no trades found in any source for %s "
+                        "(bus, disk both empty) — card will show zeros", today)
 
         return {
             "date": date_display,
             "trades": today_trades,
-            "gross": gross if gross else None,
-            "fees": fees if fees else None,
-            "net": net,
+            "gross": gross if today_trades else None,
+            "fees": fees if today_trades else None,
+            "net": net if today_trades else None,
             "timestamp": f"{self._hour:02d}:{self._minute:02d} UTC",
+            "source": source_used,
+            "fleet_expectancy_lifetime": expectancy.get("fleet_expectancy"),
         }
 
 

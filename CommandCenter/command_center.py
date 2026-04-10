@@ -430,13 +430,6 @@ class PortfolioManager:
             if amount < min_trade:
                 return {"ok": False, "reason": f"Size floor: ${amount:.2f} < 5% of pool (${min_trade:.2f})"}
 
-            # 8b. Time-of-day gate — deny reservations during historically unprofitable hours
-            # Data shows hours 1, 9, 11 UTC have sub-15% win rates
-            LOSING_HOURS_UTC = {1, 9, 11}
-            current_hour_utc = datetime.datetime.utcnow().hour
-            if current_hour_utc in LOSING_HOURS_UTC:
-                return {"ok": False, "reason": f"Time gate: hour {current_hour_utc} UTC historically unprofitable (sub-15% WR)"}
-
             # 9. Fleet intelligence gate — check engine risk assessment
             try:
                 intel = _fleet_intel.get_score(pair)
@@ -2291,9 +2284,9 @@ def _poll_loop():
         if time.time() - _last_stale_cleanup > 3600:
             for _pm_label, _pm in [("paper", _portfolio_paper), ("live", _portfolio_live)]:
                 if _pm:
-                    released_list = _pm.force_release_stale(max_age_hours=2)
+                    released_list = _pm.force_release_stale(max_age_hours=48)
                     if released_list:
-                        log.info("Auto-released %d stale %s reservation(s) (>2h old)", len(released_list), _pm_label)
+                        log.info("Auto-released %d stale %s reservation(s) (>48h old)", len(released_list), _pm_label)
                         for _sr in released_list:
                             log.warning(
                                 "Stale reservation force-released: bot=%s pair=%s amount=$%.0f "
@@ -3850,15 +3843,15 @@ def main():
 
     # Initialize dual portfolio managers
     _portfolio_paper = PortfolioManager(PORTFOLIO_TOTAL, PORTFOLIO_LIMITS, PORTFOLIO_FILE, mode_tag="paper")
-    stale = _portfolio_paper.force_release_stale(max_age_hours=2)
+    stale = _portfolio_paper.force_release_stale(max_age_hours=48)
     if stale:
-        print(f"  Paper Portfolio: released {len(stale)} stale reservation(s) (>2h old)")
+        print(f"  Paper Portfolio: released {len(stale)} stale reservation(s) (>48h old)")
     print(f"  Paper Portfolio: ${_portfolio_paper.available():,.2f} available of ${_portfolio_paper.total:,.2f}")
 
     _live_file = _fleet_config.PORTFOLIO_LIVE_FILE
     if os.path.exists(_live_file):
         _portfolio_live = PortfolioManager(0, PORTFOLIO_LIMITS, _live_file, mode_tag="live")
-        _portfolio_live.force_release_stale(max_age_hours=2)
+        _portfolio_live.force_release_stale(max_age_hours=48)
         print(f"  Live Portfolio:  ${_portfolio_live.available():,.2f} available of ${_portfolio_live.total:,.2f}")
     else:
         _portfolio_live = PortfolioManager(0, PORTFOLIO_LIMITS, _live_file, mode_tag="live")

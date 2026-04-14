@@ -1,0 +1,35 @@
+{
+  "_note": "Tokens should be set via GOLDENEYE_TELEGRAM_TOKEN_* env vars for security",
+  "fleet_intelligence": {
+    "api_key": "owner",
+    "channels": [
+      {
+        "type": "telegram",
+        "token": "${TELEGRAM_BOT_TOKEN}",
+        "chat_id": "-1003311266032"
+      }
+    ],
+    "preferences": {
+      "long": true,
+      "short": true,
+      "exit": true
+    },
+    "active": true
+  },
+  "fleet_pulse": {
+    "api_key": "owner",
+    "channels": [
+      {
+        "type": "telegram",
+        "token": "${TELEGRAM_BOT_TOKEN}",
+        "chat_id": "-1003615829313"
+      }
+    ],
+    "preferences": {
+      "long": true,
+      "short": true,
+      "exit": true
+    },
+    "active": true
+  }
+}

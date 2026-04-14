@@ -517,6 +517,255 @@ def _load_live_balance():
     return Decimal('0')
 
 
+# =============================================================================
+# Equity time-series logger — powers the dashboard equity curve
+# =============================================================================
+_EQUITY_FILE = None          # lazy-set in _equity_logger_loop (depends on _OUTPUT_DIR at runtime)
+_EQUITY_MAX_ENTRIES = 8640   # 6 days at 1/min
+_equity_series = []          # in-memory rolling window
+_equity_lock = Lock()
+_equity_hwm = 0.0            # running high-water mark (bal + upnl)
+
+def _load_equity_series():
+    """Restore equity curve from disk on startup. Also rehydrates the HWM."""
+    global _equity_series, _equity_hwm, _EQUITY_FILE
+    _EQUITY_FILE = os.path.join(_OUTPUT_DIR, 'equity_curve.json')
+    try:
+        if os.path.exists(_EQUITY_FILE):
+            with open(_EQUITY_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                with _equity_lock:
+                    _equity_series = data[-_EQUITY_MAX_ENTRIES:]
+                    _equity_hwm = max((e.get('hwm', 0.0) for e in _equity_series), default=0.0)
+                logging.info(f"Loaded equity curve: {len(_equity_series)} points, HWM ${_equity_hwm:,.2f}")
+    except Exception as e:
+        logging.warning(f"Failed to load equity_curve.json: {e}")
+
+def _save_equity_series():
+    """Atomic write of the in-memory series to disk. Caller must hold _equity_lock."""
+    if not _EQUITY_FILE:
+        return
+    try:
+        tmp = _EQUITY_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(_equity_series, f)
+        os.replace(tmp, _EQUITY_FILE)
+    except Exception as e:
+        logging.warning(f"Failed to save equity_curve.json: {e}")
+
+def _compute_upnl():
+    """Sum of unrealized P/L across all open positions. Returns float."""
+    if 'sts' not in globals() or not sts:
+        return 0.0
+    total = 0.0
+    for st in sts.values():
+        try:
+            pos = st.get_position()
+            if not pos:
+                continue
+            px, _ = st.get_price()
+            if px <= 0:
+                continue
+            entry = float(pos.get('e', 0) or 0)
+            size = float(pos.get('size', 0) or 0)
+            if entry <= 0 or size <= 0:
+                continue
+            direction = pos.get('direction', 'long')
+            sign = 1.0 if direction == 'long' else -1.0
+            # Gross unrealized P/L (fees not deducted — those hit on exit)
+            total += (float(px) - entry) * size * sign
+        except Exception:
+            continue
+    return total
+
+def _equity_logger_loop(interval=60):
+    """Daemon: append a balance snapshot every `interval` seconds.
+    Sleeps `interval` seconds before the first write so startup noise settles."""
+    global _equity_series, _equity_hwm
+    _load_equity_series()
+    time.sleep(interval)
+    while True:
+        try:
+            if _PAPER():
+                with _PAPER_BAL_LOCK:
+                    bal = float(_PAPER_BALANCE)
+            else:
+                with _LIVE_BAL_LOCK:
+                    bal = float(_LIVE_BALANCE)
+            upnl = _compute_upnl()
+            pos_count = count_open_positions(sts) if 'sts' in globals() and sts else 0
+            with _metrics_lock:
+                spnl = float(sum(_live_metrics.get('pnl_history', [])[_session_baseline.get('trades', 0):]) or 0.0)
+            equity_now = bal + upnl
+            if equity_now > _equity_hwm:
+                _equity_hwm = equity_now
+            snap = {
+                'ts': round(time.time(), 3),
+                'bal': round(bal, 4),
+                'upnl': round(upnl, 4),
+                'pos': pos_count,
+                'spnl': round(spnl, 4),
+                'hwm': round(_equity_hwm, 4),
+            }
+            with _equity_lock:
+                _equity_series.append(snap)
+                if len(_equity_series) > _EQUITY_MAX_ENTRIES:
+                    _equity_series = _equity_series[-_EQUITY_MAX_ENTRIES:]
+                _save_equity_series()
+        except Exception as e:
+            logging.warning(f"equity logger loop error: {e}")
+        time.sleep(interval)
+
+def start_equity_logger():
+    _t = threading.Thread(target=_equity_logger_loop, args=(60,), daemon=True)
+    _t.start()
+
+# =============================================================================
+# Trade marker logger — persistent list of every trade open/close
+# =============================================================================
+_TRADE_MARKERS_FILE = None
+_trade_markers = []
+_trade_markers_lock = Lock()
+
+def _load_trade_markers():
+    global _trade_markers, _TRADE_MARKERS_FILE
+    _TRADE_MARKERS_FILE = os.path.join(_OUTPUT_DIR, 'trade_markers.json')
+    try:
+        if os.path.exists(_TRADE_MARKERS_FILE):
+            with open(_TRADE_MARKERS_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, list):
+                with _trade_markers_lock:
+                    _trade_markers = data
+                logging.info(f"Loaded trade markers: {len(_trade_markers)} entries")
+    except Exception as e:
+        logging.warning(f"Failed to load trade_markers.json: {e}")
+
+def _save_trade_markers_unlocked():
+    """Caller must hold _trade_markers_lock."""
+    if not _TRADE_MARKERS_FILE:
+        return
+    try:
+        tmp = _TRADE_MARKERS_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(_trade_markers, f)
+        os.replace(tmp, _TRADE_MARKERS_FILE)
+    except Exception as e:
+        logging.warning(f"Failed to save trade_markers.json: {e}")
+
+def _log_trade_marker(marker_type, sym, direction, price, r=None, pnl=None):
+    """Append a trade open/close marker. Safe to call from any thread.
+    marker_type: 'open' or 'close'.  r/pnl are None for opens."""
+    try:
+        if _PAPER():
+            with _PAPER_BAL_LOCK:
+                bal_after = float(_PAPER_BALANCE)
+        else:
+            with _LIVE_BAL_LOCK:
+                bal_after = float(_LIVE_BALANCE)
+        marker = {
+            'ts': round(time.time(), 3),
+            'type': marker_type,
+            'sym': sym,
+            'dir': direction.upper() if direction else '',
+            'price': round(float(price), 8) if price is not None else None,
+            'r': round(float(r), 4) if r is not None else None,
+            'pnl': round(float(pnl), 4) if pnl is not None else None,
+            'bal_after': round(bal_after, 4),
+        }
+        with _trade_markers_lock:
+            _trade_markers.append(marker)
+            _save_trade_markers_unlocked()
+    except Exception as e:
+        logging.warning(f"_log_trade_marker failed: {e}")
+
+
+# =============================================================================
+# Gate funnel snapshot — derived from _decision_log, no trading-path touches.
+# Dashboard polls /api/funnel; this function computes the response on demand.
+# =============================================================================
+# Canonical gate ordering (top-to-bottom of the funnel).
+# Must match the gate names emitted by the Phase 2 instrumentation in stream().
+_FUNNEL_GATE_ORDER = [
+    'correlation',
+    'factor_floors',
+    'confluence',
+    'dir_wr',
+    'regime_mult',
+    'whale',
+    'ai_conf',
+    'max_positions',
+    'drawdown',
+    'sentiment',
+    'atr_fees',
+    'min_size',
+    'notional',
+    'duplicate',
+]
+
+def _compute_funnel_snapshot(window_seconds=60):
+    """Tally gate passes/fails from _decision_log entries in the last `window_seconds`.
+
+    Returns a dict with:
+      window_seconds: int
+      records: total decision records in window
+      entered: count where 'entry' is in gates_passed
+      gates: ordered list of {name, reached, passed, failed}
+
+    Upstream counters (total_signals, passed_len2) are NOT available via this
+    derivation path — decision records are only created for entries that pass
+    `len(sg) >= 2` at goldeneye.py:3783. Treat this as the "from correlation
+    onward" funnel — the dispatch-named upstream counters are omitted.
+    """
+    cutoff = time.time() - window_seconds
+    with _decision_log_lock:
+        records = [r for r in _decision_log if r.get('timestamp', 0) >= cutoff]
+    total = len(records)
+
+    # Bucket: name -> {'passed': n, 'failed': n}
+    buckets = {g: {'passed': 0, 'failed': 0} for g in _FUNNEL_GATE_ORDER}
+
+    def _norm(tag):
+        # tag is e.g. "whale:57.9" or "regime_mult:0.50" or "correlation"
+        return tag.split(':', 1)[0] if isinstance(tag, str) else ''
+
+    entered_count = 0
+    for r in records:
+        gp = r.get('gates_passed') or []
+        gf = r.get('gates_failed') or []
+        if 'entry' in gp:
+            entered_count += 1
+        for tag in gp:
+            name = _norm(tag)
+            if name in buckets:
+                buckets[name]['passed'] += 1
+        for tag in gf:
+            name = _norm(tag)
+            if name in buckets:
+                buckets[name]['failed'] += 1
+
+    # "reached" = passed + failed for each gate (how many records evaluated it)
+    gates = []
+    for name in _FUNNEL_GATE_ORDER:
+        p = buckets[name]['passed']
+        f = buckets[name]['failed']
+        reached = p + f
+        gates.append({
+            'name': name,
+            'reached': reached,
+            'passed': p,
+            'failed': f,
+        })
+
+    return {
+        'window_seconds': window_seconds,
+        'records': total,
+        'entered': entered_count,
+        'gates': gates,
+    }
+
+
 def get_portfolio_heat(sts):
     """Sum of (position_value * stop_distance_pct) across all open positions."""
     heat = Decimal('0')
@@ -3464,6 +3713,7 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                             )
                             _send_trade_card_close(_s, direction, current_pos, filled_price,
                                                    pnl, r, tp_hit=0, exit_type='SL')
+                            _log_trade_marker('close', _s, direction, filled_price, r=r, pnl=pnl)
                         except Exception as post_err:
                             logging.warning(f"{_s} post-trade processing error (position already cleared): {post_err}")
                 except Exception as e:
@@ -3536,6 +3786,7 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                             )
                             _send_trade_card_close(_s, direction, current_pos, filled_price,
                                                    pnl, r, tp_hit=_tp_h, exit_type='TP')
+                            _log_trade_marker('close', _s, direction, filled_price, r=r, pnl=pnl)
                         except Exception as post_err:
                             logging.warning(f"{_s} post-trade processing error (position already cleared): {post_err}")
                 except Exception as e:
@@ -4066,22 +4317,27 @@ def stream(st, sym, br, ex, iv=2):
             if direction:
                 _gates_passed.append("entry")
 
-            _decision_record = {
-                "timestamp": time.time(),
-                "symbol": sym,
-                "signals": list(sg),
-                "factors": {k: round(v, 3) for k, v in factors.items()} if factors else {},
-                "confidence": round(confidence, 3) if confidence else 0.0,
-                "whale_score": round(_ws, 1) if _ws is not None else None,
-                "regime": br.regime,
-                "gates_passed": _gates_passed,
-                "gates_failed": _gates_failed,
-                "result": "ENTERED" if direction and current_price > 0 else "BLOCKED",
-            }
-            with _decision_log_lock:
-                _decision_log.append(_decision_record)
-                if len(_decision_log) > _MAX_DECISION_LOG:
-                    _decision_log.pop(0)
+            # Only log decisions that actually ran through at least one gate.
+            # Without this guard, every stream iteration where the gate chain is skipped
+            # (len(sg) < 2, position already open, etc.) pushes an empty record and the
+            # ring buffer fills with meaningless rows, burying the real decisions.
+            if _gates_passed or _gates_failed:
+                _decision_record = {
+                    "timestamp": time.time(),
+                    "symbol": sym,
+                    "signals": list(sg),
+                    "factors": {k: round(v, 3) for k, v in factors.items()} if factors else {},
+                    "confidence": round(confidence, 3) if confidence else 0.0,
+                    "whale_score": round(_ws, 1) if _ws is not None else None,
+                    "regime": br.regime,
+                    "gates_passed": _gates_passed,
+                    "gates_failed": _gates_failed,
+                    "result": "ENTERED" if direction and current_price > 0 else "BLOCKED",
+                }
+                with _decision_log_lock:
+                    _decision_log.append(_decision_record)
+                    if len(_decision_log) > _MAX_DECISION_LOG:
+                        _decision_log.pop(0)
 
             if direction:
                 # notional stays in Decimal space — raw_size is Decimal, current_price is Decimal
@@ -4144,6 +4400,7 @@ def stream(st, sym, br, ex, iv=2):
                                                          br.regime, sg)
                                 except Exception as e:
                                     logging.warning(f"Card send (paper open) failed: {e}")
+                                _log_trade_marker('open', sym, direction, filled_price)
                                 st.set_position({
                                     'symbol': sym, 'direction': direction,
                                     'e': filled_price, 'sl': stop_loss, 'orig_sl': stop_loss,
@@ -4242,6 +4499,7 @@ def stream(st, sym, br, ex, iv=2):
                                                              br.regime, sg)
                                     except Exception as e:
                                         logging.warning(f"Card send (live open) failed: {e}")
+                                    _log_trade_marker('open', sym, direction, filled_price)
                                     st.set_position({
                                         'symbol': sym, 'direction': direction,
                                         'e': filled_price, 'sl': stop_loss, 'orig_sl': stop_loss,
@@ -4598,6 +4856,7 @@ def stream(st, sym, br, ex, iv=2):
                             )
                             _send_trade_card_close(sym, direction, pos_snap, current_price,
                                                    pnl, r, tp_hit=tp_hit, exit_type=_xt)
+                            _log_trade_marker('close', sym, direction, current_price, r=r, pnl=pnl)
                         except Exception as post_err:
                             logging.warning(f"{sym} post-trade processing error (position already cleared): {post_err}")
 
@@ -4971,6 +5230,14 @@ def _update_health_snapshot():
                 except Exception:
                     s["paper_balance"] = 0.0
             else:
+                # Refresh live balance on every snapshot build — non-forced, so
+                # _sync_live_balance's internal 60s cache still guards the Kraken API.
+                # Effect: header balance staleness drops from 5 min to <=60 s.
+                try:
+                    if 'exchange' in globals() and exchange:
+                        _sync_live_balance(exchange)
+                except Exception as _bal_err:
+                    logging.debug(f"health-snapshot balance sync failed: {_bal_err}")
                 try:
                     s["live_balance"] = float(_LIVE_BALANCE)
                     s["live_trade_amt"] = float(_get_trade_amt())
@@ -5385,6 +5652,35 @@ def _run_http_health_server():
                         'indicators': indicators,
                     }
                 self.wfile.write(json.dumps(result).encode())
+            elif self.path == "/api/equity":
+                # Equity curve time-series for the dashboard hero chart
+                with _equity_lock:
+                    series = list(_equity_series)
+                body = json.dumps(series).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/api/trade_markers":
+                # Permanent per-trade open/close markers for chart overlay
+                with _trade_markers_lock:
+                    markers = list(_trade_markers)
+                body = json.dumps(markers).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", len(body))
+                self.end_headers()
+                self.wfile.write(body)
+            elif self.path == "/api/funnel":
+                # Gate funnel snapshot derived from _decision_log (last 60s)
+                snap = _compute_funnel_snapshot(60)
+                body = json.dumps(snap).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", len(body))
+                self.end_headers()
+                self.wfile.write(body)
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -5622,6 +5918,10 @@ def main():
 
     start_health_monitor()
     start_balance_refresh()
+    # Dashboard data layer: load persisted trade markers, launch equity time-series logger.
+    # Equity logger internally calls _load_equity_series() on first iteration.
+    _load_trade_markers()
+    start_equity_logger()
     # Start background health snapshot updater — /health reads from this, never computes inline
     threading.Thread(target=_update_health_snapshot, daemon=True).start()
     start_http_health_server()

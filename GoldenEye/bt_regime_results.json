@@ -1,0 +1,35 @@
+{
+  "BULL_2024Q4_2025Q1": {
+    "aggregate": {
+      "trades": 586,
+      "wins": 316,
+      "win_rate": 0.5392491467576792,
+      "total_r": -21.72661821255953,
+      "avg_r": -0.037076140294470185,
+      "symbols_profitable": 8,
+      "symbols_total": 20
+    }
+  },
+  "CHOP_2025Q2_2025Q3": {
+    "aggregate": {
+      "trades": 1018,
+      "wins": 555,
+      "win_rate": 0.5451866404715128,
+      "total_r": 6.356743105888775,
+      "avg_r": 0.006244344897729641,
+      "symbols_profitable": 10,
+      "symbols_total": 20
+    }
+  },
+  "RECENT_2025Q4_2026Q1": {
+    "aggregate": {
+      "trades": 508,
+      "wins": 272,
+      "win_rate": 0.5354330708661418,
+      "total_r": -8.51775015735918,
+      "avg_r": -0.016767224719210983,
+      "symbols_profitable": 8,
+      "symbols_total": 20
+    }
+  }
+}

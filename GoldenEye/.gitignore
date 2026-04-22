@@ -1,0 +1,48 @@
+# Runtime state — regenerated on each run
+output/
+__pycache__/
+*.pyc
+*.pyo
+
+# Logs (rotated by bot)
+*.log
+*.log.1
+*.log.2
+*.log.3
+*.log.4
+*.log.5
+
+# Backtest artifacts
+bt_candles_cache.pkl
+bt_regime_candles.pkl
+bt_*.log
+backtest_*.log
+
+# Test artifacts
+test_*.png
+test_*.py
+
+# Secrets + local-only config
+.env
+.env.*
+.claude/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Startup diagnostics
+startup.log
+startup_err.txt
+goldeneye_audit.log
+goldeneye_factors.log
+goldeneye_err.log*
+
+# Archive — recovery snapshots, not source
+archive/
+
+# Local launcher overrides
+launch.bat
+launch_desktop.bat

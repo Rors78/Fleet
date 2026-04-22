@@ -917,7 +917,230 @@ def _build_trade_detail(pos, exit_price, tp_hit=0):
         'opened_at': opened,
     }
 
+_AUTOPSY_PATH = os.path.join(_OUTPUT_DIR, 'autopsy.jsonl')
+_AUTOPSY_LOCK = threading.Lock()
+_REGIME_SANITY_PATH = os.path.join(_OUTPUT_DIR, 'regime_sanity.json')
+_REGIME_SANITY_LOCK = threading.Lock()
+_REGIME_SANITY = {'ts': 0, 'checked': 0, 'mismatched': 0, 'details': [], 'summary': 'pending'}
+
+def _factors_vec(f):
+    """6-element factor vector in canonical order (must match across callers)."""
+    if not f: return [0.0]*6
+    return [
+        float(f.get('trend', 0)),
+        float(f.get('momentum', 0)),
+        float(f.get('volume', 0)),
+        float(f.get('structure', 0)),
+        float(f.get('volatility', 0)),
+        float(f.get('order_flow', 0)),
+    ]
+
+def _factors_distance(a, b):
+    """Euclidean distance between two 6-element factor vectors. Lower = more similar."""
+    if not a or not b: return 9.99
+    d = 0.0
+    for i in range(min(len(a), len(b))):
+        diff = a[i] - b[i]
+        d += diff * diff
+    return d ** 0.5
+
+def find_similar_trades(factors, regime=None, direction=None, k=10, max_distance=0.6):
+    """
+    Fleet memory query: return the k most similar past closed trades by factor distance.
+    Filters optionally by regime and direction. Returns list of dicts with:
+        {distance, sym, r, pnl, exit, when, factors, sigs, confidence, regime, direction}
+    Lower distance = more similar. max_distance caps to meaningful matches only.
+    """
+    out = []
+    target_vec = _factors_vec(factors)
+    with _metrics_lock:
+        log = list(_live_metrics.get('trade_log', []))
+    for t in log:
+        det = t.get('detail', {})
+        if not det: continue
+        if regime and det.get('regime') != regime: continue
+        if direction and t.get('dir','').lower()[0] != direction.lower()[0]: continue
+        cand_vec = _factors_vec(det.get('factors'))
+        dist = _factors_distance(target_vec, cand_vec)
+        if dist > max_distance: continue
+        out.append({
+            'distance': round(dist, 4),
+            'sym': t.get('sym', ''),
+            'r': t.get('r', 0),
+            'pnl': t.get('pnl', 0),
+            'exit': t.get('exit', ''),
+            'when': t.get('t', 0),
+            'factors': det.get('factors'),
+            'sigs': det.get('sigs', []),
+            'confidence': det.get('confidence'),
+            'regime': det.get('regime'),
+            'direction': t.get('dir', ''),
+            'tp_hit': det.get('tp_hit', 0),
+        })
+    out.sort(key=lambda x: x['distance'])
+    return out[:k]
+
+def _autopsy_narrative(r, exit_type, detail, similar):
+    """Build a plain-English one-paragraph explanation of why this trade won/lost."""
+    if not detail:
+        return "No detail available."
+    sigs = detail.get('sigs', [])
+    regime = detail.get('regime', '?')
+    conf = detail.get('confidence', 0)
+    fx = detail.get('factors', {})
+    tp_hit = detail.get('tp_hit', 0)
+    dur = detail.get('duration_h', 0)
+    parts = []
+    # Outcome summary
+    if r > 0.5:
+        parts.append(f"WIN +{r:.2f}R via {exit_type} after {dur:.1f}h (TP{tp_hit} hit).")
+    elif r > 0:
+        parts.append(f"Small win +{r:.2f}R via {exit_type} after {dur:.1f}h.")
+    elif r > -0.3:
+        parts.append(f"Near-flat {r:+.2f}R via {exit_type} after {dur:.1f}h.")
+    elif r > -1:
+        parts.append(f"Partial stop {r:.2f}R via {exit_type} after {dur:.1f}h.")
+    else:
+        parts.append(f"Full stop {r:.2f}R via {exit_type} after {dur:.1f}h (slippage or gap).")
+    # Entry quality
+    if conf < 0.30:
+        parts.append(f"Entry confidence was very low ({conf:.2f}) — marginal setup.")
+    elif conf < 0.40:
+        parts.append(f"Entry confidence was modest ({conf:.2f}).")
+    elif conf > 0.55:
+        parts.append(f"Entry confidence was strong ({conf:.2f}).")
+    # Factor weak spots
+    weak = [k for k, v in fx.items() if isinstance(v, (int, float)) and v < 0.25]
+    if weak:
+        parts.append(f"Weak factors at entry: {', '.join(weak)}.")
+    # Signal commentary
+    if sigs:
+        parts.append(f"Fired on signals {sigs} in {regime} regime.")
+    # Similar-setup statistics
+    if similar:
+        s_r = [s['r'] for s in similar]
+        wins = sum(1 for x in s_r if x > 0)
+        avg_r = sum(s_r) / len(s_r) if s_r else 0
+        wr_pct = (wins / len(s_r) * 100) if s_r else 0
+        parts.append(f"Similar historical setups: {len(similar)} found, {wins}W/{len(similar)-wins}L ({wr_pct:.0f}% WR, avg {avg_r:+.2f}R).")
+    return ' '.join(parts)
+
+def record_autopsy(sym, direction, r, pnl, exit_type, detail):
+    """Append a post-trade autopsy record to output/autopsy.jsonl.
+    Queries fleet memory for similar historical setups and writes a narrative.
+    Best-effort; errors are swallowed to never interfere with trade closing."""
+    try:
+        factors = (detail or {}).get('factors', {})
+        regime  = (detail or {}).get('regime')
+        similar = find_similar_trades(factors, regime=regime, direction=direction, k=10, max_distance=0.6)
+        narrative = _autopsy_narrative(r, exit_type, detail or {}, similar)
+        rec = {
+            'ts': time.time(),
+            'sym': sym,
+            'dir': direction,
+            'r': round(float(r), 3),
+            'pnl': round(float(pnl), 4),
+            'exit': exit_type,
+            'regime': regime,
+            'confidence': (detail or {}).get('confidence'),
+            'sigs': (detail or {}).get('sigs', []),
+            'factors': factors,
+            'tp_hit': (detail or {}).get('tp_hit', 0),
+            'duration_h': (detail or {}).get('duration_h', 0),
+            'similar_count': len(similar),
+            'similar_wr': round(sum(1 for s in similar if s['r'] > 0) / len(similar), 3) if similar else None,
+            'similar_avg_r': round(sum(s['r'] for s in similar) / len(similar), 3) if similar else None,
+            'narrative': narrative,
+        }
+        with _AUTOPSY_LOCK:
+            with open(_AUTOPSY_PATH, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(rec) + '\n')
+        logging.info(f"AUTOPSY {sym} {direction} {r:+.2f}R: {narrative}")
+    except Exception as _autopsy_err:
+        logging.debug(f"autopsy write failed for {sym}: {_autopsy_err}")
+
+def compute_regime_sanity():
+    """
+    Regime sanity check: per-symbol HMM label vs. actual N-bar return direction.
+    Runs against the in-memory sts dict. Writes to regime_sanity.json.
+    Returns dict with mismatched symbols + overall summary.
+    """
+    if 'sts' not in globals() or 'brs' not in globals():
+        return None
+    result = {'ts': time.time(), 'checked': 0, 'mismatched': 0, 'details': [], 'regime_counts': {}}
+    try:
+        _sts = sts
+        _brs = brs
+        for sym, st in _sts.items():
+            br = _brs.get(sym)
+            if not br or st.df is None or len(st.df) < 24:
+                continue
+            # Actual: 24-bar (24h at 1h candles) return
+            try:
+                closes = st.df['close'].values
+                p_now = float(closes[-1])
+                p_then = float(closes[-24])
+                if p_then <= 0: continue
+                ret_pct = (p_now - p_then) / p_then * 100
+            except Exception:
+                continue
+            rgm = getattr(br, 'regime', None)
+            if rgm is None: continue
+            result['checked'] += 1
+            result['regime_counts'][rgm] = result['regime_counts'].get(rgm, 0) + 1
+            # Mismatch heuristics
+            mismatch = False
+            why = ''
+            if rgm == 'bull' and ret_pct < -2.0:
+                mismatch = True
+                why = f"labeled BULL but 24h return {ret_pct:+.2f}%"
+            elif rgm == 'bear' and ret_pct > 2.0:
+                mismatch = True
+                why = f"labeled BEAR but 24h return {ret_pct:+.2f}%"
+            elif rgm in ('range', 'chop') and abs(ret_pct) > 5.0:
+                mismatch = True
+                why = f"labeled {rgm.upper()} but 24h return {ret_pct:+.2f}%"
+            if mismatch:
+                result['mismatched'] += 1
+                result['details'].append({'sym': sym, 'regime': rgm, 'ret_24h_pct': round(ret_pct, 2), 'why': why})
+        # Summary
+        n = result['checked']
+        m = result['mismatched']
+        if n == 0:
+            result['summary'] = 'pending: insufficient data'
+        else:
+            rate = m / n * 100
+            if rate < 10:
+                result['summary'] = f'healthy ({m}/{n} mismatched, {rate:.0f}%)'
+            elif rate < 30:
+                result['summary'] = f'yellow ({m}/{n} mismatched, {rate:.0f}%)'
+            else:
+                result['summary'] = f'RED: regime detectors drifting ({m}/{n} mismatched, {rate:.0f}%)'
+        # Persist
+        try:
+            tmp = _REGIME_SANITY_PATH + '.tmp'
+            with open(tmp, 'w', encoding='utf-8') as f:
+                json.dump(result, f, indent=2)
+            os.replace(tmp, _REGIME_SANITY_PATH)
+        except Exception:
+            pass
+        # Update in-memory
+        with _REGIME_SANITY_LOCK:
+            global _REGIME_SANITY
+            _REGIME_SANITY = result
+        if m > 0 and (m / n * 100) >= 30:
+            logging.warning(f"REGIME SANITY RED: {m}/{n} symbols mismatched. Details: {result['details'][:3]}")
+    except Exception as e:
+        logging.debug(f"regime sanity compute failed: {e}")
+    return result
+
 def record_live_trade(direction: str, r_multiple: float, pnl: float = 0.0, sym: str = '', exit_type: str = '', detail: dict = None):
+    # Autopsy runs BEFORE the metrics mutation so similarity query sees only
+    # prior trades (self-reference would be tautological). Best-effort, swallows errors.
+    try:
+        record_autopsy(sym, direction, r_multiple, pnl, exit_type, detail)
+    except Exception:
+        pass
     with _metrics_lock:
         _live_metrics['trades'] += 1
         _live_metrics['total_r'] += r_multiple
@@ -1346,6 +1569,75 @@ def _universe_rescan(ex, sts, brs, _thread_map, _cfg, output_dir):
 # Brain
 _REGIMES = ('bull', 'bear', 'range', 'chop')
 
+# Global fleet-wide Bayesian factor model — shared across all symbols
+# Every trade updates this single model, so it sees N=69 trades instead of N=18 per symbol.
+# Persisted to output/global_brain.json (atomic write).
+_GLOBAL_BAYES = None
+_GLOBAL_BAYES_PATH = None
+_GLOBAL_BAYES_LOCK = threading.RLock()
+
+def _get_global_bayes(out_dir='output'):
+    """Lazy-init the global fleet-wide Bayesian factor model.
+    On first init, bootstraps from the largest per-symbol brain so we don't throw away learning."""
+    global _GLOBAL_BAYES, _GLOBAL_BAYES_PATH
+    with _GLOBAL_BAYES_LOCK:
+        if _GLOBAL_BAYES is None:
+            _GLOBAL_BAYES_PATH = os.path.join(out_dir, 'global_brain.json')
+            _GLOBAL_BAYES = BayesianFactorModel()
+            if os.path.exists(_GLOBAL_BAYES_PATH):
+                try:
+                    with open(_GLOBAL_BAYES_PATH) as f:
+                        _GLOBAL_BAYES = BayesianFactorModel.from_dict(json.load(f))
+                    logging.info(f"Global Bayes loaded: n={dict(zip(_REGIMES, [_GLOBAL_BAYES.n.get(r, 0) for r in _REGIMES]))}")
+                except Exception as e:
+                    logging.warning(f"Failed to load global_brain.json: {e}")
+            else:
+                # Bootstrap: pick the per-symbol brain with highest total n, copy its posterior
+                try:
+                    import glob as _glob
+                    candidates = []
+                    for p in _glob.glob(os.path.join(out_dir, '*/brain.json')):
+                        try:
+                            with open(p) as f:
+                                d = json.load(f)
+                            bm = d.get('bayesian_model')
+                            if bm and 'n' in bm:
+                                total = sum(int(bm['n'].get(r, 0)) for r in _REGIMES)
+                                candidates.append((total, p, bm))
+                        except Exception:
+                            continue
+                    if candidates:
+                        candidates.sort(reverse=True)
+                        total, src_path, bm = candidates[0]
+                        _GLOBAL_BAYES = BayesianFactorModel.from_dict(bm)
+                        logging.info(f"Global Bayes bootstrapped from {src_path} (total n={total})")
+                        # Persist immediately so a restart starts warm
+                        try:
+                            tmp = _GLOBAL_BAYES_PATH + '.tmp'
+                            with open(tmp, 'w') as f:
+                                json.dump(_GLOBAL_BAYES.to_dict(), f)
+                            os.replace(tmp, _GLOBAL_BAYES_PATH)
+                        except Exception:
+                            pass
+                except Exception as _boot_err:
+                    logging.warning(f"Global Bayes bootstrap skipped: {_boot_err}")
+        return _GLOBAL_BAYES
+
+def _save_global_bayes():
+    """Atomic save of the global Bayesian model."""
+    global _GLOBAL_BAYES, _GLOBAL_BAYES_PATH
+    with _GLOBAL_BAYES_LOCK:
+        if _GLOBAL_BAYES is None or _GLOBAL_BAYES_PATH is None:
+            return
+        try:
+            tmp = _GLOBAL_BAYES_PATH + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(_GLOBAL_BAYES.to_dict(), f)
+            os.replace(tmp, _GLOBAL_BAYES_PATH)
+        except Exception as e:
+            logging.warning(f"Failed to save global_brain.json: {e}")
+
+
 class AdaptiveBrain:
     SIG = 'abcdefghijklmnopqrstuvwxyz2'  # 27 signals: 14 original + 13 new (v2.4)
 
@@ -1412,6 +1704,15 @@ class AdaptiveBrain:
             self._update_adaptive_weights(factors, r, rgm)
             # UPGRADE A: Update Bayesian logistic regression model
             self.bayesian_model.update(factors, r, rgm)
+            # GLOBAL POOL: also update the fleet-wide Bayesian model so all symbols benefit
+            try:
+                # self.file is output/SYM_USD/brain.json — go up one level for fleet dir
+                fleet_dir = os.path.dirname(os.path.dirname(self.file)) or 'output'
+                gb = _get_global_bayes(fleet_dir)
+                gb.update(factors, r, rgm)
+                _save_global_bayes()
+            except Exception as _gb_err:
+                logging.warning(f"Global Bayes update failed: {_gb_err}")
         self.trade_count += 1
         self.save()
 
@@ -2280,9 +2581,9 @@ def _sigs_long(df):
     if 'rsi' in l and 'rsi' in p:
         if l['rsi'] > 50 and p['rsi'] < 50: sg.append('g')
 
-    # h: BB %B recovery — crosses above 0.2 from below (Mean Reversion Confirm)
-    if 'bb_pctb' in l and 'bb_pctb' in p:
-        if l['bb_pctb'] > 0.2 and p['bb_pctb'] < 0.2: sg.append('h')
+    # h: BB %B recovery — DISABLED (37.5% WR per CLAUDE.md)
+    # if 'bb_pctb' in l and 'bb_pctb' in p:
+    #     if l['bb_pctb'] > 0.2 and p['bb_pctb'] < 0.2: sg.append('h')
 
     # j: OBV bull divergence — DISABLED (42% TP1, -0.39R in 180d backtest)
     # if len(df) >= 20 and 'obv' in l:
@@ -4055,10 +4356,38 @@ def stream(st, sym, br, ex, iv=2):
                             _gs = get_global_signal_stats(brs) if 'brs' in globals() else None
                             _wsc, _active, _suppressed = compute_weighted_confluence(dir_sigs, br, br.regime, _gs)
                             _wmin = _WTD_SIG_MIN.get(br.regime, 0.90)
+                            # GLOBAL-BAYES OVERRIDE: if fleet Bayesian model has learned enough,
+                            # allow entries that fail confluence but the model endorses with high P(win).
+                            # Requires fleet regime-n >= 30 and predicted P(win) >= 0.58.
+                            _bayes_override = False
+                            _bayes_pwin = None
+                            try:
+                                _gb = _get_global_bayes('output')
+                                _fleet_n = int(_gb.n.get(br.regime, 0))
+                                if _fleet_n >= 30:
+                                    _bayes_pwin = float(_gb.predict_proba(factors, br.regime))
+                                    if _bayes_pwin >= 0.58 and len(_active) >= 1:
+                                        _bayes_override = True
+                            except Exception as _bo_err:
+                                logging.warning(f"Bayes override check failed: {_bo_err}")
                             if _wsc < _wmin or len(_active) < 1:
-                                logging.info(f"{sym} {direction.upper()} blocked: weighted confluence {_wsc:.2f} < {_wmin} (active={_active} suppressed={_suppressed})")
-                                _gates_failed.append(f"confluence:{_wsc:.2f}")
-                                direction = None
+                                if _bayes_override:
+                                    logging.info(f"{sym} {direction.upper()} BAYES-OVERRIDE: confluence {_wsc:.2f}<{_wmin} but fleet P(win)={_bayes_pwin:.3f} (n={_fleet_n}) — allowed")
+                                    sg = _active
+                                    _gates_passed.append(f"confluence:bayes_override({_bayes_pwin:.2f})")
+                                else:
+                                    logging.info(f"{sym} {direction.upper()} blocked: weighted confluence {_wsc:.2f} < {_wmin} (active={_active} suppressed={_suppressed})")
+                                    _gates_failed.append(f"confluence:{_wsc:.2f}")
+                                    direction = None
+                            elif len(_active) < 2:
+                                if _bayes_override:
+                                    logging.info(f"{sym} {direction.upper()} BAYES-OVERRIDE: single-sig but fleet P(win)={_bayes_pwin:.3f} (n={_fleet_n}) — allowed")
+                                    sg = _active
+                                    _gates_passed.append(f"confluence_single:bayes_override({_bayes_pwin:.2f})")
+                                else:
+                                    logging.info(f"{sym} {direction.upper()} blocked: only 1 active signal after confluence filter ({_active})")
+                                    _gates_failed.append(f"confluence_single:{_active}")
+                                    direction = None
                             else:
                                 sg = _active
                                 _gates_passed.append("confluence")
@@ -4322,6 +4651,26 @@ def stream(st, sym, br, ex, iv=2):
             # (len(sg) < 2, position already open, etc.) pushes an empty record and the
             # ring buffer fills with meaningless rows, burying the real decisions.
             if _gates_passed or _gates_failed:
+                # Fleet memory query: attach similar-setup stats to every decision.
+                # Best-effort — any failure falls back to memory=None and never blocks entry.
+                _mem_summary = None
+                try:
+                    if factors:
+                        _dir_for_query = direction if direction else ('short' if _MODE == 'short' else 'long')
+                        _matches = find_similar_trades(factors, regime=br.regime,
+                                                      direction=_dir_for_query, k=10, max_distance=0.6)
+                        if _matches:
+                            _wins = sum(1 for m in _matches if m['r'] > 0)
+                            _avg_r = sum(m['r'] for m in _matches) / len(_matches)
+                            _mem_summary = {
+                                'n': len(_matches),
+                                'wins': _wins,
+                                'losses': len(_matches) - _wins,
+                                'win_rate': round(_wins / len(_matches), 3),
+                                'avg_r': round(_avg_r, 3),
+                            }
+                except Exception:
+                    _mem_summary = None
                 _decision_record = {
                     "timestamp": time.time(),
                     "symbol": sym,
@@ -4333,6 +4682,7 @@ def stream(st, sym, br, ex, iv=2):
                     "gates_passed": _gates_passed,
                     "gates_failed": _gates_failed,
                     "result": "ENTERED" if direction and current_price > 0 else "BLOCKED",
+                    "memory": _mem_summary,
                 }
                 with _decision_log_lock:
                     _decision_log.append(_decision_record)
@@ -4587,15 +4937,7 @@ def stream(st, sym, br, ex, iv=2):
                                 logging.info(f"{sym} TP{lvl} HIT @ {current_price:,.2f}")
                     # Apply side effects for all newly crossed TP levels
                     if tp_hit >= 1 and prev_tp_hit < 1:
-                        # SL to entry + 0.5*ATR (small cushion above breakeven)
-                        _atr_raw = st.df['atr'].iloc[-1] if 'atr' in st.df.columns and len(st.df) > 0 else 0
-                        atr_val = float(_atr_raw) if not pd.isna(_atr_raw) else 0
-                        if direction == 'long':
-                            current_pos['sl'] = current_pos['e'] + Decimal(str(atr_val * 0.5))
-                        else:
-                            current_pos['sl'] = current_pos['e'] - Decimal(str(atr_val * 0.5))
-                        logging.info(f"{sym} SL moved to entry+0.5ATR @ {float(current_pos['sl']):,.2f}")
-                        _sl_moved = True
+                        _sl_moved = False  # no SL move at TP1 — original SL stays
                     if tp_hit >= 2 and prev_tp_hit < 2:
                         current_pos['trail_active'] = True
                         current_pos['trail_activated_at'] = time.time()
@@ -5399,6 +5741,114 @@ def _run_http_health_server():
                             'wr': round(w, 1),
                         })
                 self.wfile.write(json.dumps(syms).encode())
+            elif self.path.startswith("/api/ohlc/"):
+                # Recent OHLC tail for a single symbol. Returns last N candles
+                # (close + time) with the current position overlay (entry/SL/TPs)
+                # and regime so the UI can render the mini chart in one round trip.
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                raw = self.path[len("/api/ohlc/"):]
+                qpos = raw.find('?')
+                sym_enc = raw if qpos < 0 else raw[:qpos]
+                try:
+                    from urllib.parse import unquote
+                    sym_req = unquote(sym_enc)
+                except Exception:
+                    sym_req = sym_enc
+                # Allow passing the bare ticker (e.g. "GUN") — resolve to "<TICKER>/USD"
+                if '/' not in sym_req:
+                    candidate = sym_req.upper() + '/USD'
+                    sym_req = candidate
+                limit = 180  # ~3 hours at 1m bars, ~15h at 5m bars
+                if qpos >= 0:
+                    try:
+                        from urllib.parse import parse_qs
+                        q = parse_qs(raw[qpos+1:])
+                        if 'limit' in q:
+                            limit = max(20, min(600, int(q['limit'][0])))
+                    except Exception:
+                        pass
+                out = {'symbol': sym_req, 'candles': [], 'position': None,
+                       'regime': None, 'current_price': None, 'last_price': None}
+                try:
+                    if 'sts' in globals() and sym_req in sts:
+                        _st = sts[sym_req]
+                        _br = brs.get(sym_req) if 'brs' in globals() else None
+                        df = _st.df
+                        if df is not None and len(df) > 0:
+                            tail = df.tail(limit)
+                            candles = []
+                            for _, row in tail.iterrows():
+                                try:
+                                    t = row.get('time')
+                                    c = row.get('close')
+                                    v = row.get('vol') if 'vol' in row.index else None
+                                    if t is None or c is None:
+                                        continue
+                                    try:
+                                        t_val = float(t.timestamp()) if hasattr(t, 'timestamp') else float(t)
+                                    except Exception:
+                                        continue
+                                    # Normalize to unix seconds (df 'time' may be ms-precision Timestamp or ns-precision int)
+                                    if t_val > 1e14:          # ns
+                                        t_val /= 1e9
+                                    elif t_val > 1e11:        # ms
+                                        t_val /= 1e3
+                                    candle = {'t': t_val, 'c': float(c)}
+                                    if v is not None:
+                                        try: candle['v'] = float(v)
+                                        except Exception: pass
+                                    candles.append(candle)
+                                except Exception:
+                                    continue
+                            out['candles'] = candles
+                        pr, lpr = _st.get_price()
+                        out['current_price'] = _fp(pr)
+                        out['last_price'] = _fp(lpr)
+                        pos = _st.get_position()
+                        if pos is not None:
+                            try:
+                                _entry = float(pos.get('e', 0))
+                                _sl = float(pos.get('sl', 0))
+                                _orig_sl = float(pos.get('orig_sl', _sl))
+                                _size = float(pos.get('size', 0))
+                                _dir = pos.get('direction', _MODE if '_MODE' in globals() else 'long')
+                                _cur = float(out['current_price'] or _entry)
+                                _upnl = (_cur - _entry) * _size if _dir == 'long' else (_entry - _cur) * _size
+                                _risk_dist = abs(_entry - _orig_sl)
+                                _r_mult = 0.0
+                                if _risk_dist > 0:
+                                    _r_mult = round(((_cur - _entry) if _dir == 'long' else (_entry - _cur)) / _risk_dist, 3)
+                                _pct = 0.0
+                                if _entry > 0:
+                                    _pct = round(((_cur - _entry) if _dir == 'long' else (_entry - _cur)) / _entry * 100, 3)
+                            except Exception:
+                                _entry = _sl = _size = _upnl = _r_mult = _pct = 0
+                                _dir = 'long'
+                            out['position'] = {
+                                'entry': _fp(_entry),
+                                'sl': _fp(_sl),
+                                'orig_sl': _fp(pos.get('orig_sl', _sl)) if 'orig_sl' in pos else _fp(_sl),
+                                'tp1': _fp(pos.get('tp1', 0)) if 'tp1' in pos else None,
+                                'tp2': _fp(pos.get('tp2', 0)) if 'tp2' in pos else None,
+                                'tp3': _fp(pos.get('tp3', 0)) if 'tp3' in pos else None,
+                                'size': _fp(_size),
+                                'size_usd': round(_size * _entry, 2),
+                                'direction': _dir,
+                                'opened_at': pos.get('opened_at', 0),
+                                'tp_hit': int(pos.get('tp_hit', 0)),
+                                'sigs': pos.get('sg', []),
+                                'regime': pos.get('regime', _br.regime if _br and hasattr(_br, 'regime') else ''),
+                                'confidence': float(_br.confidence) if _br and hasattr(_br, 'confidence') else 0.0,
+                                'unrealized_pnl': round(_upnl, 4),
+                                'r_mult': _r_mult,
+                                'pnl_pct': _pct,
+                            }
+                        out['regime'] = _br.regime if _br and hasattr(_br, 'regime') else None
+                except Exception as _ohlc_err:
+                    logging.debug(f"/api/ohlc/{sym_req} error: {_ohlc_err}")
+                self.wfile.write(json.dumps(out).encode())
             elif self.path == "/decisions":
                 # Decision traceability — last N entry decisions with full factor breakdown
                 self.send_response(200)
@@ -5681,6 +6131,179 @@ def _run_http_health_server():
                 self.send_header("Content-Length", len(body))
                 self.end_headers()
                 self.wfile.write(body)
+            elif self.path == "/api/brain/global":
+                # Global fleet-wide Bayesian brain — proves cross-symbol learning
+                try:
+                    gb = _get_global_bayes('output')
+                    out = {
+                        'regime_n': {r: int(gb.n.get(r, 0)) for r in _REGIMES},
+                        'total_n': int(sum(gb.n.values())),
+                        'override_threshold': {
+                            'min_regime_n': 30,
+                            'min_pwin': 0.58,
+                            'description': 'When fleet has >= 30 trades in a regime, '
+                                           'a trade that fails confluence can still enter if '
+                                           'predicted P(win) >= 0.58 on current factors.'
+                        },
+                        'mu_norm_by_regime': {r: float(np.linalg.norm(gb.mu.get(r, np.zeros(gb._N_FEAT)))) for r in _REGIMES},
+                        'feature_names': list(_FK) + [f'{a}*{b}' for a, b in _INTERACTION_TERMS] + ['bias'],
+                        'mu_by_regime': {r: [round(float(x), 4) for x in gb.mu.get(r, np.zeros(gb._N_FEAT))] for r in _REGIMES},
+                    }
+                    body = json.dumps(out).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", len(body))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as _gerr:
+                    body = json.dumps({'error': str(_gerr)}).encode()
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", len(body))
+                    self.end_headers()
+                    self.wfile.write(body)
+            elif self.path == "/api/brain":
+                # Learning-brain transparency snapshot — per-symbol stats + global pool + Bayesian state
+                try:
+                    per_sym = {}
+                    # Aggregate global signal stats across all symbols
+                    global_sig = {s: {'f': 0, 'w': 0} for s in 'abcdefghijklmnopqrstuvwxyz2'}
+                    total_trades = 0
+                    regime_update_counts = {r: 0 for r in ('bull', 'bear', 'range', 'chop')}
+                    for _sym, _br in brs.items():
+                        try:
+                            sym_stats = getattr(_br, 'stats', {}) or {}
+                            tc = int(getattr(_br, 'trade_count', 0))
+                            total_trades += tc
+                            for s, rec in sym_stats.items():
+                                if s in global_sig and isinstance(rec, dict):
+                                    global_sig[s]['f'] += int(rec.get('f', 0))
+                                    global_sig[s]['w'] += int(rec.get('w', 0))
+                            bm = getattr(_br, 'bayesian_model', None)
+                            bayes_n = {}
+                            if bm is not None and hasattr(bm, 'n'):
+                                bayes_n = {r: int(bm.n.get(r, 0)) for r in ('bull','bear','range','chop')}
+                                for r, n in bayes_n.items():
+                                    regime_update_counts[r] += n
+                            per_sym[_sym] = {
+                                'trade_count': tc,
+                                'regime': getattr(_br, 'regime', None),
+                                'stats': {s: sym_stats.get(s, {'f':0,'w':0}) for s in 'abcdefghijklmnopqrstuvwxyz2'},
+                                'bayes_n': bayes_n,
+                            }
+                        except Exception:
+                            continue
+                    # Per-signal global win rate (Bayesian blend: prior 50% with weight 20)
+                    signal_quality = {}
+                    for s, rec in global_sig.items():
+                        f = rec['f']; w = rec['w']
+                        blended = (w + 0.5 * 20) / (f + 20) if (f + 20) > 0 else 0.5
+                        label = _SIG_DESC.get(s.upper(), s) if '_SIG_DESC' in globals() else s
+                        signal_quality[s] = {
+                            'label': label,
+                            'fires': f,
+                            'wins': w,
+                            'raw_wr': round(w / f, 4) if f > 0 else None,
+                            'blended_wr': round(blended, 4),
+                            'status': 'suppressed' if blended < 0.40 else ('promoted' if blended >= 0.55 else 'neutral'),
+                        }
+                    body = json.dumps({
+                        'total_trades_across_fleet': total_trades,
+                        'regime_update_counts': regime_update_counts,
+                        'signal_quality': signal_quality,
+                        'per_symbol': per_sym,
+                    }).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", len(body))
+                    self.end_headers()
+                    self.wfile.write(body)
+                except Exception as _brain_err:
+                    body = json.dumps({'error': str(_brain_err)}).encode()
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", len(body))
+                    self.end_headers()
+                    self.wfile.write(body)
+            elif self.path.startswith("/api/autopsy/recent"):
+                # Last N autopsies from the jsonl journal (tail, not full history)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                limit = 20
+                try:
+                    if '?' in self.path:
+                        from urllib.parse import parse_qs
+                        q = parse_qs(self.path.split('?', 1)[1])
+                        if 'limit' in q:
+                            limit = max(1, min(200, int(q['limit'][0])))
+                except Exception:
+                    pass
+                out = []
+                try:
+                    if os.path.exists(_AUTOPSY_PATH):
+                        # Read last N lines efficiently
+                        with open(_AUTOPSY_PATH, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()[-limit:]
+                        for ln in lines:
+                            ln = ln.strip()
+                            if not ln: continue
+                            try:
+                                out.append(json.loads(ln))
+                            except Exception:
+                                continue
+                except Exception as _ap_err:
+                    logging.debug(f"autopsy read failed: {_ap_err}")
+                self.wfile.write(json.dumps(out).encode())
+            elif self.path == "/api/regime/sanity":
+                # Latest regime-sanity snapshot
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                with _REGIME_SANITY_LOCK:
+                    snap = dict(_REGIME_SANITY)
+                self.wfile.write(json.dumps(snap).encode())
+            elif self.path.startswith("/api/memory/similar"):
+                # Query fleet memory: given factors+regime+dir, return most similar past trades
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.end_headers()
+                factors = {}
+                regime = None
+                direction = None
+                k = 10
+                max_dist = 0.6
+                try:
+                    if '?' in self.path:
+                        from urllib.parse import parse_qs
+                        q = parse_qs(self.path.split('?', 1)[1])
+                        for key in ('trend','momentum','volume','structure','volatility','order_flow'):
+                            if key in q:
+                                try: factors[key] = float(q[key][0])
+                                except Exception: pass
+                        if 'regime' in q: regime = q['regime'][0]
+                        if 'dir' in q: direction = q['dir'][0]
+                        if 'k' in q:
+                            try: k = max(1, min(50, int(q['k'][0])))
+                            except Exception: pass
+                        if 'max_distance' in q:
+                            try: max_dist = max(0.05, min(2.0, float(q['max_distance'][0])))
+                            except Exception: pass
+                except Exception:
+                    pass
+                matches = find_similar_trades(factors, regime=regime, direction=direction, k=k, max_distance=max_dist)
+                summary = None
+                if matches:
+                    wins = sum(1 for m in matches if m['r'] > 0)
+                    avg_r = sum(m['r'] for m in matches) / len(matches)
+                    summary = {
+                        'n': len(matches),
+                        'wins': wins,
+                        'losses': len(matches) - wins,
+                        'win_rate': round(wins / len(matches), 3),
+                        'avg_r': round(avg_r, 3),
+                    }
+                self.wfile.write(json.dumps({'summary': summary, 'matches': matches}).encode())
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -5924,6 +6547,16 @@ def main():
     start_equity_logger()
     # Start background health snapshot updater — /health reads from this, never computes inline
     threading.Thread(target=_update_health_snapshot, daemon=True).start()
+    # Regime sanity check — every 5min, cross-checks HMM labels vs actual 24h returns
+    def _regime_sanity_loop():
+        time.sleep(120)  # give HMMs time to fit first
+        while True:
+            try:
+                compute_regime_sanity()
+            except Exception:
+                pass
+            time.sleep(300)
+    threading.Thread(target=_regime_sanity_loop, daemon=True).start()
     start_http_health_server()
     start_subscriber_api()
 

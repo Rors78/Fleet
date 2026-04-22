@@ -2,7 +2,7 @@ import os
 import logging
 import requests
 from urllib.parse import quote
-from flask import Flask, render_template_string, jsonify
+from flask import Flask, render_template_string, jsonify, request
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -290,7 +290,7 @@ body::before {
   grid-template-areas:
     "equity  equity  equity  positions"
     "aegis   signals funnel  symbols"
-    "log     log     log     log";
+    "log     log     log     brain";
   gap: 10px;
   padding: 10px;
   min-height: 0;
@@ -354,6 +354,67 @@ body::before {
 .p-funnel   { grid-area: funnel; }
 .p-symbols  { grid-area: symbols; }
 .p-log      { grid-area: log; }
+.p-brain    { grid-area: brain; }
+
+.p-brain .panel-body {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+}
+.brain-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.brain-status .bs-lbl { color: var(--text-dim); }
+.brain-status .bs-val { color: var(--gold); }
+.brain-status .bs-val.on { color: var(--green); }
+.brain-status .bs-val.off { color: var(--text-dim); }
+.brain-regimes {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  flex: 1;
+  min-height: 0;
+}
+.brain-regimes .reg-cell {
+  border: 1px solid var(--border);
+  padding: 6px 4px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+}
+.brain-regimes .reg-cell .reg-name {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  letter-spacing: 0.1em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+}
+.brain-regimes .reg-cell .reg-n {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--text);
+}
+.brain-regimes .reg-cell.primary .reg-n { color: var(--gold); }
+.brain-regimes .reg-cell.armed { border-color: var(--green); }
+.brain-regimes .reg-cell.armed .reg-n { color: var(--green); }
+.brain-countdown {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--text-dim);
+  text-align: center;
+}
+.brain-countdown b { color: var(--gold); }
 
 /* ========== TOP BAR ========== */
 
@@ -435,6 +496,13 @@ body::before {
   color: var(--cyan);
   text-shadow: 0 0 6px rgba(0,229,255,0.25);
 }
+.tb-sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--text-dim);
+  letter-spacing: 0.05em;
+  margin-left: 6px;
+}
 
 .dot {
   width: 7px;
@@ -505,164 +573,373 @@ body::before {
 .p-pos .panel-body {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  padding: 6px 8px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
+.p-pos .panel-body::-webkit-scrollbar { width: 4px; }
+.p-pos .panel-body::-webkit-scrollbar-track { background: var(--bg-deep); }
+.p-pos .panel-body::-webkit-scrollbar-thumb { background: var(--dim-2); }
 
-.pos-card {
-  background: var(--surface-lift);
+/* ---------- EMPTY STATE (NO OPEN POSITIONS) ---------- */
+.pos-empty-v2 {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  height: 100%;
+  min-height: 0;
+}
+.pos-empty-v2.hidden { display: none; }
+.pos-empty-v2 .pe-h {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.2em;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  text-align: center;
+  padding-top: 2px;
+}
+.pos-empty-v2 .pe-sub {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--dim);
+  text-align: center;
+  letter-spacing: 0.05em;
+  padding: 0 0 4px;
+  border-bottom: 1px solid var(--border);
+}
+.pe-sec {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 4px 2px 5px;
+  border-bottom: 1px solid var(--border);
+}
+.pe-sec:last-child { border-bottom: none; padding-bottom: 2px; }
+.pe-sec-h {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 600;
+  font-size: 8px;
+  letter-spacing: 0.22em;
+  color: var(--gold);
+  text-transform: uppercase;
+}
+.pe-dim {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--dim);
+  font-style: italic;
+}
+/* Nearest candidate — feature card */
+.pe-nearest-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  background: var(--bg-deep);
   border: 1px solid var(--border);
-  padding: 10px 12px;
-  border-left: 3px solid var(--cyan);
+  border-left: 2px solid var(--cyan);
+  padding: 5px 8px 6px;
 }
-.pos-card.short { border-left-color: var(--amber); }
-.pos-card.win { border-left-color: var(--gold); }
-.pos-card.loss { border-left-color: var(--red); }
+.pe-near-sym {
+  font-family: 'Rajdhani', sans-serif;
+  font-weight: 700;
+  font-size: 14px;
+  color: var(--cyan);
+  letter-spacing: 0.04em;
+  line-height: 1.1;
+}
+.pe-near-depth {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--text);
+  line-height: 1.2;
+}
+.pe-near-depth b { color: var(--green); }
+.pe-near-block {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--amber);
+  line-height: 1.2;
+}
+.pe-near-fx {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: var(--text-dim);
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  line-height: 1.3;
+}
+.pe-near-fx b { color: var(--text); font-weight: 400; }
+.pe-near-meta {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: var(--text-dim);
+  margin-top: 1px;
+  line-height: 1.2;
+}
+.pe-near-mem {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  padding: 2px 4px;
+  margin-top: 2px;
+  border-left: 2px solid;
+  background: rgba(0,0,0,0.25);
+  line-height: 1.25;
+}
+.pe-near-mem.pe-mem-good { color: var(--green); border-left-color: var(--green); }
+.pe-near-mem.pe-mem-mid  { color: var(--amber); border-left-color: var(--amber); }
+.pe-near-mem.pe-mem-bad  { color: var(--red);   border-left-color: var(--red); }
+.pe-near-mem.pe-mem-dim  { color: var(--text-dim); border-left-color: var(--dim); font-style: italic; }
+/* Queue rows */
+.pe-queue-body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.pe-q-row {
+  display: grid;
+  grid-template-columns: 50px 1fr auto;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  padding: 1px 4px;
+  background: var(--bg-deep);
+  border-left: 2px solid var(--dim);
+  line-height: 1.4;
+}
+.pe-q-row .pe-q-sym { color: var(--text); font-weight: 600; }
+.pe-q-row .pe-q-depth { color: var(--text-dim); }
+.pe-q-row .pe-q-block { color: var(--amber); font-size: 8px; }
+/* Fleet state */
+.pe-fleet-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.pe-fl-row {
+  display: flex;
+  justify-content: space-between;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  line-height: 1.3;
+}
+.pe-fl-row .pe-fl-l { color: var(--text-dim); }
+.pe-fl-row .pe-fl-v { color: var(--text); }
+.pe-fl-row .pe-fl-v.gold  { color: var(--gold); }
+.pe-fl-row .pe-fl-v.green { color: var(--green); }
+.pe-fl-row .pe-fl-v.red   { color: var(--red); }
 
-.pos-card-head {
+/* ---------- OPEN POSITION MODULE ---------- */
+.pos-open-v2 {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  height: 100%;
+}
+.pos-open-v2.hidden { display: none; }
+.pov-head {
   display: flex;
   align-items: baseline;
   gap: 10px;
-  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border);
 }
-.pos-sym {
+.pov-sym {
   font-family: 'Rajdhani', sans-serif;
   font-weight: 700;
-  font-size: 18px;
+  font-size: 20px;
   letter-spacing: 0.04em;
   color: var(--text);
 }
-.pos-dir {
+.pov-dir {
   font-family: 'JetBrains Mono', monospace;
   font-size: 9px;
   letter-spacing: 0.14em;
-  padding: 1px 6px;
+  padding: 2px 7px;
   border: 1px solid var(--cyan);
   color: var(--cyan);
   text-transform: uppercase;
 }
-.pos-dir.short { color: var(--amber); border-color: var(--amber); }
-
-.pos-age {
+.pov-dir.short { color: var(--amber); border-color: var(--amber); }
+.pov-age {
   margin-left: auto;
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
   color: var(--text-dim);
 }
-
-.pos-row {
+.pov-prices {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr;
   gap: 6px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 11px;
-  margin-bottom: 8px;
 }
-.pos-row .pc-lbl {
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  color: var(--text-dim);
-  text-transform: uppercase;
-}
-.pos-row .pc-val {
-  font-size: 12px;
-  color: var(--text);
-}
-
-.pos-sltp {
-  position: relative;
-  height: 18px;
+.pov-p {
   background: var(--bg-deep);
   border: 1px solid var(--border);
-}
-.pos-sltp-fill {
-  position: absolute;
-  top: 0;
-  left: 0;
-  height: 100%;
-  background: linear-gradient(90deg, rgba(255,45,85,0.22) 0%, rgba(255,45,85,0.1) 30%, rgba(45,212,168,0.1) 70%, rgba(45,212,168,0.22) 100%);
-}
-.pos-sltp-marker {
-  position: absolute;
-  top: -2px;
-  bottom: -2px;
-  width: 2px;
-  background: var(--cyan);
-  box-shadow: 0 0 6px rgba(0,229,255,0.7);
-}
-.pos-sltp-label {
-  position: absolute;
-  top: 50%;
-  transform: translateY(-50%);
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  color: var(--text-dim);
-  padding: 0 4px;
-}
-.pos-sltp-label.sl { left: 2px; }
-.pos-sltp-label.tp { right: 2px; }
-
-/* Empty state + nearest entry */
-
-.pos-empty {
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  align-items: center;
-  height: 100%;
-  gap: 14px;
+  padding: 4px 6px;
   text-align: center;
 }
-.pos-empty-msg {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  letter-spacing: 0.25em;
-  color: var(--dim);
+.pov-p .pov-pl {
+  font-family: 'Rajdhani', sans-serif;
+  font-size: 8px;
+  letter-spacing: 0.15em;
+  color: var(--text-dim);
   text-transform: uppercase;
 }
-.pos-nearest {
+.pov-p .pov-pv {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  color: var(--text);
+  margin-top: 1px;
+}
+.pov-p .pov-pv.up { color: var(--green); }
+.pov-p .pov-pv.dn { color: var(--red); }
+
+/* Mini chart */
+.pov-chart-wrap {
+  position: relative;
+  height: 100px;
+  border: 1px solid var(--border);
+  background: var(--bg-deep);
+}
+.pov-chart-wrap canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.pov-chart-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 9px;
+  color: var(--dim);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.pov-chart-empty.hidden { display: none; }
+
+/* Risk bar (SL / IN / TP1 / TP2 / TP3) */
+.pov-risk {
+  padding: 12px 4px 18px;
+}
+.pov-risk-track {
+  position: relative;
+  height: 6px;
   background: var(--bg-deep);
   border: 1px solid var(--border);
-  border-left: 2px solid var(--cyan-soft);
-  padding: 10px 14px;
-  width: calc(100% - 24px);
-  max-width: 360px;
 }
-.pos-nearest .pn-label {
-  font-family: 'Rajdhani', sans-serif;
-  font-size: 9px;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
+.pov-risk-band {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+}
+.pov-risk-sl {
+  left: 0; right: 50%;
+  background: linear-gradient(90deg, rgba(255,45,85,0.25), rgba(255,45,85,0.05));
+}
+.pov-risk-tp {
+  left: 50%; right: 0;
+  background: linear-gradient(90deg, rgba(45,212,168,0.05), rgba(201,162,39,0.28));
+}
+.pov-risk-tick {
+  position: absolute;
+  top: -5px;
+  width: 1px;
+  height: 16px;
+  background: var(--text-dim);
+  transform: translateX(-50%);
+}
+.pov-risk-tick span {
+  position: absolute;
+  top: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
   color: var(--text-dim);
-  margin-bottom: 4px;
+  white-space: nowrap;
 }
-.pos-nearest .pn-sym {
+.pov-risk-sl-t  { background: var(--red); }   .pov-risk-sl-t span  { color: var(--red); }
+.pov-risk-en-t  { background: var(--text); }  .pov-risk-en-t span  { color: var(--text); }
+.pov-risk-tp1-t { background: var(--green); } .pov-risk-tp1-t span { color: var(--green); }
+.pov-risk-tp2-t { background: var(--gold-soft); } .pov-risk-tp2-t span { color: var(--gold-soft); }
+.pov-risk-tp3-t { background: var(--gold); }  .pov-risk-tp3-t span  { color: var(--gold); }
+.pov-risk-marker {
+  position: absolute;
+  top: -6px;
+  bottom: -6px;
+  width: 2px;
+  background: var(--cyan);
+  box-shadow: 0 0 8px rgba(0,229,255,0.8);
+  transform: translateX(-50%);
+  transition: left 0.4s ease-out;
+  z-index: 5;
+}
+
+/* P/L strip */
+.pov-pnl {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 4px 0;
+}
+.pov-pnl-main {
   font-family: 'Rajdhani', sans-serif;
   font-weight: 700;
-  font-size: 16px;
-  color: var(--cyan);
-  letter-spacing: 0.04em;
+  font-size: 18px;
+  letter-spacing: 0.02em;
 }
-.pos-nearest .pn-depth {
+.pov-pnl-main.up { color: var(--green); }
+.pov-pnl-main.dn { color: var(--red); }
+.pov-pnl-sub {
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  color: var(--text);
-  margin-top: 3px;
+  color: var(--text-dim);
 }
-.pos-nearest .pn-block {
+
+/* Thesis + trajectory */
+.pov-thesis, .pov-traj {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+.pov-th-row, .pov-tr-row {
+  display: flex;
+  justify-content: space-between;
   font-family: 'JetBrains Mono', monospace;
   font-size: 10px;
-  color: var(--amber);
-  margin-top: 2px;
 }
+.pov-th-l, .pov-tr-l { color: var(--text-dim); }
+.pov-th-v, .pov-tr-v { color: var(--text); }
+.pov-th-v.mono, .pov-tr-v.mono { font-family: 'JetBrains Mono', monospace; font-size: 9px; }
 
 /* ========== AEGIS + ANALYTICS ========== */
 
+.p-aegis .panel-body {
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.p-aegis .panel-body::-webkit-scrollbar { width: 4px; }
+.p-aegis .panel-body::-webkit-scrollbar-track { background: var(--bg-deep); }
+.p-aegis .panel-body::-webkit-scrollbar-thumb { background: var(--dim-2); }
+
 .aegis-wrap {
   display: grid;
-  grid-template-rows: auto 1fr;
-  gap: 10px;
-  height: 100%;
+  grid-template-rows: auto auto;
+  gap: 4px;
+  min-height: 0;
 }
 
 .aegis-gauge {
@@ -671,57 +948,61 @@ body::before {
   flex-direction: column;
   align-items: center;
   padding-top: 2px;
+  min-height: 0;
 }
 
 .aegis-canvas {
-  width: 110px;
-  height: 110px;
+  width: 84px;
+  height: 84px;
   display: block;
 }
 
 .aegis-score-val {
   position: absolute;
-  top: 48px;
+  top: 32px;
   left: 0;
   right: 0;
   text-align: center;
   font-family: 'JetBrains Mono', monospace;
   font-weight: 700;
-  font-size: 28px;
+  font-size: 22px;
   color: var(--gold);
   text-shadow: 0 0 10px rgba(201,162,39,0.4);
   pointer-events: none;
+  line-height: 1;
 }
 
 .aegis-label {
   position: absolute;
-  top: 82px;
+  top: 58px;
   left: 0;
   right: 0;
   text-align: center;
   font-family: 'Rajdhani', sans-serif;
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.2em;
   color: var(--text-dim);
   text-transform: uppercase;
   pointer-events: none;
+  line-height: 1;
 }
 
 .aegis-sub {
   font-family: 'Rajdhani', sans-serif;
-  font-size: 8px;
+  font-size: 7px;
   letter-spacing: 0.2em;
   color: var(--dim);
   text-transform: uppercase;
   text-align: center;
-  margin-top: -3px;
+  margin-top: 2px;
+  line-height: 1;
 }
 
 .aa-stats {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 6px 14px;
-  padding: 6px 4px 0;
+  gap: 3px 10px;
+  padding: 4px 2px 0;
   font-family: 'JetBrains Mono', monospace;
   align-content: start;
 }
@@ -730,17 +1011,18 @@ body::before {
   justify-content: space-between;
   align-items: baseline;
   border-bottom: 1px dotted var(--dim-2);
-  padding-bottom: 2px;
+  padding-bottom: 1px;
+  line-height: 1.2;
 }
 .aa-stats .stat-lbl {
   font-family: 'Rajdhani', sans-serif;
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.14em;
   color: var(--text-dim);
   text-transform: uppercase;
 }
 .aa-stats .stat-val {
-  font-size: 12px;
+  font-size: 11px;
   color: var(--text);
   font-weight: 500;
 }
@@ -750,15 +1032,15 @@ body::before {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-top: 6px;
-  padding-top: 6px;
+  margin-top: 4px;
+  padding-top: 4px;
   border-top: 1px solid var(--border);
   font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
+  font-size: 9px;
 }
 .cb-line .cb-lbl {
   font-family: 'Rajdhani', sans-serif;
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.14em;
   color: var(--text-dim);
   text-transform: uppercase;
@@ -850,73 +1132,119 @@ body::before {
   text-transform: uppercase;
 }
 
-/* ========== GATE FUNNEL ========== */
+/* ========== DECISION STREAM ========== */
 
-.funnel-wrap {
+.ds-wrap {
+  height: 100%;
   display: flex;
   flex-direction: column;
-  gap: 4px;
-  height: 100%;
   overflow: hidden;
+  position: relative;
 }
-
-.funnel-head {
+.ds-empty {
+  position: absolute;
+  inset: 0;
   display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--text-dim);
-  margin-bottom: 2px;
-}
-.funnel-head b { color: var(--text); font-weight: 500; }
-
-.funnel-row {
-  display: grid;
-  grid-template-columns: 68px 1fr 34px;
   align-items: center;
-  gap: 6px;
+  justify-content: center;
   font-family: 'JetBrains Mono', monospace;
-  font-size: 9px;
-  line-height: 1;
-  height: 14px;
-}
-.funnel-row.bottleneck .fn-bar {
-  box-shadow: 0 0 8px rgba(255,45,85,0.4);
-}
-.funnel-row.bottleneck .fn-name { color: var(--red); }
-.funnel-row.dim-row .fn-name { color: var(--dim); }
-.funnel-row.dim-row .fn-bar { background: var(--dim-2); }
-
-.fn-name {
-  font-family: 'Rajdhani', sans-serif;
   font-size: 10px;
-  letter-spacing: 0.1em;
+  color: var(--dim);
+  letter-spacing: 0.15em;
+  text-transform: uppercase;
+  pointer-events: none;
+}
+.ds-empty.hidden { display: none; }
+.ds-feed {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 2px;
+  padding-right: 2px;
+}
+.ds-feed::-webkit-scrollbar { width: 4px; }
+.ds-feed::-webkit-scrollbar-track { background: var(--bg-deep); }
+.ds-feed::-webkit-scrollbar-thumb { background: var(--dim-2); }
+.ds-row {
+  display: grid;
+  grid-template-columns: 28px 46px 14px 1fr;
+  align-items: center;
+  gap: 5px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 10px;
+  padding: 3px 4px 4px;
+  border-left: 2px solid var(--red-soft);
+  background: var(--bg-deep);
+  line-height: 1.15;
+  animation: ds-in 0.25s ease-out;
+  min-width: 0;
+}
+@keyframes ds-in {
+  from { opacity: 0; transform: translateX(-4px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+.ds-row.entered   { border-left-color: var(--green); background: linear-gradient(90deg, rgba(45,212,168,0.08), transparent 60%); }
+.ds-row.shadow    { border-left-color: var(--amber); }
+.ds-row.blocked   { border-left-color: var(--red-soft); }
+.ds-row.override  { border-left-color: var(--gold); background: linear-gradient(90deg, rgba(201,162,39,0.10), transparent 60%); }
+.ds-time    { color: var(--dim); font-size: 9px; min-width: 0; }
+.ds-sym     { color: var(--text); font-weight: 600; font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ds-dir     { color: var(--cyan); font-size: 9px; letter-spacing: 0.1em; text-align: center; }
+.ds-dir.s   { color: var(--red); }
+.ds-body    { color: var(--text-dim); font-size: 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ds-body .fail { color: var(--red); }
+.ds-body .pass { color: var(--green); }
+.ds-body .gate { color: var(--text); }
+.ds-body .sig  { color: var(--cyan); }
+.ds-body .ovr  { color: var(--gold); font-weight: 600; }
+.ds-factors {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 8px;
+  color: var(--dim);
+  padding: 1px 0 0 44px;
+  letter-spacing: 0.02em;
+  min-width: 0;
+}
+.ds-factors .fx-txt {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: 1;
+  min-width: 0;
+}
+.ds-factors b { color: var(--text-dim); font-weight: 400; }
+.ds-mem {
+  margin-left: 4px;
+  padding: 0 3px;
+  border: 1px solid var(--dim);
+  color: var(--text-dim);
+  font-size: 7px;
+  letter-spacing: 0.04em;
+}
+.ds-mem.mem-good { color: var(--green); border-color: rgba(45,212,168,0.45); }
+.ds-mem.mem-mid  { color: var(--amber); border-color: rgba(245,158,11,0.45); }
+.ds-mem.mem-bad  { color: var(--red);   border-color: rgba(255,45,85,0.45); }
+.ds-verdict {
+  font-size: 7px;
+  letter-spacing: 0.08em;
+  padding: 1px 5px;
+  border: 1px solid var(--dim);
   color: var(--text-dim);
   text-transform: uppercase;
-  text-align: right;
+  text-align: center;
+  flex-shrink: 0;
 }
-.fn-bar-track {
-  position: relative;
-  height: 10px;
-  background: var(--bg-deep);
-  border: 1px solid var(--dim-2);
-}
-.fn-bar {
-  height: 100%;
-  background: linear-gradient(90deg, var(--cyan-soft), var(--cyan));
-  transition: width 0.5s ease-out;
-}
-.funnel-row:last-child .fn-bar {
-  background: linear-gradient(90deg, var(--gold-soft), var(--gold));
-}
-.fn-count {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 10px;
-  color: var(--text);
-  text-align: right;
-}
-.fn-count.dim { color: var(--dim); }
+.ds-verdict.entered  { color: var(--green); border-color: var(--green); }
+.ds-verdict.shadow   { color: var(--amber); border-color: var(--amber); }
+.ds-verdict.blocked  { color: var(--red); border-color: var(--red-soft); }
+.ds-verdict.override { color: var(--gold); border-color: var(--gold); }
 
 /* ========== PLACEHOLDER / UTILITY ========== */
 
@@ -1038,7 +1366,7 @@ body::before {
    At 18px per line we fit 6 lines comfortably. JS caps visible lines to 6. */
 
 .p-log .panel-body {
-  padding: 8px 14px;
+  padding: 3px 10px;
 }
 
 .log-feed {
@@ -1049,29 +1377,30 @@ body::before {
   min-height: 0;
   overflow: hidden;
   font-family: 'JetBrains Mono', 'Consolas', monospace;
-  font-size: 11px;
-  line-height: 18px;
+  font-size: 10px;
+  line-height: 13px;
 }
 .log-feed .log-line {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
   color: var(--text-dim);
-  height: 18px;
+  height: 13px;
 }
 .log-feed .log-ts {
   color: var(--dim);
-  margin-right: 6px;
+  margin-right: 5px;
+  font-size: 9px;
 }
 .log-tag {
   display: inline-block;
-  font-size: 9px;
+  font-size: 8px;
   letter-spacing: 0.08em;
-  padding: 0 5px;
-  margin-right: 6px;
+  padding: 0 4px;
+  margin-right: 5px;
   border: 1px solid var(--dim);
   color: var(--text-dim);
-  line-height: 14px;
+  line-height: 11px;
   vertical-align: 1px;
 }
 .log-line.sig   .log-tag { color: var(--cyan-soft); border-color: rgba(0,135,166,0.5); }
@@ -1155,8 +1484,9 @@ body::before {
         <span class="tb-value mono" id="tb-mem">—</span>
       </div>
       <div class="tb-group">
-        <span class="tb-label">UTC</span>
+        <span class="tb-label">MDT</span>
         <span class="tb-value mono clock" id="tb-clock">—</span>
+        <span class="tb-sub mono" id="tb-clock-utc">—</span>
       </div>
     </div>
   </header>
@@ -1176,15 +1506,77 @@ body::before {
       </div>
     </section>
 
-    <!-- POSITIONS -->
+    <!-- POSITIONS / COMMAND -->
     <section class="panel p-pos">
       <div class="panel-head">
-        <h2>Positions</h2>
+        <h2 id="pos-title">Positions</h2>
         <span class="badge" id="pos-badge">0 / 20</span>
       </div>
       <div class="panel-body" id="pos-body">
-        <div class="pos-empty">
-          <div class="pos-empty-msg">No open positions</div>
+        <div class="pos-empty-v2" id="pos-empty-v2">
+          <div class="pe-h">Awaiting signal</div>
+          <div class="pe-sub" id="pe-last-trade">—</div>
+          <div class="pe-sec pe-nearest">
+            <div class="pe-sec-h">NEAREST CANDIDATE</div>
+            <div class="pe-nearest-body" id="pe-nearest-body">
+              <div class="pe-dim">scanning…</div>
+            </div>
+          </div>
+          <div class="pe-sec pe-queue">
+            <div class="pe-sec-h">NEXT IN QUEUE</div>
+            <div class="pe-queue-body" id="pe-queue-body">
+              <div class="pe-dim">—</div>
+            </div>
+          </div>
+          <div class="pe-sec pe-fleet">
+            <div class="pe-sec-h">FLEET STATE</div>
+            <div class="pe-fleet-body" id="pe-fleet-body">
+              <div class="pe-dim">—</div>
+            </div>
+          </div>
+        </div>
+        <div class="pos-open-v2 hidden" id="pos-open-v2">
+          <div class="pov-head">
+            <span class="pov-sym" id="pov-sym">—</span>
+            <span class="pov-dir" id="pov-dir">—</span>
+            <span class="pov-age" id="pov-age">—</span>
+          </div>
+          <div class="pov-prices">
+            <div class="pov-p"><div class="pov-pl">ENTRY</div><div class="pov-pv" id="pov-entry">—</div></div>
+            <div class="pov-p"><div class="pov-pl">NOW</div><div class="pov-pv" id="pov-now">—</div></div>
+            <div class="pov-p"><div class="pov-pl">Δ</div><div class="pov-pv" id="pov-delta">—</div></div>
+          </div>
+          <div class="pov-chart-wrap">
+            <canvas id="povCanvas"></canvas>
+            <div class="pov-chart-empty" id="pov-chart-empty">building chart…</div>
+          </div>
+          <div class="pov-risk">
+            <div class="pov-risk-track" id="pov-risk-track">
+              <div class="pov-risk-band pov-risk-sl"></div>
+              <div class="pov-risk-band pov-risk-tp"></div>
+              <div class="pov-risk-tick pov-risk-sl-t"  id="pov-risk-sl-t"><span>SL</span></div>
+              <div class="pov-risk-tick pov-risk-en-t"  id="pov-risk-en-t"><span>IN</span></div>
+              <div class="pov-risk-tick pov-risk-tp1-t" id="pov-risk-tp1-t"><span>TP1</span></div>
+              <div class="pov-risk-tick pov-risk-tp2-t" id="pov-risk-tp2-t"><span>TP2</span></div>
+              <div class="pov-risk-tick pov-risk-tp3-t" id="pov-risk-tp3-t"><span>TP3</span></div>
+              <div class="pov-risk-marker" id="pov-risk-marker"></div>
+            </div>
+          </div>
+          <div class="pov-pnl">
+            <div class="pov-pnl-main" id="pov-pnl-main">—</div>
+            <div class="pov-pnl-sub" id="pov-pnl-sub">—</div>
+          </div>
+          <div class="pov-thesis" id="pov-thesis">
+            <div class="pov-th-row"><span class="pov-th-l">Regime</span><span class="pov-th-v" id="pov-th-regime">—</span></div>
+            <div class="pov-th-row"><span class="pov-th-l">Signals</span><span class="pov-th-v" id="pov-th-sigs">—</span></div>
+            <div class="pov-th-row"><span class="pov-th-l">Conf · Whale</span><span class="pov-th-v" id="pov-th-cw">—</span></div>
+            <div class="pov-th-row"><span class="pov-th-l">Entry factors</span><span class="pov-th-v mono" id="pov-th-fx">—</span></div>
+          </div>
+          <div class="pov-traj" id="pov-traj">
+            <div class="pov-tr-row"><span class="pov-tr-l">TP1 needs</span><span class="pov-tr-v" id="pov-tr-tp1">—</span></div>
+            <div class="pov-tr-row"><span class="pov-tr-l">SL distance</span><span class="pov-tr-v" id="pov-tr-sl">—</span></div>
+            <div class="pov-tr-row"><span class="pov-tr-l">TP hit</span><span class="pov-tr-v" id="pov-tr-tphit">—</span></div>
+          </div>
         </div>
       </div>
     </section>
@@ -1231,19 +1623,16 @@ body::before {
       </div>
     </section>
 
-    <!-- GATE FUNNEL -->
+    <!-- DECISION STREAM -->
     <section class="panel p-funnel">
       <div class="panel-head">
-        <h2>Gate Funnel</h2>
-        <span class="badge">60s WINDOW</span>
+        <h2>Decision Stream</h2>
+        <span class="badge" id="ds-badge">—</span>
       </div>
       <div class="panel-body">
-        <div class="funnel-wrap" id="fn-wrap">
-          <div class="funnel-head">
-            <span>Records: <b id="fn-records">0</b></span>
-            <span>Entered: <b id="fn-entered">0</b></span>
-          </div>
-          <div id="fn-rows"></div>
+        <div class="ds-wrap" id="ds-wrap">
+          <div class="ds-empty" id="ds-empty">Awaiting decisions</div>
+          <div class="ds-feed" id="ds-feed"></div>
         </div>
       </div>
     </section>
@@ -1271,6 +1660,27 @@ body::before {
         <div class="log-feed" id="log-feed">
           <div class="log-empty">Awaiting events</div>
         </div>
+      </div>
+    </section>
+
+    <!-- GLOBAL BRAIN -->
+    <section class="panel p-brain">
+      <div class="panel-head">
+        <h2>Global Brain</h2>
+        <span class="badge" id="brain-badge">BAYES</span>
+      </div>
+      <div class="panel-body">
+        <div class="brain-status">
+          <span class="bs-lbl">Override</span>
+          <span class="bs-val off" id="brain-override">STANDBY</span>
+        </div>
+        <div class="brain-regimes" id="brain-regimes">
+          <div class="reg-cell"><span class="reg-name">Bull</span><span class="reg-n" id="brain-n-bull">—</span></div>
+          <div class="reg-cell"><span class="reg-name">Bear</span><span class="reg-n" id="brain-n-bear">—</span></div>
+          <div class="reg-cell"><span class="reg-name">Range</span><span class="reg-n" id="brain-n-range">—</span></div>
+          <div class="reg-cell"><span class="reg-name">Chop</span><span class="reg-n" id="brain-n-chop">—</span></div>
+        </div>
+        <div class="brain-countdown" id="brain-countdown">—</div>
       </div>
     </section>
 
@@ -1312,10 +1722,18 @@ function fmtAge(seconds) {
   return m + 'm';
 }
 
+// MDT = UTC-6 during daylight (Great Falls, MT). Fixed offset; DST transitions are an edge the user will accept.
+const _MDT_OFFSET_HOURS = -6;
 function fmtClock() {
   const d = new Date();
+  const mdt = new Date(d.getTime() + _MDT_OFFSET_HOURS * 3600 * 1000);
   const p = n => String(n).padStart(2, '0');
-  return p(d.getUTCHours()) + ':' + p(d.getUTCMinutes()) + ':' + p(d.getUTCSeconds());
+  return p(mdt.getUTCHours()) + ':' + p(mdt.getUTCMinutes()) + ':' + p(mdt.getUTCSeconds());
+}
+function fmtClockUTC() {
+  const d = new Date();
+  const p = n => String(n).padStart(2, '0');
+  return 'UTC ' + p(d.getUTCHours()) + ':' + p(d.getUTCMinutes());
 }
 
 function fmtTimeShort(ts) {
@@ -1334,8 +1752,12 @@ function fmtTimeLabel(ts, spanSec) {
 
 // ---- clock tick (independent of data poll) ---------------------------------
 
-setInterval(() => { $('tb-clock').textContent = fmtClock(); }, 1000);
+setInterval(() => {
+  $('tb-clock').textContent = fmtClock();
+  const u = $('tb-clock-utc'); if (u) u.textContent = fmtClockUTC();
+}, 1000);
 $('tb-clock').textContent = fmtClock();
+(() => { const u = $('tb-clock-utc'); if (u) u.textContent = fmtClockUTC(); })();
 
 // ---- top bar renderer ------------------------------------------------------
 
@@ -1732,90 +2154,385 @@ const EquityChart = (() => {
 // POSITIONS PANEL
 // ============================================================================
 
-function renderPositions(positions, decisions) {
-  const body = $('pos-body');
-  if (positions && positions.length) {
-    // Live position cards
-    const cards = positions.map(p => {
-      const isShort = (p.direction || 'long').toLowerCase() === 'short';
-      const pnl = Number(p.pnl || 0);
-      const r = Number(p.r_mult || 0);
-      const cardCls = pnl >= 0 ? 'win' : 'loss';
-      const dirCls = isShort ? 'short' : '';
+// ============================================================================
+// POSITIONS MODULE v2 — SOTA situational awareness
+// ============================================================================
 
-      // Compute SL/TP bar position
-      const entry = parseFloat(String(p.entry).replace(/,/g, '')) || 0;
-      const sl = parseFloat(String(p.sl).replace(/,/g, '')) || 0;
-      const tp1 = p.tp1 ? parseFloat(String(p.tp1).replace(/,/g, '')) : null;
-      // Current price is not on /positions payload directly; approximate from entry + pnl sign
-      // For the marker position we use: distance from SL vs distance from TP1
-      let markerPct = 50;
-      if (sl > 0 && tp1 != null && tp1 > 0 && entry > 0) {
-        // Assume current price between SL and TP1 proportional to pnl
-        // pnl >= 0 -> marker between entry and TP1, pnl < 0 -> between SL and entry
-        if (pnl >= 0 && tp1 !== entry) {
-          const fracToTp = Math.min(1, pnl / Math.max(0.01, Math.abs(tp1 - entry) * (p.size || 1)));
-          markerPct = 50 + fracToTp * 50;
-        } else if (sl !== entry) {
-          const fracToSl = Math.min(1, -pnl / Math.max(0.01, Math.abs(entry - sl) * (p.size || 1)));
-          markerPct = 50 - fracToSl * 50;
-        }
-      }
+let _ohlcCache = null;        // last OHLC payload for the open position
+let _ohlcSymbol = null;       // symbol we're currently tracking
+let _ohlcLastFetch = 0;       // seconds since epoch
 
-      const age = p.opened_at ? fmtAge(Date.now() / 1000 - p.opened_at) : '—';
-      const pnlCls = pnl >= 0 ? 'gold' : 'dn';
+function _povFactorsString(factors) {
+  if (!factors) return '—';
+  const p = v => Math.round((Number(v)||0) * 100).toString().padStart(2, '0');
+  return 'T' + p(factors.trend) + ' M' + p(factors.momentum)
+       + ' V' + p(factors.volume) + ' S' + p(factors.structure)
+       + ' F' + p(factors.order_flow);
+}
 
-      return (
-        '<div class="pos-card ' + cardCls + '">'
-        + '<div class="pos-card-head">'
-        +   '<span class="pos-sym">' + esc(p.symbol) + '</span>'
-        +   '<span class="pos-dir ' + dirCls + '">' + (isShort ? 'SHORT' : 'LONG') + '</span>'
-        +   '<span class="pos-age">' + age + '</span>'
-        + '</div>'
-        + '<div class="pos-row">'
-        +   '<div><div class="pc-lbl">Entry</div><div class="pc-val">$' + esc(p.entry) + '</div></div>'
-        +   '<div><div class="pc-lbl">P/L</div><div class="pc-val ' + pnlCls + '">' + (pnl >= 0 ? '+' : '') + pnl.toFixed(2) + '</div></div>'
-        +   '<div><div class="pc-lbl">R</div><div class="pc-val ' + pnlCls + '">' + (r >= 0 ? '+' : '') + r.toFixed(2) + 'R</div></div>'
-        + '</div>'
-        + '<div class="pos-sltp">'
-        +   '<div class="pos-sltp-fill"></div>'
-        +   '<div class="pos-sltp-label sl">SL</div>'
-        +   '<div class="pos-sltp-label tp">TP</div>'
-        +   '<div class="pos-sltp-marker" style="left:' + markerPct.toFixed(1) + '%"></div>'
-        + '</div>'
-        + '</div>'
-      );
-    });
-    body.innerHTML = cards.join('');
+function _povDrawChart(ohlc) {
+  const canvas = $('povCanvas');
+  const emptyEl = $('pov-chart-empty');
+  if (!canvas) return;
+  const candles = (ohlc && Array.isArray(ohlc.candles)) ? ohlc.candles : [];
+  if (!candles.length) {
+    if (emptyEl) emptyEl.classList.remove('hidden');
     return;
   }
+  if (emptyEl) emptyEl.classList.add('hidden');
 
-  // Empty state: find nearest entry from decisions
-  let nearest = null;
-  if (Array.isArray(decisions) && decisions.length) {
-    const scored = decisions.map(d => {
-      const gp = d.gates_passed || [];
-      const gf = d.gates_failed || [];
-      // Depth = count of gates passed
-      return { d, depth: gp.length, gp, gf };
-    });
-    scored.sort((a, b) => b.depth - a.depth || (b.d.timestamp || 0) - (a.d.timestamp || 0));
-    nearest = scored[0];
+  // Size canvas to DPR
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = Math.floor(rect.width * dpr);
+  canvas.height = Math.floor(rect.height * dpr);
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+  const w = rect.width, h = rect.height;
+  ctx.clearRect(0, 0, w, h);
+
+  const pos = ohlc.position || {};
+  const entry = parseFloat(String(pos.entry||0).replace(/,/g,'')) || 0;
+  const sl    = parseFloat(String(pos.sl||0).replace(/,/g,'')) || 0;
+  const tp1   = parseFloat(String(pos.tp1||0).replace(/,/g,'')) || 0;
+  const tp2   = parseFloat(String(pos.tp2||0).replace(/,/g,'')) || 0;
+  const tp3   = parseFloat(String(pos.tp3||0).replace(/,/g,'')) || 0;
+  const cur   = parseFloat(String(ohlc.current_price||0).replace(/,/g,'')) || candles[candles.length-1].c;
+
+  // y range: include all candles + position lines
+  const all = [];
+  candles.forEach(c => all.push(c.c));
+  [entry, sl, tp1, tp2, tp3, cur].forEach(v => { if (v > 0) all.push(v); });
+  let lo = Math.min(...all), hi = Math.max(...all);
+  const pad = (hi - lo) * 0.05 || Math.abs(hi) * 0.01 || 1;
+  lo -= pad; hi += pad;
+  const range = hi - lo || 1;
+
+  const padL = 4, padR = 4, padT = 4, padB = 4;
+  const plotW = w - padL - padR;
+  const plotH = h - padT - padB;
+
+  const xAt = i => padL + (i / Math.max(1, candles.length - 1)) * plotW;
+  const yAt = v => padT + plotH - ((v - lo) / range) * plotH;
+
+  // Horizontal overlay lines
+  const drawHLine = (v, color, dashed) => {
+    if (!(v > 0)) return;
+    const y = yAt(v);
+    ctx.save();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1;
+    if (dashed) ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke();
+    ctx.restore();
+  };
+  drawHLine(sl,    'rgba(255,45,85,0.55)', true);
+  drawHLine(tp1,   'rgba(45,212,168,0.55)', true);
+  drawHLine(tp2,   'rgba(138,112,24,0.55)', true);
+  drawHLine(tp3,   'rgba(201,162,39,0.55)', true);
+  drawHLine(entry, 'rgba(232,228,221,0.6)', false);
+
+  // Price line
+  ctx.beginPath();
+  candles.forEach((c, i) => {
+    const x = xAt(i), y = yAt(c.c);
+    if (i === 0) ctx.moveTo(x, y);
+    else         ctx.lineTo(x, y);
+  });
+  const lastColor = cur >= entry ? 'rgba(45,212,168,0.95)' : 'rgba(255,45,85,0.95)';
+  ctx.strokeStyle = lastColor;
+  ctx.lineWidth = 1.5;
+  ctx.stroke();
+
+  // Current-price marker at right edge
+  if (cur > 0) {
+    const y = yAt(cur);
+    ctx.fillStyle = lastColor;
+    ctx.beginPath(); ctx.arc(w - padR - 2, y, 2.5, 0, Math.PI * 2); ctx.fill();
+    // Glow
+    ctx.save();
+    ctx.shadowColor = lastColor; ctx.shadowBlur = 8;
+    ctx.beginPath(); ctx.arc(w - padR - 2, y, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.restore();
+  }
+}
+
+function _povSetRisk(pos, curPrice) {
+  // Lay SL / entry / TP1 / TP2 / TP3 across the track proportional to price
+  const track = $('pov-risk-track');
+  if (!track) return;
+  const sl    = parseFloat(String(pos.sl||0).replace(/,/g,'')) || 0;
+  const entry = parseFloat(String(pos.entry||0).replace(/,/g,'')) || 0;
+  const tp1   = parseFloat(String(pos.tp1||0).replace(/,/g,'')) || 0;
+  const tp2   = parseFloat(String(pos.tp2||0).replace(/,/g,'')) || 0;
+  const tp3   = parseFloat(String(pos.tp3||0).replace(/,/g,'')) || 0;
+  const cur   = parseFloat(String(curPrice||0).replace(/,/g,'')) || entry;
+  const isShort = String(pos.direction||'long').toLowerCase().startsWith('s');
+
+  // Determine low/high of the track scale
+  const pts = [sl, entry, tp1, tp2, tp3, cur].filter(v => v > 0);
+  if (pts.length < 2) return;
+  const lo = Math.min(...pts), hi = Math.max(...pts);
+  const range = (hi - lo) || 1;
+  const pct = v => ((v - lo) / range) * 100;
+  const setTick = (id, v) => {
+    const el = $(id);
+    if (!el) return;
+    if (v > 0) {
+      el.style.display = '';
+      el.style.left = pct(v).toFixed(1) + '%';
+    } else {
+      el.style.display = 'none';
+    }
+  };
+  setTick('pov-risk-sl-t',  isShort ? Math.max(sl, entry) : sl);
+  setTick('pov-risk-en-t',  entry);
+  setTick('pov-risk-tp1-t', tp1);
+  setTick('pov-risk-tp2-t', tp2);
+  setTick('pov-risk-tp3-t', tp3);
+  const marker = $('pov-risk-marker');
+  if (marker && cur > 0) marker.style.left = pct(cur).toFixed(1) + '%';
+}
+
+function _povRender(ohlc, positionMeta) {
+  if (!ohlc || !ohlc.position) return;
+  const p = ohlc.position;
+  const sym = ohlc.symbol || '';
+  const isShort = String(p.direction||'long').toLowerCase().startsWith('s');
+  const cur = parseFloat(String(ohlc.current_price||0).replace(/,/g,'')) || 0;
+  const entry = parseFloat(String(p.entry).replace(/,/g,'')) || 0;
+  const upnl = Number(p.unrealized_pnl || 0);
+  const rmult = Number(p.r_mult || 0);
+  const pct = Number(p.pnl_pct || 0);
+
+  $('pov-sym').textContent = sym;
+  const dirEl = $('pov-dir');
+  dirEl.textContent = isShort ? 'SHORT' : 'LONG';
+  dirEl.className = 'pov-dir' + (isShort ? ' short' : '');
+  $('pov-age').textContent = p.opened_at ? fmtAge(Date.now()/1000 - p.opened_at) : '—';
+
+  $('pov-entry').textContent = '$' + p.entry;
+  const nowEl = $('pov-now');
+  nowEl.textContent = cur > 0 ? '$' + cur.toLocaleString('en-US',{minimumFractionDigits:4,maximumFractionDigits:6}) : '—';
+  nowEl.className = 'pov-pv ' + (cur >= entry ? 'up' : 'dn');
+  const deltaEl = $('pov-delta');
+  deltaEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+  deltaEl.className = 'pov-pv ' + (pct >= 0 ? 'up' : 'dn');
+
+  // Chart
+  _povDrawChart(ohlc);
+
+  // Risk bar
+  _povSetRisk(p, ohlc.current_price);
+
+  // P/L strip
+  const pnlMain = $('pov-pnl-main');
+  pnlMain.textContent = (upnl >= 0 ? '+$' : '−$') + Math.abs(upnl).toFixed(2);
+  pnlMain.className = 'pov-pnl-main ' + (upnl >= 0 ? 'up' : 'dn');
+  $('pov-pnl-sub').textContent = (rmult >= 0 ? '+' : '') + rmult.toFixed(2) + 'R · ' + (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
+
+  // Thesis
+  $('pov-th-regime').textContent = String(p.regime || ohlc.regime || '—').toUpperCase();
+  $('pov-th-sigs').textContent = (Array.isArray(p.sigs) && p.sigs.length) ? '[' + p.sigs.join(',') + ']' : '—';
+  $('pov-th-cw').textContent = 'C ' + (Number(p.confidence)||0).toFixed(2) + ' · W ' + (positionMeta && positionMeta.whale_score != null ? Math.round(positionMeta.whale_score) : '—');
+  $('pov-th-fx').textContent = _povFactorsString(positionMeta && positionMeta.factors);
+
+  // Trajectory
+  const tp1 = parseFloat(String(p.tp1||0).replace(/,/g,'')) || 0;
+  const sl  = parseFloat(String(p.sl||0).replace(/,/g,'')) || 0;
+  if (tp1 > 0 && cur > 0) {
+    const needed = isShort ? (cur - tp1) : (tp1 - cur);
+    const neededPct = (needed / cur) * 100;
+    $('pov-tr-tp1').textContent = (needed >= 0 ? '+' : '') + needed.toFixed(6) + ' (' + (neededPct >= 0 ? '+' : '') + neededPct.toFixed(2) + '%)';
+  } else {
+    $('pov-tr-tp1').textContent = '—';
+  }
+  if (sl > 0 && cur > 0) {
+    const dist = Math.abs(cur - sl);
+    const distPct = (dist / cur) * 100;
+    $('pov-tr-sl').textContent = dist.toFixed(6) + ' (' + distPct.toFixed(2) + '%)';
+  } else {
+    $('pov-tr-sl').textContent = '—';
+  }
+  $('pov-tr-tphit').textContent = (p.tp_hit || 0) + ' of 3';
+}
+
+function _povRenderEmpty(decisions, analytics, funnel, symbols) {
+  // Last closed trade summary
+  const tradeLog = (analytics && Array.isArray(analytics.trade_log)) ? analytics.trade_log : [];
+  const lastTrade = tradeLog.length ? tradeLog[tradeLog.length - 1] : null;
+  const subEl = $('pe-last-trade');
+  if (subEl) {
+    if (lastTrade) {
+      const r = Number(lastTrade.r || 0);
+      const pnl = Number(lastTrade.pnl || 0);
+      const sym = String(lastTrade.sym || '').split('/')[0];
+      const exit = String(lastTrade.exit || '').toUpperCase();
+      subEl.innerHTML = 'Last: ' + esc(sym) + ' ' + esc(exit) + ' '
+        + '<span style="color:' + (pnl >= 0 ? 'var(--green)' : 'var(--red)') + '">'
+        + (pnl >= 0 ? '+' : '−') + '$' + Math.abs(pnl).toFixed(2) + ' · ' + (r >= 0 ? '+' : '') + r.toFixed(2) + 'R'
+        + '</span>';
+    } else {
+      subEl.textContent = 'No trades yet';
+    }
   }
 
-  let html = '<div class="pos-empty">'
-           + '<div class="pos-empty-msg">No open positions</div>';
-  if (nearest && nearest.depth > 0) {
-    const blocker = nearest.gf && nearest.gf.length ? nearest.gf[0].split(':')[0] : 'pending';
-    html += '<div class="pos-nearest">'
-          + '<div class="pn-label">Nearest entry</div>'
-          + '<div class="pn-sym">' + esc(nearest.d.symbol) + '</div>'
-          + '<div class="pn-depth">passed ' + nearest.depth + ' gates</div>'
-          + '<div class="pn-block">blocked: ' + esc(blocker) + '</div>'
+  // Rank decisions by gate depth
+  const scored = (decisions || []).map(d => {
+    const gp = Array.isArray(d.gates_passed) ? d.gates_passed : [];
+    const gf = Array.isArray(d.gates_failed) ? d.gates_failed : [];
+    return { d, depth: gp.length, gf, gp };
+  });
+  scored.sort((a, b) => (b.depth - a.depth) || ((b.d.timestamp||0) - (a.d.timestamp||0)));
+  const top = scored[0];
+
+  // Nearest candidate card
+  const nbody = $('pe-nearest-body');
+  if (nbody) {
+    if (top && top.depth > 0) {
+      const d = top.d;
+      const blocker = top.gf.length ? String(top.gf[0]).split(':')[0] : 'pending';
+      const blockerDetail = top.gf.length ? String(top.gf[0]) : '';
+      const fx = _povFactorsString(d.factors);
+      // Fleet memory line — plain English "brain says" about similar past setups
+      let memLine = '';
+      if (d.memory && d.memory.n) {
+        const m = d.memory;
+        const wrPct = Math.round((m.win_rate || 0) * 100);
+        const verdict = wrPct >= 55 ? 'says go' : (wrPct < 40 ? 'says no' : 'mixed');
+        const cls = wrPct >= 55 ? 'pe-mem-good' : (wrPct < 40 ? 'pe-mem-bad' : 'pe-mem-mid');
+        memLine = '<div class="pe-near-mem ' + cls + '">Brain ' + verdict + ': '
+                + m.n + ' similar · ' + m.wins + 'W/' + m.losses + 'L · '
+                + wrPct + '% WR · ' + (m.avg_r >= 0 ? '+' : '') + m.avg_r.toFixed(2) + 'R avg</div>';
+      } else {
+        memLine = '<div class="pe-near-mem pe-mem-dim">Brain: no similar setups yet</div>';
+      }
+      nbody.innerHTML =
+          '<div class="pe-near-sym">' + esc(d.symbol || '') + '</div>'
+        + '<div class="pe-near-depth">passed <b>' + top.depth + '</b> of ' + (top.depth + top.gf.length) + ' gates</div>'
+        + '<div class="pe-near-block">✗ ' + esc(blockerDetail || blocker) + '</div>'
+        + '<div class="pe-near-fx"><b>' + fx + '</b> · W' + Math.round(Number(d.whale_score)||0) + ' · C' + ((Number(d.confidence)||0).toFixed(2)) + '</div>'
+        + memLine
+        + '<div class="pe-near-meta"><span>' + esc(String(d.regime||'').toUpperCase()) + '</span><span>' + (Array.isArray(d.signals) ? '[' + d.signals.join(',') + ']' : '') + '</span></div>';
+    } else {
+      nbody.innerHTML = '<div class="pe-dim">no candidates passing any gates yet</div>';
+    }
+  }
+
+  // Queue — dedupe by (symbol, blocker) and take the next 2 deepest distinct candidates
+  const qbody = $('pe-queue-body');
+  if (qbody) {
+    const seen = new Set();
+    const topSym = top && top.d ? String(top.d.symbol || '') : '';
+    const deduped = [];
+    for (const n of scored) {
+      const sym = String(n.d.symbol || '');
+      const blocker = n.gf.length ? String(n.gf[0]).split(':')[0] : 'none';
+      const key = sym + '|' + blocker;
+      if (sym === topSym) continue;     // already shown as NEAREST
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(n);
+      if (deduped.length >= 2) break;
+    }
+    if (deduped.length) {
+      qbody.innerHTML = deduped.map(n => {
+        const sym = String(n.d.symbol || '').split('/')[0];
+        const blocker = n.gf.length ? String(n.gf[0]).split(':')[0] : 'none';
+        return '<div class="pe-q-row">'
+          + '<span class="pe-q-sym">' + esc(sym) + '</span>'
+          + '<span class="pe-q-depth">' + n.depth + ' gates</span>'
+          + '<span class="pe-q-block">' + esc(blocker) + '</span>'
           + '</div>';
+      }).join('');
+    } else {
+      qbody.innerHTML = '<div class="pe-dim">no other candidates</div>';
+    }
   }
-  html += '</div>';
-  body.innerHTML = html;
+
+  // Fleet state
+  const fbody = $('pe-fleet-body');
+  if (fbody && symbols && Array.isArray(symbols)) {
+    const regimeCounts = {bull:0, bear:0, range:0, chop:0};
+    symbols.forEach(s => {
+      const r = String(s.regime || '').toLowerCase();
+      if (regimeCounts[r] != null) regimeCounts[r]++;
+    });
+    const rStr = Object.entries(regimeCounts).filter(([_,n]) => n > 0)
+      .map(([r,n]) => n + ' ' + r.toUpperCase()).join(' · ');
+
+    // Bottleneck from funnel
+    let bottleneck = 'quiet';
+    let bnCls = '';
+    if (funnel && Array.isArray(funnel.gates)) {
+      for (const g of funnel.gates) {
+        if ((g.failed || 0) > 0) {
+          bottleneck = g.name.replace('factor_floors','floors').replace('regime_mult','regime') + ' ' + g.failed + '/' + (g.reached||0);
+          bnCls = 'red';
+          break;
+        }
+      }
+    }
+
+    // Time since last trade
+    const lastT = lastTrade ? lastTrade.t : null;
+    const sinceStr = lastT ? fmtAge(Date.now()/1000 - lastT) : '—';
+
+    // Avg whale score across active decisions
+    let ws = 0, wn = 0;
+    (decisions || []).forEach(d => { if (d.whale_score != null) { ws += Number(d.whale_score); wn++; } });
+    const whaleAvg = wn > 0 ? (ws / wn) : 0;
+
+    fbody.innerHTML =
+        '<div class="pe-fl-row"><span class="pe-fl-l">Symbols scanned</span><span class="pe-fl-v">' + symbols.length + '</span></div>'
+      + '<div class="pe-fl-row"><span class="pe-fl-l">Regime mix</span><span class="pe-fl-v gold">' + esc(rStr || '—') + '</span></div>'
+      + '<div class="pe-fl-row"><span class="pe-fl-l">Avg whale</span><span class="pe-fl-v">' + whaleAvg.toFixed(1) + '</span></div>'
+      + '<div class="pe-fl-row"><span class="pe-fl-l">Bottleneck</span><span class="pe-fl-v ' + bnCls + '">' + esc(bottleneck) + '</span></div>'
+      + '<div class="pe-fl-row"><span class="pe-fl-l">Last entry</span><span class="pe-fl-v">' + esc(sinceStr) + ' ago</span></div>';
+  }
+}
+
+function renderPositions(positions, decisions) {
+  const emptyEl = $('pos-empty-v2');
+  const openEl  = $('pos-open-v2');
+  const title = $('pos-title');
+  const badge = $('pos-badge');
+
+  if (positions && positions.length) {
+    const p = positions[0];  // show first/primary; goldeneye is single-position-focus today
+    if (emptyEl) emptyEl.classList.add('hidden');
+    if (openEl)  openEl.classList.remove('hidden');
+    if (title)   title.textContent = 'Live Position';
+    if (badge)   badge.textContent = positions.length + ' OPEN';
+
+    // Trigger OHLC fetch for this symbol (separate from the main poll)
+    _povScheduleOhlcFetch(p.symbol, p);
+  } else {
+    if (emptyEl) emptyEl.classList.remove('hidden');
+    if (openEl)  openEl.classList.add('hidden');
+    if (title)   title.textContent = 'Command';
+    if (badge)   badge.textContent = '0 / 20';
+    _ohlcSymbol = null;
+    _povRenderEmpty(decisions, _latestAnalytics, _latestFunnel, _latestSymbols);
+  }
+}
+
+function _povScheduleOhlcFetch(symbol, positionMeta) {
+  if (!symbol) return;
+  _ohlcSymbol = symbol;
+  const now = Date.now() / 1000;
+  if (_ohlcCache && _ohlcCache.symbol === symbol && (now - _ohlcLastFetch) < 4) {
+    // Fresh enough — just re-render with newest position meta
+    _povRender(_ohlcCache, positionMeta);
+    return;
+  }
+  gj('/api/ohlc/' + encodeURIComponent(symbol) + '?limit=180').then(d => {
+    if (!d || d.symbol !== symbol) return;
+    _ohlcCache = d;
+    _ohlcLastFetch = Date.now() / 1000;
+    _povRender(d, positionMeta);
+  });
 }
 
 // ============================================================================
@@ -1893,38 +2610,42 @@ const AegisGauge = (() => {
 })();
 
 function renderAegis(funnel, analytics, health) {
-  // Compute conviction from funnel depth: find deepest gate where majority pass
-  // Score = (deepest_majority_gate_idx / gates.length) * 100
+  // Conviction score: primary = funnel depth (real-time); fallback = historical
+  // WR × (1 + avgR) so the gauge never flatlines at "—" when funnel is quiet.
   let score = 0;
   let label = 'DORMANT';
+  let source = 'live';
+
   if (funnel && Array.isArray(funnel.gates) && funnel.gates.length && funnel.records > 0) {
     const gates = funnel.gates;
-    const recs = funnel.records;
     let deepestMajority = -1;
     for (let i = 0; i < gates.length; i++) {
       const g = gates[i];
       const reached = g.reached || 0;
       const passed = g.passed || 0;
-      if (reached === 0) continue; // skip unreached (e.g. ai_conf dead path)
-      if (passed / reached >= 0.5) {
-        deepestMajority = i;
-      }
+      if (reached === 0) continue;
+      if (passed / reached >= 0.5) deepestMajority = i;
     }
     if (deepestMajority >= 0) {
       score = Math.round(((deepestMajority + 1) / gates.length) * 100);
     }
-    // Boost for entered trades
-    if (funnel.entered > 0) {
-      score = Math.min(100, score + 10);
-    }
+    if (funnel.entered > 0) score = Math.min(100, score + 10);
+  } else if (analytics && analytics.trades != null && analytics.trades > 0) {
+    // Historical fallback — blend WR (0-100%) with R-factor (clamped [-1,+1])
+    const wr = Number(analytics.win_rate || 0);          // already 0..100
+    const r  = Math.max(-1, Math.min(1, Number(analytics.avg_r || 0)));
+    score = Math.round(Math.max(0, Math.min(100, wr * (1 + r * 0.5))));
+    source = 'hist';
   }
 
-  $('aegisScore').textContent = score || '—';
-  if (score >= 80) label = 'HOT';
+  $('aegisScore').textContent = score > 0 ? score : '—';
+  if (score >= 75) label = 'HOT';
   else if (score >= 55) label = 'ACTIVE';
-  else if (score >= 30) label = 'CAUTIOUS';
-  else if (score > 0) label = 'DORMANT';
-  else label = 'AWAITING';
+  else if (score >= 35) label = 'CAUTIOUS';
+  else if (score >= 15) label = 'DORMANT';
+  else if (score > 0)   label = 'COOL';
+  else                  label = 'AWAITING';
+  if (source === 'hist' && score > 0) label += ' · HIST';
   $('aegisLabel').textContent = label;
   AegisGauge.setScore(score);
 
@@ -2042,76 +2763,146 @@ function renderSignalIntelligence(decisions, funnel) {
 // GATE FUNNEL
 // ============================================================================
 
-function renderFunnel(funnel) {
-  if (!funnel) return;
-  $('fn-records').textContent = funnel.records || 0;
-  $('fn-entered').textContent = funnel.entered || 0;
+// ============================================================================
+// DECISION STREAM (replaces old Gate Funnel bar chart)
+// ============================================================================
 
-  const gates = Array.isArray(funnel.gates) ? funnel.gates : [];
-  const totalReached = gates.reduce((a, g) => a + (g.reached || 0), 0);
-  const maxReached = Math.max(1, ...gates.map(g => g.reached || 0));
+const _SIG_NAMES = {
+  a: 'ema-cross', b: 'macd', c: 'rsi-ovrsld', d: 'vol-spike', e: 'bb-lower',
+  f: 'trend-pb', g: 'fib-golden', h: 'bb-pctb', i: 'obv-bull', j: 'obv-div',
+  k: 'bb-squeeze', l: 'sr-hold', m: 'mfi', n: 'ichimoku', o: 'pivot',
+  p: 'stoch', q: 'adx', r: 'vwap', s: 'supertrend', t: 'cvd',
+  u: 'rev-ema', v: 'vol-exp', w: 'obv-rev', x: 'whale-flow', y: 'ms-high',
+  z: 'regime-align', '2': 'liq-sweep'
+};
 
-  // Find bottleneck: first gate (top-to-bottom) where failed > 0
-  let bottleneckIdx = -1;
-  for (let i = 0; i < gates.length; i++) {
-    if ((gates[i].failed || 0) > 0) { bottleneckIdx = i; break; }
+function _fmtRelTime(ts) {
+  if (!ts) return '—';
+  const age = Math.max(0, (Date.now()/1000) - Number(ts));
+  if (age < 60) return Math.floor(age) + 's';
+  if (age < 3600) return Math.floor(age/60) + 'm';
+  if (age < 86400) return Math.floor(age/3600) + 'h';
+  return Math.floor(age/86400) + 'd';
+}
+
+function _classifyDecision(d) {
+  const res = String(d.result || '').toUpperCase();
+  const failed = Array.isArray(d.gates_failed) ? d.gates_failed : [];
+  const passed = Array.isArray(d.gates_passed) ? d.gates_passed : [];
+  const isOverride = passed.some(g => String(g).toLowerCase().includes('bayes')) ||
+                     String(d.notes || '').toLowerCase().includes('bayes-override');
+  if (isOverride && res === 'ENTERED') return 'override';
+  if (res === 'ENTERED') return 'entered';
+  if (res === 'SHADOW')  return 'shadow';
+  return 'blocked';
+}
+
+function _decisionReason(d) {
+  const cls = _classifyDecision(d);
+  const failed = Array.isArray(d.gates_failed) ? d.gates_failed : [];
+  const passed = Array.isArray(d.gates_passed) ? d.gates_passed : [];
+  const sigs = Array.isArray(d.signals) ? d.signals : [];
+  const sigStr = sigs.length
+    ? '<span class="sig">[' + sigs.join(',') + ']</span>'
+    : '';
+
+  if (cls === 'override') {
+    return sigStr + ' <span class="ovr">BAYES-OVERRIDE</span>';
+  }
+  if (cls === 'entered') {
+    const lastPassed = passed.length ? passed[passed.length - 1] : '—';
+    return sigStr + ' <span class="pass">✓ all gates · conf ' + (d.confidence || 0).toFixed(2) + '</span>';
+  }
+  if (cls === 'shadow') {
+    const why = failed.length ? failed[0] : (d.notes || 'shadow');
+    return sigStr + ' <span class="fail">shadow @</span> <span class="gate">' + esc(why) + '</span>';
+  }
+  // blocked
+  const why = failed.length ? failed[0] : 'unknown';
+  return sigStr + ' <span class="fail">blocked @</span> <span class="gate">' + esc(why) + '</span>';
+}
+
+function _decisionFactors(d) {
+  const f = d.factors || {};
+  // Compact form: T64 M79 V61 S25 F49 (factors ×100, dropping decimals & separators)
+  const pct = v => Math.round((Number(v)||0) * 100).toString().padStart(2, '0');
+  const parts = [
+    'T' + pct(f.trend),
+    'M' + pct(f.momentum),
+    'V' + pct(f.volume),
+    'S' + pct(f.structure),
+    'F' + pct(f.order_flow),
+  ];
+  const whale = d.whale_score != null ? ' W' + Math.round(Number(d.whale_score)) : '';
+  const conf = d.confidence != null ? ' C' + pct(d.confidence) : '';
+  const regime = d.regime ? ' ' + String(d.regime).slice(0,3).toUpperCase() : '';
+
+  // Fleet memory chip: "M 2W/3L 40%" with color cue by WR (green ≥55%, red <40%, amber otherwise)
+  let mem = '';
+  if (d.memory && d.memory.n) {
+    const m = d.memory;
+    const wrPct = Math.round((m.win_rate || 0) * 100);
+    const cls = wrPct >= 55 ? 'mem-good' : (wrPct < 40 ? 'mem-bad' : 'mem-mid');
+    mem = ' <span class="ds-mem ' + cls + '">M ' + m.wins + 'W/' + m.losses + 'L ' + wrPct + '%</span>';
   }
 
-  // Gate name shortener (consistent top-to-bottom of the funnel)
-  const shortName = g => g.name.replace('factor_floors', 'FLOORS')
-                               .replace('regime_mult', 'REGIME')
-                               .replace('max_positions', 'MAX POS')
-                               .replace('atr_fees', 'ATR FEES')
-                               .replace('min_size', 'MIN SIZE')
-                               .replace('dir_wr', 'DIR WR')
-                               .toUpperCase();
+  return '<b>' + parts.join(' ') + '</b>' + whale + conf + regime + mem;
+}
 
-  // Always show the primary chain (correlation through min_size) so the funnel
-  // structure is visible even in quiet-market states where nothing reaches the gates.
-  // Dead code paths (ai_conf in current config) and terminal race-guards (notional,
-  // duplicate) are hidden unless they actually fired.
-  const ALWAYS_SHOW = new Set([
-    'correlation', 'factor_floors', 'confluence', 'dir_wr', 'regime_mult',
-    'whale', 'max_positions', 'drawdown', 'sentiment', 'atr_fees', 'min_size',
-  ]);
-  const visible = gates.filter((g, i) =>
-    ALWAYS_SHOW.has(g.name) || (g.reached || 0) > 0 || i === bottleneckIdx
-  );
+function renderDecisionStream(decisions, funnel) {
+  // Badge: show bottleneck gate + pass/fail summary from funnel (if any activity)
+  const badge = $('ds-badge');
+  if (badge) {
+    if (funnel && (funnel.records || 0) > 0) {
+      const gates = Array.isArray(funnel.gates) ? funnel.gates : [];
+      let bottleneck = null;
+      for (const g of gates) {
+        if ((g.failed || 0) > 0) { bottleneck = g; break; }
+      }
+      if (bottleneck) {
+        const bnShort = bottleneck.name.replace('factor_floors','FLOORS').replace('regime_mult','REGIME').replace('dir_wr','DIR WR').toUpperCase();
+        badge.textContent = bnShort + ' ' + bottleneck.failed + '/' + (bottleneck.reached || 0);
+      } else {
+        badge.textContent = (funnel.entered || 0) + ' / ' + funnel.records + ' IN';
+      }
+    } else {
+      badge.textContent = 'QUIET';
+    }
+  }
 
-  const rowsHtml = visible.map(g => {
-    const reached = g.reached || 0;
-    const passed = g.passed || 0;
-    const widthPct = maxReached > 0 ? (reached / maxReached) * 100 : 0;
-    const isBottleneck = (g.failed || 0) > 0 && gates.indexOf(g) === bottleneckIdx;
-    const isDim = reached === 0;
-    const display = shortName(g);
-    const countStr = passed + '';
+  const feed = $('ds-feed');
+  const empty = $('ds-empty');
+  if (!feed) return;
+
+  if (!Array.isArray(decisions) || decisions.length === 0) {
+    feed.innerHTML = '';
+    if (empty) empty.classList.remove('hidden');
+    return;
+  }
+  if (empty) empty.classList.add('hidden');
+
+  // Newest first
+  const sorted = decisions.slice().sort((a,b) => (b.timestamp||0) - (a.timestamp||0));
+  const show = sorted.slice(0, 40);
+
+  feed.innerHTML = show.map(d => {
+    const cls = _classifyDecision(d);
+    const sym = (d.symbol || '').split('/')[0];
+    const dir = String(d.direction || d.dir || 'L').toUpperCase().startsWith('S') ? 'S' : 'L';
+    const verdict = cls === 'override' ? 'OVR' : cls.toUpperCase().slice(0,4);
     return (
-      '<div class="funnel-row ' + (isBottleneck ? 'bottleneck' : '') + (isDim ? ' dim-row' : '') + '">'
-      + '<div class="fn-name">' + display + '</div>'
-      + '<div class="fn-bar-track"><div class="fn-bar" style="width:' + widthPct.toFixed(1) + '%"></div></div>'
-      + '<div class="fn-count ' + (passed === 0 ? 'dim' : '') + '">' + countStr + '</div>'
+      '<div class="ds-row ' + cls + '">'
+      + '<div class="ds-time">' + _fmtRelTime(d.timestamp) + '</div>'
+      + '<div class="ds-sym">' + esc(sym) + '</div>'
+      + '<div class="ds-dir ' + dir.toLowerCase() + '">' + dir + '</div>'
+      + '<div class="ds-body">' + _decisionReason(d) + '</div>'
+      + '<div class="ds-factors">'
+      +   '<span class="fx-txt">' + _decisionFactors(d) + '</span>'
+      +   '<span class="ds-verdict ' + cls + '">' + verdict + '</span>'
+      + '</div>'
       + '</div>'
     );
   }).join('');
-
-  // ENTERED row at the bottom
-  const enteredWidth = maxReached > 0 ? ((funnel.entered || 0) / maxReached) * 100 : 0;
-  const enteredRow = (
-    '<div class="funnel-row" style="margin-top:4px">'
-    + '<div class="fn-name gold">ENTERED</div>'
-    + '<div class="fn-bar-track"><div class="fn-bar" style="width:' + enteredWidth.toFixed(1) + '%;background:linear-gradient(90deg,var(--gold-soft),var(--gold))"></div></div>'
-    + '<div class="fn-count ' + ((funnel.entered || 0) === 0 ? 'dim' : 'gold') + '">' + (funnel.entered || 0) + '</div>'
-    + '</div>'
-  );
-
-  // If no gates have any activity, add a quiet-market notice above the bars.
-  let notice = '';
-  if (totalReached === 0 && (funnel.records || 0) === 0) {
-    notice = '<div style="font-family:\'JetBrains Mono\',monospace;font-size:9px;color:var(--dim);text-align:center;padding:3px 0 5px;letter-spacing:0.1em;">WAITING FOR len≥2 CONFLUENCE</div>';
-  }
-
-  $('fn-rows').innerHTML = notice + rowsHtml + enteredRow;
 }
 
 // ============================================================================
@@ -2208,7 +2999,7 @@ function renderSymbolGrid(symbols, positions) {
 // LIVE LOG — frontend-maintained rolling buffer, dedup against last-seen line
 // ============================================================================
 
-const MAX_LOG_LINES = 6;         // visible lines cap — panel body is ~114px / 18px line = 6 rows
+const MAX_LOG_LINES = 9;         // visible lines cap — panel body ~126px / 13px line ≈ 9 rows
 const _logBuffer = [];           // { ts, text, cls, tag }
 let _lastLogFingerprint = '';    // used to detect what's new since last poll
 
@@ -2342,31 +3133,105 @@ async function pollMid() {
   _latestDecisions = Array.isArray(decisions) ? decisions : [];
   _latestFunnel = funnel;
   _latestPositions = Array.isArray(positions) ? positions : [];
+  if (Array.isArray(symbols)) _latestSymbols = symbols;
   renderPositions(_latestPositions, _latestDecisions);
   renderSignalIntelligence(_latestDecisions, funnel);
-  renderFunnel(funnel);
+  renderDecisionStream(_latestDecisions, funnel);
   // AEGIS depends on funnel + analytics + health
   renderAegis(funnel, _latestAnalytics, _latestHealth);
   // Symbol grid uses positions for glow + border state
   if (Array.isArray(symbols)) {
-    _latestSymbols = symbols;
     renderSymbolGrid(symbols, _latestPositions);
   }
 }
 
+function renderBrain(brain) {
+  if (!brain || typeof brain !== 'object') return;
+  const regimeN = brain.regime_n || {};
+  const bull = Number(regimeN.bull || 0);
+  const bear = Number(regimeN.bear || 0);
+  const range = Number(regimeN.range || 0);
+  const chop = Number(regimeN.chop || 0);
+
+  // override_threshold is an object: {min_regime_n: 30, min_pwin: 0.58, ...}
+  const ot = brain.override_threshold || {};
+  const threshold = Number(ot.min_regime_n != null ? ot.min_regime_n : 30);
+
+  const cells = [
+    ['bull', bull], ['bear', bear], ['range', range], ['chop', chop]
+  ];
+  const maxN = Math.max(bull, bear, range, chop, 0);
+  const armedCount = cells.filter(c => c[1] >= threshold).length;
+
+  cells.forEach(([name, n]) => {
+    const el = $('brain-n-' + name);
+    if (el) el.textContent = n;
+    const cell = el ? el.parentElement : null;
+    if (cell) {
+      cell.classList.remove('primary', 'armed');
+      if (n >= threshold) cell.classList.add('armed');
+      else if (n > 0 && n === maxN) cell.classList.add('primary');
+    }
+  });
+
+  // Override is active if ANY regime has hit the threshold
+  const overrideActive = armedCount > 0;
+  const ov = $('brain-override');
+  if (ov) {
+    ov.textContent = overrideActive ? 'ACTIVE' : 'STANDBY';
+    ov.classList.toggle('on', overrideActive);
+    ov.classList.toggle('off', !overrideActive);
+  }
+
+  const cd = $('brain-countdown');
+  if (cd) {
+    if (overrideActive) {
+      cd.innerHTML = 'Bayes gate <b>ARMED</b> across ' + armedCount + ' regime(s)';
+    } else {
+      const best = maxN;
+      const remain = Math.max(0, threshold - best);
+      cd.innerHTML = '<b>' + remain + '</b> trades to arm (best regime: ' + best + '/' + threshold + ')';
+    }
+  }
+}
+
 async function pollSlow() {
-  // 15s: equity + markers + analytics
-  const [eq, mk, analytics] = await Promise.all([
+  // 15s: equity + markers + analytics + brain
+  const [eq, mk, analytics, brain] = await Promise.all([
     gj('/api/equity'),
     gj('/api/trade_markers'),
     gj('/api/analytics'),
+    gj('/api/brain/global'),
   ]);
   if (Array.isArray(eq)) {
-    EquityChart.setData(eq, Array.isArray(mk) ? mk : []);
+    // Append a synthetic "now" point so the curve extends to live equity
+    // (balance + sum of unrealized P/L on open positions). Flagged so the
+    // chart can render it as a dashed projection if desired.
+    const pts = eq.slice();
+    if (_latestHealth && _latestHealth.live_balance != null) {
+      const bal = Number(_latestHealth.live_balance) || 0;
+      let upnl = 0;
+      if (Array.isArray(_latestPositions)) {
+        _latestPositions.forEach(p => { upnl += Number(p.pnl || 0); });
+      } else if (_ohlcCache && _ohlcCache.position && _ohlcCache.position.unrealized_pnl != null) {
+        upnl = Number(_ohlcCache.position.unrealized_pnl);
+      }
+      const lastPt = pts.length ? pts[pts.length - 1] : null;
+      const nowTs = Date.now() / 1000;
+      // Only append if we're more than ~20s beyond last persisted point
+      if (!lastPt || (nowTs - (lastPt.ts || 0)) > 20) {
+        pts.push({ ts: nowTs, bal: bal, upnl: upnl, pos: (_latestPositions||[]).length,
+                   spnl: 0, hwm: lastPt ? lastPt.hwm : bal, live: true });
+      }
+    }
+    EquityChart.setData(pts, Array.isArray(mk) ? mk : []);
   }
   if (analytics && typeof analytics === 'object') {
     _latestAnalytics = analytics;
     renderAegis(_latestFunnel, _latestAnalytics, _latestHealth);
+  }
+  if (brain && typeof brain === 'object') {
+    renderBrain(brain);
   }
 }
 
@@ -4149,6 +5014,109 @@ def api_symbols():
     except Exception:
         pass
     return jsonify([])
+
+@app.route('/api/brain/global')
+def api_brain_global():
+    """Proxy to bot's /api/brain/global endpoint (fleet Bayesian factor model)."""
+    try:
+        resp = requests.get(f"{GOLDENEYE_URL}/api/brain/global", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify({})
+
+@app.route('/api/brain')
+def api_brain():
+    """Proxy to bot's /api/brain endpoint (per-symbol + per-signal Bayesian stats)."""
+    try:
+        resp = requests.get(f"{GOLDENEYE_URL}/api/brain", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify({})
+
+@app.route('/api/expectancy')
+def api_expectancy():
+    """Proxy to bot's /api/expectancy endpoint (fleet expectancy + rankings)."""
+    try:
+        resp = requests.get(f"{GOLDENEYE_URL}/api/expectancy", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify({})
+
+@app.route('/api/trades')
+def api_trades():
+    """Proxy to bot's /api/trades endpoint (today's trade list for broadcaster/EOD)."""
+    try:
+        resp = requests.get(f"{GOLDENEYE_URL}/api/trades", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify({"trades": []})
+
+@app.route('/api/events/recent')
+def api_events_recent():
+    """Proxy to bot's /api/events/recent endpoint (event bus tail — currently stubbed on bot side)."""
+    try:
+        resp = requests.get(f"{GOLDENEYE_URL}/api/events/recent", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify([])
+
+@app.route('/api/ohlc/<path:sym>')
+def api_ohlc(sym):
+    """Proxy to bot's /api/ohlc/<sym> endpoint (recent candles + position overlay)."""
+    try:
+        resp = requests.get(f"{GOLDENEYE_URL}/api/ohlc/{quote(sym, safe='')}", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify({'symbol': sym, 'candles': [], 'position': None})
+
+@app.route('/api/autopsy/recent')
+def api_autopsy_recent():
+    """Proxy to bot's /api/autopsy/recent endpoint (post-trade autopsies)."""
+    try:
+        limit = request.args.get('limit', '20')
+        resp = requests.get(f"{GOLDENEYE_URL}/api/autopsy/recent?limit={limit}", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify([])
+
+@app.route('/api/regime/sanity')
+def api_regime_sanity():
+    """Proxy to bot's /api/regime/sanity endpoint (HMM vs actual-return sanity check)."""
+    try:
+        resp = requests.get(f"{GOLDENEYE_URL}/api/regime/sanity", timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify({})
+
+@app.route('/api/memory/similar')
+def api_memory_similar():
+    """Proxy to bot's /api/memory/similar endpoint (fleet memory query by factor vector)."""
+    try:
+        qs = request.query_string.decode('utf-8') if request.query_string else ''
+        url = f"{GOLDENEYE_URL}/api/memory/similar"
+        if qs: url += '?' + qs
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            return jsonify(resp.json())
+    except Exception:
+        pass
+    return jsonify({'summary': None, 'matches': []})
 
 if __name__ == '__main__':
     port = int(os.getenv('DASHBOARD_PORT', 8050))

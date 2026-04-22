@@ -1,230 +1,253 @@
-# Oracle — Autonomous Crypto Trading Fleet
+# GoldenEye
 
-> 16-bot autonomous trading fleet with cinematic solar system dashboard, mathematical council engines, and Jim Simons-inspired measurement layer. Live on Kraken with $10K deployed capital.
+Standalone live crypto trading bot for Kraken with a self-learning brain, a mission-control dashboard, and a post-trade autopsy journal. Paper-live hybrid: runs on real Kraken balances with small position sizes and full risk controls.
 
----
+Not a fleet component, not a signal broadcaster — GoldenEye trades its own account end-to-end: streams prices, computes signals, fires factor-scored entries through a 15-gate chain, manages positions with breakeven-stop + trailing, and writes a plain-English autopsy to disk every time a trade closes.
 
-## Overview
+## What it does
 
-Oracle is a self-coordinating fleet of 16 specialized trading bots operating on Kraken. Each bot runs its own strategy — turtle trading, whale detection, adaptive grids, statistical arbitrage, phase transitions, mean reversion — and shares a central capital pool, event bus, and real-time intelligence layer coordinated by Command Center.
+- **Streams 20 Kraken USD pairs** (auto-ranked every 2h by movement score)
+- **27 long signals** (a–z, 2) compressed into **6 continuous factors** (trend, momentum, structure, volume, volatility, order_flow)
+- **Regime-adaptive**: HMM 4-state classifier (bull/bear/range/chop) drives per-regime confidence thresholds, TP distances, and the factor-weighted confluence gate
+- **Fleet-wide Bayesian brain**: one model learns across all 20 symbols and all regimes, not per-symbol
+- **Post-trade autopsy**: writes a narrative to `output/autopsy.jsonl` after every close, including similar-setup statistics from fleet memory
+- **Regime sanity check**: cross-validates HMM labels against actual 24h price returns every 5 min, flags drift
+- **Mission-control dashboard** at `http://localhost:18065` — live equity curve, command panel, decision stream, global brain panel
 
-The fleet is not a collection of independent bots. It is a system. Bots publish intelligence to a shared event bus. A central portfolio manager allocates capital. AEGIS monitors fleet health and throttles exposure. A 14-engine mathematical council in Nexus runs continuous regime analysis across information geometry, topology, quantum state superposition, Granger causality, thermodynamics, strange attractors, and catastrophe theory. A Jim Simons-inspired measurement layer tracks expectancy, signal attribution, and fee-adjusted returns on every trade.
+## Running the bot
 
-The dashboard — COSMOS v5 — renders the fleet as a living solar system on a 50-inch display. Planets orbit stars. Moons orbit planets. The sun pulses with fleet health. Sound responds to market events in real time.
+```bash
+# Standard run (long mode, paper balance synced to live Kraken)
+python goldeneye.py --output-dir output --mode long
 
----
+# Short mode
+python goldeneye.py --output-dir output --mode short
+
+# Historical backtest (180 days, canonical 20 pairs)
+python bt_harness.py
+
+# Parameter sweep
+python bt_tune.py
+
+# Regime-specific backtest
+python bt_tune_regime.py
+```
+
+Actual launcher is `D:\Desktop\launch.bat` (authoritative for live operation). Local `launch.bat` exists for reference.
 
 ## Architecture
 
-```
-+-------------------------------------------------------------+
-|                    COMMAND CENTER :9000                     |
-|  Event Bus (SSE) . Portfolio Manager . Market Data Cache   |
-|  Jim Simons Measurement Layer . COSMOS v5 Dashboard        |
-|  AI Inference :9001 (gemma2:2b on Tesla P4 via Ollama)     |
-+---------------------------+--------------------------------+
-                            | SSE pub/sub . REST APIs
-         +------------------+------------------+
-         |                  |                  |
-   SIGNAL SYSTEM       FLOW SYSTEM        MATH SYSTEM
-   (Oracle star)    (Deep Blue star)    (Nexus star)
-   TrekBot           Arbitrageur         NexusBrain
-   Gridzilla         Contrarian          Rubberband
-   TurtleSue                             PHITEX
-   Trinity
+**One monolith**: `goldeneye.py` (~6600 lines). Everything runs in one process with ~20 daemon threads:
 
-   CC Moons: AEGIS . Sentinel . Chronos . HiveMind
-```
+- **Per-symbol stream loop** (`stream()`): 2s polling on `hot` tier symbols, 15s on `watch` tier. Each tick: fetch price → update DataFrame → compute indicators → fire signals → classify regime → compute factors → run gate chain → execute or skip
+- **Universe rescan**: every 2h, re-ranks 20 pairs by volatility × spread
+- **Periodic reconciler**: every 5 min, reconciles local position state against Kraken orders (catches SL/TP fills missed by WebSocket)
+- **Health snapshot updater**: 1s refresh, feeds `/health` without inline compute
+- **Balance refresh**: 60s, syncs live Kraken balance into the paper ledger
+- **Regime sanity loop**: 5 min, writes `output/regime_sanity.json`
+- **Equity logger**: 60s, appends to `output/equity_curve.json`
+- **HTTP server**: port 18095, serves 20+ endpoints
+- **Flask dashboard**: port 18065, imports `dashboard.py` as a module
 
----
+## The learning layer (added 2026-04-22)
 
-## Bot Roster
+Three subsystems that make the bot introspect its own trading:
 
-| Port | Bot | Strategy | Status |
-|------|-----|----------|--------|
-| 8070 | **TurtleSue** | Turtle Trading — patient trend following | ALIVE |
-| 8071 | **Sentinel** | Probabilistic regime forecasting | ALIVE |
-| 8072 | **Trinity** | Multi-timeframe scanner, 5 signals | ALIVE |
-| 8073 | **HiveMind** | Differential evolution portfolio optimizer | ALIVE |
-| 8074 | **NexusBrain** | Multi-timeframe confluence, 50 signal pairs | ALIVE |
-| 8075 | **Oracle** | 93-pair quantitative scanner | ALIVE |
-| 8076 | **Deep Blue** | Whale detection, order flow analysis | ALIVE |
-| 8077 | **Gridzilla** | Adaptive intelligent grid trading v2 | ALIVE |
-| 8078 | **PHITEX** | Phase transition detection, thermodynamic model | ALIVE |
-| 8079 | **AEGIS** | Fleet self-assessment, health monitoring, capital throttle | ALIVE |
-| 8080 | **TrekBot** | 27-signal adaptive trading — fleet's best performer | ALIVE |
-| 8082 | **Nexus** | 14-engine mathematical council | ALIVE |
-| 8083 | **Rubberband** | Mean reversion | ALIVE |
-| 8084 | **Contrarian** | Sentiment extreme detection | ALIVE |
-| 8085 | **Arbitrageur** | Statistical arbitrage | ALIVE |
-| 8086 | **Chronos** | Session and time-based strategy | ALIVE |
+### Autopsy journal — `output/autopsy.jsonl`
+Every trade close triggers `record_autopsy()` which writes a JSON line with:
+- The closed trade (symbol, R, pnl, exit reason, factors, signals, regime, duration)
+- Similarity query against prior closed trades (factor-vector Euclidean distance, k=10, max_distance=0.6)
+- A plain-English `narrative` field combining outcome, entry quality, weak factors, and historical peer performance
 
----
+Log emits e.g. `AUTOPSY GUN long -1.02R: Full stop -1.02R via SL after 6.1h. Entry confidence was very low (0.25). Weak factors at entry: volume. Fired on signals ['f', 'p'] in bull regime. Similar historical setups: 5 found, 1W/4L (20% WR, avg -0.60R).`
 
-## Mathematical Council
+### Regime sanity check — `output/regime_sanity.json`
+Every 5 min, for each symbol: compute actual 24-bar return and compare against the HMM's assigned label. Mismatches logged:
+- `bull` labeled but 24h return < −2% → flagged
+- `bear` labeled but 24h return > +2% → flagged
+- `range`/`chop` labeled but |24h return| > 5% → flagged
 
-Nexus runs 14 mathematical engines continuously across all pairs, publishing regime intelligence to the event bus every 15 seconds.
+Summary bucket: `healthy` (<10%), `yellow` (<30%), `RED` (≥30% mismatched). RED emits a `REGIME SANITY RED` warning to the log.
 
-| Engine | Framework | Bus Event | What It Detects |
-|--------|-----------|-----------|-----------------|
-| Information Geometry | Fisher information metric | MANIFOLD_WARNING | Distribution morphing before regime change |
-| Topology | Persistent homology, Takens embedding | CYCLE_DETECTED | Market cycles from reconstructed phase space |
-| Quantum State | Regime superposition with interference | QUANTUM_COLLAPSE | Regime collapse when entropy < 0.30 |
-| Causal Flow | Granger causality | CAUSAL_GRAPH_UPDATE | Which signals causally precede price moves |
-| Shannon Information | Mutual information, transfer entropy | ENTROPY_SIGNAL | Information flow between market variables |
-| Boltzmann Order Book | Order book thermodynamics | THERMAL_REGIME | Phase transitions in liquidity structure |
-| Lorenz Attractor | Strange attractors, Lyapunov exponent | CHAOS_WARNING | Chaos vs. order regime classification |
-| Thom Catastrophe | Catastrophe theory early warning | BIFURCATION_ALERT | Pre-bifurcation structural warnings |
-| Prigogine Entropy | Dissipative structures, entropy production | STRUCTURE_FORMING | Self-organization in price action |
-| Newton | Newtonian force model | NEWTON_FORCE | Momentum, mass, velocity of price |
-| Euclid | Geometric S/R levels | EUCLID_LEVEL | Support and resistance from price geometry |
-| Einstein | Relativistic energy | EINSTEIN_ENERGY | Breakout force and mass |
-| Schwarzschild | Gravitational event horizon | SCHWARZSCHILD_HORIZON | Price capture near S/R |
-| Riemann | Manifold curvature | — | Curvature in return space |
+### Fleet memory query
+Every entry decision is enriched with `memory = {n, wins, losses, win_rate, avg_r}` computed by `find_similar_trades()` against the closed trade log. Surfaces in the Decision Stream panel as a colored WR chip per row and as a "Brain says go/no/mixed" line in the Nearest Candidate card.
 
----
+## Ports and endpoints
 
-## Jim Simons Measurement Layer
+| Port | Service |
+|------|---------|
+| 18095 | Bot HTTP API (health, analytics, positions, funnel, brain, ohlc, autopsy, regime, memory) |
+| 18065 | Flask dashboard (mission control UI) |
 
-Named after the Renaissance Technologies founder. The fleet had 45,000 lines of code and 10 mathematical frameworks before this layer was built. It was losing money. The measurement layer found out why.
+### Bot API (port 18095)
 
-```
-Fleet gross profit (before fees):   +$52
-Fleet total fees paid:              -$51
-Fee ratio:                          650% of gross profit
-Fleet expectancy:                   -$1.50 / trade
+**Core state:**
+- `GET /health` — status, uptime, threads, balance, positions, heat, circuit breaker state
+- `GET /positions` — open positions with entry/SL/TPs/P&L/R-multiple
+- `GET /symbols` — all 20 tracked pairs with price, regime, WR, historical P&L
+- `GET /analytics` — lifetime trade stats (trades, WR, avg R, P&L, DD) + per-signal breakdown
+- `GET /decisions` — last N entry decisions with factors, gates_passed/failed, memory
+- `GET /api/funnel` — 60s rolling gate funnel (per-gate pass/fail counts)
+- `GET /logs` — last 8 TUI log lines
 
-Conclusion: strategies have edge — fees erase it entirely.
-```
+**Learning layer:**
+- `GET /api/brain` — per-symbol Bayesian stats + fleet signal quality
+- `GET /api/brain/global` — fleet Bayesian factor model (mu coefficients per regime, arming countdown)
+- `GET /api/autopsy/recent?limit=N` — tail of `autopsy.jsonl`
+- `GET /api/regime/sanity` — latest HMM-vs-actual-return sanity snapshot
+- `GET /api/memory/similar?trend=&momentum=&volume=&structure=&volatility=&order_flow=&regime=&dir=&k=&max_distance=` — live factor-vector k-nearest query
 
-**Core modules:**
+**Position deep-dive:**
+- `GET /api/ohlc/<sym>?limit=N` — last N candles (1h bars) + full position overlay (entry, SL, TPs, unrealized P&L, R-multiple, regime, signals)
+- `GET /position/<sym>` — richer position payload (TP progress, R-mult, time clocks)
+- `GET /symbol/<sym>` — indicators + signals + regime + direction history
+- `GET /signal/<letter>` — per-signal WR across symbols
+- `GET /trade/<idx>` — individual closed-trade detail with factor snapshot
 
-| Module | Endpoint | Purpose |
-|--------|----------|---------|
-| expectancy.py | GET /api/expectancy | Per-bot, per-pair P/L with full Kraken fee accounting |
-| signal_aggregator.py | POST /api/signals/propose | Ensemble trade proposals — bots submit, council decides |
-| signal_decomposition.py | GET /api/signals/decomposition | Per-signal marginal value: KEEP / CUT |
-| signal_decay.py | GET /api/signals/decay | 40 signal types with measured half-lives |
+**Broadcaster-compatible:**
+- `GET /api/trades` — today's trades (for EOD card)
+- `GET /api/expectancy` — fleet expectancy summary
 
-**Analysis scripts:**
+## Dashboard (port 18065)
 
-| Script | Purpose |
-|--------|---------|
-| regime_expectancy.py | Per-regime W/R, fees, expectancy net of fees |
-| signal_attribution.py | Fee-adjusted per-signal expectancy, flags MISLEADING signals |
-| denial_cost.py | Opportunity cost of portfolio manager denials via OHLC replay |
-| ultron.py | Full fleet self-analysis |
-| evolution.py | Weekly optimization recommendations |
+Single-screen mission control at `http://localhost:18065`, polled every 2s (fast tier), 5s (positions/decisions), 15s (analytics/equity/brain).
 
-**Key discovery — Signal i+f:**
+**Top bar**: Kraken status · balance · trade size · open positions · thread health · mode · uptime · CPU · memory · **MDT / UTC dual clock**
 
-Across 411 TrekBot trades, only one signal combination showed positive net expectancy after Kraken fees:
+**Main panels**:
+- **Equity Curve** — live-ticking line with trade markers, extends to "now" with balance + unrealized P&L
+- **COMMAND** — when position open: mini chart with entry/SL/TP lines, risk bar (SL/IN/TP1/TP2/TP3), P&L strip, thesis, trajectory. When empty: NEAREST CANDIDATE card with factors + "Brain says go/no/mixed" memory readout, NEXT IN QUEUE (deduped), FLEET STATE (regime mix, avg whale, bottleneck, time since last entry)
+- **Conviction · Analytics** — score gauge with historical-WR fallback (never flatlines), trades/WR/avg R/P&L/DD/heat stats
+- **Signal Intelligence** — top-5 decisions showing gate pass/fail chain
+- **Decision Stream** — live narrative feed: `MON L [z,2] blocked @ confluence:0.38 ... T64 M79 V61 S25 F49 W38 C44 BUL [M 4W/1L 80%]` with color-coded verdict chip (ENTE/BLOC/SHAD/OVR) and fleet-memory WR chip
+- **Symbol Grid** — 20-cell grid with price, direction, regime, WR, active-signal glow
+- **Live Log** — last 9 events (tight JetBrains Mono, ~10px)
+- **Global Brain** — fleet Bayesian state: regime tiles (bull/bear/range/chop), override status (STANDBY/ACTIVE), arming countdown
 
-```
-Signal i (MFI Oversold Cross, 14-period, threshold 20):
+## Key constants
 
-  With MACD histogram rising (signal f):    11 trades   63.6% WR   avg R +0.524   KEEP
-  Without MACD histogram rising:            12 trades   33.3% WR   avg R -0.159   CUT
-  Fleet baseline (all signals):            411 trades   24.9% WR   avg R -0.205
-```
+| Setting | Value | Location |
+|---|---|---|
+| Fee | 0.40% | `get_fee()` — Kraken taker |
+| Max heat | $30 | `_MAX_HEAT` |
+| Max positions | 20 | `_MAX_OPEN_POS` |
+| Circuit breaker daily | −$15 | `update_circuit_breaker()` |
+| Circuit breaker weekly | −$35 | `update_circuit_breaker()` |
+| Kill switch | 20% drawdown, **manual reset** | delete `output/kill_switch.json` |
+| Bayes-override threshold | `regime_n ≥ 30 AND P(win) ≥ 0.58` | `_get_global_bayes()` |
 
-Signal i without MACD histogram confluence is now gated out. The 12 fee-negative trades per sample period are suppressed.
+### Regime-adaptive TP multipliers (long mode)
 
----
+| Regime | TP1 | TP2 | TP3 |
+|---|---|---|---|
+| bull | 0.75R | 1.50R | 2.50R |
+| bear | 0.50R | 0.75R | 1.25R |
+| range | 0.50R | 0.75R | 1.25R |
+| chop | 0.50R | 0.75R | 1.00R |
 
-## COSMOS v5 Dashboard
+TP1 is load-bearing: hitting it triggers breakeven-stop move.
 
-5,524 lines. 272KB. Single HTML file. Served from Command Center on port 9000.
+### Regime confidence floors (long mode)
 
-**19 render layers:** CosmicCanvas (600 stars, 14 nebulae, 10 dust lanes, 12 galaxies, shooting stars) → ambient particles → sun with corona and prominences → gravity zones → orbit paths → orbit trails → migration trails → constellations → wormholes → gravitational lensing → synaptic connections → comets → shockwaves → stars → planets → moons
+| Regime | Min confidence | Rationale |
+|---|---|---|
+| bull | 0.40 | trending — standard bar |
+| bear | 0.55 | counter-trend needs stronger conviction |
+| range | 0.55 | demand clear structure/momentum |
+| chop | 0.65 | only very strong setups survive chop |
 
-**Planet rendering:** Illuminated spheres lit by the sun's position. Each planet has unique surface detail — Oracle has cloud bands and a Great Red Spot, Deep Blue has ocean waves and ice caps, Gridzilla renders green grid lines, PHITEX has pulsar beams and magnetic field lines, AEGIS shows hexagonal shield geometry, Chronos shows time rings with a live UTC clock hand, Nexus orbits 14 colored engine moons.
+## Entry gate chain (top-to-bottom)
 
-**Sound system:** Full WebAudio graph. Compressor → master → destination. Three layer buses (cosmic / planetary / events). Convolver reverb. 16 planet voices. Fleet harmony chord driven by regime. Sidechain ducking. Spatial audio. Event sounds: whale calls, trade bells, supernova, emergency klaxon.
+1. **correlation** — max 0.5 returns-correlation with open positions
+2. **factor_floors** — trend ≥ 0.25, momentum ≥ 0.20, volume ≥ 0.15
+3. **confluence** — weighted sum of active signals vs regime-specific min; Bayes-override can bypass when fleet regime_n ≥ 30 and P(win) ≥ 0.58
+4. **dir_wr** — directional WR ≥ 20% over last 10 trades (tail-cut)
+5. **regime_mult** — regime probability-weighted multiplier
+6. **whale** — whale_score ≥ 30 (or SHADOW position logged for learning)
+7. **ai_conf** — stub (ensemble disabled)
+8. **max_positions** — `< _MAX_OPEN_POS`
+9. **drawdown** — not in 0x tier
+10. **sentiment** — placeholder
+11. **atr_fees** — TP1 distance must cover 2× fee
+12. **min_size** — Kraken min × price must fit in 10% balance cap
+13. **notional** — above exchange minimum cost
+14. **duplicate** — per-symbol entry lock
+15. **entry** — final confirmation, decision logged with memory enrichment
 
-**Planet migration:** Planets migrate between star systems based on which intelligence source is dominant. 60-second cooldown prevents ping-ponging.
+## State files in `output/`
 
-**Interaction:** Mouse drag to pan, scroll to zoom, fullscreen toggle, minimap at >1.5x zoom, hover tooltips, planet click for detail view, sun click for System Manifest panel.
+- `metrics.json` — cumulative trade history (r_history, trade_log, pnl_history, by_direction)
+- `equity_curve.json` — HWM + equity timeline (ts, bal, upnl, pos, spnl, hwm)
+- `global_brain.json` — fleet Bayesian factor model (mu, precision, n per regime)
+- `autopsy.jsonl` — post-trade autopsies (one JSON per line)
+- `regime_sanity.json` — latest HMM-vs-actual-return sanity snapshot
+- `circuit_breaker_state.json` — daily/weekly P&L accumulators
+- `kill_switch.json` — presence = kill switch active; delete to re-arm
+- `deviation_cooldowns.json` — 24h cooldown timestamps
+- `<SYM>_USD/position.json` — open position, atomic write via `.tmp` + `os.replace`
+- `<SYM>_USD/brain.json` — per-symbol AdaptiveBrain stats + Bayesian posterior
 
----
+## Subscribers / Telegram
 
-## Tech Stack
+`subscribers.json` defines named subscriber groups (`fleet_intelligence`, `fleet_pulse`). Bot token read from `${GOLDENEYE_TELEGRAM_TOKEN}`. `card_renderer.py` renders signal cards (POSITION OPENED, POSITION CLOSED win/loss, WHALE ALERT, END OF DAY trades/flat) at 2400px → downsampled to 1200px via Pillow + Windows system fonts.
 
-| Component | Spec |
-|-----------|------|
-| CPU | AMD Ryzen 9 5900XT |
-| GPU | NVIDIA Tesla P4 (AI inference) |
-| RAM | 32GB DDR4 |
-| OS | Windows 11 |
-| Python | 3.14 |
-| Exchange | Kraken live API |
-| AI Runtime | Ollama + gemma2:2b |
-| Dashboard | Vanilla JS + HTML5 Canvas + WebAudio API |
-| Event system | Server-Sent Events (SSE) |
-| External deps | requests only |
+## Backtest harness
 
----
+`bt_harness.py` imports signal logic directly from `goldeneye.py`, runs against 20 canonical Kraken pairs over 180 days. Returns R-based results, not dollar P&L. Sets dummy env keys before import to bypass Kraken auth.
 
-## Launch
+`bt_tune.py` sweeps parameters. `bt_tune_regime.py` does regime-specific tuning.
 
-```bash
-cd D:\CommandCenter
-python launch_fleet.py
-```
-
-Phased boot — Command Center first, then bots in dependency order with health verification between phases.
-
-**Health checks:**
-```bash
-curl http://localhost:8080/health          # TrekBot
-curl http://localhost:9000/api/master      # Full fleet state
-curl http://localhost:9000/api/expectancy  # P/L summary
-```
-
----
-
-## Current Status
-
-- **Live** on Kraken, real trades, real capital
-- **Pool:** $10,000
-- **AEGIS:** Defensive (30% max deployment)
-- **Best performer:** TrekBot (only bot with positive net expectancy after fees)
-- **Measurement layer:** Active across all 6 trading bots
-
----
-
-## Repository Structure
+## Project files
 
 ```
-Oracle/
-├── CommandCenter/
-│   ├── command_center.py          Main server (port 9000)
-│   ├── command_center_v4.html     COSMOS v5 dashboard (272KB)
-│   ├── event_bus.py               SSE pub/sub
-│   ├── portfolio_client.py        Capital allocation client
-│   ├── launch_fleet.py            Phased fleet launcher
-│   ├── expectancy.py              Trade P/L + fee tracking
-│   ├── signal_aggregator.py       Ensemble proposals
-│   ├── signal_decomposition.py    Signal attribution
-│   ├── signal_decay.py            Event half-life tracking
-│   ├── info_geometry.py           Fisher information metric
-│   ├── topology.py                Persistent homology
-│   ├── quantum_state.py           Market superposition
-│   ├── causal_flow.py             Granger causality
-│   ├── shannon.py                 Information theory
-│   ├── boltzmann.py               Order book thermodynamics
-│   ├── lorenz.py                  Strange attractors
-│   ├── thom.py                    Catastrophe theory
-│   ├── prigogine.py               Dissipative structures
-│   ├── ultron.py                  Fleet self-analysis
-│   ├── evolution.py               Weekly optimization
-│   ├── regime_expectancy.py       Per-regime P/L analysis
-│   ├── signal_attribution.py      Fee-adjusted signal analysis
-│   └── denial_cost.py             Portfolio denial cost analysis
-└── Gridzilla/
-    └── gridzilla.py               Adaptive grid engine v2
+goldeneye.py              Main bot (~6600 lines)
+dashboard.py              Flask mission-control dashboard (~5100 lines)
+backtest.py               Standalone backtester (~2050 lines)
+card_renderer.py          Telegram signal card renderer
+analyze_confidence.py     Factor-confidence post-hoc analyzer
+whale_indicators.py       Whale score computation
+benchmark_goldeneye.py    Live performance benchmark
+config.yaml               Bot configuration
+subscribers.json          Telegram subscriber groups
+launch.bat                Local launcher (reference)
+launch_desktop.bat        Actual launcher (from Desktop)
+output/                   Runtime state (metrics, equity, brain, autopsy, per-symbol)
+archive/                  Quarantined orphan files with trace logs
 ```
 
----
+## Configuration
 
-*Built by one person with AI assistance. Not a hedge fund. A laboratory.*
+`config.yaml`:
+
+```yaml
+poll_interval_seconds: 2.0
+reconciliation_interval_seconds: 300
+order_monitor_interval_seconds: 30
+# symbols omitted — auto-discovered from Kraken top-20 by movement score
+```
+
+Environment:
+- `GOLDENEYE_TELEGRAM_TOKEN` — bot token for Telegram signal cards (optional)
+- `KRAKEN_API_KEY`, `KRAKEN_SECRET` — live trading (paper mode runs without)
+- `DASHBOARD_PORT` — override default 18065
+- `DASHBOARD_PORT_SHORT` — short-mode dashboard port
+
+## Disabled signals (do not re-enable without backtest)
+
+- `h` (BB %B recovery, 37.5% WR)
+- `j` (OBV bull divergence, −0.39R)
+- `k` (BB squeeze, sub-27% WR)
+
+Commented out in `_sigs_long` with reason inline. Confirm with `bt_tune_regime.py` before flipping.
+
+## Operational notes
+
+- **Kill switch manual reset**: stop bot → `rm output/kill_switch.json` → restart
+- **Per-signal suppression**: Bayesian blend auto-suppresses signals with blended WR < 40% (20 prior count for shrinkage)
+- **Adaptive brain**: `AdaptiveBrain` tracks per-signal win rates per symbol, blends with global prior for weight adjustment
+- **Tiered polling**: `hot` (2s full pipeline) / `watch` (15s ticker + signals only); promotion threshold lifts `watch` to `hot` on signal activity
+- **AI ensemble disabled**: `is_ai_enabled()` returns False; infrastructure kept for future re-enable; LLM Brier score tracking dormant
+
+## License
+
+Private. Not for redistribution.

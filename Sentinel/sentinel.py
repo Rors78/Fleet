@@ -532,7 +532,14 @@ class SentinelEngine:
         # Confluence without a confirming source on exactly the freshest
         # candidates. Re-poll Oracle and forecast anything new before publishing.
         try:
-            late = [p for p in get_oracle_pairs() if p not in forecasts]
+            # Blacklisted pairs must be excluded here too, not just from the
+            # main universe. Without this the catch-up retries them every cycle
+            # — XNO/USD is blacklisted precisely because Kraken has no OHLC for
+            # it, so each attempt is a guaranteed-failed fetch. Observed cost:
+            # per-pair time rose 1.04s -> 1.30s on a cycle that added +0 pairs.
+            late = [p for p in get_oracle_pairs()
+                    if p not in forecasts and not _is_blacklisted(p)]
+            added = 0
             for pair in late[:ORACLE_CATCHUP_MAX]:
                 candles = get_ohlc(pair, interval=60, limit=200)
                 if not candles:
@@ -540,10 +547,13 @@ class SentinelEngine:
                 forecast = forecast_pair(pair, candles, ctx)
                 if forecast:
                     forecasts[pair] = forecast
+                    added += 1
                 time.sleep(0.1)
             if late:
-                self._log(f"Catch-up: +{len([p for p in late[:ORACLE_CATCHUP_MAX] if p in forecasts])} "
-                          f"late Oracle pair(s)")
+                # Report attempted vs added — "+0 late" alone reads like a no-op
+                # when it actually means every attempt failed.
+                self._log(f"Catch-up: +{added} of {len(late[:ORACLE_CATCHUP_MAX])} "
+                          f"attempted late Oracle pair(s)")
         except Exception as e:
             self._log(f"Catch-up pass failed: {e}")
 

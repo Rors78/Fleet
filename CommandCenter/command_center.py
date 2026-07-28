@@ -311,8 +311,13 @@ class PortfolioManager:
     # ── Core Operations ──
 
     def reserve(self, bot_id: str, pair: str, direction: str, amount: float,
-                stop_loss_pct: Optional[float] = None) -> dict:
-        """Validate risk limits and reserve capital. Returns dict with ok/reason."""
+                stop_loss_pct: Optional[float] = None,
+                is_reentry: bool = False) -> dict:
+        """Validate risk limits and reserve capital. Returns dict with ok/reason.
+
+        is_reentry marks a re-reservation for a position that is already open
+        (bot restart re-claiming capital), which bypasses the direction gate.
+        """
         from fleet_config import is_blacklisted
         pair = normalize_pair(pair) or pair  # canonical format for per-pair limits
         with self._lock:
@@ -370,9 +375,18 @@ class PortfolioManager:
             if is_blacklisted(pair):
                 return {"ok": False, "reason": f"Pair {pair} is blacklisted (0% WR across fleet)"}
 
-            # Live direction gate — LONG only in live mode
-            if not _fleet_config.live_direction_allowed(direction):
-                return {"ok": False, "reason": f"LIVE_LONG_ONLY: SHORT positions blocked in live mode"}
+            # Direction gate — shorts are retired fleet-wide (paper AND live).
+            # Reports the specific rule that fired rather than always blaming
+            # live mode, so a paper-mode rejection is not misdiagnosed.
+            # is_reentry lets a bot re-claim capital for an ALREADY-OPEN short
+            # after a restart; without it the bot reads its own position as
+            # unfunded and force-closes it at market.
+            _dir_ok, _dir_reason = _fleet_config.direction_allowed(
+                direction, is_reentry=is_reentry)
+            if not _dir_ok:
+                log.info("SHORT DENIED: %s requested %s %s — %s",
+                         bot_id, direction, pair, _dir_reason)
+                return {"ok": False, "reason": _dir_reason}
 
             # Validate bot is a trading bot
             if bot_id not in TRADING_BOTS:
@@ -3556,6 +3570,10 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             direction=data["direction"],
             amount=amount,
             stop_loss_pct=data.get("stop_loss_pct"),
+            # Bots re-claiming capital for an already-open position pass this
+            # so the fleet-wide short ban does not strand (and force-close)
+            # positions that predate the policy.
+            is_reentry=bool(data.get("is_reentry")),
         )
 
         if _fleet_logger:

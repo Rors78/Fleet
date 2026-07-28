@@ -60,8 +60,16 @@ class PortfolioClient:
                 time.sleep(0.5 * (2 ** attempt))
         return None
 
-    def reserve(self, pair, direction, amount, stop_loss_pct=None):
-        """Request capital. Returns (ok, reservation_id_or_reason)."""
+    def reserve(self, pair, direction, amount, stop_loss_pct=None,
+                is_reentry=False):
+        """Request capital. Returns (ok, reservation_id_or_reason).
+
+        Set is_reentry=True when re-claiming capital for a position that is
+        ALREADY open (e.g. after a restart, or when a reservation went stale).
+        Direction policy gates — such as the fleet-wide short ban — are skipped
+        for re-entries, because refusing them makes the bot read its own open
+        position as unfunded and close it at market.
+        """
         data = {
             "bot_id": self.bot_id,
             "pair": pair,
@@ -70,6 +78,8 @@ class PortfolioClient:
         }
         if stop_loss_pct is not None:
             data["stop_loss_pct"] = stop_loss_pct
+        if is_reentry:
+            data["is_reentry"] = True
         result = self._post("/api/portfolio/reserve", data)
         if result is None:
             return False, "Command Center unreachable"

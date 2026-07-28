@@ -197,15 +197,46 @@ def is_live() -> bool:
 # and the fleet has near-zero data in bear/range regimes to validate short strategies.
 LIVE_LONG_ONLY = True
 
+# Shorting is retired FLEET-WIDE, in paper as well as live.
+#
+# LIVE_LONG_ONLY above only bites once FLEET_MODE == "live", so in paper mode
+# bots could still open shorts freely — TurtleSue was observed holding an
+# AAVE/USD SHORT while the fleet was nominally long-only. Paper positions feed
+# expectancy, signal decomposition and every WR/attribution statistic the fleet
+# tunes itself on, so shorts that will never be traded live were still steering
+# the fleet's learning.
+#
+# Set False to re-enable short entries in paper for research.
+FLEET_LONG_ONLY = True
+
+
+def direction_allowed(direction: str, is_reentry: bool = False) -> tuple:
+    """Return (allowed, reason) for reserving capital in `direction`.
+
+    Applies in BOTH paper and live mode — see FLEET_LONG_ONLY.
+
+    `is_reentry=True` marks a re-reservation for a position that is ALREADY
+    open (e.g. a bot restarting and re-claiming capital for existing trades).
+    Those must be allowed through: the policy is "open no new shorts", not
+    "liquidate open ones". Blocking them makes a bot read its own position as
+    unfunded and force-close it at market — turning a config change into an
+    unintended liquidation.
+    """
+    d = (direction or "").upper()
+    if d != "SHORT":
+        return True, ""
+    if is_reentry:
+        return True, ""
+    if FLEET_LONG_ONLY:
+        return False, "FLEET_LONG_ONLY: short entries are retired fleet-wide"
+    if FLEET_MODE == "live" and LIVE_LONG_ONLY:
+        return False, "LIVE_LONG_ONLY: SHORT positions blocked in live mode"
+    return True, ""
+
 
 def live_direction_allowed(direction: str) -> bool:
-    """Check if a trade direction is allowed in the current fleet mode.
-    Paper mode: both LONG and SHORT. Live mode: LONG only (unless LIVE_LONG_ONLY disabled)."""
-    if FLEET_MODE == "paper":
-        return True
-    if LIVE_LONG_ONLY and direction.upper() == "SHORT":
-        return False
-    return True
+    """Backwards-compatible boolean wrapper around direction_allowed()."""
+    return direction_allowed(direction)[0]
 
 
 # 3-state engage model: paper → live_armed → live_engaged

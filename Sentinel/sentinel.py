@@ -56,10 +56,21 @@ PORT = 8071
 CC_URL = "http://127.0.0.1:9000"
 SCAN_INTERVAL = 300         # 5 minutes between forecast cycles
 # Cold-start tolerance: Sentinel can boot before Command Center has populated
-# /api/universe. Without a retry the first cycle silently degrades to three
-# majors and holds it for a full SCAN_INTERVAL.
-UNIVERSE_RETRIES = 5
+# /api/universe. Without a retry the first cycle degrades to three majors and
+# holds it for a full SCAN_INTERVAL (5 min).
+#
+# Sizing: Sentinel is a phase-2 bot, launched as soon as CC BINDS its port —
+# but CC needs appreciably longer to finish its first poll sweep and populate
+# the universe. Measured on a cold boot, 5x3s (12s) still landed in the empty
+# window. 20x3s covers a full minute, which comfortably exceeds CC's observed
+# warm-up while still costing nothing on a warm start (the first attempt
+# succeeds and returns immediately).
+UNIVERSE_RETRIES = 20
 UNIVERSE_RETRY_WAIT_S = 3
+# Pairs used only when the universe is genuinely unreachable. Kept as a named
+# constant so the scan loop can detect that it ran a degraded cycle.
+_FALLBACK_PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD"]
+DEGRADED_RETRY_S = 30       # re-run soon after a fallback cycle
 HORIZONS = [60, 240, 1440]  # minutes: 1h, 4h, 24h
 N_SIMULATIONS = 500         # Monte Carlo paths per pair
 # Forecast the full CC universe, not just the top slice by volume.
@@ -233,7 +244,7 @@ def get_universe():
     print(f"[WARN] Universe unavailable after {UNIVERSE_RETRIES} attempts "
           f"(CC and Oracle both empty) — falling back to 3 majors this cycle",
           flush=True)
-    return ["BTC/USD", "ETH/USD", "SOL/USD"]
+    return list(_FALLBACK_PAIRS)
 
 
 def get_ohlc(pair, interval=60, limit=100):
@@ -552,11 +563,24 @@ class ThreadedServer(ThreadingMixIn, HTTPServer):
 def _scan_loop():
     time.sleep(15)  # wait for fleet to boot
     while True:
+        degraded = False
         try:
             _engine.compute()
+            # A cycle that produced only the 3-major fallback means the
+            # universe was still unavailable. Retry shortly rather than
+            # holding a degraded forecast set for a full SCAN_INTERVAL —
+            # downstream consumers (Confluence) cannot tell the difference
+            # between "3 pairs is all there is" and "CC wasn't ready yet".
+            with _engine._lock:
+                degraded = len(_engine.forecasts) <= len(_FALLBACK_PAIRS)
         except Exception as e:
             _engine._log(f"ERROR: {e}")
-        time.sleep(SCAN_INTERVAL)
+        if degraded:
+            _engine._log(f"Degraded cycle ({len(_engine.forecasts)} pairs) — "
+                         f"retrying in {DEGRADED_RETRY_S}s")
+            time.sleep(DEGRADED_RETRY_S)
+        else:
+            time.sleep(SCAN_INTERVAL)
 
 
 def main():

@@ -128,7 +128,7 @@ def _wmic_processes():
     try:
         out = subprocess.run(
             ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=30).stdout.strip()
+            capture_output=True, text=True, timeout=60).stdout.strip()
         if not out:
             return []
         data = json.loads(out)
@@ -314,12 +314,15 @@ def port_bindable(port):
     reports a false 'still occupied' and stalls the restart for the full
     timeout. Conversely a port held by a live listener is not bindable.
 
-    SO_REUSEADDR matches how the launcher's servers bind (allow_reuse_address),
-    so this tests the same condition they will hit.
+    NO SO_REUSEADDR on the test socket: on Windows that option lets the
+    bind SUCCEED against a live listener (shadow-bind) — this check then
+    reported "all ports free" while the fleet was still running, and the
+    restart booted a second fleet (2026-07-28). A plain bind fails against
+    a live listener but still succeeds over TIME_WAIT leftovers on
+    Windows, which is exactly the distinction this check needs.
     """
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             s.bind(("127.0.0.1", port))
             return True
     except OSError:
@@ -344,7 +347,7 @@ def wait_ports_free(ports, timeout=PORT_FREE_TIMEOUT):
     blocked = [p for p in ports if not port_bindable(p)]
     warn(f"Still held after {timeout}s: {blocked}")
     for p in blocked:
-        warn(f"  :{p} has a live listener — launcher will reclaim it")
+        warn(f"  :{p} has a live listener")
     return False
 
 
@@ -550,13 +553,32 @@ def main():
         for pid, ppid, cmd in orphans:
             warn(f"orphan pid={pid} (parent {ppid} is dead)")
 
+    if not launchers and not children and port_busy(cc_port):
+        # The survey saw nothing to reap, yet Command Center is answering on
+        # its port — process enumeration failed (or raced). Launching now
+        # would boot a SECOND fleet next to the live one: duplicate
+        # bot_responders, shadow-bound ports, doubled Telegram sends
+        # (happened 2026-07-28). Refuse.
+        err(f"Survey found no fleet processes but CC is live on :{cc_port} — "
+            "process enumeration failed; refusing to launch a second fleet.")
+        err("Investigate with --status, or stop the fleet manually first.")
+        print()
+        return 1
+
     reap(launchers, children, orphans, strays)
-    wait_ports_free(ports)
 
     if args.stop:
+        wait_ports_free(ports)
         ok("Fleet stopped")
         print()
         return 0
+
+    if not wait_ports_free(ports):
+        err("Fleet ports still held by live listeners after reap — "
+            "refusing to launch a second fleet on top of them.")
+        err("Run with --status to see what survived, then retry.")
+        print()
+        return 1
 
     ensure_ollama()
     launch()

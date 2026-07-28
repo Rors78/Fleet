@@ -52,7 +52,6 @@
         "oracle":     {"port": 8075, "dir": "D:\\Oracle",     "cmd": ["server.py"],     "type": "intel",   "pairs": 93, "phase": 1},
         "deepblue":   {"port": 8076, "dir": "D:\\Whale Watcher\\apex_whale_finder.dir", "cmd": ["main.py", "--headless"], "type": "intel", "pairs": 50, "phase": 1},
         "gridzilla":  {"port": 8077, "dir": "D:\\Gridzilla",  "cmd": ["gridzilla.py", "--auto"],  "type": "trader",  "pairs": 12, "phase": 1},
-        "trekbot":    {"port": 8080, "dir": "D:\\TrekBot",    "cmd": ["trekbot.py"],    "type": "trader",  "pairs": 20, "phase": 1},
         "phitex":     {"port": 8078, "dir": "D:\\PhiTex",     "cmd": ["phitex.py"],     "type": "novel",   "pairs": 50, "phase": 2},
         "aegis":      {"port": 8079, "dir": "D:\\Aegis",      "cmd": ["aegis.py"],      "type": "meta",    "phase": 2},
         "nexus":      {"port": 8082, "dir": "D:\\Nexus",      "cmd": ["nexus.py"],      "type": "novel",   "pairs": 50, "phase": 2},
@@ -60,6 +59,8 @@
         "contrarian": {"port": 8084, "dir": "D:\\Contrarian", "cmd": ["contrarian.py"], "type": "intel",   "phase": 2},
         "arbitrageur":{"port": 8085, "dir": "D:\\Arbitrageur","cmd": ["arbitrageur.py"],"type": "trader",  "pairs": 5,  "phase": 2},
         "chronos":    {"port": 8086, "dir": "D:\\Chronos",    "cmd": ["chronos.py"],    "type": "intel",   "phase": 2},
-        "inference":  {"port": 9001, "dir": "D:\\CommandCenter","cmd": ["inference_server.py"], "type": "ai", "phase": 2}
+        "confluence": {"port": 8088, "dir": "D:\\Confluence", "cmd": ["confluence.py"], "type": "trader",  "phase": 2},
+        "inference":  {"port": 9001, "dir": "D:\\CommandCenter","cmd": ["inference_server.py"], "type": "ai", "phase": 2},
+        "signal_broadcaster": {"port": 9002, "dir": "D:\\CommandCenter", "cmd": ["signal_broadcaster.py"], "type": "support", "phase": 2}
     }
 }

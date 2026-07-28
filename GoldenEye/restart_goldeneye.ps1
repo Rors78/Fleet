@@ -3,11 +3,20 @@
 # leftovers, starts a fresh session, waits for health, opens the dashboard.
 #
 # Launched by restart_goldeneye.bat (the desktop shortcut target).
+#
+# -Mode paper|live   overrides config.yaml's trading_mode for this run.
+#                    Omit to use whatever config.yaml already says.
+
+param(
+    [ValidateSet('paper', 'live')]
+    [string]$Mode
+)
 
 $ErrorActionPreference = 'Continue'
 
 $BOT_DIR    = 'D:\GoldenEye'
 $LAUNCHER   = 'C:\Users\Miner\Desktop\launch.bat'
+$CONFIG     = 'D:\GoldenEye\config.yaml'
 $DASHBOARD  = 'http://localhost:18065'
 $PORTS      = @(18095, 18065, 18096)
 $HEALTH_URL = 'http://localhost:18095/health'
@@ -155,6 +164,40 @@ if (Test-Path $ks) {
     Say '      (This is intentional - it fired on a 20% drawdown.)' 'Red'
 }
 
+# ------------------------------------------------------------ 4b. TRADING MODE
+if ($Mode) {
+    Write-Host ''
+    Say "[4b ] Setting trading mode to $($Mode.ToUpper())..." 'Cyan'
+    try {
+        # config.yaml MUST stay BOM-free UTF-8: the bot opens it without an
+        # explicit encoding, so a BOM (or a mangled non-ASCII char) crashes boot
+        # with a cp1252 UnicodeDecodeError. PowerShell's -Encoding UTF8 writes a
+        # BOM, so read/write raw bytes through .NET with a BOM-less encoder.
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        $cfg = [System.IO.File]::ReadAllText($CONFIG, $utf8NoBom)
+        $current = if ($cfg -match '(?m)^\s*trading_mode:\s*(\w+)') { $Matches[1] } else { 'unknown' }
+        if ($current -eq $Mode) {
+            Say "      Already $Mode - config unchanged." 'DarkGray'
+        } else {
+            $cfg = $cfg -replace '(?m)^(\s*trading_mode:\s*)\w+', "`${1}$Mode"
+            [System.IO.File]::WriteAllText($CONFIG, $cfg, $utf8NoBom)
+
+            # Verify the bot can still parse what we just wrote, before launching.
+            $check = & python -c "import yaml,io,sys; sys.stdout.write(str(yaml.safe_load(io.open(r'$CONFIG',encoding='utf-8'))['trading_mode']))" 2>&1
+            if ($LASTEXITCODE -ne 0 -or $check -ne $Mode) {
+                throw "config.yaml failed post-write validation (got '$check')"
+            }
+            Say "      config.yaml: $current -> $Mode (validated)" 'Yellow'
+        }
+    } catch {
+        Say "      FAILED to set mode: $($_.Exception.Message)" 'Red'
+        Say '      Aborting - refusing to start in an unknown mode.' 'Red'
+        Write-Host ''
+        Read-Host 'Press Enter to close'
+        exit 1
+    }
+}
+
 # ----------------------------------------------------------------- 5. LAUNCH
 Write-Host ''
 Say '[5/6] Starting GoldenEye...' 'Cyan'
@@ -232,6 +275,9 @@ Write-Host ''
 Say 'Opening dashboard...' 'Cyan'
 Start-Process $DASHBOARD
 
+# Two consoles per restart is clutter: the launcher window owns the bot and
+# shows its live output, so this one closes itself once the bot is confirmed up.
+# Only failure paths above stay open (they Read-Host), because those need reading.
 Write-Host ''
-Say 'This window closes in 15 seconds. The bot keeps running.' 'DarkGray'
-Start-Sleep -Seconds 15
+Say 'Done. Closing this window - the launcher window keeps the bot running.' 'DarkGray'
+Start-Sleep -Seconds 4

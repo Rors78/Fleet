@@ -1,4 +1,4 @@
-trading_mode: live   # "paper" or "live" — requires KRAKEN_API_KEY + KRAKEN_API_SECRET env vars
+trading_mode: paper   # "paper" or "live" — requires KRAKEN_API_KEY + KRAKEN_API_SECRET env vars
 
 poll_interval_seconds: 2.0
 reconciliation_interval_seconds: 300

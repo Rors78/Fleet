@@ -2,6 +2,7 @@
 *.log
 *_state.json
 *_positions.json
+*.db
 
 # Python
 __pycache__/

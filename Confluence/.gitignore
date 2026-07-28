@@ -1,0 +1,12 @@
+# Runtime state — regenerated on every run
+confluence_state.json
+confluence_state.json.tmp
+run.log
+run.err
+
+# Python
+__pycache__/
+*.pyc
+
+# Windows
+desktop.ini

@@ -185,8 +185,18 @@ def _normalise_pair(p):
     return p if "/" in p else f"{p}/USD"
 
 
+# Oracle pairs seen recently, pair -> last-seen unix ts. Oracle rotates its
+# top-N faster than Sentinel's 300s cycle, so unioning only the CURRENT set
+# chases a moving target: by the time forecasts are served Oracle has already
+# moved on, and measured overlap oscillates between ~2/10 and ~9/10 purely on
+# sampling phase. Remembering recent pairs keeps coverage stable across the
+# rotation instead.
+_ORACLE_SEEN = {}
+ORACLE_MEMORY_S = 1800      # keep a pair in the forecast set for 30 min
+
+
 def get_oracle_pairs():
-    """Pairs Oracle is currently signalling on.
+    """Pairs Oracle is currently signalling on, plus recently-seen ones.
 
     Sentinel ranks by VOLUME while Oracle signals on mid-cap alts, so the two
     select along different axes and their sets barely intersect by chance.
@@ -194,17 +204,27 @@ def get_oracle_pairs():
     no Sentinel forecast can only reach quorum via NEXUS — a fleet-wide posture,
     not per-pair confirmation. Forecasting Oracle's actual candidates is what
     makes cross-source agreement mean anything.
+
+    Includes pairs seen within ORACLE_MEMORY_S so a pair that rotates out of
+    Oracle's top-N mid-cycle still has a fresh forecast when it rotates back.
     """
+    now = time.time()
     data = fetch_json("http://127.0.0.1:8075/api/snapshot")
-    if not data:
-        return []
-    sigs = data.get("all_signals") or data.get("top_signals") or []
-    out = []
-    for s in sigs:
-        p = _normalise_pair(s.get("pair"))
-        if p:
-            out.append(p)
-    return out
+    if data:
+        sigs = data.get("all_signals") or data.get("top_signals") or []
+        for s in sigs:
+            p = _normalise_pair(s.get("pair"))
+            if p:
+                _ORACLE_SEEN[p] = now
+
+    # Drop pairs Oracle has not signalled on for a while, so the forecast set
+    # does not grow without bound.
+    for p in [p for p, ts in _ORACLE_SEEN.items() if now - ts > ORACLE_MEMORY_S]:
+        _ORACLE_SEEN.pop(p, None)
+
+    # Most-recently-seen first, so the freshest Oracle candidates are forecast
+    # earliest in the cycle.
+    return sorted(_ORACLE_SEEN, key=lambda p: _ORACLE_SEEN[p], reverse=True)
 
 
 def get_universe():

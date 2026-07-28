@@ -1,0 +1,15 @@
+# Runtime state — regenerated on every run
+turtle_positions.json
+turtle_positions.json.tmp
+*.log
+
+# Backups / scratch
+*.backup_*
+turtle-bot/
+
+# Python
+__pycache__/
+*.pyc
+
+# Windows
+desktop.ini

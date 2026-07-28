@@ -368,7 +368,21 @@ class BroadcasterHealthServer:
         # ThreadingHTTPServer: a browser keep-alive connection (dashboard
         # panel polling /stats + /feed) must not block the CC watchdog's
         # /health probe — a blocked probe gets this process taskkilled.
-        self._server = ThreadingHTTPServer(("0.0.0.0", self._port), Handler)
+        class _ExclusiveServer(ThreadingHTTPServer):
+            # HTTPServer sets SO_REUSEADDR, which on Windows lets a second
+            # process bind the same port. Two watchdogs (CC health monitor
+            # + launch_fleet) can each spawn a broadcaster within seconds
+            # of each other; with a shared bind both consume SSE and every
+            # Telegram signal goes out twice. Exclusive bind makes the
+            # second instance fail fast instead.
+            allow_reuse_address = False
+
+        try:
+            self._server = _ExclusiveServer(("0.0.0.0", self._port), Handler)
+        except OSError as e:
+            log.critical("Port %d already bound — another broadcaster "
+                         "instance is running, exiting: %s", self._port, e)
+            sys.exit(0)
         t = threading.Thread(target=self._server.serve_forever, daemon=True,
                              name="health-server")
         t.start()
@@ -2861,6 +2875,12 @@ class Broadcaster:
         log.info("Config reloaded")
 
     def start(self) -> None:
+        # Bind the status port before anything else — it doubles as a
+        # single-instance mutex. The CC probe below can take 30s; binding
+        # first closes the window where two freshly spawned instances both
+        # pass port_guard because neither has bound yet.
+        self._health.start()
+
         cc_url = self._config["cc_url"]
         log.info("Probing Command Center at %s...", cc_url)
         for i in range(15):
@@ -2875,7 +2895,6 @@ class Broadcaster:
             log.critical("Command Center unreachable after 30s, exiting")
             sys.exit(1)
 
-        self._health.start()
         self._sse.start()
         self._poller.start()
         self._daily.start()

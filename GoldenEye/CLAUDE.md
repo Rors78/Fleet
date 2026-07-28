@@ -10,21 +10,21 @@ As of 2026-04-22, it has a **self-learning brain** composed of three cooperating
 
 ## Running the Bot
 
-Actual launcher is `D:\Desktop\launch.bat`. Local `launch.bat` exists but the desktop one is authoritative.
+Actual launcher is `C:\Users\Miner\Desktop\launch.bat` (sets Kraken/Telegram env vars, cd's to D:\GoldenEye). There is no local launch.bat.
 
 ```bat
 # Manual run
 python goldeneye.py --output-dir output --mode long
 
-# Backtest (180 days, canonical 20 pairs)
-python bt_harness.py
+# Backtest harness (the bt_harness/bt_tune scripts named in older docs do not exist)
+python backtest.py
 
-# Parameter sweep
-python bt_tune.py
-
-# Regime-specific backtest
-python bt_tune_regime.py
+# Confidence analysis / benchmark
+python analyze_confidence.py
+python benchmark_goldeneye.py
 ```
+
+A full five-domain audit with file:line findings lives in `AUDIT_2026-07-28.md`; fix batches 1–9 from it were applied 2026-07-28.
 
 ## Ports and Endpoints
 
@@ -32,6 +32,7 @@ python bt_tune_regime.py
 |------|---------|
 | 18095 | Bot HTTP API |
 | 18065 | Flask mission-control dashboard (served by `dashboard.py` as in-process thread) |
+| 18096 | Subscriber registration API (hardcoded in goldeneye.py) |
 
 ### Bot endpoints (port 18095)
 
@@ -72,17 +73,17 @@ python bt_tune_regime.py
 7. Entry gate chain (15 gates, funnel ordering: correlation → factor_floors → confluence → dir_wr → regime_mult → whale → ai_conf → max_positions → drawdown → sentiment → atr_fees → min_size → notional → duplicate → entry)
 8. Decision record appended to in-memory `_decision_log` with `memory` field from `find_similar_trades()`
 
-**Regime-adaptive TP multipliers** (`_TP_BY_REGIME`, `_TP_BY_REGIME_SHORT`): bull 0.75/1.50/2.50, bear/range 0.50/0.75/1.25, chop 0.50/0.75/1.00. TP1 is load-bearing — triggers breakeven-stop move. Don't widen without re-running `bt_tune_regime.py`.
+**Regime-adaptive TP multipliers** (`_TP_BY_REGIME`, `_TP_BY_REGIME_SHORT`): bull 0.75/1.50/2.50, bear/range 0.50/0.75/1.25, chop 0.50/0.75/1.00. The TP1 breakeven-stop move is currently DISABLED in code (deliberate `_sl_moved = False`; audit M10) — the fee-safe trailing floor (`entry + 0.5×ATR`) is the active protection. Don't widen TPs without re-running `backtest.py`.
 
 **Regime confidence floors** (`_RGM_CONF_MIN`, long mode): bull 0.40, bear 0.55, range 0.55, chop 0.65.
 
-**Execution**: `LiveExecutor` wraps ccxt Kraken. All private API calls serialized through `_kraken_api_lock` (RLock) to prevent nonce races. Fee hardcoded at `0.0040` (Kraken taker 0.40%).
+**Execution**: one shared ccxt Kraken instance wrapped in the `_LockedExchange` proxy (added 2026-07-28); all private API calls acquire `_kraken_api_lock` (RLock) inside the proxy to prevent nonce races — public market-data calls are unlocked. There is no `LiveExecutor` class. `submit_order_with_retry` reconciles ambiguous timeouts against the exchange before ever retrying (double-buy protection). Fee hardcoded at `0.0040` (Kraken taker 0.40%).
 
-**Risk controls:**
-- `_MAX_HEAT = $30` portfolio heat cap
+**Risk controls** (all four below were documented-but-missing until implemented 2026-07-28):
+- `_MAX_HEAT = $30` portfolio heat cap — enforced in the gate chain (funnel tag `heat_cap`)
 - `_MAX_OPEN_POS = 20` max concurrent positions
-- Circuit breaker: −$15 daily / −$35 weekly, persisted to `output/circuit_breaker_state.json`
-- Kill switch: 20% drawdown from peak equity — manual reset (delete `output/kill_switch.json`)
+- Circuit breaker: −$15 daily / −$35 weekly, persisted atomically to `output/circuit_breaker_state.json`, loaded at boot, rollover/untrip evaluated every 30s by the reconciler (not just on trade close)
+- Kill switch: 20% drawdown from peak equity → writes `output/kill_switch.json`, blocks NEW entries only (exits keep running) — manual reset by deleting the file; `_LIVE_PEAK` is persisted so drawdown survives restarts
 - min_size gate: Kraken min × price must fit in 10% balance cap (blocks GWEI and similar dead-zone symbols)
 
 ## Learning Layer (2026-04-22)
@@ -128,7 +129,7 @@ RED triggers a `REGIME SANITY RED` WARN log.
 One `BayesianFactorModel` per regime (bull/bear/range/chop) instead of per-symbol. Lives at `output/global_brain.json`.
 
 - Features: 6 factors + 3 interactions (trend×momentum, structure×volume, order_flow×momentum) + bias → 10 features
-- Posterior: conjugate Bayesian linear regression (weak prior, precision = I × 0.1)
+- Posterior: Bayesian **logistic** regression (P(win) goes through a sigmoid; older docs said "linear" — the code is logistic) with weak prior, precision = I × 0.1
 - Updates: called from `record_live_trade` with factors at entry + outcome (r > 0 → label = 1)
 - **Cold-start bootstrap**: on first load, copies posterior from the per-symbol brain with highest `total_n`. Prevents starting from zero when per-symbol brains have history.
 - **Override gate**: once `regime_n ≥ 30`, a candidate that fails confluence can still enter if `P(win) ≥ 0.58`. Logs `BAYES-OVERRIDE` when it fires.
@@ -142,7 +143,7 @@ Each symbol has an `AdaptiveBrain` instance at `output/<SYM>_USD/brain.json`:
 - Bayesian blend: per-symbol posterior + global prior (weight 20). Suppresses signals with blended WR < 40%.
 - `signal_weight(sig)` returns weight ∈ [0,1] used by `compute_weighted_confluence()`
 
-Tracks are decayed over time (half-life applied on load).
+No decay is applied (older docs claimed a half-life on load — never implemented).
 
 ## Dashboard (port 18065)
 
@@ -176,7 +177,7 @@ All rendering driven by `/api/*` polls (2s / 5s / 15s tiers).
 
 ## Subscribers / Telegram
 
-`subscribers.json` defines named groups (`fleet_intelligence`, `fleet_pulse`). Token read from `${GOLDENEYE_TELEGRAM_TOKEN}`. `card_renderer.py` (`OracleCardRenderer`) renders PNG cards at 2400px, downsampled to 1200px via Pillow + Windows system fonts. Card types: POSITION OPENED, POSITION CLOSED (win/loss), WHALE ALERT, END OF DAY (trades/flat).
+`subscribers.json` defines named groups (`fleet_intelligence`, `fleet_pulse`). Token placeholder is `${TELEGRAM_BOT_TOKEN}` (resolved from env at send time only; the raw file with placeholders is what gets saved — never resolved tokens). Card sends run on a dedicated worker thread via a bounded queue — never on the trade path. `card_renderer.py` (`OracleCardRenderer`) renders PNG cards at 2400px, downsampled to 1200px via Pillow + Windows system fonts. Card types: POSITION OPENED, POSITION CLOSED (win/loss), WHALE ALERT, END OF DAY (trades/flat).
 
 ## Key Constants to Know Before Editing
 

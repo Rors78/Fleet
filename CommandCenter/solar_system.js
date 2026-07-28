@@ -29,6 +29,13 @@ function _darken(hex,p){
 }
 
 /* --- Celestial hierarchy — solar system structure --- */
+/* Orbital speeds follow true Kepler's-third-law scaling (T = k * radius^1.5,
+   k anchored to oracle's pre-existing period so the star tier — already
+   judged to feel majestic — is untouched). Every planet/moon period now
+   falls purely out of its orbitRadius: bigger orbit = slower, always,
+   with no per-bot special-casing. Previous (pre-2026-07-28 motion pass)
+   planet periods were 15-52s — visibly frantic on the 50" display — moon
+   periods were a much saner 75s-6min. New planet+moon band: 84-214s. */
 var CELESTIAL_HIERARCHY={
   /* THE SUN — Command Center at absolute center, never moves */
   cc:        {type:"sun",   parent:null,      orbitRadius:0,   orbitSpeed:0,      mass:100, sz:104, gravitationalRadius:0},
@@ -36,22 +43,22 @@ var CELESTIAL_HIERARCHY={
   oracle:    {type:"star",  parent:"cc",      orbitRadius:585, orbitSpeed:0.000085,mass:40,  sz:57, gravitationalRadius:180, grp:"intel",  pt:"gas_giant",  pers:"deliberate"},
   deepblue:  {type:"star",  parent:"cc",      orbitRadius:520, orbitSpeed:0.000115,mass:35,  sz:54, gravitationalRadius:160, grp:"intel",  pt:"ocean",      pers:"predatory"},
   nexus:     {type:"star",  parent:"cc",      orbitRadius:468, orbitSpeed:0.00007, mass:38,  sz:56, gravitationalRadius:170, grp:"novel",  pt:"binary",     pers:"omniscient"},
-  /* PLANETS — Trading bots ×1.3, orbital radii ×1.3 */
-  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.004,  mass:15, sz:29, grp:"trader", pt:"terrestrial", pers:"aggressive"},
-  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.005,  mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"analytical"},
-  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.006,  mass:10, sz:26, grp:"trader", pt:"crystal",     pers:"steady"},
-  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.002,  mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"patient"},
-  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.007,  mass:10, sz:25, grp:"trader", pt:"elastic",     pers:"bouncy"},
-  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.004,  mass:10, sz:25, grp:"trader", pt:"binary_pair", pers:"paired"},
-  /* MOONS — Small support bots ×1.2, orbital radii ×1.3 */
-  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.00057, mass:14, sz:36, grp:"novel",    pt:"magnetar",   pers:"guardian"},
-  phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.00085, mass:12, sz:16, grp:"novel",    pt:"variable",   pers:"pulsing"},
-  sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.00043, mass:10, sz:14, grp:"intel",    pt:"nebula",     pers:"watchful"},
-  contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.00115, mass:10, sz:14, grp:"intel",    pt:"dark_nebula",pers:"contrarian",ecc:0.22},
-  chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.00029, mass:10, sz:14, grp:"intel",    pt:"pulsar",     pers:"rhythmic"},
-  hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0014,  mass:8,  sz:13, grp:"optimizer",pt:"cluster",    pers:"swarm"},
-  trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0017,  mass:8,  sz:13, grp:"intel",    pt:"trinary",    pers:"scattered"},
-  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.00065, mass:6,  sz:11, grp:"support",  pt:"nebula",     pers:"processing"}
+  /* PLANETS — Trading bots ×1.3, orbital radii ×1.3. orbitSpeed = Kepler(orbitRadius). */
+  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.0008114,mass:15, sz:29, grp:"trader", pt:"terrestrial", pers:"aggressive"},
+  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"analytical"},
+  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.0010284,mass:10, sz:26, grp:"trader", pt:"crystal",     pers:"steady"},
+  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.0006173,mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"patient"},
+  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:10, sz:25, grp:"trader", pt:"elastic",     pers:"bouncy"},
+  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.0008710,mass:10, sz:25, grp:"trader", pt:"binary_pair", pers:"paired"},
+  /* MOONS — Small support bots ×1.2, orbital radii ×1.3. orbitSpeed = Kepler(orbitRadius). */
+  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.0009503, mass:14, sz:36, grp:"novel",    pt:"magnetar",   pers:"guardian"},
+  phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.0010284, mass:12, sz:16, grp:"novel",    pt:"variable",   pers:"pulsing"},
+  sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.0006173, mass:10, sz:14, grp:"intel",    pt:"nebula",     pers:"watchful"},
+  contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.0011340, mass:10, sz:14, grp:"intel",    pt:"dark_nebula",pers:"contrarian",ecc:0.22},
+  chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.0004898, mass:10, sz:14, grp:"intel",    pt:"pulsar",     pers:"rhythmic"},
+  hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0012397, mass:8,  sz:13, grp:"optimizer",pt:"cluster",    pers:"swarm"},
+  trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0011340, mass:8,  sz:13, grp:"intel",    pt:"trinary",    pers:"scattered"},
+  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:11, grp:"support",  pt:"nebula",     pers:"processing"}
 };
 
 /* --- Synapse definitions (event bus connections) --- */
@@ -71,412 +78,266 @@ var _SYN_PAIRS=[
   ["oracle","confluence"],["deepblue","confluence"],["nexus","confluence"],["sentinel","confluence"]
 ];
 
-/* ═══════ COSMOS v5 — VISUAL UNIVERSE ═══════ */
-
-/* --- THE SUN — CC as a Neutron Star / Magnetar --- */
-/* Particle pool for jet trails — reused each frame, no heap allocation in render loop */
-var _nsJetParticles = (function(){
-    var pool = [];
-    for(var i=0;i<120;i++) pool.push({x:0,y:0,alpha:0,sz:0,life:0,maxLife:0,vx:0,vy:0,active:false});
-    return pool;
-}());
-var _nsJetParticleTimer = 0;
-
-/* Accretion disk rotation angle — incremented each frame */
-var _nsDiskAngle = 0;
-
-/* Neutron star core image — replaces procedural sphere/bloom gradients */
-var _nsImage = new Image();
-_nsImage.src = 'neutron_star.png';
-
-/* (TrekBot ship sprite retired — bot moved to standalone GoldenEye, replaced by Confluence) */
-
-/* TurtleSue — Death Star sprite */
+/* TurtleSue — Death Star sprite (unrelated to the sun/CC visual below;
+   was previously declared alongside the old neutron-star assets and must
+   stay — PLANET_VISUALS.turtlesue.surface references it directly). */
 var _turtlesueDeathStarImg = new Image();
 _turtlesueDeathStarImg.src = 'static/turtlesue_deathstar.png';
 
-/* Keplerian orbit particle pool — 28 particles in disk plane */
-var _nsKeplerParticles = (function(){
+/* ═══════ COSMOS v5 — VISUAL UNIVERSE ═══════ */
+
+/* --- THE CONVERGENCE CORE — Command Center as a living data-aggregation
+   engine, not a star. CC genuinely polls all 18 bots every ~10s and weaves
+   their state into one picture; the visual says exactly that: a rotating
+   geodesic data-lattice at the absolute center, with data motes flowing
+   inward from every live bot's actual current position along faint
+   convergence lanes, and a "weave" pulse that sweeps through the lattice
+   once per real poll cycle. Replaces the 2026-04 neutron-star/magnetar
+   design (retired 2026-07-28 — user feedback: centerpiece should read as
+   "a data relating object", not another star competing with Oracle/
+   Deep Blue/NEXUS for the same visual language). ═══ */
+
+/* Data-mote pool — motes travel inward along convergence lanes from each
+   live bot toward CC. Reused every frame, no heap allocation in the loop. */
+var _ccMotes = (function(){
     var pool = [];
-    for(var i = 0; i < 28; i++){
-        var r = 60 + Math.random() * 80;        /* orbital radius px */
-        var angle = Math.random() * Math.PI * 2;
-        pool.push({
-            r: r,
-            angle: angle,
-            speed: (Math.random() > 0.85 ? 0 : 1), /* 0 = jet-caught */
-            jetDir: (Math.random() > 0.5 ? 1 : -1),
-            jetPos: Math.random(),                   /* 0..1 along jet */
-            jetSpeed: 0.004 + Math.random() * 0.006,
-            color: (Math.random() > 0.4 ? 'rgba(220,240,255,' : 'rgba(180,210,255,')
-        });
-    }
+    for(var i=0;i<54;i++) pool.push({active:false,botId:null,prog:0,speed:0,sz:0,lane:0});
     return pool;
 }());
+var _ccMoteSpawnTimer = 0;
 
-/* Jet knots — 5 per jet direction, animated bright blobs travelling along jet */
-var _nsJetKnots = (function(){
-    var knots = [];
-    for(var d = -1; d <= 1; d += 2){
-        for(var k = 0; k < 5; k++){
-            knots.push({
-                dir: d,
-                pos: Math.random(),          /* 0..1 along jet length */
-                speed: 0.003 + Math.random() * 0.005,
-                size: 2 + Math.random() * 2.5,
-                alpha: 0.5 + Math.random() * 0.5
-            });
+/* Lattice rotation angles — two counter-rotating shells for parallax depth,
+   both slow (majestic, matches the orbital-motion pass elsewhere in this
+   file: nothing at the heart of the display should read as frantic). */
+var _ccLatticeAngleA = 0;   /* outer shell   — full turn ≈ 90s  */
+var _ccLatticeAngleB = 0;   /* inner shell   — full turn ≈ 60s, opposite direction */
+
+/* Weave pulse — brightens the lattice edges once per real CC poll cycle.
+   CC polls the fleet every 10s, so the pulse period matches that cadence
+   rather than an arbitrary "looks nice" number. */
+var _ccWeavePulsePeriod = 10000;
+
+/* Geodesic lattice vertices — a simple icosahedron projected with a fixed
+   3D rotation baked in per-vertex, then spun in 2D via the angles above.
+   Computed once; icosahedra don't need per-frame trig for their base shape,
+   only for the rotation applied at draw time. */
+var _ccLatticeVerts = (function(){
+    var t = (1 + Math.sqrt(5)) / 2; /* golden ratio */
+    var raw = [
+        [-1, t, 0],[1, t, 0],[-1,-t, 0],[1,-t, 0],
+        [0,-1, t],[0, 1, t],[0,-1,-t],[0, 1,-t],
+        [ t, 0,-1],[ t, 0, 1],[-t, 0,-1],[-t, 0, 1]
+    ];
+    /* normalize to unit sphere */
+    var norm = raw.map(function(v){
+        var m = Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);
+        return [v[0]/m, v[1]/m, v[2]/m];
+    });
+    return norm;
+}());
+var _ccLatticeEdges = (function(){
+    var v = _ccLatticeVerts, edges = [];
+    var THRESH = 1.2; /* true nearest-neighbor distance is ≈1.0515 (next tier is 1.7013) — 1.2
+                          sits safely between the two so only real edges pass */
+    for(var i=0;i<v.length;i++){
+        for(var j=i+1;j<v.length;j++){
+            var dx=v[i][0]-v[j][0], dy=v[i][1]-v[j][1], dz=v[i][2]-v[j][2];
+            var d=Math.sqrt(dx*dx+dy*dy+dz*dz);
+            if(d < THRESH) edges.push([i,j]);
         }
     }
-    return knots;
+    return edges;
 }());
 
+/* Rotate a unit vertex around Y then X and project to 2D (orthographic —
+   this is a HUD glyph, not a physically-lit scene, so no perspective divide
+   needed). Returns {x,y,z} where z is used only for depth-sort/fade. */
+function _ccProjectVertex(v, angleY, angleX, scale){
+    var cy=Math.cos(angleY), sy=Math.sin(angleY);
+    var x1 = v[0]*cy - v[2]*sy;
+    var z1 = v[0]*sy + v[2]*cy;
+    var y1 = v[1];
+    var cx=Math.cos(angleX), sx=Math.sin(angleX);
+    var y2 = y1*cx - z1*sx;
+    var z2 = y1*sx + z1*cx;
+    return {x:x1*scale, y:y2*scale, z:z2};
+}
+
 function drawSun(ctx, x, y, baseRadius, now, eventRate) {
-    /* Neutron star is compact — 60% of the old radius */
-    var sz = baseRadius * 0.6;
+    var sz = baseRadius * 0.62;
 
-    /* Advance disk rotation — full revolution in ~45 seconds */
-    _nsDiskAngle += 0.00139; /* radians per frame at 60fps ≈ 45s period */
+    /* Advance lattice rotation — two shells, counter-rotating, both slow */
+    _ccLatticeAngleA += 0.0007;   /* ≈ 90s per revolution at 60fps */
+    _ccLatticeAngleB -= 0.00105;  /* ≈ 60s per revolution, opposite spin */
 
-    /* ═══════════════════════════════════════════════════════════════════
-       FEATURE 6 — GRAVITATIONAL LENSING ON STARFIELD
-       Radial dark overlay applied after stars, before neutron star body.
-       Dims/absorbs starfield within ~100px of the compact object.
-    ═══════════════════════════════════════════════════════════════════ */
-    var lensR = sz * 5.5;
-    var lensG = ctx.createRadialGradient(x, y, sz * 0.8, x, y, Math.max(0.1, lensR));
-    lensG.addColorStop(0,    'rgba(0,0,0,0.72)');
-    lensG.addColorStop(0.18, 'rgba(0,0,4,0.38)');
-    lensG.addColorStop(0.45, 'rgba(0,0,8,0.12)');
-    lensG.addColorStop(1,    'rgba(0,0,0,0)');
-    ctx.fillStyle = lensG;
-    ctx.beginPath(); ctx.arc(x, y, lensR, 0, Math.PI * 2); ctx.fill();
+    /* Fleet health — literally what CC aggregates, read straight off the
+       real state global (read-only; never touches the counting logic that
+       populates it). Falls back to "fully healthy" only when state hasn't
+       loaded yet, so the very first frames don't render as a fleet outage. */
+    var _agg = (typeof state !== "undefined" && state.aggregate) || null;
+    var _alive = _agg ? _agg.bots_alive : 18;
+    var _total = _agg ? (_agg.bots_total || 18) : 18;
+    var _health = _total > 0 ? Math.max(0, Math.min(1, _alive / _total)) : 1;
 
     /* ═══════════════════════════════════════════════════════════════════
-       FEATURE 5 — STATIC MAGNETIC FIELD LINES — dipole arcs, pole to equator
-       4-6 faint bezier curves, dim blue, very low opacity (0.08-0.15).
+       1 — SOFT VIGNETTE — a much gentler version of the old lensing dark
+       overlay. This is an information hub, not a gravity well: it should
+       recede into the display, not visually devour the starfield around it.
     ═══════════════════════════════════════════════════════════════════ */
-    var nFieldLines = 5;
-    var northPoleY = y - sz * 0.90;
-    var southPoleY = y + sz * 0.90;
-    ctx.lineWidth = 0.75;
-    for(var fi = 0; fi < nFieldLines; fi++) {
-        /* Each line fans out from one side then the other */
-        var fSide = (fi % 2 === 0) ? 1 : -1;
-        var fIdx  = Math.floor(fi / 2);
-        var fExtent = sz * (2.0 + fIdx * 0.55);
-        var fOffX   = fSide * fExtent;
-        var cpY1 = y - fExtent * 0.28;
-        var cpY2 = y + fExtent * 0.28;
-        var fAlpha = 0.09 + fIdx * 0.015;
-        ctx.strokeStyle = 'rgba(21,101,192,' + Math.min(0.15, fAlpha).toFixed(3) + ')';
-        ctx.beginPath();
-        ctx.moveTo(x, northPoleY);
-        ctx.bezierCurveTo(x + fOffX, cpY1, x + fOffX, cpY2, x, southPoleY);
-        ctx.stroke();
-        /* Mirror */
-        ctx.beginPath();
-        ctx.moveTo(x, northPoleY);
-        ctx.bezierCurveTo(x - fOffX, cpY1, x - fOffX, cpY2, x, southPoleY);
-        ctx.stroke();
-    }
+    var vigR = sz * 4.2;
+    var vigG = ctx.createRadialGradient(x, y, sz * 0.9, x, y, Math.max(0.1, vigR));
+    vigG.addColorStop(0,    'rgba(0,4,10,0.30)');
+    vigG.addColorStop(0.4,  'rgba(0,4,10,0.10)');
+    vigG.addColorStop(1,    'rgba(0,0,0,0)');
+    ctx.fillStyle = vigG;
+    ctx.beginPath(); ctx.arc(x, y, vigR, 0, Math.PI * 2); ctx.fill();
 
     /* ═══════════════════════════════════════════════════════════════════
-       FEATURE 4 — KEPLERIAN ORBIT PARTICLES
-       20-28 particles on elliptical disk-plane orbits. Inner = faster.
-       3-5 particles "caught" in the jets and streak outward.
+       2 — CONVERGENCE LANES + DATA MOTES — faint lines from every LIVE
+       bot's actual current world position into CC, with motes travelling
+       inward continuously. This is the "visually connects to the bots it
+       aggregates" requirement made literal: it is wired to real _orbNodes
+       positions, not decorative arcs.
     ═══════════════════════════════════════════════════════════════════ */
-    var kepRefR = 70; /* reference orbital radius for speed normalisation */
-    for(var ki = 0; ki < _nsKeplerParticles.length; ki++){
-        var kp = _nsKeplerParticles[ki];
-        if(kp.speed === 0){
-            /* Jet-caught particle — travels along jet axis */
-            kp.jetPos += kp.jetSpeed;
-            if(kp.jetPos > 1.0) kp.jetPos = 0.0;
-            var jLen = sz * 4.2;
-            var jpY = y + kp.jetDir * (sz * 0.8 + kp.jetPos * jLen);
-            var jpAlpha = Math.sin(kp.jetPos * Math.PI) * 0.7;
-            ctx.fillStyle = 'rgba(200,230,255,' + jpAlpha.toFixed(3) + ')';
-            ctx.beginPath();
-            ctx.arc(x + (Math.random() - 0.5) * sz * 0.10, jpY, Math.max(0.1, 1.0 + kp.jetPos * 0.5), 0, Math.PI * 2);
-            ctx.fill();
-        } else {
-            /* Keplerian orbit — v ∝ 1/√r */
-            var kepV = (Math.sqrt(kepRefR / kp.r)) * 0.022;
-            kp.angle += kepV;
-            /* Slight eccentricity — scale y by 0.28 to simulate disk viewing angle */
-            var kpX = x + Math.cos(kp.angle) * kp.r;
-            var kpY = y + Math.sin(kp.angle) * kp.r * 0.22;
-            /* Fade particles behind the star (y > star center = behind disk) */
-            var kpDepth = Math.sin(kp.angle);
-            if(kpDepth < 0) { /* behind the disk plane — draw faint */
-                ctx.fillStyle = kp.color + '0.25)';
-            } else {
-                ctx.fillStyle = kp.color + '0.75)';
-            }
-            ctx.beginPath();
-            ctx.arc(kpX, kpY, Math.max(0.1, 1.2 + (kepRefR / kp.r) * 0.3), 0, Math.PI * 2);
-            ctx.fill();
+    var _liveBotIds = [];
+    if(typeof _orbNodes !== "undefined"){
+        for(var _nid in _orbNodes){
+            var _n = _orbNodes[_nid];
+            if(_n && _n.id !== "cc" && _n.alive) _liveBotIds.push(_nid);
         }
     }
-
-    /* ═══════════════════════════════════════════════════════════════════
-       FEATURE 3 — RELATIVISTIC JETS
-       Layered width (3 passes: 12px/0.15, 6px/0.4, 2px/0.9).
-       Blue-white base → violet/purple tips.
-       Jet knots: 5 animated bright blobs per direction.
-    ═══════════════════════════════════════════════════════════════════ */
-    var pulsePhase  = (now % 2500) / 2500;
-    var pulseBright = 0.7 + Math.sin(pulsePhase * Math.PI * 2) * 0.3;
-    var jetLen = sz * 4.2;
-
-    /* Update jet knot positions */
-    for(var jki = 0; jki < _nsJetKnots.length; jki++){
-        _nsJetKnots[jki].pos += _nsJetKnots[jki].speed;
-        if(_nsJetKnots[jki].pos > 1.0) _nsJetKnots[jki].pos = 0.0;
+    for(var li=0; li<_liveBotIds.length; li++){
+        var ln = _orbNodes[_liveBotIds[li]];
+        ctx.strokeStyle = 'rgba(' + ln.rgb + ',0.05)';
+        ctx.lineWidth = 0.6;
+        ctx.beginPath();
+        ctx.moveTo(ln.x, ln.y);
+        ctx.lineTo(x, y);
+        ctx.stroke();
     }
-
-    function _drawJet(dir) {
-        var jetBaseY = y + dir * sz * 0.9;
-        var jetTipY  = y + dir * (sz * 0.9 + jetLen);
-
-        /* Width taper: base is ~4px equivalent, tip ~2px, with fuzzy outer shells */
-        /* Pass 1 — widest, most transparent outer shell (12px wide) */
-        var outerGrad = ctx.createLinearGradient(x, jetBaseY, x, jetTipY);
-        outerGrad.addColorStop(0,   'rgba(227,242,253,0.00)');
-        outerGrad.addColorStop(0.05,'rgba(179,229,252,' + (0.12 * pulseBright).toFixed(3) + ')');
-        outerGrad.addColorStop(0.45,'rgba(124,77,255,'  + (0.10 * pulseBright).toFixed(3) + ')');
-        outerGrad.addColorStop(0.80,'rgba(206,147,216,' + (0.08 * pulseBright).toFixed(3) + ')');
-        outerGrad.addColorStop(1,   'rgba(0,0,0,0)');
-        ctx.save();
-        /* Taper: wide at base (12px), narrow at tip (3px) using a trapezoid */
-        var bw1 = 12, tw1 = 3;
-        ctx.fillStyle = outerGrad;
-        ctx.beginPath();
-        ctx.moveTo(x - bw1, jetBaseY);
-        ctx.lineTo(x - tw1, jetTipY);
-        ctx.lineTo(x + tw1, jetTipY);
-        ctx.lineTo(x + bw1, jetBaseY);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-
-        /* Pass 2 — mid shell (6px wide, 0.4 alpha) */
-        var midGrad = ctx.createLinearGradient(x, jetBaseY, x, jetTipY);
-        midGrad.addColorStop(0,   'rgba(227,242,253,0.00)');
-        midGrad.addColorStop(0.04,'rgba(179,229,252,' + (0.38 * pulseBright).toFixed(3) + ')');
-        midGrad.addColorStop(0.50,'rgba(124,77,255,'  + (0.28 * pulseBright).toFixed(3) + ')');
-        midGrad.addColorStop(0.85,'rgba(206,147,216,' + (0.18 * pulseBright).toFixed(3) + ')');
-        midGrad.addColorStop(1,   'rgba(0,0,0,0)');
-        ctx.save();
-        var bw2 = 6, tw2 = 1.5;
-        ctx.fillStyle = midGrad;
-        ctx.beginPath();
-        ctx.moveTo(x - bw2, jetBaseY);
-        ctx.lineTo(x - tw2, jetTipY);
-        ctx.lineTo(x + tw2, jetTipY);
-        ctx.lineTo(x + bw2, jetBaseY);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-
-        /* Pass 3 — core spine (2px wide, 0.9 alpha, bright blue-white) */
-        var coreGrad = ctx.createLinearGradient(x, jetBaseY, x, jetTipY);
-        coreGrad.addColorStop(0,    'rgba(255,255,255,' + (0.90 * pulseBright).toFixed(3) + ')');
-        coreGrad.addColorStop(0.30, 'rgba(200,235,255,' + (0.75 * pulseBright).toFixed(3) + ')');
-        coreGrad.addColorStop(0.65, 'rgba(149,117,205,' + (0.50 * pulseBright).toFixed(3) + ')');
-        coreGrad.addColorStop(1,    'rgba(124,77,255,0)');
-        ctx.save();
-        var bw3 = 2.0, tw3 = 0.5;
-        ctx.fillStyle = coreGrad;
-        ctx.beginPath();
-        ctx.moveTo(x - bw3, jetBaseY);
-        ctx.lineTo(x - tw3, jetTipY);
-        ctx.lineTo(x + tw3, jetTipY);
-        ctx.lineTo(x + bw3, jetBaseY);
-        ctx.closePath();
-        ctx.fill();
-        ctx.restore();
-
-        /* Jet knots — bright blobs travelling along the jet */
-        for(var jki2 = 0; jki2 < _nsJetKnots.length; jki2++){
-            var jk = _nsJetKnots[jki2];
-            if(jk.dir !== dir) continue;
-            var jkY  = jetBaseY + (jetTipY - jetBaseY) * jk.pos;
-            var jkR  = Math.max(0.1, jk.size * (1.0 - jk.pos * 0.5)); /* shrink toward tip */
-            /* Knot glow — small radial gradient blob */
-            var knotG = ctx.createRadialGradient(x, jkY, 0, x, jkY, Math.max(0.1, jkR * 2.5));
-            knotG.addColorStop(0,   'rgba(255,255,255,' + (jk.alpha * pulseBright).toFixed(3) + ')');
-            knotG.addColorStop(0.5, 'rgba(179,229,252,' + (jk.alpha * 0.55 * pulseBright).toFixed(3) + ')');
-            knotG.addColorStop(1,   'rgba(0,0,0,0)');
-            ctx.fillStyle = knotG;
-            ctx.beginPath();
-            ctx.arc(x, jkY, Math.max(0.1, jkR * 2.5), 0, Math.PI * 2);
-            ctx.fill();
-        }
-
-        /* Shockfront tip */
-        var tipY = jetTipY + dir * sz * 0.3;
-        var tipR = sz * 0.55;
-        var tipG = ctx.createRadialGradient(x, tipY, 0, x, tipY, Math.max(0.1, tipR * 3.0));
-        tipG.addColorStop(0,   'rgba(206,147,216,' + (0.25 * pulseBright).toFixed(3) + ')');
-        tipG.addColorStop(0.5, 'rgba(124,77,255,'  + (0.10 * pulseBright).toFixed(3) + ')');
-        tipG.addColorStop(1,   'rgba(0,0,0,0)');
-        ctx.fillStyle = tipG;
-        ctx.beginPath(); ctx.arc(x, tipY, tipR * 3.0, 0, Math.PI * 2); ctx.fill();
-    }
-    _drawJet(-1); /* north pole jet */
-    _drawJet(+1); /* south pole jet */
-
-    /* ═══ LEGACY JET PARTICLE TRAIL (streaky dots along beams) ═══ */
-    _nsJetParticleTimer += 1;
-    if(_nsJetParticleTimer % 2 === 0) {
-        for(var jd = -1; jd <= 1; jd += 2) {
-            for(var psi = 0; psi < 2; psi++) {
-                for(var pi = 0; pi < _nsJetParticles.length; pi++) {
-                    var pp = _nsJetParticles[pi];
-                    if(!pp.active) {
-                        var spread = (Math.random() - 0.5) * sz * 0.14;
-                        pp.x = x + spread;
-                        pp.y = y + jd * sz * 0.8;
-                        pp.vx = spread * 0.008;
-                        pp.vy = jd * (2.4 + Math.random() * 1.6);
-                        pp.sz = 0.6 + Math.random() * 0.9;
-                        pp.maxLife = 24 + Math.floor(Math.random() * 16);
-                        pp.life = 0;
-                        pp.active = true;
-                        break;
-                    }
-                }
+    /* Spawn motes onto random live lanes at a gentle, steady rate — reads
+       as continuous ambient polling rather than a discrete triggered event */
+    _ccMoteSpawnTimer++;
+    if(_ccMoteSpawnTimer >= 14 && _liveBotIds.length){
+        _ccMoteSpawnTimer = 0;
+        for(var mi=0; mi<_ccMotes.length; mi++){
+            if(!_ccMotes[mi].active){
+                _ccMotes[mi].active = true;
+                _ccMotes[mi].botId = _liveBotIds[Math.floor(Math.random()*_liveBotIds.length)];
+                _ccMotes[mi].prog = 0;
+                _ccMotes[mi].speed = 0.006 + Math.random()*0.006; /* ~3-5s inbound travel */
+                _ccMotes[mi].sz = 1.0 + Math.random()*1.2;
+                break;
             }
         }
     }
-    for(var pi2 = 0; pi2 < _nsJetParticles.length; pi2++) {
-        var pt = _nsJetParticles[pi2];
-        if(!pt.active) continue;
-        pt.x += pt.vx;
-        pt.y += pt.vy;
-        pt.life++;
-        if(pt.life >= pt.maxLife) { pt.active = false; continue; }
-        var ptAlpha = Math.sin((pt.life / pt.maxLife) * Math.PI) * 0.85 * pulseBright;
-        ctx.fillStyle = 'rgba(200,230,255,' + ptAlpha.toFixed(3) + ')';
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, Math.max(0.1, pt.sz), 0, Math.PI * 2);
-        ctx.fill();
+    for(var mj=0; mj<_ccMotes.length; mj++){
+        var mo = _ccMotes[mj];
+        if(!mo.active) continue;
+        var mn = _orbNodes && _orbNodes[mo.botId];
+        if(!mn || !mn.alive){ mo.active=false; continue; }
+        mo.prog += mo.speed;
+        if(mo.prog >= 1){ mo.active = false; continue; }
+        var mx = mn.x + (x-mn.x)*mo.prog;
+        var my = mn.y + (y-mn.y)*mo.prog;
+        var moAlpha = Math.sin(mo.prog*Math.PI) * 0.8; /* fade in, fade out on arrival */
+        var moG = ctx.createRadialGradient(mx, my, 0, mx, my, Math.max(0.1, mo.sz*3));
+        moG.addColorStop(0,   'rgba('+mn.rgb+','+moAlpha.toFixed(3)+')');
+        moG.addColorStop(1,   'rgba('+mn.rgb+',0)');
+        ctx.fillStyle = moG;
+        ctx.beginPath(); ctx.arc(mx, my, Math.max(0.1, mo.sz*3), 0, Math.PI*2); ctx.fill();
     }
 
     /* ═══════════════════════════════════════════════════════════════════
-       FEATURE 2 — ACCRETION DISK — GRAVITATIONALLY LENSED
-       Primary ellipse: radiusX=90px scaled, radiusY=18px scaled.
-       Color: blue-white inner → gold middle → deep red outer.
-       Doppler beaming: left side brighter (approaching).
-       Two ghost ellipses offset ±10px for lensing over/under effect.
-       Rotates via _nsDiskAngle.
+       3 — WEAVE PULSE — brightens the lattice edges once per real poll
+       cycle (10s), a soft ring expanding outward from the core to mark
+       "data just arrived and was woven in."
     ═══════════════════════════════════════════════════════════════════ */
-    var diskRX = sz * 2.8;   /* semi-major axis */
-    var diskRY = sz * 0.56;  /* semi-minor axis (flattened for perspective) */
-
-    function _drawDiskEllipse(offsetY, alphaScale) {
-        ctx.save();
-        ctx.translate(x, y + offsetY);
-        ctx.rotate(_nsDiskAngle);
-
-        /* Stroke the ellipse in multiple radial bands using arc segments.
-           We paint 3 concentric "rings" to achieve the color gradient across width. */
-
-        /* Outer ring — deep red/orange */
-        ctx.beginPath();
-        ctx.ellipse(0, 0, diskRX, diskRY, 0, 0, Math.PI * 2);
-        ctx.ellipse(0, 0, diskRX * 0.75, diskRY * 0.75, 0, 0, Math.PI * 2, true);
-        var outerRingG = ctx.createLinearGradient(-diskRX, 0, diskRX, 0);
-        outerRingG.addColorStop(0,    'rgba(230,74,25,'   + (0.55 * alphaScale).toFixed(3) + ')'); /* deep red left (approaching) */
-        outerRingG.addColorStop(0.25, 'rgba(191,54,12,'   + (0.40 * alphaScale).toFixed(3) + ')');
-        outerRingG.addColorStop(0.5,  'rgba(191,54,12,'   + (0.20 * alphaScale).toFixed(3) + ')'); /* right side dimmer — receding */
-        outerRingG.addColorStop(0.75, 'rgba(230,74,25,'   + (0.28 * alphaScale).toFixed(3) + ')');
-        outerRingG.addColorStop(1,    'rgba(230,74,25,'   + (0.55 * alphaScale).toFixed(3) + ')');
-        ctx.fillStyle = outerRingG;
-        ctx.fill('evenodd');
-
-        /* Mid ring — gold/amber */
-        ctx.beginPath();
-        ctx.ellipse(0, 0, diskRX * 0.75, diskRY * 0.75, 0, 0, Math.PI * 2);
-        ctx.ellipse(0, 0, diskRX * 0.50, diskRY * 0.50, 0, 0, Math.PI * 2, true);
-        var midRingG = ctx.createLinearGradient(-diskRX * 0.75, 0, diskRX * 0.75, 0);
-        midRingG.addColorStop(0,    'rgba(255,213,79,'   + (0.70 * alphaScale).toFixed(3) + ')'); /* Doppler bright left */
-        midRingG.addColorStop(0.30, 'rgba(255,167,38,'   + (0.55 * alphaScale).toFixed(3) + ')');
-        midRingG.addColorStop(0.55, 'rgba(255,167,38,'   + (0.30 * alphaScale).toFixed(3) + ')'); /* dim right */
-        midRingG.addColorStop(0.80, 'rgba(255,213,79,'   + (0.48 * alphaScale).toFixed(3) + ')');
-        midRingG.addColorStop(1,    'rgba(255,213,79,'   + (0.70 * alphaScale).toFixed(3) + ')');
-        ctx.fillStyle = midRingG;
-        ctx.fill('evenodd');
-
-        /* Inner ring — blue-white hot */
-        ctx.beginPath();
-        ctx.ellipse(0, 0, diskRX * 0.50, diskRY * 0.50, 0, 0, Math.PI * 2);
-        ctx.ellipse(0, 0, diskRX * 0.28, diskRY * 0.28, 0, 0, Math.PI * 2, true);
-        var innerRingG = ctx.createLinearGradient(-diskRX * 0.50, 0, diskRX * 0.50, 0);
-        innerRingG.addColorStop(0,    'rgba(224,247,250,' + (0.90 * alphaScale).toFixed(3) + ')'); /* blue-white, hot, Doppler bright */
-        innerRingG.addColorStop(0.35, 'rgba(179,229,252,' + (0.75 * alphaScale).toFixed(3) + ')');
-        innerRingG.addColorStop(0.55, 'rgba(179,229,252,' + (0.42 * alphaScale).toFixed(3) + ')'); /* dim right */
-        innerRingG.addColorStop(0.80, 'rgba(224,247,250,' + (0.65 * alphaScale).toFixed(3) + ')');
-        innerRingG.addColorStop(1,    'rgba(224,247,250,' + (0.90 * alphaScale).toFixed(3) + ')');
-        ctx.fillStyle = innerRingG;
-        ctx.fill('evenodd');
-
-        /* Innermost hot line — white-hot at ISCO */
-        ctx.beginPath();
-        ctx.ellipse(0, 0, diskRX * 0.28, diskRY * 0.28, 0, 0, Math.PI * 2);
-        ctx.ellipse(0, 0, diskRX * 0.18, diskRY * 0.18, 0, 0, Math.PI * 2, true);
-        var iscoG = ctx.createLinearGradient(-diskRX * 0.28, 0, diskRX * 0.28, 0);
-        iscoG.addColorStop(0,   'rgba(255,255,255,' + (1.00 * alphaScale).toFixed(3) + ')');
-        iscoG.addColorStop(0.5, 'rgba(200,240,255,' + (0.60 * alphaScale).toFixed(3) + ')');
-        iscoG.addColorStop(1,   'rgba(255,255,255,' + (1.00 * alphaScale).toFixed(3) + ')');
-        ctx.fillStyle = iscoG;
-        ctx.fill('evenodd');
-
-        ctx.restore();
+    var _weavePhase = (now % _ccWeavePulsePeriod) / _ccWeavePulsePeriod;
+    var _weaveBright = Math.max(0, 1 - _weavePhase*2.2); /* sharp attack, decay across ~45% of cycle */
+    if(_weaveBright > 0.01){
+        var wR = sz * (1.1 + _weavePhase*2.6);
+        var wG = ctx.createRadialGradient(x, y, Math.max(0.1, wR*0.85), x, y, Math.max(0.1, wR));
+        wG.addColorStop(0, 'rgba(120,200,255,0)');
+        wG.addColorStop(0.6, 'rgba(120,200,255,'+(0.14*_weaveBright).toFixed(3)+')');
+        wG.addColorStop(1, 'rgba(120,200,255,0)');
+        ctx.fillStyle = wG;
+        ctx.beginPath(); ctx.arc(x, y, wR, 0, Math.PI*2); ctx.fill();
     }
 
-    /* Ghost ellipses — lensed light bent over and under the star */
-    _drawDiskEllipse(-sz * 0.38, 0.38); /* ghost above */
-    _drawDiskEllipse( sz * 0.38, 0.32); /* ghost below */
-    /* Primary disk — drawn on top */
-    _drawDiskEllipse(0, 1.0);
-
-    /* Disk outer diffuse glow */
-    ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(1.0, 0.20);
-    var diskGlowG = ctx.createRadialGradient(0, 0, diskRX * 0.15, 0, 0, Math.max(0.1, diskRX * 1.45));
-    diskGlowG.addColorStop(0,   'rgba(68,136,255,0.15)');
-    diskGlowG.addColorStop(0.4, 'rgba(255,213,79,0.06)');
-    diskGlowG.addColorStop(0.7, 'rgba(230,74,25,0.03)');
-    diskGlowG.addColorStop(1,   'rgba(0,0,0,0)');
-    ctx.fillStyle = diskGlowG;
-    ctx.beginPath(); ctx.arc(0, 0, diskRX * 1.45, 0, Math.PI * 2); ctx.fill();
-    ctx.restore();
-
-    /* ═══ MAGNETIC FIELD LINE BREATHING — subtle, already drawn above — reuse, no redraw ═══ */
-
-    /* ═══ NEUTRON STAR CORE — image replaces procedural sphere/bloom gradients ═══ */
-    if (_nsImage.complete && _nsImage.naturalWidth > 0) {
-        ctx.drawImage(_nsImage, x - 71, y - 40, 142, 80);
-    } else {
-        /* Fallback: simple blue-white point if image hasn't loaded yet */
-        var fbG = ctx.createRadialGradient(x, y, 0, x, y, Math.max(0.1, sz));
-        fbG.addColorStop(0,   'rgba(255,255,255,1.0)');
-        fbG.addColorStop(0.3, 'rgba(160,212,255,0.8)');
-        fbG.addColorStop(1,   'rgba(0,0,0,0)');
-        ctx.fillStyle = fbG;
-        ctx.beginPath(); ctx.arc(x, y, sz, 0, Math.PI * 2); ctx.fill();
+    /* ═══════════════════════════════════════════════════════════════════
+       4 — THE LATTICE — two counter-rotating geodesic wireframe shells.
+       Straight edges, triangulated faces: deliberately the ONLY
+       non-spherical body in the entire system, so it reads instantly as
+       "structure/data", never mistaken for a planet or star silhouette.
+       Inner shell is smaller + brighter (the "processed" core); outer
+       shell is larger + dimmer (the "raw intake" lattice). Both breathe
+       with fleet health: more bots alive = brighter, steadier weave.
+    ═══════════════════════════════════════════════════════════════════ */
+    function _drawLatticeShell(radius, angleY, angleX, alphaBase, coreColor){
+        var pts = new Array(_ccLatticeVerts.length);
+        for(var vi=0; vi<_ccLatticeVerts.length; vi++){
+            pts[vi] = _ccProjectVertex(_ccLatticeVerts[vi], angleY, angleX, radius);
+        }
+        for(var ei=0; ei<_ccLatticeEdges.length; ei++){
+            var e = _ccLatticeEdges[ei];
+            var pa = pts[e[0]], pb = pts[e[1]];
+            /* Depth-fade: edges whose average z is toward the viewer (positive)
+               draw brighter than edges swinging to the far side. */
+            var avgZ = (pa.z+pb.z) / 2;
+            var depthA = 0.35 + 0.65 * ((avgZ + radius) / (radius*2));
+            var eAlpha = alphaBase * depthA * (0.55 + _health*0.45);
+            ctx.strokeStyle = 'rgba('+coreColor+','+eAlpha.toFixed(3)+')';
+            ctx.lineWidth = 0.85;
+            ctx.beginPath();
+            ctx.moveTo(x+pa.x, y+pa.y);
+            ctx.lineTo(x+pb.x, y+pb.y);
+            ctx.stroke();
+        }
+        /* Vertex nodes — small bright points where edges meet, the "data
+           nodes" of the lattice. Front-facing ones (z>0) get a soft glow. */
+        for(var vj=0; vj<pts.length; vj++){
+            var pv = pts[vj];
+            if(pv.z <= 0) continue;
+            var vAlpha = alphaBase * (0.5 + _health*0.5) * (pv.z/radius);
+            ctx.fillStyle = 'rgba('+coreColor+','+Math.min(1,vAlpha*1.4).toFixed(3)+')';
+            ctx.beginPath();
+            ctx.arc(x+pv.x, y+pv.y, Math.max(0.1, 1.1), 0, Math.PI*2);
+            ctx.fill();
+        }
     }
+    /* Outer shell — raw intake lattice */
+    _drawLatticeShell(sz*1.55, _ccLatticeAngleA, 0.6, 0.30 + _weaveBright*0.35, '90,180,255');
+    /* Inner shell — processed/aggregated core, brighter, counter-rotating */
+    _drawLatticeShell(sz*0.92, _ccLatticeAngleB, -0.45, 0.55 + _weaveBright*0.4, '190,225,255');
 
-    /* ═══ CC TEXT — always visible ═══ */
-    ctx.fillStyle = 'rgba(200,235,255,0.82)';
+    /* ═══ CORE GLOW — soft light at dead-center, brightness = fleet health ═══ */
+    var coreR = sz * 0.5;
+    var coreG = ctx.createRadialGradient(x, y, 0, x, y, Math.max(0.1, coreR));
+    coreG.addColorStop(0,   'rgba(225,240,255,'+(0.55+_health*0.35+_weaveBright*0.25).toFixed(3)+')');
+    coreG.addColorStop(0.45,'rgba(140,195,255,'+(0.28+_health*0.20).toFixed(3)+')');
+    coreG.addColorStop(1,   'rgba(60,120,220,0)');
+    ctx.fillStyle = coreG;
+    ctx.beginPath(); ctx.arc(x, y, coreR, 0, Math.PI*2); ctx.fill();
+
+    /* ═══ CC TEXT — always visible, unchanged position/contract with the
+       rest of the codebase (several call sites assume "CC" renders at
+       the sun's x,y — this keeps that contract intact) ═══ */
+    ctx.fillStyle = 'rgba(210,235,255,0.85)';
     ctx.font = 'bold ' + Math.max(11, sz * 0.38) + 'px "IBM Plex Mono"';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillText('CC', x, y);
+
+    /* Fleet count — small qualifier under the core, ties the centerpiece
+       directly to the number every viewer already trusts elsewhere on the
+       display (same state.bots-derived aggregate the header uses; this is
+       a read of _agg, never a re-count, so it can't drift from the header). */
+    if(_agg){
+        ctx.fillStyle = 'rgba(190,215,240,0.5)';
+        ctx.font = Math.max(9, sz*0.16) + 'px "IBM Plex Mono"';
+        ctx.fillText(_alive+'/'+_total, x, y + sz*0.62);
+    }
 }
 
 /* ═══ PLANET VISUAL DEFINITIONS ═══ */
@@ -1137,199 +998,123 @@ var PLANET_VISUALS = {
     },
 
     nexus: {
-        /* ═══ PULSAR — rapidly spinning neutron star, The Council's 14-engine core ═══
-           NEXUS is the math council. Rendered as a pulsar: dense bright core,
-           twin lighthouse beams sweeping at 1500ms rotation period, dipole
-           field lines, equatorial radiation belt, ejected beam particles,
-           and expanding radio-pulse rings. */
-        baseColor: [20, 40, 120],
-        atmosphere: [80, 140, 255],
+        /* ═══ THE COUNCIL LATTICE — 14 mathematical engines orbiting one verdict ═══
+           Retired 2026-07-28: NEXUS previously rendered as a bright blue-white
+           pulsar (dense neutron-star core + twin lighthouse beams strobing at
+           a 1500ms rotation) which read as visually out-of-place — a raw star
+           dropped among NASA-textured planets and, now, a geodesic data
+           lattice at Command Center. Redesigned to sit in that same "data/
+           structure" register CC now establishes: a small teal geodesic core
+           (echoing CC's lattice language, since NEXUS is itself a council
+           that aggregates 14 engines into one verdict — the same shape of
+           job CC does for the whole fleet) surrounded by exactly 14 engine
+           motes in slow, stately orbit, each a faint point of light that
+           flares briefly when that engine fires. No beams, no strobing,
+           no white-hot core — NEXUS now reads as "a council in session",
+           not "a lighthouse". Palette pulled from NEXUS's real BOTS_DEF
+           color (#2dd4bf teal) instead of the old pulsar's unrelated blue,
+           so the rendered body finally matches the color used everywhere
+           else it appears (label, HUD chips, sound pan table). */
+        baseColor: [20, 130, 130],
+        atmosphere: [45, 212, 191],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* ═══ COMPACT CORE — intense blue-white neutron star ═══
-               Core is only 35% of allocated radius — this thing is DENSE. */
-            var cr = Math.max(0.1, r * 0.35);
-            /* Outer halo — diffuse glow extends to full r */
+            /* Compact core — teal, steady, no strobe */
+            var cr = Math.max(0.1, r * 0.42);
             var haloG = ctx.createRadialGradient(x, y, Math.max(0.1, cr * 0.8), x, y, r);
-            haloG.addColorStop(0,   'rgba(160,200,255,0.22)');
-            haloG.addColorStop(0.4, 'rgba(80,140,255,0.10)');
-            haloG.addColorStop(1,   'rgba(20,40,120,0)');
+            haloG.addColorStop(0,   'rgba(110,230,220,0.20)');
+            haloG.addColorStop(0.4, 'rgba(45,180,180,0.09)');
+            haloG.addColorStop(1,   'rgba(15,60,60,0)');
             ctx.fillStyle = haloG;
             ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
-            /* Mid glow ring */
-            var midG = ctx.createRadialGradient(x, y, 0, x, y, Math.max(0.1, cr * 1.6));
-            midG.addColorStop(0,   'rgba(220,235,255,0.85)');
-            midG.addColorStop(0.35,'rgba(140,185,255,0.55)');
-            midG.addColorStop(0.7, 'rgba(60,120,255,0.22)');
-            midG.addColorStop(1,   'rgba(20,40,200,0)');
-            ctx.fillStyle = midG;
-            ctx.beginPath(); ctx.arc(x, y, Math.max(0.1, cr * 1.6), 0, Math.PI * 2); ctx.fill();
-            /* Hard bright core — the neutron star surface */
             var coreG = ctx.createRadialGradient(x, y, 0, x, y, cr);
-            coreG.addColorStop(0,   'rgba(255,255,255,1)');
-            coreG.addColorStop(0.25,'rgba(220,235,255,0.98)');
-            coreG.addColorStop(0.6, 'rgba(140,185,255,0.90)');
-            coreG.addColorStop(1,   'rgba(60,120,255,0.70)');
+            coreG.addColorStop(0,   'rgba(225,255,250,0.95)');
+            coreG.addColorStop(0.35,'rgba(150,235,225,0.85)');
+            coreG.addColorStop(0.7, 'rgba(45,190,180,0.55)');
+            coreG.addColorStop(1,   'rgba(20,110,110,0.30)');
             ctx.fillStyle = coreG;
             ctx.beginPath(); ctx.arc(x, y, cr, 0, Math.PI * 2); ctx.fill();
-            /* Specular hotspot */
+            /* Specular hotspot — soft, not blown-out white */
             var specG = ctx.createRadialGradient(
-                x - cr * 0.2, y - cr * 0.2,
-                0,
-                x - cr * 0.2, y - cr * 0.2,
-                Math.max(0.1, cr * 0.55)
+                x - cr * 0.22, y - cr * 0.22, 0,
+                x - cr * 0.22, y - cr * 0.22, Math.max(0.1, cr * 0.5)
             );
-            specG.addColorStop(0,   'rgba(255,255,255,0.9)');
-            specG.addColorStop(0.5, 'rgba(220,240,255,0.3)');
+            specG.addColorStop(0,   'rgba(255,255,255,0.55)');
             specG.addColorStop(1,   'rgba(255,255,255,0)');
             ctx.fillStyle = specG;
             ctx.beginPath(); ctx.arc(x, y, cr, 0, Math.PI * 2); ctx.fill();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
-            /* ═══ PULSAR OVERLAY — beams, field lines, disk, particles, rings ═══ */
             ctx.save();
-            var beamAngle = now / 1500;          /* fast rotation ~1.5s period  */
-            var diskAngle = now / 18000;          /* equatorial belt slow drift   */
-            var cr        = Math.max(0.1, r * 0.35);
-            var beamLen   = r * 3.5;
-            var halfAng   = Math.PI / 12;         /* 15 degrees half-angle        */
+            var cr = Math.max(0.1, r * 0.42);
 
-            /* ── 1. MAGNETIC FIELD LINES (dipole, very faint, rotate with beam) ── */
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.rotate(beamAngle);
-            var numLines = 5;
-            for (var li = 0; li < numLines; li++) {
-                var lt  = li / (numLines - 1);           /* 0..1                 */
-                var lAlpha = 0.06 + lt * 0.06;           /* faint at poles, mid  */
-                /* Spread control points outward; lines bow symmetrically */
-                var spread = 0.5 + lt * 1.4;             /* 0.5r..1.9r spread    */
-                var cpx    = cr * 1.6 * spread;
-                /* North pole arc */
-                ctx.strokeStyle = 'rgba(80,120,255,' + lAlpha.toFixed(3) + ')';
-                ctx.lineWidth   = 0.6;
-                ctx.beginPath();
-                ctx.moveTo(0, -cr);
-                ctx.quadraticCurveTo( cpx, 0,  0,  cr);
-                ctx.stroke();
-                /* South-side mirror (negative cpx) */
-                ctx.beginPath();
-                ctx.moveTo(0, -cr);
-                ctx.quadraticCurveTo(-cpx, 0,  0,  cr);
-                ctx.stroke();
+            /* ── Small geodesic wire shell around the core — echoes the
+               Command Center lattice language at NEXUS's own scale, tying
+               "council that aggregates 14 engines" back to "hub that
+               aggregates 18 bots" without literally reusing CC's centerpiece. ── */
+            if(typeof _ccLatticeVerts !== "undefined" && typeof _ccProjectVertex === "function"){
+                var latAngle = now / 40000; /* one slow revolution ≈ 40s — a peer's pace, not a strobe */
+                var latR = cr * 1.35;
+                var pts = new Array(_ccLatticeVerts.length);
+                for(var vi=0; vi<_ccLatticeVerts.length; vi++){
+                    pts[vi] = _ccProjectVertex(_ccLatticeVerts[vi], latAngle, 0.5, latR);
+                }
+                for(var ei=0; ei<_ccLatticeEdges.length; ei++){
+                    var e = _ccLatticeEdges[ei];
+                    var pa = pts[e[0]], pb = pts[e[1]];
+                    var avgZ = (pa.z+pb.z)/2;
+                    var depthA = 0.3 + 0.6*((avgZ+latR)/(latR*2));
+                    ctx.strokeStyle = 'rgba(80,220,210,' + (0.16*depthA).toFixed(3) + ')';
+                    ctx.lineWidth = 0.6;
+                    ctx.beginPath();
+                    ctx.moveTo(x+pa.x, y+pa.y);
+                    ctx.lineTo(x+pb.x, y+pb.y);
+                    ctx.stroke();
+                }
             }
-            ctx.restore();
 
-            /* ── 2. EQUATORIAL RADIATION BELT — thin ellipse, slow independent spin ── */
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.rotate(diskAngle);
-            var beltA = r * 1.8;
-            var beltB = Math.max(0.1, beltA * 0.18);   /* flat disk, viewed at angle */
-            var beltG = ctx.createLinearGradient(-beltA, 0, beltA, 0);
-            beltG.addColorStop(0,   'rgba(40,160,255,0)');
-            beltG.addColorStop(0.2, 'rgba(60,180,255,0.18)');
-            beltG.addColorStop(0.5, 'rgba(100,210,255,0.28)');
-            beltG.addColorStop(0.8, 'rgba(60,180,255,0.18)');
-            beltG.addColorStop(1,   'rgba(40,160,255,0)');
-            ctx.strokeStyle = beltG;
-            ctx.lineWidth   = beltB * 0.9;
+            /* ── 14 ENGINE MOTES — one per mathematical framework in the
+               council (Euclid, Schwarzschild, Topology, Fisher, Causal,
+               Newton, Lorenz, Einstein, Boltzmann, Prigogine, Quantum,
+               Thom, Shannon + the aggregate verdict slot). Slow, stately
+               orbit — same register as the star tier elsewhere in this
+               file, never a fast strobe. Each mote flares briefly on a
+               staggered cycle to suggest engines firing independently
+               rather than a single synchronized pulse. ── */
+            var numEngines = 14;
+            var engineOrbit = r * 2.1;
+            for (var ei2 = 0; ei2 < numEngines; ei2++) {
+                var baseAngle = (ei2 / numEngines) * Math.PI * 2;
+                var engAngle = baseAngle + now / 52000; /* full ring revolution ≈ 52s */
+                var ex = x + Math.cos(engAngle) * engineOrbit;
+                var ey = y + Math.sin(engAngle) * engineOrbit * 0.82; /* slight ellipse for depth */
+                /* Staggered flare — each engine gets its own phase offset so
+                   they clearly fire independently, not in lockstep */
+                var flarePhase = ((now / 4200) + ei2 / numEngines) % 1;
+                var flareBright = Math.max(0, 1 - flarePhase*3.5);
+                var moteA = 0.28 + flareBright*0.55;
+                var moteR = Math.max(0.1, 1.3 + flareBright*1.6);
+                var moteG = ctx.createRadialGradient(ex, ey, 0, ex, ey, Math.max(0.1, moteR*2.6));
+                moteG.addColorStop(0, 'rgba(190,245,235,' + moteA.toFixed(3) + ')');
+                moteG.addColorStop(0.5, 'rgba(80,210,195,' + (moteA*0.5).toFixed(3) + ')');
+                moteG.addColorStop(1, 'rgba(45,190,180,0)');
+                ctx.fillStyle = moteG;
+                ctx.beginPath();
+                ctx.arc(ex, ey, Math.max(0.1, moteR*2.6), 0, Math.PI*2);
+                ctx.fill();
+            }
+
+            /* ── VERDICT PULSE — soft ring expands outward on a steady 6s
+               cadence, standing in for "the council reaches a verdict" —
+               same visual grammar as CC's weave pulse, at NEXUS's scale. ── */
+            var ringPeriod = 6000;
+            var rPhase = (now % ringPeriod) / ringPeriod;
+            var rRadius = Math.max(0.1, cr + rPhase * r * 2.2);
+            var rAlpha = Math.max(0, (1-rPhase)*0.22);
+            ctx.strokeStyle = 'rgba(80,220,210,' + rAlpha.toFixed(3) + ')';
+            ctx.lineWidth = Math.max(0.3, (1-rPhase)*1.4);
             ctx.beginPath();
-            ctx.ellipse(0, 0, beltA, Math.max(0.1, beltB * 0.5), 0, 0, Math.PI * 2);
+            ctx.arc(x, y, rRadius, 0, Math.PI*2);
             ctx.stroke();
-            ctx.restore();
-
-            /* ── 3. SWEEPING LIGHTHOUSE BEAMS (two opposing, north/south poles) ── */
-            var beamColors = [
-                /* outer pass  */ { w: halfAng * 2.8, a: 0.07, r:80,  g:160, b:255 },
-                /* mid pass    */ { w: halfAng * 1.6, a: 0.18, r:140, g:200, b:255 },
-                /* core pass   */ { w: halfAng * 0.7, a: 0.55, r:210, g:235, b:255 }
-            ];
-            for (var pole = 0; pole < 2; pole++) {
-                var poleBase = beamAngle + pole * Math.PI; /* 180 degrees apart */
-                for (var bp = 0; bp < beamColors.length; bp++) {
-                    var bc = beamColors[bp];
-                    var hw = bc.w;                         /* half-angle of cone  */
-                    ctx.save();
-                    /* Clip cone to a triangle path */
-                    ctx.beginPath();
-                    ctx.moveTo(x, y);
-                    ctx.lineTo(
-                        x + Math.cos(poleBase - hw) * beamLen,
-                        y + Math.sin(poleBase - hw) * beamLen
-                    );
-                    ctx.lineTo(
-                        x + Math.cos(poleBase + hw) * beamLen,
-                        y + Math.sin(poleBase + hw) * beamLen
-                    );
-                    ctx.closePath();
-                    ctx.clip();
-                    /* Radial gradient fills the clipped cone */
-                    var bgx = x + Math.cos(poleBase) * beamLen;
-                    var bgy = y + Math.sin(poleBase) * beamLen;
-                    var beamG = ctx.createRadialGradient(x, y, Math.max(0.1, cr), bgx, bgy, Math.max(0.1, beamLen * 0.1));
-                    beamG.addColorStop(0,   'rgba(' + bc.r + ',' + bc.g + ',' + bc.b + ',' + bc.a + ')');
-                    beamG.addColorStop(0.4, 'rgba(' + bc.r + ',' + bc.g + ',' + bc.b + ',' + (bc.a * 0.5).toFixed(3) + ')');
-                    beamG.addColorStop(1,   'rgba(' + bc.r + ',' + bc.g + ',' + bc.b + ',0)');
-                    ctx.fillStyle = beamG;
-                    ctx.fillRect(x - beamLen, y - beamLen, beamLen * 2, beamLen * 2);
-                    ctx.restore();
-                }
-            }
-
-            /* ── 4. BEAM PARTICLES — energetic dots ejected along beam path ── */
-            var numPart = 7;
-            for (var pole2 = 0; pole2 < 2; pole2++) {
-                var pBase2 = beamAngle + pole2 * Math.PI;
-                for (var pi = 0; pi < numPart; pi++) {
-                    /* Each particle travels along the beam axis at different depths */
-                    var phase  = ((pi / numPart) + now / 2200) % 1;  /* 0..1 along beam  */
-                    var dist   = Math.max(0.1, cr * 1.2 + phase * beamLen * 0.85);
-                    var spread = (pi % 3 - 1) * halfAng * 0.4;       /* slight scatter    */
-                    var angle  = pBase2 + spread;
-                    var px     = x + Math.cos(angle) * dist;
-                    var py     = y + Math.sin(angle) * dist;
-                    var pAlpha = Math.max(0, (1 - phase) * 0.7);      /* fade as it travels */
-                    var pSize  = Math.max(0.4, (1 - phase) * 2.2);
-                    ctx.fillStyle = 'rgba(180,220,255,' + pAlpha.toFixed(3) + ')';
-                    ctx.beginPath();
-                    ctx.arc(px, py, pSize, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            }
-
-            /* ── 5. RADIO PULSE RINGS — 3 expanding concentric rings ── */
-            var ringPeriod = 3000;                       /* ms per pulse cycle    */
-            for (var ri = 0; ri < 3; ri++) {
-                var rPhase  = ((now / ringPeriod) + ri / 3) % 1;   /* stagger by 1/3   */
-                var rRadius = Math.max(0.1, cr + rPhase * r * 2.8);
-                var rAlpha  = Math.max(0, (1 - rPhase) * 0.35);
-                ctx.strokeStyle = 'rgba(100,180,255,' + rAlpha.toFixed(3) + ')';
-                ctx.lineWidth   = Math.max(0.3, (1 - rPhase) * 1.8);
-                ctx.beginPath();
-                ctx.arc(x, y, rRadius, 0, Math.PI * 2);
-                ctx.stroke();
-            }
-
-            /* ── 6. LIGHTHOUSE FLASH — brief bright flare when beam faces viewer ── */
-            /* Beam faces viewer when beamAngle ≈ 0 or π (mod 2π)                  */
-            for (var pole3 = 0; pole3 < 2; pole3++) {
-                var faceAngle = (beamAngle + pole3 * Math.PI) % (Math.PI * 2);
-                /* How close to facing forward (angle 0 = rightward) */
-                var facing = Math.cos(faceAngle);       /* 1 = direct, -1 = away  */
-                if (facing > 0.92) {
-                    var flashStrength = (facing - 0.92) / 0.08;  /* 0..1           */
-                    var fAlpha = flashStrength * 0.45;
-                    var fRadius = Math.max(0.1, cr * (1.8 + flashStrength * 1.4));
-                    var flashG = ctx.createRadialGradient(x, y, 0, x, y, fRadius);
-                    flashG.addColorStop(0,   'rgba(255,255,255,' + (fAlpha * 0.9).toFixed(3) + ')');
-                    flashG.addColorStop(0.4, 'rgba(180,220,255,' + (fAlpha * 0.5).toFixed(3) + ')');
-                    flashG.addColorStop(1,   'rgba(80,160,255,0)');
-                    ctx.fillStyle = flashG;
-                    ctx.beginPath();
-                    ctx.arc(x, y, fRadius, 0, Math.PI * 2);
-                    ctx.fill();
-                }
-            }
 
             ctx.restore();
         }

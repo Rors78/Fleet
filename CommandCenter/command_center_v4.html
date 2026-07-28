@@ -948,7 +948,13 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
     var su=0,sd=0;var fc=raw.forecasts||{};
     for(var k in fc){var fp=(fc[k]||{})["4h"]||{};var dp=fp.direction_probability||{};
       if((dp.up||0)>0.55)su++;if((dp.down||0)>0.55)sd++;}
-    this.statusLabel=su+"\u2191 "+sd+"\u2193";
+    /* Lead with the pair count (Sentinel's real headline number \u2014 54-57
+       pairs/cycle) instead of raw up/down arrow counts, which render as
+       unreadable noise ("0\u2191 0\u2193") at 8px on the 50" display when both
+       are near zero, which is most of the time. Directional counts still
+       shown, just demoted to a qualifier rather than the whole label. */
+    var _pf=raw.pairs_forecast||norm.pairs_forecast||Object.keys(fc).length;
+    this.statusLabel=_pf+" pairs \u00b7 "+su+"\u2191"+sd+"\u2193";
     var scanning=Math.sin(now/5000+this.pulsePhase)>0.85;
     if(scanning){this.sizeMultiplier=1.3;this.energyTarget=0.8;}
   }
@@ -1678,6 +1684,112 @@ function _posRings(ctx,nd,x,y,sz){
   ctx.restore();
 }
 
+/* ═══ LABEL COLLISION AVOIDANCE ═══
+   Every body queues its label instead of drawing it inline, so a single
+   end-of-frame pass can see ALL labels at once and resolve overlaps —
+   impossible when each body draws its own label mid-pipeline with zero
+   awareness of its neighbors. Fixes the lower-right (Confluence/TurtleSue)
+   and upper-left (Gridzilla/NEXUS) collision clusters, plus NexusBrain/
+   Rubberband, all reported as unreadable on the 50" display 2026-07-28. */
+var _orbLabelQueue=[];
+function _queueLabel(nd,x,y,sz,priority){
+  if(!nd||!nd.label) return;
+  _orbLabelQueue.push({
+    nd:nd, x:x, y:y, sz:sz,
+    priority:priority!=null?priority:(nd.celestialType==="star"?3:nd.celestialType==="planet"?2:1),
+    text:nd.label, status:nd.statusLabel||"",
+    alive:nd.alive, rgb:nd.rgb,
+    font:(nd.celestialType==="star"?'bold 10':'9')+'px "IBM Plex Mono",monospace'
+  });
+}
+/* Measures a queued label's box (name line + optional status line) and
+   returns {w,h} in the label's own font — approximate monospace metrics,
+   good enough for collision testing without a ctx.measureText() per body
+   per frame (that would force font-switch thrash across 18 bodies/frame). */
+function _labelBoxSize(entry){
+  var charW=entry.nd.celestialType==="star"?6.2:5.6;
+  var nameW=entry.text.length*charW;
+  var statusW=entry.status?entry.status.length*(charW*0.9):0;
+  return {w:Math.max(nameW,statusW), h:entry.status?24:13};
+}
+function _boxesOverlap(a,b){
+  return !(a.x2<b.x1||a.x1>b.x2||a.y2<b.y1||a.y1>b.y2);
+}
+/* Resolve + draw every queued label. Runs once per frame, in world space,
+   after all bodies have been positioned and drawn (called at the end of
+   _orbRender, right after L17). Higher-priority labels (stars, then
+   trading planets, then moons) claim their default slot first; anything
+   that would collide with an already-placed box gets nudged — first to
+   the underside-opposite side (left of the body instead of centered
+   below), then further out radially from Command Center — until clear or
+   a small attempt budget is exhausted (silent give-up: labels never
+   disappear, worst case they end up slightly overlapping again, same as
+   before this pass, never worse). */
+function _drawLabelsWithCollisionAvoidance(ctx){
+  var q=_orbLabelQueue;
+  if(!q.length){return;}
+  q.sort(function(a,b){return b.priority-a.priority;});
+  var placed=[];
+  var ccN=_orbNodes.cc;
+  var ccx=ccN?ccN.x:_orbLW/2, ccy=ccN?ccN.y:_orbLH/2;
+  for(var i=0;i<q.length;i++){
+    var e=q[i];
+    var box=_labelBoxSize(e);
+    /* Candidate offsets tried in order: default (centered, below body),
+       then left/right shifted, then pushed further below, then a leader
+       line out along the CC→body radial. */
+    var dx0=e.x-ccx, dy0=e.y-ccy, rlen=Math.sqrt(dx0*dx0+dy0*dy0)||1;
+    var radialX=dx0/rlen, radialY=dy0/rlen;
+    var candidates=[
+      {cx:e.x,           cy:e.y+e.sz+13+box.h/2, lx:null, ly:null},
+      {cx:e.x-box.w*0.55,cy:e.y+e.sz+13+box.h/2, lx:null, ly:null},
+      {cx:e.x+box.w*0.55,cy:e.y+e.sz+13+box.h/2, lx:null, ly:null},
+      {cx:e.x,           cy:e.y-e.sz-13-box.h/2, lx:null, ly:null},
+      {cx:e.x+radialX*(e.sz+34),cy:e.y+radialY*(e.sz+34)+box.h/2, lx:e.x,ly:e.y},
+      {cx:e.x+radialX*(e.sz+58),cy:e.y+radialY*(e.sz+58)+box.h/2, lx:e.x,ly:e.y}
+    ];
+    var chosen=candidates[0];
+    for(var c=0;c<candidates.length;c++){
+      var cand=candidates[c];
+      var testBox={x1:cand.cx-box.w/2,x2:cand.cx+box.w/2,y1:cand.cy-box.h/2,y2:cand.cy+box.h/2};
+      var collides=false;
+      for(var p=0;p<placed.length;p++){ if(_boxesOverlap(testBox,placed[p])){collides=true;break;} }
+      if(!collides){chosen=cand;break;}
+    }
+    var finalBox={x1:chosen.cx-box.w/2,x2:chosen.cx+box.w/2,y1:chosen.cy-box.h/2,y2:chosen.cy+box.h/2};
+    placed.push(finalBox);
+    /* Leader line — only drawn when the label was pushed to a radial slot,
+       so a viewer can still trace which body it names. */
+    if(chosen.lx!=null){
+      ctx.strokeStyle="rgba("+e.rgb+",0.18)";
+      ctx.lineWidth=0.75;
+      ctx.beginPath();ctx.moveTo(chosen.lx,chosen.ly);ctx.lineTo(chosen.cx,chosen.cy-box.h/2+4);ctx.stroke();
+    }
+    /* Text backing plate — small translucent dark pill behind the text so
+       a pale/grey body (AEGIS #e2e8f0) or a busy starfield background
+       never swallows the label, without resorting to a solid box that
+       would look like UI chrome floating in space. */
+    var padX=4,padY=2;
+    ctx.fillStyle="rgba(4,6,14,0.42)";
+    ctx.beginPath();
+    ctx.roundRect?ctx.roundRect(chosen.cx-box.w/2-padX,chosen.cy-box.h/2-padY,box.w+padX*2,box.h+padY*2,3):
+      ctx.rect(chosen.cx-box.w/2-padX,chosen.cy-box.h/2-padY,box.w+padX*2,box.h+padY*2);
+    ctx.fill();
+    var labelAlpha=e.alive?(0.55+(e.nd.energy||0)*0.25):0.28;
+    ctx.fillStyle="rgba("+e.rgb+","+labelAlpha+")";
+    ctx.font=e.font;
+    ctx.textAlign="center";
+    var nameY=e.status?chosen.cy-box.h/2+9:chosen.cy;
+    ctx.fillText(e.text,chosen.cx,nameY);
+    if(e.status){
+      ctx.fillStyle="rgba("+e.rgb+","+(e.alive?0.34:0.1)+")";
+      ctx.font='8px "IBM Plex Mono",monospace';
+      ctx.fillText(e.status,chosen.cx,chosen.cy+box.h/2-3);
+    }
+  }
+  q.length=0;
+}
+
 /* ═══ MASTER DRAW NODE — uses new drawPlanet ═══ */
 function _drawNode(ctx,nd){
   if(nd.id==="cc") return; /* Sun drawn separately by drawSun */
@@ -1727,19 +1839,10 @@ function _drawNode(ctx,nd){
       }
     }
   }
-  /* Label — ALWAYS visible (name), status on hover or always in non-FS */
+  /* Label — queued, not drawn here. See _drawLabelsWithCollisionAvoidance,
+     which runs once at end-of-frame once every body's position is known. */
   {
-    var labelAlpha=nd.alive?(0.55+nd.energy*0.25):0.28;
-    ctx.fillStyle="rgba("+nd.rgb+","+labelAlpha+")";
-    ctx.font=(nd.celestialType==="star"?'bold 10':'9')+'px "IBM Plex Mono",monospace';
-    ctx.textAlign="center";
-    ctx.fillText(nd.label,x,y+sz+13);
-    /* Status line — always show, slightly dimmer */
-    if(nd.statusLabel){
-      ctx.fillStyle="rgba("+nd.rgb+","+(nd.alive?0.32:0.1)+")";
-      ctx.font='8px "IBM Plex Mono",monospace';
-      ctx.fillText(nd.statusLabel,x,y+sz+24);
-    }
+    _queueLabel(nd,x,y,sz);
   }
 }
 
@@ -2503,19 +2606,11 @@ function _orbRender(timestamp){
     var planet=_orbNodes[planetIds[pi]];
     if(!planet) continue;
     if(_drawFullscreenEntity(ctx,planet,_drawNow)){
-      /* Name + status always visible in cinema mode */
+      /* Name + status queued — collision-resolved in the end-of-frame pass */
       if(planet.alive){
-        /* Ships extend further — use larger offset */
-        var _plbOff=planet.currentSize*1.8+14;
-        ctx.fillStyle=hexAlpha(planet.color,0.55);
-        ctx.font='9px "IBM Plex Mono",monospace';
-        ctx.textAlign="center";
-        ctx.fillText(planet.label,planet.x,planet.y+_plbOff);
-        if(planet.statusLabel){
-          ctx.fillStyle=hexAlpha(planet.color,0.32);
-          ctx.font='8px "IBM Plex Mono",monospace';
-          ctx.fillText(planet.statusLabel,planet.x,planet.y+_plbOff+11);
-        }
+        /* Ships extend further — use larger effective size so the queued
+           label's default slot starts below the full cinema sprite. */
+        _queueLabel(planet,planet.x,planet.y,planet.currentSize*1.8+1,2);
         /* Trade flash in cinema mode */
         if(planet.tradeFlash){
           var _tf2=planet.tradeFlash,_el2=Date.now()-_tf2.startTime;
@@ -2557,17 +2652,9 @@ function _orbRender(timestamp){
       else if(moon.id==="contrarian") _drawMoonContrarian(ctx,moon.x,moon.y,moon.currentSize,_drawNow,(_mr.sentiment_state||"").toUpperCase());
       else if(moon.id==="trinity") _drawMoonTrinity(ctx,moon.x,moon.y,moon.currentSize,_drawNow);
       else if(moon.id==="inference") _drawMoonInference(ctx,moon.x,moon.y,moon.currentSize,_drawNow);
-      else _drawNode(ctx,moon);
-      /* Name + status always drawn after cinema renderer */
-      var _msz=moon.currentSize;
-      ctx.fillStyle="rgba("+moon.rgb+",0.52)";
-      ctx.font='9px "IBM Plex Mono",monospace';ctx.textAlign="center";
-      ctx.fillText(moon.label,moon.x,moon.y+_msz+13);
-      if(moon.statusLabel){
-        ctx.fillStyle="rgba("+moon.rgb+",0.30)";
-        ctx.font='8px "IBM Plex Mono",monospace';
-        ctx.fillText(moon.statusLabel,moon.x,moon.y+_msz+24);
-      }
+      else { _drawNode(ctx,moon); continue; } /* _drawNode already queues its own label */
+      /* Name + status queued — collision-resolved in the end-of-frame pass */
+      _queueLabel(moon,moon.x,moon.y,moon.currentSize,1);
     } else {
       _drawNode(ctx,moon);
     }
@@ -2581,6 +2668,11 @@ function _orbRender(timestamp){
 
   /* L17: Fee Black Hole — the fee drain lurking in the corner */
   _drawFeeBlackHole(ctx,_drawNow,W,H);
+
+  /* L17b: Labels — single collision-resolved pass, world space, after
+     every body this frame is positioned+drawn (still before the HUD
+     transform reset below, so world coordinates are valid). */
+  _drawLabelsWithCollisionAvoidance(ctx);
 
   _updateFsHud();
 
@@ -12079,7 +12171,13 @@ var _solarFlares=[];
 function _drawSunCinematic(ctx,x,y,baseR,now,eventRate){
   var score=(typeof aegisState!=="undefined"&&aegisState.score!=null)?aegisState.score:0.02;
 
-  /* Magnetospheric pulse — AEGIS-driven outer halo in cinema mode */
+  /* Guardian halo — AEGIS-driven outer field around the Convergence Core.
+     AEGIS is the fleet's risk guardian; its score modulates how wide and
+     bright this protective field reads, and how often a data-surge arc
+     fires below. Kept from the old neutron-star design (good info-
+     linkage — a real bot's real score visibly affects the centerpiece —
+     just recontextualized: no longer "magnetospheric", now a guardian
+     field around a data lattice. */
   var magR=baseR*(2.8+score*3.5);
   var magAlpha=(0.06+score*0.10);
   var breathe=1+Math.sin(now/7000)*0.04;
@@ -12090,7 +12188,9 @@ function _drawSunCinematic(ctx,x,y,baseR,now,eventRate){
   ctx.fillStyle=magG;
   ctx.beginPath();ctx.arc(x,y,magR*breathe,0,Math.PI*2);ctx.fill();
 
-  /* Magnetic reconnection events — blue arcs, frequency driven by AEGIS */
+  /* Data-surge arcs — brief bright arcs radiating from the core, frequency
+     driven by AEGIS score (was "magnetic reconnection events" under the
+     old neutron-star framing) */
   var flareChance=score*0.012+0.0008;
   if(Math.random()<flareChance){
     _solarFlares.push({
@@ -12129,7 +12229,7 @@ function _drawSunCinematic(ctx,x,y,baseR,now,eventRate){
     ctx.restore();
   }
 
-  /* Core neutron star — use existing drawSun */
+  /* Core — the Convergence Core data lattice, defined in solar_system.js */
   drawSun(ctx,x,y,baseR,now,eventRate);
 }
 

@@ -10,14 +10,21 @@ Cards: POSITION OPENED, POSITION CLOSED (win/loss), WHALE ALERT,
 
 from PIL import Image, ImageDraw, ImageFont
 import io
+import logging
 import math
 import random
 import os
+
+# Number of entry signals the system evaluates — single source of truth for
+# every footer/prose mention on the cards.
+SIGNAL_COUNT = 27
 
 # ---------------------------------------------------------------------------
 # Font resolution — Windows system fonts
 # ---------------------------------------------------------------------------
 _FONTS_DIR = "C:/Windows/Fonts"
+
+_font_fallback_warned = set()
 
 def _font(name, size):
     """Load a TrueType font by short name, fall back to default."""
@@ -36,7 +43,28 @@ def _font(name, size):
     try:
         return ImageFont.truetype(path, size)
     except (OSError, IOError):
+        if path not in _font_fallback_warned:
+            _font_fallback_warned.add(path)
+            logging.getLogger("oracle.cards").warning(
+                "Font %s not found — falling back to default bitmap font "
+                "(card typography will be degraded)", path)
         return ImageFont.load_default()
+
+
+def _fmt_price(v):
+    """Adaptive price decimals. Prices >= $1 keep the classic 4-decimal look;
+    sub-$1 tickers get enough precision to stay readable (fixed :.4f renders
+    sub-cent prices like 0.00001234 as 0.0000)."""
+    try:
+        v = float(v)
+    except (TypeError, ValueError):
+        return "0.0000"
+    av = abs(v)
+    if av >= 1:      return f"{v:.4f}"
+    if av >= 0.01:   return f"{v:.6f}"
+    if av >= 0.0001: return f"{v:.8f}"
+    if av == 0:      return "0.0000"
+    return f"{v:.10f}"
 
 
 class OracleCardRenderer:
@@ -690,7 +718,9 @@ class OracleCardRenderer:
     # ------------------------------------------------------------------
 
     def _draw_footer(self, draw, h, channel="Fleet Intelligence",
-                     stats="19 signals \u00b7 live \u00b7 Kraken"):
+                     stats=None):
+        if stats is None:
+            stats = f"{SIGNAL_COUNT} signals \u00b7 live \u00b7 Kraken"
         y = h - self.MARGIN - 40
         draw.line(
             [(self.MARGIN, y - 32), (self.RENDER_W - self.MARGIN, y - 32)],
@@ -844,13 +874,13 @@ class OracleCardRenderer:
                                    "Direction", f"{d_glyph} {direction}",
                                    d_color)
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
-                                   "Entry", f"{data.get('entry', 0):.4f}")
+                                   "Entry", _fmt_price(data.get('entry', 0)))
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
-                                   "Stop", f"{data.get('stop', 0):.4f}",
+                                   "Stop", _fmt_price(data.get('stop', 0)),
                                    self.TEXT_NEGATIVE)
         for i, t in enumerate(data.get("targets", [])):
             y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
-                                       f"Target {i+1}", f"{t:.4f}",
+                                       f"Target {i+1}", _fmt_price(t),
                                        self.ACCENT)
         # Adaptive decimals — large-unit tickers (DOGE/PEPE) show whole numbers,
         # fractional-unit tickers (BTC/ETH) need more precision or they render as 0.00
@@ -880,13 +910,17 @@ class OracleCardRenderer:
         # Signal bars
         y = self._draw_signal_bars(draw, data.get("signals", []), y)
 
-        # Gate grid
-        gate_names = ["Correlation", "Quality Floor", "Confluence",
-                      "Win Rate", "Regime", "Position", "Sentiment"]
-        gates_passed = data.get("gates_passed", 7)
-        gates = [{"name": g, "passed": i < gates_passed}
-                 for i, g in enumerate(gate_names)]
-        y = self._draw_gate_grid(draw, gates, y)
+        # Gate grid — data-driven: caller passes the real gate outcomes as
+        # data['gates'] = [{'name': ..., 'passed': bool}, ...]. Falls back to
+        # the legacy 7-gate count rendering if no gate list is provided.
+        gates = data.get("gates")
+        if not gates:
+            gate_names = ["Correlation", "Quality Floor", "Confluence",
+                          "Win Rate", "Regime", "Position", "Sentiment"]
+            gates_passed = data.get("gates_passed", 7)
+            gates = [{"name": g, "passed": i < gates_passed}
+                     for i, g in enumerate(gate_names)]
+        y = self._draw_gate_grid(draw, gates[:12], y)
 
         # Voice
         y = self._draw_voice_line(draw, voice, y)
@@ -946,9 +980,9 @@ class OracleCardRenderer:
                                    "Direction", f"{d_glyph} {direction}",
                                    d_color)
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
-                                   "Entry", f"{data.get('entry', 0):.4f}")
+                                   "Entry", _fmt_price(data.get('entry', 0)))
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
-                                   "Exit", f"{data.get('exit', 0):.4f}",
+                                   "Exit", _fmt_price(data.get('exit', 0)),
                                    self.ACCENT)
 
         # Gross P/L as % with $ in parens
@@ -1138,7 +1172,7 @@ class OracleCardRenderer:
         flat_lines = [
             "THE ENGINE RAN ALL DAY",
             "",
-            "27 signals evaluated on every setup.",
+            f"{SIGNAL_COUNT} signals evaluated on every setup.",
             "7 gates checked on every entry.",
             "Nothing qualified.",
             "",
@@ -1206,12 +1240,12 @@ class OracleCardRenderer:
         """Return list of (label, value) for POSITION OPENED copy messages."""
         vals = []
         if data.get("entry") is not None:
-            vals.append(("Entry", f"{data['entry']:.4f}"))
+            vals.append(("Entry", _fmt_price(data['entry'])))
         if data.get("stop") is not None:
-            vals.append(("Stop", f"{data['stop']:.4f}"))
+            vals.append(("Stop", _fmt_price(data['stop'])))
         for i, t in enumerate(data.get("targets", []), 1):
             if t is not None:
-                vals.append((f"Target {i}", f"{t:.4f}"))
+                vals.append((f"Target {i}", _fmt_price(t)))
         if data.get("size") is not None:
             # Adaptive decimals — matches render_position_opened size formatting
             _sz = float(data['size'])
@@ -1336,11 +1370,27 @@ def send_card_telegram(token, chat_id, png_bytes, copy_values,
         method="POST",
     )
     photo_ok = False
-    try:
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            photo_ok = resp.status == 200
-    except Exception as e:
-        log.warning("sendPhoto failed: %s", e)
+    for attempt in range(2):  # one retry, 429-aware (runs on the card worker thread)
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                photo_ok = resp.status == 200
+            break
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt == 0:
+                try:
+                    body = _json.loads(e.read().decode("utf-8"))
+                    wait = float(body.get("parameters", {}).get("retry_after", 5))
+                except Exception:
+                    wait = 5.0
+                wait = max(1.0, min(wait, 60.0))  # honor retry_after, capped at 60s
+                log.warning("sendPhoto 429, retrying after %.0fs", wait)
+                time.sleep(wait)
+                continue
+            log.warning("sendPhoto failed: HTTP %d", e.code)
+            break
+        except Exception as e:
+            log.warning("sendPhoto failed: %s", e)
+            break
 
     if not photo_ok:
         log.error("Failed to send card image to Telegram")

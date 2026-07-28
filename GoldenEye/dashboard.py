@@ -515,6 +515,20 @@ body::before {
 .dot.warn  { background: var(--amber); box-shadow: 0 0 6px rgba(245,158,11,0.6); }
 .dot.err   { background: var(--red);   box-shadow: 0 0 6px rgba(255,45,85,0.6); }
 
+/* Degraded-feed badges: bot API down must look different from flat data */
+.stale-badge {
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  padding: 2px 7px;
+  border-radius: 3px;
+  color: var(--amber);
+  border: 1px solid rgba(245,158,11,0.45);
+  background: rgba(245,158,11,0.08);
+}
+.stale-badge.sev { color: var(--red); border-color: rgba(255,45,85,0.45); background: rgba(255,45,85,0.08); }
+.stale-badge.hidden { display: none; }
+.sym-grid.stale { opacity: 0.45; filter: saturate(0.4); }
+
 .thr-bar {
   display: inline-flex;
   gap: 1px;
@@ -1510,6 +1524,7 @@ body::before {
     <section class="panel p-pos">
       <div class="panel-head">
         <h2 id="pos-title">Positions</h2>
+        <span class="stale-badge sev hidden" id="pos-stale">FEED OFFLINE</span>
         <span class="badge" id="pos-badge">0 / 20</span>
       </div>
       <div class="panel-body" id="pos-body">
@@ -1641,6 +1656,7 @@ body::before {
     <section class="panel p-symbols">
       <div class="panel-head">
         <h2>Symbol Grid</h2>
+        <span class="stale-badge hidden" id="grid-stale">STALE</span>
         <span class="badge" id="sym-badge">20</span>
       </div>
       <div class="panel-body">
@@ -2610,6 +2626,21 @@ const AegisGauge = (() => {
 })();
 
 function renderAegis(funnel, analytics, health) {
+  // Bot offline: the analytics proxy sets bot_online:false when the bot API is
+  // unreachable. Render an explicit OFFLINE state — never zeros dressed as data.
+  if (analytics && analytics.bot_online === false) {
+    $('aegisScore').textContent = '—';
+    $('aegisLabel').textContent = 'OFFLINE';
+    AegisGauge.setScore(0);
+    ['aa-trades','aa-wr','aa-r','aa-dd','aa-heat'].forEach(id => {
+      const el = $(id); if (el) el.textContent = '—';
+    });
+    const pnlOff = $('aa-pnl');
+    if (pnlOff) { pnlOff.textContent = '—'; pnlOff.className = 'stat-val'; }
+    const cbOff = $('aa-cb');
+    if (cbOff) { cbOff.textContent = '—'; cbOff.className = 'cb-val'; }
+    return;
+  }
   // Conviction score: primary = funnel depth (real-time); fallback = historical
   // WR × (1 + avgR) so the gauge never flatlines at "—" when funnel is quiet.
   let score = 0;
@@ -2684,9 +2715,19 @@ function renderAegis(funnel, analytics, health) {
 // Must match the funnel order in goldeneye.py so the chain reads naturally.
 const GATE_CHAIN = [
   'correlation', 'factor_floors', 'confluence', 'dir_wr', 'regime_mult',
-  'whale', 'max_positions', 'drawdown', 'sentiment', 'atr_fees',
-  'min_size', 'notional', 'duplicate'
+  'whale', 'ai_conf', 'kill_switch', 'max_positions', 'drawdown',
+  'heat_cap', 'sentiment', 'atr_fees', 'min_size', 'notional', 'duplicate'
 ];
+
+// Normalize a gate tag ("whale:57.9", legacy "factor_floor:trend",
+// "confluence_single:['a']") to its canonical GATE_CHAIN name — mirrors
+// _FUNNEL_TAG_ALIASES in goldeneye.py.
+function _gateName(tag) {
+  const n = String(tag).split(':')[0];
+  if (n === 'factor_floor') return 'factor_floors';
+  if (n === 'confluence_single' || n === 'no_dir_sigs') return 'confluence';
+  return n;
+}
 
 function renderSignalIntelligence(decisions, funnel) {
   const list = $('si-list');
@@ -2701,8 +2742,8 @@ function renderSignalIntelligence(decisions, funnel) {
   const recent = decisions.slice(-200).map(d => {
     const gp = d.gates_passed || [];
     const gf = d.gates_failed || [];
-    const gpSet = new Set(gp.map(s => s.split(':')[0]));
-    const gfSet = new Set(gf.map(s => s.split(':')[0]));
+    const gpSet = new Set(gp.map(_gateName));
+    const gfSet = new Set(gf.map(_gateName));
     let depth = 0;
     for (const g of GATE_CHAIN) if (gpSet.has(g)) depth++;
     return { d, depth, gpSet, gfSet, conf: d.confidence || 0 };
@@ -2729,13 +2770,13 @@ function renderSignalIntelligence(decisions, funnel) {
 
   const html = top.map(r => {
     const d = r.d;
-    const isHot = r.depth >= 10;
-    const dirRaw = (d.signals && d.signals.length) ? 'LONG' : 'LONG'; // we only trade long
+    const isHot = r.depth >= 12;  // ~75% of the 16-gate chain (was 10/13)
+    const dirRaw = String(d.direction || d.dir || 'long').toUpperCase().startsWith('S') ? 'SHORT' : 'LONG';
     const whale = d.whale_score != null ? d.whale_score.toFixed(1) : '—';
     const conf = (d.confidence != null ? d.confidence : 0).toFixed(3);
 
     const chain = GATE_CHAIN.map(g => {
-      const short = g.replace('factor_floors', 'floors').replace('regime_mult', 'regime').replace('max_positions', 'maxpos').replace('atr_fees', 'atr');
+      const short = g.replace('factor_floors', 'floors').replace('regime_mult', 'regime').replace('max_positions', 'maxpos').replace('atr_fees', 'atr').replace('ai_conf', 'ai').replace('kill_switch', 'kill').replace('heat_cap', 'heat');
       if (r.gpSet.has(g)) {
         return '<span class="si-g ok"><span class="mark">✓</span>' + short + '</span>';
       }
@@ -3115,13 +3156,15 @@ async function pollFast() {
     renderLogFeed(logs);
     // Log feed calls markSignalActivity() for any new-to-us lines; re-paint
     // the symbol grid from cached data so the cell glow shows within one fast tick.
-    if (_latestSymbols.length) {
+    // Skip while the symbols feed is stale — never repaint stale data as fresh.
+    if (_latestSymbols.length && !_symbolsStale) {
       renderSymbolGrid(_latestSymbols, _latestPositions);
     }
   }
 }
 
 let _latestPositions = [];
+let _symbolsStale = false;
 async function pollMid() {
   // 5s: positions + decisions + funnel + symbols
   const [positions, decisions, funnel, symbols] = await Promise.all([
@@ -3130,15 +3173,37 @@ async function pollMid() {
     gj('/api/funnel'),
     gj('/api/symbols'),
   ]);
-  _latestDecisions = Array.isArray(decisions) ? decisions : [];
-  _latestFunnel = funnel;
-  _latestPositions = Array.isArray(positions) ? positions : [];
-  if (Array.isArray(symbols)) _latestSymbols = symbols;
-  renderPositions(_latestPositions, _latestDecisions);
-  renderSignalIntelligence(_latestDecisions, funnel);
-  renderDecisionStream(_latestDecisions, funnel);
+  // Degraded-state handling: gj() yields null when a feed is down (proxy 502 /
+  // network error). Keep last-known data on screen and flag it visibly —
+  // never flip COMMAND to "no position" or repaint the grid as if fresh.
+  const posStale = $('pos-stale');
+  if (positions === null) {
+    if (posStale) posStale.classList.remove('hidden');
+  } else {
+    if (posStale) posStale.classList.add('hidden');
+    _latestPositions = Array.isArray(positions) ? positions : [];
+  }
+  if (Array.isArray(decisions)) _latestDecisions = decisions;
+  if (funnel) _latestFunnel = funnel;
+  const gridStale = $('grid-stale');
+  const gridEl = $('sym-grid');
+  if (Array.isArray(symbols)) {
+    _latestSymbols = symbols;
+    _symbolsStale = false;
+    if (gridStale) gridStale.classList.add('hidden');
+    if (gridEl) gridEl.classList.remove('stale');
+  } else {
+    _symbolsStale = true;
+    if (gridStale) gridStale.classList.remove('hidden');
+    if (gridEl) gridEl.classList.add('stale');
+  }
+  if (positions !== null) {
+    renderPositions(_latestPositions, _latestDecisions);
+  }
+  renderSignalIntelligence(_latestDecisions, _latestFunnel);
+  renderDecisionStream(_latestDecisions, _latestFunnel);
   // AEGIS depends on funnel + analytics + health
-  renderAegis(funnel, _latestAnalytics, _latestHealth);
+  renderAegis(_latestFunnel, _latestAnalytics, _latestHealth);
   // Symbol grid uses positions for glow + border state
   if (Array.isArray(symbols)) {
     renderSymbolGrid(symbols, _latestPositions);
@@ -4804,12 +4869,14 @@ TRADE_TEMPLATE = """<!DOCTYPE html>
 # =============================================================================
 
 def fetch_positions():
-    """Fetch active positions from the bot's :8080/positions endpoint."""
+    """Fetch active positions from the bot's /positions endpoint.
+    Returns None when the bot is unreachable so callers can distinguish
+    'feed down' from 'no open positions'."""
     try:
         resp = requests.get(f"{GOLDENEYE_URL}/positions", timeout=5)
-        return resp.json() if resp.status_code == 200 else []
+        return resp.json() if resp.status_code == 200 else None
     except Exception:
-        return []
+        return None
 
 # =============================================================================
 # Routes
@@ -4861,6 +4928,10 @@ def api_health():
 @app.route('/api/positions')
 def api_positions():
     positions = fetch_positions()
+    if positions is None:
+        # Bot unreachable — 502 so the JS gj() helper maps it to null (visible
+        # degraded state) instead of a fake "no positions" empty list.
+        return jsonify([]), 502
     return jsonify(positions)
 
 @app.route('/api/tui')
@@ -4881,10 +4952,11 @@ def api_tui():
         fp = pool.submit(fetch_positions)
         fs = pool.submit(_fetch_symbols)
 
+    _pos = fp.result()
     return jsonify({
         'health': fh.result(),
         'analytics': fa.result(),
-        'positions': fp.result(),
+        'positions': _pos if _pos is not None else [],
         'symbols': fs.result(),
     })
 
@@ -4897,7 +4969,7 @@ def api_logs():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/messages')
 def api_messages():
@@ -4908,7 +4980,7 @@ def api_messages():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/position/<path:sym>')
 def api_position(sym):
@@ -4963,7 +5035,7 @@ def api_equity():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/trade_markers')
 def api_trade_markers():
@@ -4974,7 +5046,7 @@ def api_trade_markers():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/funnel')
 def api_funnel():
@@ -4985,7 +5057,7 @@ def api_funnel():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({'window_seconds': 60, 'records': 0, 'entered': 0, 'gates': []})
+    return jsonify({'window_seconds': 60, 'records': 0, 'entered': 0, 'gates': []}), 502  # upstream down
 
 @app.route('/api/decisions')
 def api_decisions():
@@ -4996,7 +5068,7 @@ def api_decisions():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/analytics')
 def api_analytics():
@@ -5013,7 +5085,7 @@ def api_symbols():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/brain/global')
 def api_brain_global():
@@ -5024,7 +5096,7 @@ def api_brain_global():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({})
+    return jsonify({}), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/brain')
 def api_brain():
@@ -5035,7 +5107,7 @@ def api_brain():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({})
+    return jsonify({}), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/expectancy')
 def api_expectancy():
@@ -5046,7 +5118,7 @@ def api_expectancy():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({})
+    return jsonify({}), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/trades')
 def api_trades():
@@ -5057,7 +5129,7 @@ def api_trades():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({"trades": []})
+    return jsonify({"trades": []}), 502  # upstream down
 
 @app.route('/api/events/recent')
 def api_events_recent():
@@ -5068,7 +5140,7 @@ def api_events_recent():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/ohlc/<path:sym>')
 def api_ohlc(sym):
@@ -5079,7 +5151,7 @@ def api_ohlc(sym):
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({'symbol': sym, 'candles': [], 'position': None})
+    return jsonify({'symbol': sym, 'candles': [], 'position': None}), 502  # upstream down
 
 @app.route('/api/autopsy/recent')
 def api_autopsy_recent():
@@ -5091,7 +5163,7 @@ def api_autopsy_recent():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify([])
+    return jsonify([]), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/regime/sanity')
 def api_regime_sanity():
@@ -5102,7 +5174,7 @@ def api_regime_sanity():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({})
+    return jsonify({}), 502  # upstream down — let the client see it, not fake-empty data
 
 @app.route('/api/memory/similar')
 def api_memory_similar():
@@ -5116,10 +5188,12 @@ def api_memory_similar():
             return jsonify(resp.json())
     except Exception:
         pass
-    return jsonify({'summary': None, 'matches': []})
+    return jsonify({'summary': None, 'matches': []}), 502  # upstream down
 
 if __name__ == '__main__':
     port = int(os.getenv('DASHBOARD_PORT', 8050))
     logger.info(f"ORACLE Dashboard starting on port {port}")
     logger.info(f"Command Center: http://localhost:{port}/")
+    # Deliberately LAN-visible (view layer, watched from other devices); the bot
+    # APIs on 18095/18096 are loopback-only and reached via this dashboard proxy.
     app.run(host='0.0.0.0', port=port, debug=False)

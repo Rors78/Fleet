@@ -1,4 +1,4 @@
-import os, sys, json, time, argparse, logging, yaml, threading, requests, math
+import os, sys, json, time, argparse, logging, yaml, threading, requests, math, copy
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
@@ -90,6 +90,11 @@ def parse_args():
     return p.parse_args()
 
 # State
+# Guards sts/brs dict mutation (universe rescan add/drop). Readers do NOT take
+# this lock — they iterate list(...) snapshots instead (atomic under the GIL
+# because mutations are serialized behind this lock).
+_sts_lock = threading.Lock()
+
 class BotState:
     def __init__(self, d):
         self.price = self.last_price = Decimal(0)
@@ -187,6 +192,83 @@ def set_exchange(ex):
     global _exchange
     _exchange = ex
 
+# Kraken private-API serialization. Kraken nonces must be strictly increasing
+# per API key; ~20 threads share one ccxt instance (one requests.Session), so
+# concurrent authenticated calls can race and land out-of-order nonces
+# (EAPI:Invalid nonce) or interleave order state. One RLock, acquired per call
+# — never held across sleeps or retry loops.
+_kraken_api_lock = threading.RLock()
+
+class _LockedExchange:
+    """Proxy around the ccxt Kraken instance that serializes every private
+    (authenticated) call through _kraken_api_lock. Public market-data calls
+    (fetch_ohlcv, fetch_ticker(s), fetch_order_book, load_markets,
+    price_to_precision, .markets, .session, ...) pass through unlocked via
+    __getattr__ — they are high-frequency and unauthenticated."""
+
+    def __init__(self, ex):
+        object.__setattr__(self, '_ex', ex)
+
+    # --- private (authenticated) methods: serialized, lock per call ---
+    def create_order(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.create_order(*a, **kw)
+
+    def create_market_buy_order(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.create_market_buy_order(*a, **kw)
+
+    def create_market_sell_order(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.create_market_sell_order(*a, **kw)
+
+    def create_limit_buy_order(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.create_limit_buy_order(*a, **kw)
+
+    def create_limit_sell_order(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.create_limit_sell_order(*a, **kw)
+
+    def cancel_order(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.cancel_order(*a, **kw)
+
+    def fetch_order(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.fetch_order(*a, **kw)
+
+    def fetch_orders(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.fetch_orders(*a, **kw)
+
+    def fetch_open_orders(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.fetch_open_orders(*a, **kw)
+
+    def fetch_closed_orders(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.fetch_closed_orders(*a, **kw)
+
+    def fetch_my_trades(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.fetch_my_trades(*a, **kw)
+
+    def fetch_balance(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.fetch_balance(*a, **kw)
+
+    def fetch_ledger(self, *a, **kw):
+        with _kraken_api_lock:
+            return self._ex.fetch_ledger(*a, **kw)
+
+    # --- everything else (public data, attributes) passes through unlocked ---
+    def __getattr__(self, name):
+        return getattr(object.__getattribute__(self, '_ex'), name)
+
+    def __setattr__(self, name, value):
+        setattr(object.__getattribute__(self, '_ex'), name, value)
+
 _global_config = {}
 
 def set_config(c):
@@ -271,6 +353,18 @@ def _fp(v):
 
 _live_metrics = {'trades': 0, 'wins': 0, 'losses': 0, 'total_r': 0.0, 'start_time': time.time(), 'by_direction': {'long': {'trades': 0, 'wins': 0}, 'short': {'trades': 0, 'wins': 0}}, 'r_history': [], 'pnl_history': [], 'trade_log': []}
 _session_baseline = {'trades': 0, 'wins': 0, 'losses': 0, 'total_r': 0.0, 'pnl': 0.0}  # snapshot at startup
+
+def _trade_is_win(rec) -> bool:
+    """Fee-honest win label (audit item 15): a win is NET pnl > 0, not gross r > 0
+    (a +0.05R 'win' gross of fees is a net dollar loss). Falls back to r > 0 only
+    for legacy records that lack a pnl field."""
+    try:
+        p = rec.get('pnl')
+        if p is not None:
+            return float(p) > 0
+        return float(rec.get('r', 0)) > 0
+    except Exception:
+        return False
 _metrics_lock = Lock()
 _METRICS_FILE = os.path.join('output', 'metrics.json')
 
@@ -315,7 +409,13 @@ def _load_metrics():
             pnl_hist = []
         if not isinstance(tlog, list):
             tlog = []
-        wins = sum(1 for r in r_hist if r > 0)
+        # Fee-honest wins (audit item 15): use the parallel pnl_history (net of
+        # fees) when it lines up with r_history; legacy r-only histories stay
+        # r-based (no pnl available to be honest with).
+        if pnl_hist and len(pnl_hist) == len(r_hist):
+            wins = sum(1 for p in pnl_hist if p > 0)
+        else:
+            wins = sum(1 for r in r_hist if r > 0)
         losses = len(r_hist) - wins
         _live_metrics['r_history'] = r_hist
         _live_metrics['pnl_history'] = pnl_hist
@@ -328,8 +428,8 @@ def _load_metrics():
         if tlog and len(tlog) >= len(r_hist):
             long_t = sum(1 for e in tlog if isinstance(e, dict) and e.get('dir', '') == 'L')
             short_t = len(tlog) - long_t
-            long_w = sum(1 for e in tlog if isinstance(e, dict) and e.get('dir', '') == 'L' and e.get('r', 0) > 0)
-            short_w = sum(1 for e in tlog if isinstance(e, dict) and e.get('dir', '') == 'S' and e.get('r', 0) > 0)
+            long_w = sum(1 for e in tlog if isinstance(e, dict) and e.get('dir', '') == 'L' and _trade_is_win(e))
+            short_w = sum(1 for e in tlog if isinstance(e, dict) and e.get('dir', '') == 'S' and _trade_is_win(e))
             _live_metrics['by_direction']['long'] = {'trades': long_t, 'wins': long_w}
             _live_metrics['by_direction']['short'] = {'trades': short_t, 'wins': short_w}
         elif isinstance(by_dir, dict):
@@ -363,6 +463,75 @@ _circuit_breaker = {'until': 0, 'daily_pnl': 0.0, 'weekly_pnl': 0.0,
                     'day_reset': time.time(), 'week_reset': time.time()}
 _circuit_breaker_tripped = False
 _cb_lock = Lock()
+_CB_STATE_FILE = os.path.join(_OUTPUT_DIR, 'circuit_breaker_state.json')
+
+def _save_circuit_breaker_unlocked():
+    """Persist circuit breaker state (atomic). Caller must hold _cb_lock."""
+    try:
+        tmp = _CB_STATE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'daily_pnl': _circuit_breaker['daily_pnl'],
+                       'weekly_pnl': _circuit_breaker['weekly_pnl'],
+                       'day_reset': _circuit_breaker['day_reset'],
+                       'week_reset': _circuit_breaker['week_reset'],
+                       'tripped': _circuit_breaker_tripped}, f)
+        os.replace(tmp, _CB_STATE_FILE)
+    except Exception as e:
+        logging.warning(f"Failed to save circuit breaker state: {e}")
+
+def _cb_rollover_unlocked(now):
+    """Sliding-window day/week rollover + untrip evaluation. Caller must hold _cb_lock.
+    Untrips only when NO window still breaches its limit (a daily rollover must not
+    silently clear a live weekly trip). Returns True if any window rolled."""
+    global _circuit_breaker_tripped
+    changed = False
+    if now - _circuit_breaker['day_reset'] > 86400:
+        _circuit_breaker['daily_pnl'] = 0.0
+        _circuit_breaker['day_reset'] = now
+        changed = True
+    if now - _circuit_breaker['week_reset'] > 604800:
+        _circuit_breaker['weekly_pnl'] = 0.0
+        _circuit_breaker['week_reset'] = now
+        changed = True
+    if changed and _circuit_breaker_tripped:
+        if _circuit_breaker['daily_pnl'] >= -15 and _circuit_breaker['weekly_pnl'] >= -35:
+            _circuit_breaker_tripped = False
+            logging.warning("Circuit breaker RESET: loss window expired — entries re-enabled")
+    return changed
+
+def check_circuit_breaker_rollover():
+    """Time-driven rollover check (called from periodic_reconciler). Without this,
+    a tripped breaker with zero open positions could never untrip — rollover only
+    ran inside update_circuit_breaker(), which only fires on trade close."""
+    try:
+        with _cb_lock:
+            if _cb_rollover_unlocked(time.time()):
+                _save_circuit_breaker_unlocked()
+    except Exception as e:
+        logging.warning(f"Circuit breaker rollover check failed: {e}")
+
+def _load_circuit_breaker():
+    """Restore circuit breaker state at boot, before trading starts.
+    Expired windows roll forward instead of resurrecting a stale trip."""
+    global _circuit_breaker, _circuit_breaker_tripped
+    try:
+        if not os.path.exists(_CB_STATE_FILE):
+            return
+        with open(_CB_STATE_FILE) as f:
+            data = json.load(f)
+        with _cb_lock:
+            now = time.time()
+            _circuit_breaker['daily_pnl'] = float(data.get('daily_pnl', 0.0))
+            _circuit_breaker['weekly_pnl'] = float(data.get('weekly_pnl', 0.0))
+            _circuit_breaker['day_reset'] = float(data.get('day_reset', now))
+            _circuit_breaker['week_reset'] = float(data.get('week_reset', now))
+            _circuit_breaker_tripped = bool(data.get('tripped', False))
+            _cb_rollover_unlocked(now)
+            _save_circuit_breaker_unlocked()
+            logging.info(f"Loaded circuit breaker state: daily ${_circuit_breaker['daily_pnl']:+.2f} "
+                         f"weekly ${_circuit_breaker['weekly_pnl']:+.2f} tripped={_circuit_breaker_tripped}")
+    except Exception as e:
+        logging.warning(f"Failed to load circuit breaker state: {e}")
 
 _RGM_MULT = {
     'bull':  {'long': 1.0, 'short': 0.3},
@@ -395,15 +564,7 @@ def _get_conf_min(trade_count=0):
 def update_circuit_breaker(pnl: float):
     global _circuit_breaker, _circuit_breaker_tripped
     with _cb_lock:
-        now = time.time()
-        if now - _circuit_breaker['day_reset'] > 86400:
-            _circuit_breaker['daily_pnl'] = 0.0
-            _circuit_breaker['day_reset'] = now
-            _circuit_breaker_tripped = False
-        if now - _circuit_breaker['week_reset'] > 604800:
-            _circuit_breaker['weekly_pnl'] = 0.0
-            _circuit_breaker['week_reset'] = now
-            _circuit_breaker_tripped = False
+        _cb_rollover_unlocked(time.time())
         _circuit_breaker['daily_pnl'] += pnl
         _circuit_breaker['weekly_pnl'] += pnl
         if _circuit_breaker['daily_pnl'] < -15:
@@ -412,6 +573,7 @@ def update_circuit_breaker(pnl: float):
         if _circuit_breaker['weekly_pnl'] < -35:
             _circuit_breaker_tripped = True
             logging.warning(f"Circuit breaker TRIPPED: weekly loss ${_circuit_breaker['weekly_pnl']:.0f} — entries halted")
+        _save_circuit_breaker_unlocked()  # persist on every mutation (audit P0-2)
     # Update paper balance
     if _PAPER():
         with _PAPER_BAL_LOCK:
@@ -435,6 +597,64 @@ def get_drawdown_mult():
     if dd_pct < 0.10: return 0.75
     if dd_pct < 0.15: return 0.5
     return 0.0
+
+# =============================================================================
+# Kill switch (audit C1) — 20% drawdown from peak equity halts NEW entries.
+# Manual reset: stop bot is NOT required — delete output/kill_switch.json.
+# Exits and position management are never blocked by the switch.
+# =============================================================================
+_KILL_SWITCH_FILE = os.path.join(_OUTPUT_DIR, 'kill_switch.json')
+_KILL_SWITCH_DD = 0.20
+_kill_switch_active = False     # in-memory mirror of file existence
+_kill_switch_last_stat = 0.0    # last file-existence check (cached, not per-candidate)
+_kill_switch_lock = Lock()
+
+def _kill_switch_engaged():
+    """Cheap gate-chain check. Uses the in-memory flag, re-statting the file at
+    most every 10s so a manual delete of kill_switch.json is picked up quickly
+    without hitting the filesystem on every candidate in the hot loop."""
+    global _kill_switch_active, _kill_switch_last_stat
+    now = time.time()
+    with _kill_switch_lock:
+        if now - _kill_switch_last_stat >= 10:
+            _kill_switch_last_stat = now
+            try:
+                _kill_switch_active = os.path.exists(_KILL_SWITCH_FILE)
+            except Exception as e:
+                logging.warning(f"Kill switch file check failed: {e}")
+        return _kill_switch_active
+
+def _evaluate_kill_switch():
+    """Trip check — called from the equity/balance update paths (never the
+    per-symbol hot loop). Paper: drawdown from _PAPER_START_BAL. Live: drawdown
+    from _LIVE_PEAK. Writes kill_switch.json (atomic) with forensics on trip."""
+    global _kill_switch_active
+    try:
+        if _PAPER():
+            with _PAPER_BAL_LOCK:
+                peak = float(_PAPER_START_BAL)
+                equity = float(_PAPER_BALANCE)
+        else:
+            with _LIVE_BAL_LOCK:
+                peak = float(_LIVE_PEAK)
+                equity = float(_LIVE_BALANCE)
+        if peak <= 0 or equity <= 0:
+            return  # no baseline yet — cannot compute drawdown
+        dd = (peak - equity) / peak
+        if dd < _KILL_SWITCH_DD:
+            return
+        with _kill_switch_lock:
+            _kill_switch_active = True
+        if not os.path.exists(_KILL_SWITCH_FILE):
+            tmp = _KILL_SWITCH_FILE + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump({'ts': time.time(), 'peak': peak, 'equity': equity,
+                           'dd_pct': round(dd * 100, 2)}, f)
+            os.replace(tmp, _KILL_SWITCH_FILE)
+            logging.critical(f"KILL SWITCH TRIPPED: equity ${equity:,.2f} is {dd*100:.1f}% below peak "
+                             f"${peak:,.2f} — new entries halted. Manual reset: delete {_KILL_SWITCH_FILE}")
+    except Exception as e:
+        logging.warning(f"Kill switch evaluation failed: {e}")
 
 def _deduct_paper_balance(amt):
     pass  # equity-tracked, not cash-tracked
@@ -465,14 +685,15 @@ def _sync_live_balance(ex, force=False):
                 _LIVE_BALANCE = usd  # persist fallback in global state
         # Clear RECON funds-fail flags when balance increases (new funds available for SL/TP orders)
         if usd > old_bal and 'sts' in globals() and sts:
-            for st in sts.values():
+            for st in list(sts.values()):  # snapshot — rescan may mutate sts
                 with st._lock:
                     if st.pos and (st.pos.get('_sl_funds_fail') or st.pos.get('_tp_funds_fail')):
                         st.pos.pop('_sl_funds_fail', None)
                         st.pos.pop('_tp_funds_fail', None)
                         st._save_position()
         logging.info(f"Kraken balance synced: ${float(usd):,.2f} available")
-        _save_live_balance()  # Persist balance to disk for crash recovery
+        _save_live_balance()  # Persist balance + peak to disk for crash recovery
+        _evaluate_kill_switch()  # drawdown vs peak already fresh here (internally try/except'd)
         return usd
     except Exception as e:
         logging.warning(f"Kraken balance sync failed: {e}")
@@ -494,26 +715,45 @@ def _get_trade_amt():
 
 
 def _save_live_balance():
-    """Persist live balance to disk for crash recovery."""
+    """Persist live balance + peak high-water mark to disk (atomic — audit L1/H8)."""
     try:
-        with open(os.path.join(_OUTPUT_DIR, 'live_balance.json'), 'w') as f:
-            json.dump({'balance': float(_LIVE_BALANCE), 'timestamp': time.time()}, f)
+        path = os.path.join(_OUTPUT_DIR, 'live_balance.json')
+        with _LIVE_BAL_LOCK:
+            payload = {'balance': float(_LIVE_BALANCE), 'peak': float(_LIVE_PEAK),
+                       'timestamp': time.time()}
+        tmp = path + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(payload, f)
+        os.replace(tmp, path)
     except Exception as e:
-        logging.debug(f"Could not save live balance: {e}")
+        logging.warning(f"Could not save live balance: {e}")
 
 
 def _load_live_balance():
-    """Load persisted live balance from disk."""
+    """Load persisted live balance from disk. Restores _LIVE_PEAK so drawdown
+    tiers survive restarts (audit H8). Backward compat: a legacy file holding a
+    bare number or lacking 'peak' loads cleanly — peak defaults to balance."""
+    global _LIVE_PEAK
     try:
         path = os.path.join(_OUTPUT_DIR, 'live_balance.json')
         if os.path.exists(path):
             with open(path) as f:
                 data = json.load(f)
-                bal = Decimal(str(data.get('balance', 0)))
-                logging.info(f"Loaded persisted balance: ${float(bal):,.2f}")
-                return bal
+            if isinstance(data, dict):
+                bal = Decimal(str(data.get('balance', 0) or 0))
+                peak = Decimal(str(data.get('peak', 0) or 0))
+            else:
+                bal = Decimal(str(data or 0))  # legacy: bare number
+                peak = Decimal('0')
+            if peak < bal:
+                peak = bal  # peak can never sit below current balance
+            with _LIVE_BAL_LOCK:
+                if peak > _LIVE_PEAK:
+                    _LIVE_PEAK = peak
+            logging.info(f"Loaded persisted balance: ${float(bal):,.2f} (peak ${float(peak):,.2f})")
+            return bal
     except Exception as e:
-        logging.debug(f"Could not load live balance: {e}")
+        logging.warning(f"Could not load live balance: {e}")
     return Decimal('0')
 
 
@@ -559,7 +799,7 @@ def _compute_upnl():
     if 'sts' not in globals() or not sts:
         return 0.0
     total = 0.0
-    for st in sts.values():
+    for st in list(sts.values()):  # snapshot — rescan may mutate sts
         try:
             pos = st.get_position()
             if not pos:
@@ -613,6 +853,9 @@ def _equity_logger_loop(interval=60):
                 if len(_equity_series) > _EQUITY_MAX_ENTRIES:
                     _equity_series = _equity_series[-_EQUITY_MAX_ENTRIES:]
                 _save_equity_series()
+            # Kill switch: per-cycle drawdown evaluation (only trip path in paper
+            # mode; a second periodic check in live). Internally try/except'd.
+            _evaluate_kill_switch()
         except Exception as e:
             logging.warning(f"equity logger loop error: {e}")
         time.sleep(interval)
@@ -695,14 +938,26 @@ _FUNNEL_GATE_ORDER = [
     'regime_mult',
     'whale',
     'ai_conf',
+    'kill_switch',
     'max_positions',
     'drawdown',
+    'heat_cap',
     'sentiment',
     'atr_fees',
     'min_size',
     'notional',
     'duplicate',
 ]
+
+# Legacy/variant tag prefixes -> canonical funnel bucket. Keeps every emitted
+# tag countable: 'factor_floor:' is the pre-2026-07-28 spelling still present
+# in old ring-buffer records; 'confluence_single:'/'no_dir_sigs' are variants
+# of the confluence gate that were previously invisible to the funnel.
+_FUNNEL_TAG_ALIASES = {
+    'factor_floor': 'factor_floors',
+    'confluence_single': 'confluence',
+    'no_dir_sigs': 'confluence',
+}
 
 def _compute_funnel_snapshot(window_seconds=60):
     """Tally gate passes/fails from _decision_log entries in the last `window_seconds`.
@@ -728,7 +983,8 @@ def _compute_funnel_snapshot(window_seconds=60):
 
     def _norm(tag):
         # tag is e.g. "whale:57.9" or "regime_mult:0.50" or "correlation"
-        return tag.split(':', 1)[0] if isinstance(tag, str) else ''
+        name = tag.split(':', 1)[0] if isinstance(tag, str) else ''
+        return _FUNNEL_TAG_ALIASES.get(name, name)
 
     entered_count = 0
     for r in records:
@@ -769,7 +1025,7 @@ def _compute_funnel_snapshot(window_seconds=60):
 def get_portfolio_heat(sts):
     """Sum of (position_value * stop_distance_pct) across all open positions."""
     heat = Decimal('0')
-    for st in sts.values():
+    for st in list(sts.values()):  # snapshot — rescan may mutate sts
         pos = st.get_position()
         if pos and pos.get('e') and pos.get('sl'):
             e, sl = pos['e'], pos['sl']
@@ -778,7 +1034,7 @@ def get_portfolio_heat(sts):
     return heat
 
 def count_open_positions(sts):
-    return sum(1 for st in sts.values() if st.get_position() is not None)
+    return sum(1 for st in list(sts.values()) if st.get_position() is not None)  # snapshot — rescan may mutate sts
 
 def _force_reconcile_exit(sym, st, br, exit_price, exit_type='RECON'):
     """Force-close a local position during reconciliation. Mirrors stream() exit path."""
@@ -805,12 +1061,19 @@ def _force_reconcile_exit(sym, st, br, exit_price, exit_type='RECON'):
     logging.info(f"{sym} RECON EXIT {exit_type} {r:+.1f}R @ {float(exit_price):,.2f}, PnL={float(pnl):.2f}")
     try:
         br.record(pos_snap['sg'], r, pos_snap.get('slippage', Decimal('0')), direction,
-                  factors=pos_snap.get('factors'), rgm=pos_snap.get('regime'))
+                  factors=pos_snap.get('factors'), rgm=pos_snap.get('regime'), pnl=float(pnl))
         _td = _build_trade_detail(pos_snap, float(exit_price), tp_hit=tp_hit)
         record_live_trade(direction, float(r), float(pnl), sym=sym, exit_type=exit_type, detail=_td)
         _log_factor_trade(sym, pos_snap, r, float(pnl))
     except Exception as e:
         logging.warning(f"{sym} recon post-trade error: {e}")
+    # Subscribers saw the OPEN card — reconciliation closes must send the CLOSE card too
+    try:
+        _card_exit = 'RECON_TP' if 'TP' in str(exit_type).upper() else 'RECON_SL'
+        _send_trade_card_close(sym, direction, pos_snap, float(exit_price),
+                               float(pnl), float(r), tp_hit=tp_hit, exit_type=_card_exit)
+    except Exception as e:
+        logging.warning(f"{sym} recon close card failed: {e}")
 
 def reconcile_positions(ex, sts, brs):
     """Cross-check local positions against exchange state. Run at startup + periodically."""
@@ -959,7 +1222,9 @@ def find_similar_trades(factors, regime=None, direction=None, k=10, max_distance
         det = t.get('detail', {})
         if not det: continue
         if regime and det.get('regime') != regime: continue
-        if direction and t.get('dir','').lower()[0] != direction.lower()[0]: continue
+        # Guard (audit 9h): legacy records may have an empty 'dir' — one bad
+        # record must not IndexError-abort the whole memory query.
+        if direction and (t.get('dir') or '?').lower()[0] != (direction or '?').lower()[0]: continue
         cand_vec = _factors_vec(det.get('factors'))
         dist = _factors_distance(target_vec, cand_vec)
         if dist > max_distance: continue
@@ -976,6 +1241,9 @@ def find_similar_trades(factors, regime=None, direction=None, k=10, max_distance
             'regime': det.get('regime'),
             'direction': t.get('dir', ''),
             'tp_hit': det.get('tp_hit', 0),
+            # Fee-honest win label (audit item 15) computed at the source record,
+            # where a missing pnl field is still distinguishable from pnl == 0.
+            'win': _trade_is_win(t),
         })
     out.sort(key=lambda x: x['distance'])
     return out[:k]
@@ -1019,7 +1287,8 @@ def _autopsy_narrative(r, exit_type, detail, similar):
     # Similar-setup statistics
     if similar:
         s_r = [s['r'] for s in similar]
-        wins = sum(1 for x in s_r if x > 0)
+        # Fee-honest wins (audit item 15): net-pnl label, r-fallback for legacy
+        wins = sum(1 for s in similar if s.get('win', s.get('r', 0) > 0))
         avg_r = sum(s_r) / len(s_r) if s_r else 0
         wr_pct = (wins / len(s_r) * 100) if s_r else 0
         parts.append(f"Similar historical setups: {len(similar)} found, {wins}W/{len(similar)-wins}L ({wr_pct:.0f}% WR, avg {avg_r:+.2f}R).")
@@ -1048,7 +1317,8 @@ def record_autopsy(sym, direction, r, pnl, exit_type, detail):
             'tp_hit': (detail or {}).get('tp_hit', 0),
             'duration_h': (detail or {}).get('duration_h', 0),
             'similar_count': len(similar),
-            'similar_wr': round(sum(1 for s in similar if s['r'] > 0) / len(similar), 3) if similar else None,
+            # Fee-honest WR (audit item 15): net-pnl win label, r-fallback for legacy
+            'similar_wr': round(sum(1 for s in similar if s.get('win', s.get('r', 0) > 0)) / len(similar), 3) if similar else None,
             'similar_avg_r': round(sum(s['r'] for s in similar) / len(similar), 3) if similar else None,
             'narrative': narrative,
         }
@@ -1071,15 +1341,17 @@ def compute_regime_sanity():
     try:
         _sts = sts
         _brs = brs
-        for sym, st in _sts.items():
+        for sym, st in list(_sts.items()):  # snapshot — rescan may mutate sts
             br = _brs.get(sym)
-            if not br or st.df is None or len(st.df) < 24:
+            if not br or st.df is None or len(st.df) < 25:
                 continue
-            # Actual: 24-bar (24h at 1h candles) return
+            # Actual: 24-bar (24h at 1h candles) return.
+            # closes[-25] vs closes[-1] spans 24 intervals; the old closes[-24]
+            # spanned only 23 (and one of those is the still-forming candle).
             try:
                 closes = st.df['close'].values
                 p_now = float(closes[-1])
-                p_then = float(closes[-24])
+                p_then = float(closes[-25])
                 if p_then <= 0: continue
                 ret_pct = (p_now - p_then) / p_then * 100
             except Exception:
@@ -1152,7 +1424,8 @@ def record_live_trade(direction: str, r_multiple: float, pnl: float = 0.0, sym: 
         if len(_live_metrics['pnl_history']) > 2000:
             _live_metrics['pnl_history'] = _live_metrics['pnl_history'][-2000:]
         _live_metrics['by_direction'][direction]['trades'] += 1
-        if r_multiple > 0:
+        # Fee-honest win (audit item 15): win = net pnl > 0, not gross r > 0
+        if pnl > 0:
             _live_metrics['wins'] += 1
             _live_metrics['by_direction'][direction]['wins'] += 1
         else:
@@ -1209,7 +1482,14 @@ def get_live_metrics() -> dict:
         if total_pnl > peak: peak = total_pnl
         dd = peak - total_pnl
         if dd > max_dd: max_dd = dd
-    max_dd_pct = (max_dd / float(_PAPER_START_BAL)) * 100.0 if max_dd > 0 else 0  # DD as % of starting balance
+    # DD denominator: paper mode uses the fixed starting balance; live mode uses
+    # peak equity (_LIVE_PEAK, persisted across restarts). Falling back to the
+    # paper constant in live mode understated drawdown ~30x on a ~$300 account.
+    if _PAPER():
+        _dd_denom = float(_PAPER_START_BAL)
+    else:
+        _dd_denom = float(_LIVE_PEAK) if float(_LIVE_PEAK) > 0 else float(_PAPER_START_BAL)
+    max_dd_pct = (max_dd / _dd_denom) * 100.0 if max_dd > 0 and _dd_denom > 0 else 0
 
     # Session stats (this run only)
     s_trades = t - _session_baseline['trades']
@@ -1382,9 +1662,73 @@ def check_correlation_risk(symbol: str, open_positions: list) -> tuple:
         return False, max_corr
     return True, max_corr
 
+def _reconcile_ambiguous_order(ex, symbol: str, side: str, amount: float, submit_ts_ms: int):
+    """After a RequestTimeout/ExchangeNotAvailable on an order submit, determine
+    whether the order actually reached Kraken. Returns a ccxt order dict if it
+    landed (resting or filled), else None. Raises on nested network failure —
+    the caller treats that as order-state-UNKNOWN and does NOT retry.
+    All calls go through the _LockedExchange proxy (serialized private calls)."""
+    def _amt_match(a):
+        try:
+            return a is not None and abs(float(a) - float(amount)) <= float(amount) * 0.01
+        except (TypeError, ValueError):
+            return False
+
+    # (a) Resting open order for our symbol/side/~amount placed since submission.
+    for o in (ex.fetch_open_orders(symbol) or []):
+        if o.get('side') == side and _amt_match(o.get('amount')) \
+                and (o.get('timestamp') or submit_ts_ms) >= submit_ts_ms - 60_000:
+            oid = o.get('id')
+            if oid:
+                try:
+                    return ex.fetch_order(oid, symbol)
+                except Exception as fe:
+                    logging.warning(f"{symbol} reconcile: fetch_order({oid}) failed ({fe}); using open-order record")
+            return o
+
+    # (b) Market orders fill instantly — look for our fill in trades since submit
+    # (5s clock-skew margin). Aggregate by order id to handle partial fills.
+    by_order = {}
+    for t in (ex.fetch_my_trades(symbol, since=submit_ts_ms - 5000) or []):
+        if t.get('side') != side:
+            continue
+        key = t.get('order') or t.get('id')
+        agg = by_order.setdefault(key, {'amount': 0.0, 'cost': 0.0, 'last': t})
+        try:
+            agg['amount'] += float(t.get('amount') or 0)
+            agg['cost'] += float(t.get('cost') or 0)
+        except (TypeError, ValueError):
+            pass
+        agg['last'] = t
+    for oid, agg in by_order.items():
+        if not _amt_match(agg['amount']):
+            continue
+        if oid:
+            try:
+                return ex.fetch_order(oid, symbol)
+            except Exception as fe:
+                logging.warning(f"{symbol} reconcile: fetch_order({oid}) failed ({fe}); synthesizing from trades")
+        t = agg['last']
+        avg = (agg['cost'] / agg['amount']) if agg['amount'] > 0 else t.get('price')
+        # Order-shaped dict so the caller's fill handling (filled/average/id) keeps working.
+        return {
+            'id': oid or 'reconciled-unknown',
+            'symbol': symbol, 'side': side, 'type': 'market', 'status': 'closed',
+            'filled': agg['amount'], 'amount': agg['amount'],
+            'average': avg, 'price': avg, 'cost': agg['cost'],
+            'fee': t.get('fee'), 'timestamp': t.get('timestamp'),
+            'info': {'reconciled_from_trade': True},
+        }
+    return None
+
+
 def submit_order_with_retry(ex, method: str, symbol: str, amount: float, retries=3, base_delay=1.0):
     import ccxt
-    for attempt in range(retries):
+    side = 'buy' if 'buy' in method else 'sell'
+    ambiguous_retried = False  # RequestTimeout/ExchangeNotAvailable get at most ONE resubmit, ever
+    attempt = 0
+    while attempt < retries:
+        submit_ts_ms = int(time.time() * 1000)
         try:
             func = getattr(ex, method)
             order = func(symbol, amount)
@@ -1399,7 +1743,30 @@ def submit_order_with_retry(ex, method: str, symbol: str, amount: float, retries
         except ccxt.InsufficientFunds as e:
             logging.error(f"Insufficient funds: {e}")
             raise
+        except (ccxt.RequestTimeout, ccxt.ExchangeNotAvailable) as e:
+            # AMBIGUOUS: the response was lost, not necessarily the request —
+            # the order MAY be live on Kraken. Never blind-retry (double-buy
+            # risk); reconcile against the exchange first.
+            logging.warning(f"{symbol} {side} order ambiguous ({type(e).__name__}: {e}) — reconciling before any retry")
+            try:
+                time.sleep(2.5)  # let Kraken settle before we look
+                landed = _reconcile_ambiguous_order(ex, symbol, side, amount, submit_ts_ms)
+            except Exception as rec_err:
+                logging.error(f"{symbol} order state UNKNOWN for {side} {amount} — "
+                              f"reconciliation failed ({rec_err}); manual check advised. NOT retrying.")
+                return None
+            if landed is not None:
+                logging.warning(f"{symbol} ambiguous {side} order DID land (id={landed.get('id', '?')}) — using it, no retry")
+                return landed
+            if ambiguous_retried:
+                logging.error(f"{symbol} second ambiguous failure with no order found on exchange — giving up")
+                raise
+            ambiguous_retried = True
+            logging.warning(f"{symbol} no evidence order landed — request likely never arrived; retrying once")
+            continue  # does not consume a normal attempt; capped by ambiguous_retried
         except ccxt.NetworkError as e:
+            # Pure connectivity failure (RequestTimeout/ExchangeNotAvailable are
+            # handled above) — the request did not reach Kraken; safe to retry.
             if attempt < retries - 1:
                 delay = base_delay * (2 ** attempt)
                 logging.warning(f"Network error, retrying in {delay}s: {e}")
@@ -1409,6 +1776,7 @@ def submit_order_with_retry(ex, method: str, symbol: str, amount: float, retries
         except Exception as e:
             logging.error(f"Order failed: {e}")
             raise
+        attempt += 1
     return None
 
 
@@ -1474,8 +1842,12 @@ def periodic_reconciler(ex, sts, brs, _thread_map, _cfg, interval=300):
         # Watchdog: restart dead stream threads
         for sym, t in list(_thread_map.items()):
             if not t.is_alive():
+                st, br = sts.get(sym), brs.get(sym)
+                if st is None or br is None or st.shutdown.is_set():
+                    # Symbol was dropped by rescan between snapshot and here — don't resurrect
+                    _thread_map.pop(sym, None)
+                    continue
                 logging.warning(f"WATCHDOG: {sym} stream thread died, restarting")
-                st, br = sts[sym], brs[sym]
                 iv = _cfg.get("poll_interval_seconds", 2.0)
                 new_t = threading.Thread(target=stream, args=(st, sym, br, ex, iv), daemon=True)
                 new_t.start()
@@ -1495,6 +1867,9 @@ def periodic_reconciler(ex, sts, brs, _thread_map, _cfg, interval=300):
                 del _sentiment_cache[k]
             for k in [k for k, (t, _) in list(_of_cache.items()) if now - t > 2 * _of_ttl]:
                 del _of_cache[k]
+        # Time-driven circuit-breaker rollover (audit P0-2): a tripped breaker
+        # with zero open positions must still untrip when its window expires.
+        check_circuit_breaker_rollover()
         if elapsed >= interval:
             elapsed = 0
             try:
@@ -1537,23 +1912,37 @@ def _universe_rescan(ex, sts, brs, _thread_map, _cfg, output_dir):
 
             # Drop stale symbols
             for sym in to_drop:
-                sts[sym].shutdown.set()
+                sts[sym].shutdown.set()  # stream() AND order_status_monitor() loops exit on this
                 t = _thread_map.pop(sym, None)
                 if t:
                     t.join(timeout=5)
-                del sts[sym]
-                del brs[sym]
+                with _sts_lock:
+                    del sts[sym]
+                    del brs[sym]
+                # Remove health entries so the health monitor doesn't alert on
+                # deliberately-stopped threads forever (audit M6)
+                _unregister_thread(f'stream_{sym}')
+                _unregister_thread(f'monitor_{sym}')
 
             # Add new symbols
             for sym in to_add:
                 d = os.path.join(output_dir, sym.replace('/', '_'))
                 st = BotState(d)
                 br = AdaptiveBrain(st)
-                sts[sym] = st
-                brs[sym] = br
+                with _sts_lock:
+                    sts[sym] = st
+                    brs[sym] = br
                 t = threading.Thread(target=stream, args=(st, sym, br, ex, iv), daemon=True)
                 t.start()
                 _thread_map[sym] = t
+                # Live mode: rescanned-in symbols need an order-status monitor too,
+                # else their exchange SL/TP fills are only caught by the 5-min
+                # reconciler at wrong prices (audit H7)
+                if not _is_paper():
+                    _mon_iv = _cfg.get('order_monitor_interval_seconds', 30)
+                    _mt = threading.Thread(target=order_status_monitor, args=(ex, st, br, _mon_iv, sym), daemon=True)
+                    _mt.start()
+                    register_thread(f'monitor_{sym}')
 
             parts = []
             if to_add:
@@ -1576,10 +1965,13 @@ _GLOBAL_BAYES = None
 _GLOBAL_BAYES_PATH = None
 _GLOBAL_BAYES_LOCK = threading.RLock()
 
-def _get_global_bayes(out_dir='output'):
+def _get_global_bayes(out_dir=None):
     """Lazy-init the global fleet-wide Bayesian factor model.
-    On first init, bootstraps from the largest per-symbol brain so we don't throw away learning."""
+    On first init, bootstraps from the largest per-symbol brain so we don't throw away learning.
+    out_dir defaults to _OUTPUT_DIR at call time (late-bound so --output-dir is honored)."""
     global _GLOBAL_BAYES, _GLOBAL_BAYES_PATH
+    if out_dir is None:
+        out_dir = _OUTPUT_DIR
     with _GLOBAL_BAYES_LOCK:
         if _GLOBAL_BAYES is None:
             _GLOBAL_BAYES_PATH = os.path.join(out_dir, 'global_brain.json')
@@ -1691,25 +2083,31 @@ class AdaptiveBrain:
         except Exception as e:
             logging.warning(f"Failed to save brain.json ({self.file}): {e}")
 
-    def record(self, sigs, r, slippage=Decimal('0'), direction=None, factors=None, rgm=None):
+    def record(self, sigs, r, slippage=Decimal('0'), direction=None, factors=None, rgm=None, pnl=None):
+        # Fee-honest win label (audit item 15): net pnl when the caller provides
+        # it, else fall back to gross r > 0 (legacy callers only).
+        won = (float(pnl) > 0) if pnl is not None else (r > 0)
         for s in sigs:
             if s not in self.stats:
                 continue
             self.stats[s]['f'] += 1
-            if r > 0: self.stats[s]['w'] += 1
+            if won: self.stats[s]['w'] += 1
         if direction in ('long', 'short'):
-            self.dir_history[direction].append(1 if r > 0 else 0)
+            self.dir_history[direction].append(1 if won else 0)
             self.dir_history[direction] = self.dir_history[direction][-10:]
         if factors is not None and rgm is not None:
             self._update_adaptive_weights(factors, r, rgm)
             # UPGRADE A: Update Bayesian logistic regression model
-            self.bayesian_model.update(factors, r, rgm)
+            self.bayesian_model.update(factors, r, rgm, win=won)
             # GLOBAL POOL: also update the fleet-wide Bayesian model so all symbols benefit
             try:
                 # self.file is output/SYM_USD/brain.json — go up one level for fleet dir
                 fleet_dir = os.path.dirname(os.path.dirname(self.file)) or 'output'
                 gb = _get_global_bayes(fleet_dir)
-                gb.update(factors, r, rgm)
+                # Audit item 31: gb is shared across all symbols' brains — mutate
+                # only under _GLOBAL_BAYES_LOCK (RLock, safe to nest with save).
+                with _GLOBAL_BAYES_LOCK:
+                    gb.update(factors, r, rgm, win=won)
                 _save_global_bayes()
             except Exception as _gb_err:
                 logging.warning(f"Global Bayes update failed: {_gb_err}")
@@ -1898,9 +2296,12 @@ class HMMRegimeDetector:
     Also adds sticky transition priors to reduce regime whipsaws.
     Falls back to uniform [0.25]*4 when not fitted.
     """
-    _WINDOW = 750   # rolling training window
+    _WINDOW = 720   # rolling training window — capped at Kraken's 720-bar OHLC max per call
     _MIN_BARS = 200  # minimum bars required to fit
-    _REFIT_INTERVAL = 500  # refit every N bars
+    # tick() is called once per regime refresh (every 4h, both live and backtest),
+    # NOT once per bar — so this interval is in refresh cycles:
+    # 42 cycles x 4h = 168h = 7 days between refits.
+    _REFIT_INTERVAL = 42
     _PRED_TAIL = 50  # last N bars for forward prediction
     # UPGRADE C: Sticky transition prior — high self-transition probability
     _STICKY_ALPHA = 10.0  # Dirichlet concentration for self-transitions (higher = stickier)
@@ -2020,7 +2421,10 @@ class HMMRegimeDetector:
                 # Normalize rows
                 sticky_transmat /= sticky_transmat.sum(axis=1, keepdims=True)
                 model.transmat_ = sticky_transmat
-                model.init_params = 'mc'  # only init means and covars, keep our transmat
+                # init_params='mc' initializes ONLY means and covars — hmmlearn
+                # will NOT set startprob_, so we must, or fit() raises in _check.
+                model.startprob_ = np.full(n_states, 1.0 / n_states)
+                model.init_params = 'mc'  # only init means and covars, keep our transmat/startprob
 
                 model.fit(X)
                 self._model = model
@@ -2028,7 +2432,9 @@ class HMMRegimeDetector:
                 self.fitted = True
                 self._last_fit_bar = self._bar_count
             except Exception as e:
-                logging.debug(f"HMM fit failed: {e}")
+                # Must never kill the caller thread, but a fit failure means the
+                # regime layer is running blind (uniform probs) — log it loudly.
+                logging.warning(f"HMM fit failed ({len(X)} bars): {type(e).__name__}: {e}")
 
     def predict_proba(self, df):
         """Return [p_bull, p_bear, p_range, p_chop] from forward algorithm.
@@ -2062,7 +2468,7 @@ class HMMRegimeDetector:
         return _REGIMES[int(np.argmax(proba))]
 
     def needs_refit(self):
-        """True every _REFIT_INTERVAL bars since last fit."""
+        """True every _REFIT_INTERVAL tick() calls (4h refresh cycles) since last fit."""
         return (self._bar_count - self._last_fit_bar) >= self._REFIT_INTERVAL
 
     def tick(self):
@@ -2193,23 +2599,32 @@ class BayesianFactorModel:
         if rgm not in self.mu or self.n.get(rgm, 0) < _AW_MIN_TRADES:
             return None  # not enough data, use prior
         coefs = self.mu[rgm][:self._N_BASE]
-        # Use absolute value of coefficients as importance weights
-        abs_coefs = np.abs(coefs) + 1e-8
-        # Clip to floor/ceiling before normalizing
-        abs_coefs = np.clip(abs_coefs, _AW_FLOOR, _AW_CEIL)
-        total = abs_coefs.sum()
-        weights = {k: round(float(abs_coefs[i] / total), 4) for i, k in enumerate(_FK)}
+        # Audit item 16: clamp negative coefficients to zero instead of abs() —
+        # a negatively-predictive factor must not be handed a large POSITIVE
+        # confidence weight. abs() rewarded anti-predictive factors.
+        pos_coefs = np.clip(coefs, 0, None)
+        if pos_coefs.sum() <= 1e-12:
+            # Every factor is negatively predictive here — no usable importance
+            # signal. Return None so AdaptiveBrain.get_weights falls back to the
+            # legacy EMA-adapted weights / regime prior (same path as 'not enough data').
+            return None
+        # Clip to floor/ceiling before normalizing (floor keeps every factor alive)
+        pos_coefs = np.clip(pos_coefs + 1e-8, _AW_FLOOR, _AW_CEIL)
+        total = pos_coefs.sum()
+        weights = {k: round(float(pos_coefs[i] / total), 4) for i, k in enumerate(_FK)}
         return weights
 
-    def update(self, factors, r_mult, rgm):
+    def update(self, factors, r_mult, rgm, win=None):
         """Online Bayesian update with a single observation.
         Uses Laplace approximation: approximate posterior as Gaussian,
         update via natural gradient on the log-likelihood.
+        win: fee-honest outcome label (net pnl > 0) — audit item 15. Falls back
+        to gross r_mult > 0 only when the caller does not supply it.
         """
         if rgm not in self.mu:
             return
         x = self._build_features(factors)
-        y = 1.0 if r_mult > 0 else 0.0  # binary outcome
+        y = 1.0 if (win if win is not None else (r_mult > 0)) else 0.0  # binary outcome
 
         # Current prediction
         logit = x @ self.mu[rgm]
@@ -2255,12 +2670,18 @@ class BayesianFactorModel:
                     arr = np.array(d['mu'][r])
                     if len(arr) == obj._N_FEAT:
                         obj.mu[r] = arr
+                    else:
+                        # Audit 9h: silent drop hid feature-count migrations —
+                        # the regime restarted from the prior with no trace.
+                        logging.warning(f"BayesianFactorModel.from_dict: dropping saved mu[{r}] — shape {arr.shape} != ({obj._N_FEAT},); regime restarts from prior")
         if 'precision' in d:
             for r in d['precision']:
                 if r in obj.precision:
                     arr = np.array(d['precision'][r])
                     if arr.shape == (obj._N_FEAT, obj._N_FEAT):
                         obj.precision[r] = arr
+                    else:
+                        logging.warning(f"BayesianFactorModel.from_dict: dropping saved precision[{r}] — shape {arr.shape} != ({obj._N_FEAT}, {obj._N_FEAT}); regime restarts from prior")
         if 'n' in d:
             obj.n = {r: d['n'].get(r, 0) for r in _REGIMES}
         return obj
@@ -2366,7 +2787,15 @@ def compute_factors(df, price, vp_data, ob_data, htf_bias=0.5, rgm='chop', of_sc
     bvc_flow = 0.5
     if len(df) >= 20:
         _ohlcv = df.iloc[-20:]
-        _open = _ohlcv['o'] if 'o' in _ohlcv.columns else _ohlcv['close'].shift(1).bfill()
+        # Live pipeline now names the column 'open' (revives signals b/q, fixes y);
+        # backtest.py's own fetch_ohlcv still produces 'o' — keep that fallback so
+        # backtest behavior is unchanged.
+        if 'open' in _ohlcv.columns:
+            _open = _ohlcv['open']
+        elif 'o' in _ohlcv.columns:
+            _open = _ohlcv['o']
+        else:
+            _open = _ohlcv['close'].shift(1).bfill()
         _z = (_ohlcv['close'] - _open) / (_ohlcv['high'] - _ohlcv['low'] + 1e-9)
         _z = _z.clip(-3, 3)
         _buy_pct = _z.apply(lambda x: 0.5 * (1 + math.erf(x / math.sqrt(2))))
@@ -2943,12 +3372,15 @@ def fetch_higher_timeframe(ex, symbol, timeframe='4h', limit=100):
     ttl = _HTF_TTL.get(timeframe, 300)
     if cache_key in _htf_cache:
         cached_time, cached_data = _htf_cache[cache_key]
-        if now - cached_time < ttl:
+        # Depth guard: cache key ignores `limit`, so a shallow frame (e.g. the
+        # 100-bar MTF confluence fetch) must not satisfy a deep request (the
+        # 720-bar HMM training fetch). Serve cache only if it covers the ask.
+        if now - cached_time < ttl and len(cached_data) >= limit:
             return cached_data
     try:
         o = ex.fetch_ohlcv(symbol, timeframe, limit=limit)
         if o:
-            df = pd.DataFrame(o, columns=['t','o','h','l','c','v']).rename(columns={'c':'close','h':'high','l':'low','v':'vol'})
+            df = pd.DataFrame(o, columns=['t','o','h','l','c','v']).rename(columns={'o':'open','c':'close','h':'high','l':'low','v':'vol'})
             df = ind(df)
             _htf_cache[cache_key] = (now, df)
             return df
@@ -3498,8 +3930,11 @@ def _iter_telegram_targets(signal_type: str):
     subscriber has opted in for this signal_type ('long' | 'short' | 'exit').
     Sources auth from subscribers.json — env vars are intentionally ignored.
     """
-    _load_subscribers()
-    for sub_id, sub in _subscribers.items():
+    with _subscribers_lock:
+        _load_subscribers()
+        subs = list(_subscribers.items())
+    # Lock released — never held across Telegram HTTP calls made by consumers
+    for sub_id, sub in subs:
         if not sub.get('active', False):
             continue
         prefs = sub.get('preferences', {})
@@ -3514,9 +3949,87 @@ def _iter_telegram_targets(signal_type: str):
                 yield sub_id, token, str(chat_id)
 
 
+# --- Card send worker --------------------------------------------------------
+# Render + Telegram HTTP happen on a dedicated daemon thread so timeouts and
+# 429 sleeps can never stall SL/TP monitoring or delay position persistence.
+# Trade-path callers only enqueue (put_nowait — never blocks, drops with a WARN
+# if the queue is full).
+import queue as _cardq
+_card_queue = _cardq.Queue(maxsize=50)
+
+
+def _enqueue_card(kind, kwargs, sym):
+    """Enqueue a card job for the worker. Never blocks the trade path."""
+    if not _CARDS_ENABLED:
+        return
+    try:
+        _card_queue.put_nowait((kind, kwargs))
+    except _cardq.Full:
+        logging.warning(f"Card queue full (50) — {kind.upper()} card for {sym} dropped")
+    except Exception as e:
+        logging.warning(f"Card enqueue ({kind}) failed for {sym}: {e}")
+
+
+def _card_worker_loop():
+    """Daemon worker: pulls card jobs and does render + Telegram HTTP here."""
+    register_thread('card_worker')
+    while True:
+        heartbeat('card_worker')
+        try:
+            kind, kwargs = _card_queue.get(timeout=30)
+        except _cardq.Empty:
+            continue
+        except Exception as e:
+            logging.error(f"Card worker queue error: {e}")
+            time.sleep(1)
+            continue
+        try:
+            if kind == 'open':
+                _send_trade_card_open_now(**kwargs)
+            elif kind == 'close':
+                _send_trade_card_close_now(**kwargs)
+            else:
+                logging.warning(f"Card worker: unknown job kind {kind!r}")
+        except Exception as e:
+            logging.error(f"Card worker {kind} job failed: {e}")
+
+
+def start_card_worker():
+    t = threading.Thread(target=_card_worker_loop, daemon=True)
+    t.start()
+    logging.info("Card send worker started (queue max 50)")
+
+
+def _pretty_gate(g):
+    """'regime_mult:1.20' -> 'Regime Mult' for the card gate grid."""
+    return str(g).split(':', 1)[0].replace('_', ' ').title()
+
+
 def _send_trade_card_open(sym, direction, entry, stop, tp1, tp2, tp3,
-                          size, confidence, regime, signals, factors=None):
-    """Render and send a POSITION OPENED card to Telegram."""
+                          size, confidence, regime, signals, factors=None,
+                          gates_passed=None, gates_failed=None, sig_weights=None):
+    """Enqueue a POSITION OPENED card — render + send happen on the card worker."""
+    try:
+        _enqueue_card('open', {
+            'sym': sym, 'direction': direction,
+            'entry': float(entry), 'stop': float(stop),
+            'tp1': float(tp1), 'tp2': float(tp2), 'tp3': float(tp3),
+            'size': float(size),
+            'confidence': float(confidence) if confidence is not None else None,
+            'regime': regime,
+            'signals': list(signals or []),
+            'gates_passed': list(gates_passed or []),
+            'gates_failed': list(gates_failed or []),
+            'sig_weights': dict(sig_weights or {}),
+        }, sym)
+    except Exception as e:
+        logging.warning(f"Card enqueue (open) failed for {sym}: {e}")
+
+
+def _send_trade_card_open_now(sym, direction, entry, stop, tp1, tp2, tp3,
+                              size, confidence, regime, signals,
+                              gates_passed=None, gates_failed=None, sig_weights=None):
+    """Render and send a POSITION OPENED card to Telegram. Card-worker thread only."""
     if not _CARDS_ENABLED:
         return
     try:
@@ -3526,10 +4039,19 @@ def _send_trade_card_open(sym, direction, entry, stop, tp1, tp2, tp3,
             logging.info(f"No active telegram subscribers for {signal_type} — card not sent")
             return
 
+        sig_weights = sig_weights or {}
         sig_bars = []
         for s in signals[:4]:
             name = _SIG_DESC.get(s, s.upper())
-            sig_bars.append({'name': name, 'strength': 0.75})
+            try:
+                strength = float(sig_weights.get(s, 0.75))
+            except (TypeError, ValueError):
+                strength = 0.75
+            sig_bars.append({'name': name, 'strength': max(0.0, min(1.0, strength))})
+
+        # Real gate outcomes from the entry decision (pretty names, pass/fail)
+        gates = ([{'name': _pretty_gate(g), 'passed': True} for g in (gates_passed or [])] +
+                 [{'name': _pretty_gate(g), 'passed': False} for g in (gates_failed or [])])
 
         now = datetime.now(timezone.utc)
 
@@ -3540,10 +4062,11 @@ def _send_trade_card_open(sym, direction, entry, stop, tp1, tp2, tp3,
             'stop': float(stop),
             'targets': [float(tp1), float(tp2), float(tp3)],
             'size': float(size),
-            'conviction': float(confidence) if confidence else 0.5,
+            'conviction': float(confidence) if confidence is not None else 0.5,
             'regime': (regime or 'chop').upper(),
             'signals': sig_bars,
-            'gates_passed': 7,
+            'gates': gates,
+            'gates_passed': sum(1 for g in gates if g['passed']),
             'voice': _pick_voice(_VOICE_OPEN),
             'timestamp': now.strftime('%H:%M UTC'),
             'date': now.strftime('%d %b %Y'),
@@ -3553,18 +4076,40 @@ def _send_trade_card_open(sym, direction, entry, stop, tp1, tp2, tp3,
         copy_vals = _card_renderer.copy_values_opened(data)
         for sub_id, token, chat_id in targets:
             try:
-                send_card_telegram(token, chat_id, png, copy_vals)
-                logging.info(f"Telegram OPEN card sent: {sub_id} {sym} {direction}")
-                _log_telegram_message(f"Signal {sym}", f"POSITION OPENED: {sym} {direction.upper()} @ {float(entry):.4f}")
+                ok = send_card_telegram(token, chat_id, png, copy_vals)
+                if ok:
+                    logging.info(f"Telegram OPEN card sent: {sub_id} {sym} {direction}")
+                    _log_telegram_message(f"Signal {sym}", f"POSITION OPENED: {sym} {direction.upper()} @ {float(entry):.4f}")
+                else:
+                    logging.error(f"Telegram OPEN card FAILED: group={sub_id} {sym} {direction} — send_card_telegram returned False (Telegram error logged by oracle.telegram)")
             except Exception as e:
-                logging.warning(f"Telegram OPEN card failed for {sub_id}: {e}")
+                logging.error(f"Telegram OPEN card FAILED: group={sub_id} {sym} {direction}: {e}")
     except Exception as e:
         logging.warning(f"Card send (open) failed: {e}")
 
 
 def _send_trade_card_close(sym, direction, pos, exit_price, pnl, r_mult,
                            tp_hit=0, exit_type='SL'):
-    """Render and send a POSITION CLOSED card to Telegram."""
+    """Enqueue a POSITION CLOSED card — render + send happen on the card worker."""
+    try:
+        try:
+            pos_copy = dict(pos) if pos else {}
+        except Exception:
+            pos_copy = {}
+        _enqueue_card('close', {
+            'sym': sym, 'direction': direction, 'pos': pos_copy,
+            'exit_price': float(exit_price), 'pnl': float(pnl),
+            'r_mult': float(r_mult), 'tp_hit': int(tp_hit or 0),
+            'exit_type': exit_type,
+            'closed_at': time.time(),
+        }, sym)
+    except Exception as e:
+        logging.warning(f"Card enqueue (close) failed for {sym}: {e}")
+
+
+def _send_trade_card_close_now(sym, direction, pos, exit_price, pnl, r_mult,
+                               tp_hit=0, exit_type='SL', closed_at=None):
+    """Render and send a POSITION CLOSED card to Telegram. Card-worker thread only."""
     if not _CARDS_ENABLED:
         return
     try:
@@ -3580,8 +4125,13 @@ def _send_trade_card_close(sym, direction, pos, exit_price, pnl, r_mult,
         gross = float(pnl) + fees
         net = float(pnl)
 
-        duration_s = time.time() - pos.get('opened_at', time.time())
-        duration_str = _format_duration(duration_s)
+        # Percent returns on entry notional (guard zero denominators)
+        notional = abs(entry) * abs(size)
+        net_pct = (net / notional * 100.0) if notional > 0 else 0.0
+        gross_pct = (gross / notional * 100.0) if notional > 0 else 0.0
+
+        duration_s = (closed_at or time.time()) - pos.get('opened_at', time.time())
+        duration_str = _format_duration(max(0, duration_s))
 
         is_win = net >= 0
         if tp_hit > 0:
@@ -3612,8 +4162,11 @@ def _send_trade_card_close(sym, direction, pos, exit_price, pnl, r_mult,
             'exit': float(exit_price),
             'r_multiple': float(r_mult),
             'gross_pnl': gross,
+            'gross_pct': gross_pct,
             'fees': fees,
             'net_pnl': net,
+            'net_pct': net_pct,
+            'tp_hit': int(tp_hit or 0),
             'duration': duration_str,
             'exit_reason': exit_reason,
             'wins': wins,
@@ -3629,11 +4182,14 @@ def _send_trade_card_close(sym, direction, pos, exit_price, pnl, r_mult,
         copy_vals = _card_renderer.copy_values_closed(data)
         for sub_id, token, chat_id in targets:
             try:
-                send_card_telegram(token, chat_id, png, copy_vals)
-                logging.info(f"Telegram CLOSE card sent: {sub_id} {sym} {direction} net=${net:.2f}")
-                _log_telegram_message(f"Signal {sym}", f"POSITION CLOSED: {sym} {direction.upper()} {exit_reason} P/L=${net:.2f}")
+                ok = send_card_telegram(token, chat_id, png, copy_vals)
+                if ok:
+                    logging.info(f"Telegram CLOSE card sent: {sub_id} {sym} {direction} net=${net:.2f}")
+                    _log_telegram_message(f"Signal {sym}", f"POSITION CLOSED: {sym} {direction.upper()} {exit_reason} P/L=${net:.2f}")
+                else:
+                    logging.error(f"Telegram CLOSE card FAILED: group={sub_id} {sym} {direction} — send_card_telegram returned False (Telegram error logged by oracle.telegram)")
             except Exception as e:
-                logging.warning(f"Telegram CLOSE card failed for {sub_id}: {e}")
+                logging.error(f"Telegram CLOSE card FAILED: group={sub_id} {sym} {direction}: {e}")
     except Exception as e:
         logging.warning(f"Card send (close) failed: {e}")
 
@@ -3641,73 +4197,106 @@ def _send_trade_card_close(sym, direction, pos, exit_price, pnl, r_mult,
 # =============================================================================
 # Subscriber Signal Delivery System
 # =============================================================================
-_subscribers = {}
+_subscribers = {}       # RESOLVED working copy (env tokens substituted) — send paths read this, NEVER saved
+_subscribers_raw = {}   # PRISTINE dict as parsed from disk (placeholders intact) — the ONLY thing saved
+_subscribers_lock = threading.RLock()
+_subscribers_load_failed = False
 _subscriber_file = "subscribers.json"
 _api_key = None
 
+def _resolve_channel_tokens(sub):
+    """Resolve ${ENV_VAR} telegram token placeholders in place.
+    Call ONLY on resolved working copies, never on _subscribers_raw."""
+    for channel in sub.get('channels', []):
+        if not isinstance(channel, dict):
+            continue
+        if channel.get('type') == 'telegram':
+            token = channel.get('token', '')
+            if isinstance(token, str) and token.startswith('${') and token.endswith('}'):
+                env_var = token[2:-1]
+                resolved = os.environ.get(env_var, '')
+                if resolved:
+                    channel['token'] = resolved
+                else:
+                    logging.warning(f"Telegram token env var {env_var} not set — channel disabled")
+                    channel['token'] = ''
+
 def _load_subscribers():
-    global _subscribers
-    if os.path.exists(_subscriber_file):
+    global _subscribers, _subscribers_raw, _subscribers_load_failed
+    with _subscribers_lock:
+        if not os.path.exists(_subscriber_file):
+            _subscribers_raw = {}
+            _subscribers = {}
+            _subscribers_load_failed = False
+            return
         try:
             with open(_subscriber_file) as _f:
                 raw = json.load(_f)
-            # Filter out non-dict keys (like "_note")
-            _subscribers = {k: v for k, v in raw.items() if isinstance(v, dict)}
-            # Resolve environment variables in tokens for security
-            for sub in _subscribers.values():
-                if not isinstance(sub, dict):
-                    continue
-                for channel in sub.get('channels', []):
-                    if not isinstance(channel, dict):
-                        continue
-                    if channel.get('type') == 'telegram':
-                        token = channel.get('token', '')
-                        if token.startswith('${') and token.endswith('}'):
-                            env_var = token[2:-1]
-                            resolved = os.environ.get(env_var, '')
-                            if resolved:
-                                channel['token'] = resolved
-                            else:
-                                logging.warning(f"Telegram token env var {env_var} not set — channel disabled")
-                                channel['token'] = ''
-        except Exception:
+            # Raw keeps the file exactly as parsed ("_note" and ${...} placeholders intact)
+            _subscribers_raw = raw
+            # Resolved working copy: dict entries only, env tokens substituted (deep copy —
+            # resolution must never touch the raw structure that gets written back to disk)
+            resolved = {k: copy.deepcopy(v) for k, v in raw.items() if isinstance(v, dict)}
+            for sub in resolved.values():
+                _resolve_channel_tokens(sub)
+            _subscribers = resolved
+            _subscribers_load_failed = False
+        except Exception as e:
+            _subscribers_load_failed = True
+            _subscribers_raw = {}
             _subscribers = {}
-    else:
-        _subscribers = {}
+            logging.error(f"subscribers.json parse failed: {e} — subscriber delivery DISABLED until fixed; saves blocked to protect last-good file")
 
 def _save_subscribers():
-    with open(_subscriber_file, 'w') as f:
-        json.dump(_subscribers, f, indent=2)
+    with _subscribers_lock:
+        if _subscribers_load_failed:
+            logging.error("Refusing to save subscribers.json: last load FAILED — fix the file manually; saving now would wipe it")
+            return
+        # Serialize the RAW structure only — resolved tokens must never hit disk
+        tmp = _subscriber_file + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump(_subscribers_raw, f, indent=2)
+        os.replace(tmp, _subscriber_file)
 
 def _generate_api_key():
     import secrets
     return secrets.token_urlsafe(32)
 
 def register_subscriber(sub_id: str, channels: list, preferences: dict = None) -> str:
-    _load_subscribers()
     api_key = _generate_api_key()
-    _subscribers[sub_id] = {
+    entry = {
         'api_key': api_key,
         'channels': channels,
         'preferences': preferences or {'long': True, 'short': True, 'exit': True},
         'created_at': datetime.now(timezone.utc).isoformat() + "Z",
         'active': True
     }
-    _save_subscribers()
+    with _subscribers_lock:
+        _load_subscribers()
+        # Raw stores exactly what the caller provided (placeholders stay placeholders;
+        # never write back an env-resolved token)
+        _subscribers_raw[sub_id] = copy.deepcopy(entry)
+        resolved = copy.deepcopy(entry)
+        _resolve_channel_tokens(resolved)
+        _subscribers[sub_id] = resolved
+        _save_subscribers()
     logging.info(f"Subscriber registered: {sub_id}")
     return api_key
 
 def remove_subscriber(sub_id: str):
-    _load_subscribers()
-    if sub_id in _subscribers:
-        del _subscribers[sub_id]
-        _save_subscribers()
-        logging.info(f"Subscriber removed: {sub_id}")
+    with _subscribers_lock:
+        _load_subscribers()
+        if sub_id in _subscribers or sub_id in _subscribers_raw:
+            _subscribers.pop(sub_id, None)
+            _subscribers_raw.pop(sub_id, None)
+            _save_subscribers()
+            logging.info(f"Subscriber removed: {sub_id}")
 
 def verify_api_key(sub_id: str, api_key: str) -> bool:
-    _load_subscribers()
-    sub = _subscribers.get(sub_id)
-    return sub and sub.get('api_key') == api_key and sub.get('active', False)
+    with _subscribers_lock:
+        _load_subscribers()
+        sub = _subscribers.get(sub_id)
+        return bool(sub and sub.get('api_key') == api_key and sub.get('active', False))
 
 def format_signal_message(signal_type: str, symbol: str, direction: str, price: float,
                           sl: float = None, tp1: float = None, tp2: float = None,
@@ -3814,10 +4403,13 @@ def deliver_signal(signal_type: str, symbol: str, direction: str, price: float,
                   confidence: float | None = None, reason: str | None = None,
                   exit_price: float = None, pnl: float = None,
                   tp_hit: int = 0, r_multiple: float = None):
-    _load_subscribers()
+    with _subscribers_lock:
+        _load_subscribers()
+        subs = list(_subscribers.items())
     signal = format_signal_message(signal_type, symbol, direction, price, sl, tp1, tp2, tp3,
                                    confidence, reason, exit_price, pnl, tp_hit, r_multiple)
-    for sub_id, sub in _subscribers.items():
+    # Lock released — delivery HTTP calls happen outside it
+    for sub_id, sub in subs:
         if not sub.get('active', False):
             continue
         prefs = sub.get('preferences', {})
@@ -3855,10 +4447,11 @@ def _run_subscriber_api():
                 self.end_headers()
                 self.wfile.write(json.dumps({'status': 'ok'}).encode())
             elif self.path == '/subscribers':
-                _load_subscribers()
-                public_subs = {k: {'active': v.get('active', True),
-                                   'preferences': v.get('preferences', {}),
-                                   'created_at': v.get('created_at', '')} for k, v in _subscribers.items()}
+                with _subscribers_lock:
+                    _load_subscribers()
+                    public_subs = {k: {'active': v.get('active', True),
+                                       'preferences': v.get('preferences', {}),
+                                       'created_at': v.get('created_at', '')} for k, v in _subscribers.items()}
                 body = json.dumps(public_subs).encode()
                 self.send_response(200)
                 self.send_header('Content-Type', 'application/json')
@@ -3901,10 +4494,15 @@ def _run_subscriber_api():
                 sub_id = self.path.split('/')[-1]
                 length = int(self.headers.get('Content-Length', 0))
                 prefs = json.loads(self.rfile.read(length))
-                _load_subscribers()
-                if sub_id in _subscribers:
-                    _subscribers[sub_id]['preferences'] = prefs
-                    _save_subscribers()
+                with _subscribers_lock:
+                    _load_subscribers()
+                    found = sub_id in _subscribers
+                    if found:
+                        _subscribers[sub_id]['preferences'] = prefs
+                        if isinstance(_subscribers_raw.get(sub_id), dict):
+                            _subscribers_raw[sub_id]['preferences'] = copy.deepcopy(prefs)
+                        _save_subscribers()
+                if found:
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/json')
                     self.end_headers()
@@ -3922,7 +4520,8 @@ def _run_subscriber_api():
             daemon_threads = True
             allow_reuse_address = True
         _sub_port = 18096  # GoldenEye standalone — high port to avoid fleet conflicts
-        with _ThreadedAPI(("", _sub_port), SubscriberAPIHandler) as httpd:
+        # Audit item 33: bind loopback only — subscriber management is local-only
+        with _ThreadedAPI(("127.0.0.1", _sub_port), SubscriberAPIHandler) as httpd:
             logging.info(f"Subscriber API server listening on port {_sub_port}")
             while _api_server_running:
                 httpd.handle_request()
@@ -3936,7 +4535,9 @@ def start_subscriber_api():
 
 def order_status_monitor(ex, st, br, interval=30, sym=''):
     _mon_name = f'monitor_{sym}' if sym else 'monitor'
-    while True:
+    # Honors st.shutdown so dropped-from-universe symbols don't leak monitor
+    # threads forever (audit M6). Rescan drop path sets shutdown before del.
+    while not st.shutdown.is_set():
         time.sleep(interval)
         heartbeat(_mon_name)
         try:
@@ -3952,8 +4553,11 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                 try:
                     sl_order = ex.fetch_order(sl_order_id, current_pos.get('symbol', ''))
                     if sl_order.get('status') in ('closed', 'filled'):
-                        filled_price = Decimal(str(sl_order.get('average', current_pos.get('e'))))
-                        filled_size = Decimal(str(sl_order.get('filled', current_pos.get('size', 0))))
+                        # Audit item 34: ccxt returns 'average': None (key PRESENT) —
+                        # dict.get(key, default) does NOT fall back, and
+                        # Decimal(str(None)) raises InvalidOperation forever. Use `or`.
+                        filled_price = Decimal(str(sl_order.get('average') or current_pos.get('e')))
+                        filled_size = Decimal(str(sl_order.get('filled') or current_pos.get('size', 0)))
                         fee = current_pos.get('fee', get_fee(current_pos.get('symbol', '')))
                         risk_dist = abs(float(current_pos['e']) - float(current_pos.get('orig_sl', current_pos['sl'])))
                         if risk_dist > 0:
@@ -3965,7 +4569,9 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                             pnl = (filled_price - current_pos['e']) * filled_size - (filled_price * fee * filled_size + current_pos['e'] * fee * filled_size)
                         else:
                             pnl = (current_pos['e'] - filled_price) * filled_size - (filled_price * fee * filled_size + current_pos['e'] * fee * filled_size)
-                        update_circuit_breaker(float(pnl))
+                        # Audit item 30: CB update moved BELOW the sym_lock ownership
+                        # recheck — if stream() already closed this trade, updating
+                        # here would double-count the P&L in the circuit breaker.
 
                         if tp_order_id:
                             _cancel_attempts = 0
@@ -3986,10 +4592,16 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
 
                         # Clear position under sym_lock to prevent race with stream() exit path
                         _s = current_pos.get('symbol', '')
+                        # Audit item 34: TP1/TP2 may have been hit in software before
+                        # the exchange stop filled — preserve the real tp_hit so
+                        # autopsy/brain stats aren't recorded as tp_hit=0.
+                        _sl_tp_h = current_pos.get('tp_hit', 0)
                         _sl_lock = _get_sym_lock(_s)
                         with _sl_lock:
                             if st.get_position() is None:
                                 continue  # stream() already exited this position
+                            # Audit item 30: ownership confirmed — safe to book P&L once
+                            update_circuit_breaker(float(pnl))
                             _sym_cooldown[_s] = time.time()
                             st.clear_position()
                         logging.warning(f"SL HIT ({direction}): {_s} @ {filled_price:,.2f}, PnL={pnl:.2f}")
@@ -3999,8 +4611,8 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                         try:
                             exit_side = 'sell' if direction == 'long' else 'buy'
                             log_fill(_s, exit_side, sl_order_id, float(filled_size), float(filled_price), float(fee) * float(filled_size) * float(filled_price), float(pnl))
-                            br.record(current_pos['sg'], r, current_pos.get('slippage', Decimal('0')), direction, factors=current_pos.get('factors'), rgm=current_pos.get('regime'))
-                            _td = _build_trade_detail(current_pos, filled_price, tp_hit=0)
+                            br.record(current_pos['sg'], r, current_pos.get('slippage', Decimal('0')), direction, factors=current_pos.get('factors'), rgm=current_pos.get('regime'), pnl=float(pnl))
+                            _td = _build_trade_detail(current_pos, filled_price, tp_hit=_sl_tp_h)
                             record_live_trade(direction, float(r), float(pnl), sym=_s, exit_type='SL', detail=_td)
                             _log_factor_trade(_s, current_pos, r, float(pnl))
                             deliver_signal(
@@ -4010,13 +4622,17 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                                 tp1=float(current_pos.get('tp1', 0)), tp2=float(current_pos.get('tp2', 0)),
                                 tp3=float(current_pos.get('tp3', 0)),
                                 confidence=None, exit_price=float(filled_price),
-                                pnl=float(pnl), tp_hit=0, r_multiple=float(r)
+                                pnl=float(pnl), tp_hit=_sl_tp_h, r_multiple=float(r)
                             )
-                            _send_trade_card_close(_s, direction, current_pos, filled_price,
-                                                   pnl, r, tp_hit=0, exit_type='SL')
-                            _log_trade_marker('close', _s, direction, filled_price, r=r, pnl=pnl)
                         except Exception as post_err:
                             logging.warning(f"{_s} post-trade processing error (position already cleared): {post_err}")
+                        # Close card in its own try — an earlier post-trade exception must not eat it
+                        try:
+                            _send_trade_card_close(_s, direction, current_pos, filled_price,
+                                                   pnl, r, tp_hit=_sl_tp_h, exit_type='SL')
+                            _log_trade_marker('close', _s, direction, filled_price, r=r, pnl=pnl)
+                        except Exception as card_err:
+                            logging.warning(f"{_s} close card/marker error: {card_err}")
                 except Exception as e:
                     logging.warning(f"SL order check failed: {e}")
 
@@ -4024,8 +4640,9 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                 try:
                     tp_order = ex.fetch_order(tp_order_id, current_pos.get('symbol', ''))
                     if tp_order.get('status') in ('closed', 'filled'):
-                        filled_price = Decimal(str(tp_order.get('average', current_pos.get('e'))))
-                        filled_size = Decimal(str(tp_order.get('filled', current_pos.get('size', 0))))
+                        # Audit item 34: same 'average': None trap as the SL branch — use `or`
+                        filled_price = Decimal(str(tp_order.get('average') or current_pos.get('e')))
+                        filled_size = Decimal(str(tp_order.get('filled') or current_pos.get('size', 0)))
                         fee = current_pos.get('fee', get_fee(current_pos.get('symbol', '')))
                         risk_dist = abs(float(current_pos['e']) - float(current_pos.get('orig_sl', current_pos['sl'])))
                         if risk_dist > 0:
@@ -4037,7 +4654,8 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                             pnl = (filled_price - current_pos['e']) * filled_size - (filled_price * fee * filled_size + current_pos['e'] * fee * filled_size)
                         else:
                             pnl = (current_pos['e'] - filled_price) * filled_size - (filled_price * fee * filled_size + current_pos['e'] * fee * filled_size)
-                        update_circuit_breaker(float(pnl))
+                        # Audit item 30: CB update moved BELOW the sym_lock ownership
+                        # recheck (see SL branch) to prevent double-counting.
 
                         if sl_order_id:
                             _cancel_attempts = 0
@@ -4063,6 +4681,8 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                         with _tp_lock:
                             if st.get_position() is None:
                                 continue  # stream() already exited this position
+                            # Audit item 30: ownership confirmed — safe to book P&L once
+                            update_circuit_breaker(float(pnl))
                             _sym_cooldown[_s] = time.time()
                             st.clear_position()
                         logging.info(f"TP HIT ({direction}): {_s} @ {filled_price:,.2f}, PnL={pnl:.2f}")
@@ -4072,7 +4692,7 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                         try:
                             exit_side = 'sell' if direction == 'long' else 'buy'
                             log_fill(_s, exit_side, tp_order_id, float(filled_size), float(filled_price), float(fee) * float(filled_size) * float(filled_price), float(pnl))
-                            br.record(current_pos['sg'], r, current_pos.get('slippage', Decimal('0')), direction, factors=current_pos.get('factors'), rgm=current_pos.get('regime'))
+                            br.record(current_pos['sg'], r, current_pos.get('slippage', Decimal('0')), direction, factors=current_pos.get('factors'), rgm=current_pos.get('regime'), pnl=float(pnl))
                             _td = _build_trade_detail(current_pos, filled_price, tp_hit=_tp_h)
                             record_live_trade(direction, float(r), float(pnl), sym=_s, exit_type='TP', detail=_td)
                             _log_factor_trade(_s, current_pos, r, float(pnl))
@@ -4085,11 +4705,15 @@ def order_status_monitor(ex, st, br, interval=30, sym=''):
                                 confidence=None, exit_price=float(filled_price),
                                 pnl=float(pnl), tp_hit=_tp_h, r_multiple=float(r)
                             )
+                        except Exception as post_err:
+                            logging.warning(f"{_s} post-trade processing error (position already cleared): {post_err}")
+                        # Close card in its own try — an earlier post-trade exception must not eat it
+                        try:
                             _send_trade_card_close(_s, direction, current_pos, filled_price,
                                                    pnl, r, tp_hit=_tp_h, exit_type='TP')
                             _log_trade_marker('close', _s, direction, filled_price, r=r, pnl=pnl)
-                        except Exception as post_err:
-                            logging.warning(f"{_s} post-trade processing error (position already cleared): {post_err}")
+                        except Exception as card_err:
+                            logging.warning(f"{_s} close card/marker error: {card_err}")
                 except Exception as e:
                     logging.warning(f"TP order check failed: {e}")
 
@@ -4122,8 +4746,8 @@ def stream(st, sym, br, ex, iv=2):
             o = ex.fetch_ohlcv(sym, '1h', limit=100)
             if o:
                 hdf = pd.DataFrame(o, columns=['t','o','h','l','c','v']).rename(
-                    columns={'c':'close','h':'high','l':'low','v':'vol','t':'time'})
-                hdf = hdf[['time','o','close','high','low','vol']]
+                    columns={'o':'open','c':'close','h':'high','l':'low','v':'vol','t':'time'})
+                hdf = hdf[['time','open','close','high','low','vol']]
                 with st._lock:
                     st.df = ind(hdf)
                 _ohlcv_ts = now
@@ -4155,7 +4779,11 @@ def stream(st, sym, br, ex, iv=2):
             # Regime on 4h timeframe with 4h cooldown, fallback to tick data
             regime_age = time.time() - getattr(br, '_regime_ts', 0)
             if regime_age > 14400:  # 4 hours
-                htf_df = fetch_higher_timeframe(ex, sym, '4h', 100)
+                # 720 bars of 4h = 120 days — Kraken OHLC max per call. The HMM
+                # needs >= _MIN_BARS (200) to fit; the old 100-bar feed meant
+                # fit() bailed forever and every symbol read uniform 'bull'.
+                # This deep fetch runs only on the 4h regime cadence per symbol.
+                htf_df = fetch_higher_timeframe(ex, sym, '4h', 720)
                 rgm_df = htf_df if htf_df is not None and len(htf_df) >= 50 else st.df
                 if _HAS_HMM:
                     if sym not in _hmm_detectors:
@@ -4261,7 +4889,7 @@ def stream(st, sym, br, ex, iv=2):
                 _corr_val = 0.0
                 _floor_fail = None
                 # Gate 1: Correlation pre-screen
-                open_symbols = [pos.get('symbol') for s in sts.values() for pos in [s.get_position()] if pos]
+                open_symbols = [pos.get('symbol') for s in list(sts.values()) for pos in [s.get_position()] if pos]  # snapshot — rescan may mutate sts
                 _corr_ok, _corr_val = check_correlation_risk(sym, open_symbols)
                 if not _corr_ok and _corr_val > 0.95:
                     logging.debug(f"{sym} correlation hard ceiling, skipping")
@@ -4298,7 +4926,7 @@ def stream(st, sym, br, ex, iv=2):
                                 break
                     if _floor_fail:
                         logging.info(f"{sym} SKIP: factor_floor_{_floor_fail} ({factors[_floor_fail]:.2f} < {_FACTOR_FLOORS[_floor_fail]})")
-                        _gates_failed.append(f"factor_floor:{_floor_fail}")
+                        _gates_failed.append(f"factor_floors:{_floor_fail}")
                         # Shadow track: record what WOULD have happened so brain still learns
                         _shadow_dir = _MODE
                         _shadow_tp_dist = float(current_price) * float(TP_PCT)
@@ -4362,7 +4990,7 @@ def stream(st, sym, br, ex, iv=2):
                             _bayes_override = False
                             _bayes_pwin = None
                             try:
-                                _gb = _get_global_bayes('output')
+                                _gb = _get_global_bayes(_OUTPUT_DIR)
                                 _fleet_n = int(_gb.n.get(br.regime, 0))
                                 if _fleet_n >= 30:
                                     _bayes_pwin = float(_gb.predict_proba(factors, br.regime))
@@ -4504,9 +5132,21 @@ def stream(st, sym, br, ex, iv=2):
                             else:
                                 _gates_passed.append(f"ai_conf:{confidence:.3f}")
 
-                    # Gate 5: Position count + drawdown (signal bot — no heat cap)
+                    # Gate 5: Kill switch + position count + drawdown + heat cap
                     if direction:
-                        if count_open_positions(sts) >= _MAX_OPEN_POS:
+                        # Projected $ risk of this trade in get_portfolio_heat units
+                        # (|entry−sl|·size = SL_PCT × notional). Uses the base trade
+                        # amount — Kelly can scale up to 3×, so this is a floor estimate.
+                        _this_risk = Decimal('0')
+                        try:
+                            _this_risk = _get_trade_amt() * SL_PCT
+                        except Exception as e:
+                            logging.warning(f"{sym} heat-cap risk estimate failed: {e}")
+                        if _kill_switch_engaged():
+                            logging.info(f"{sym} blocked: KILL SWITCH active (delete output/kill_switch.json to reset)")
+                            _gates_failed.append("kill_switch")
+                            direction = None
+                        elif count_open_positions(sts) >= _MAX_OPEN_POS:
                             logging.info(f"{sym} blocked: max {_MAX_OPEN_POS} open positions")
                             _gates_failed.append("max_positions")
                             direction = None
@@ -4514,9 +5154,16 @@ def stream(st, sym, br, ex, iv=2):
                             logging.info(f"{sym} blocked: drawdown tier 0x (>15%)")
                             _gates_failed.append("drawdown")
                             direction = None
+                        elif get_portfolio_heat(sts) + _this_risk > _MAX_HEAT:
+                            logging.info(f"{sym} blocked: heat cap — portfolio ${float(get_portfolio_heat(sts)):.2f} "
+                                         f"+ trade ${float(_this_risk):.2f} > ${float(_MAX_HEAT):.0f}")
+                            _gates_failed.append("heat_cap")
+                            direction = None
                         else:
+                            _gates_passed.append("kill_switch")
                             _gates_passed.append("max_positions")
                             _gates_passed.append("drawdown")
+                            _gates_passed.append("heat_cap")
 
                     # Gate 6: Sentiment filter (external API — most expensive)
                     if direction:
@@ -4595,11 +5242,14 @@ def stream(st, sym, br, ex, iv=2):
                                           min(_kelly_amt, _base_amt * Decimal('2')))
 
                 trade_amt = _kelly_base * Decimal(str(rgm_mult)) * dd_mult * _bus_boost
-                # Floor: paper mode needs CC pool floor; live mode uses _base_amt directly
-                if _PAPER():
-                    trade_amt = max(trade_amt, _TRADE_AMT * Decimal('1.01'))
-                else:
-                    trade_amt = max(trade_amt, _base_amt)
+                # Audit item 9: NO bump back to _base_amt/_TRADE_AMT here — that
+                # floor cancelled every risk-reduction multiplier (regime, drawdown,
+                # bus), so "scaling by 0.5x" never actually shrank a trade.
+                # Exchange-minimum viability is enforced downstream by the min_size
+                # gate (raw_size < min_amt -> scale up + 10% balance cap) and the
+                # notional gate (cost_min). A small absolute floor guards markets
+                # where Kraken reports no limits — it is a dust guard, not a risk floor.
+                trade_amt = max(trade_amt, Decimal('5'))
 
                 # Cap at 20% of balance
                 if _PAPER():
@@ -4660,7 +5310,8 @@ def stream(st, sym, br, ex, iv=2):
                         _matches = find_similar_trades(factors, regime=br.regime,
                                                       direction=_dir_for_query, k=10, max_distance=0.6)
                         if _matches:
-                            _wins = sum(1 for m in _matches if m['r'] > 0)
+                            # Fee-honest wins (audit item 15): net-pnl label, r-fallback
+                            _wins = sum(1 for m in _matches if m.get('win', m.get('r', 0) > 0))
                             _avg_r = sum(m['r'] for m in _matches) / len(_matches)
                             _mem_summary = {
                                 'n': len(_matches),
@@ -4679,8 +5330,12 @@ def stream(st, sym, br, ex, iv=2):
                     "confidence": round(confidence, 3) if confidence else 0.0,
                     "whale_score": round(_ws, 1) if _ws is not None else None,
                     "regime": br.regime,
+                    "direction": direction if direction else ('short' if _MODE == 'short' else 'long'),
                     "gates_passed": _gates_passed,
                     "gates_failed": _gates_failed,
+                    # Provisional: notional/duplicate/balance/order gates run AFTER this
+                    # record is appended. _patch_decision() below rewrites result (and
+                    # strips the 'entry' pass tag) if any late gate blocks the trade.
                     "result": "ENTERED" if direction and current_price > 0 else "BLOCKED",
                     "memory": _mem_summary,
                 }
@@ -4689,12 +5344,31 @@ def stream(st, sym, br, ex, iv=2):
                     if len(_decision_log) > _MAX_DECISION_LOG:
                         _decision_log.pop(0)
 
+                def _patch_decision(new_result, fail_tag=None):
+                    """Late-gate honesty (audit item 25): the decision record above is
+                    shared by reference in _decision_log, so patching it here updates
+                    /decisions and /api/funnel. Removing 'entry' from gates_passed keeps
+                    the funnel's entered count limited to trades that actually opened."""
+                    try:
+                        with _decision_log_lock:
+                            if fail_tag and fail_tag not in _gates_failed:
+                                _gates_failed.append(fail_tag)
+                            if 'entry' in _gates_passed:
+                                _gates_passed.remove('entry')
+                            _decision_record['result'] = new_result
+                    except Exception:
+                        pass
+            else:
+                def _patch_decision(new_result, fail_tag=None):
+                    pass  # no record was created this iteration
+
             if direction:
                 # notional stays in Decimal space — raw_size is Decimal, current_price is Decimal
                 notional = raw_size * current_price
                 if cost_min and notional < Decimal(str(cost_min)):
                     logging.warning(f"{sym} notional {notional} below cost min {cost_min}, skipping")
                     _gates_failed.append("notional")
+                    _patch_decision("BLOCKED")
                 else:
                     _gates_passed.append("notional")
                     # Acquire per-symbol lock to prevent duplicate entries from watchdog-restarted threads
@@ -4705,6 +5379,7 @@ def stream(st, sym, br, ex, iv=2):
                         if st.get_position() is not None:
                             logging.info(f"{sym} duplicate open blocked: position already open (pair guard)")
                             _gates_failed.append("duplicate")
+                            _patch_decision("BLOCKED")
                         else:
                             position_size = raw_size
                             _reservation_id = ""
@@ -4747,7 +5422,10 @@ def stream(st, sym, br, ex, iv=2):
                                     _send_trade_card_open(sym, direction, filled_price, stop_loss,
                                                          tp1, tp2, tp3, filled_size,
                                                          float(br.confidence) if hasattr(br, 'confidence') else None,
-                                                         br.regime, sg)
+                                                         br.regime, sg,
+                                                         gates_passed=list(_gates_passed),
+                                                         gates_failed=list(_gates_failed),
+                                                         sig_weights={s: float(br.signal_weight(s)) for s in sg})
                                 except Exception as e:
                                     logging.warning(f"Card send (paper open) failed: {e}")
                                 _log_trade_marker('open', sym, direction, filled_price)
@@ -4777,18 +5455,26 @@ def stream(st, sym, br, ex, iv=2):
                                     _avail = _LIVE_BALANCE
                                 if trade_amt > _avail:
                                     logging.warning(f"{sym} live order blocked: trade ${float(trade_amt):,.2f} > available ${float(_avail):,.2f}")
+                                    _patch_decision("FAILED", "entry:insufficient_balance")
                                     continue
                                 try:
                                     if direction == 'long':
                                         order = submit_order_with_retry(ex, 'create_market_buy_order', sym, float(position_size))
-                                        filled = order.get('filled') if order.get('filled') is not None else order.get('amount', 0) or 0
-                                        avg_price = order.get('average') or order.get('price') or current_price or 0
                                         side = 'buy'
                                     else:
                                         order = submit_order_with_retry(ex, 'create_market_sell_order', sym, float(position_size))
-                                        filled = order.get('filled') if order.get('filled') is not None else order.get('amount', 0) or 0
-                                        avg_price = order.get('average') or order.get('price') or current_price or 0
                                         side = 'sell'
+                                    # Guard (audit 9h): submit may return None (ambiguous
+                                    # order, reconciliation failed) and ccxt may report
+                                    # filled=0.0 (not None) — either way there is no
+                                    # confirmed fill, and a size-0 position must never
+                                    # be created.
+                                    filled = ((order.get('filled') if order.get('filled') is not None else order.get('amount', 0)) or 0) if order else 0
+                                    avg_price = (order.get('average') or order.get('price') or current_price or 0) if order else 0
+                                    if not order or not filled:
+                                        logging.error(f"{sym} {direction.upper()} entry FAILED: no confirmed fill (order_id={order.get('id', '?') if order else 'None'}, filled={filled}) — skipping position")
+                                        _patch_decision("FAILED", "entry:no_fill")
+                                        continue
                                     actual_fee = float(fee) * float(filled) * float(avg_price)
                                     if direction == 'long':
                                         slippage = (Decimal(str(avg_price)) - current_price) / current_price
@@ -4832,24 +5518,8 @@ def stream(st, sym, br, ex, iv=2):
                                         logging.info(f"{sym} TP1 order placed: {tp_order.get('id', 'unknown')} @ {tp1:,.2f}")
                                     except Exception as tp_err:
                                         logging.error(f"{sym} TP order failed: {tp_err}")
-                                    try:
-                                        deliver_signal(
-                                            signal_type=direction, symbol=sym, direction=direction,
-                                            price=float(avg_price), sl=float(stop_loss),
-                                            tp1=float(tp1), tp2=float(tp2), tp3=float(tp3),
-                                            confidence=float(br.confidence) if hasattr(br, 'confidence') else None,
-                                            reason="confluence entry"
-                                        )
-                                    except Exception as e:
-                                        logging.warning(f"Signal delivery failed: {e}")
-                                    try:
-                                        _send_trade_card_open(sym, direction, avg_price, stop_loss,
-                                                             tp1, tp2, tp3, filled_size,
-                                                             float(br.confidence) if hasattr(br, 'confidence') else None,
-                                                             br.regime, sg)
-                                    except Exception as e:
-                                        logging.warning(f"Card send (live open) failed: {e}")
-                                    _log_trade_marker('open', sym, direction, filled_price)
+                                    # Persist the position FIRST — a crash during signal
+                                    # delivery/card enqueue must never orphan a live fill.
                                     st.set_position({
                                         'symbol': sym, 'direction': direction,
                                         'e': filled_price, 'sl': stop_loss, 'orig_sl': stop_loss,
@@ -4867,8 +5537,30 @@ def stream(st, sym, br, ex, iv=2):
                                         'corr': round(_corr_val, 4), 'corr_override': _corr_val > _max_correlation,
                                         'reservation_id': _reservation_id,
                                     })
+                                    _log_trade_marker('open', sym, direction, filled_price)
+                                    try:
+                                        deliver_signal(
+                                            signal_type=direction, symbol=sym, direction=direction,
+                                            price=float(avg_price), sl=float(stop_loss),
+                                            tp1=float(tp1), tp2=float(tp2), tp3=float(tp3),
+                                            confidence=float(br.confidence) if hasattr(br, 'confidence') else None,
+                                            reason="confluence entry"
+                                        )
+                                    except Exception as e:
+                                        logging.warning(f"Signal delivery failed: {e}")
+                                    try:
+                                        _send_trade_card_open(sym, direction, avg_price, stop_loss,
+                                                             tp1, tp2, tp3, filled_size,
+                                                             float(br.confidence) if hasattr(br, 'confidence') else None,
+                                                             br.regime, sg,
+                                                             gates_passed=list(_gates_passed),
+                                                             gates_failed=list(_gates_failed),
+                                                             sig_weights={s: float(br.signal_weight(s)) for s in sg})
+                                    except Exception as e:
+                                        logging.warning(f"Card send (live open) failed: {e}")
                                 except Exception as order_err:
                                     logging.error(f"{sym} entry order failed: {order_err}")
+                                    _patch_decision("FAILED", "entry:order_error")
 
             if current_pos:
                 direction = current_pos.get('direction', _MODE)
@@ -5178,7 +5870,7 @@ def stream(st, sym, br, ex, iv=2):
                         try:
                             exit_side_log = 'sell' if direction == 'long' else 'buy'
                             log_fill(sym, exit_side_log, pos_snap.get('order_id', 'unknown'), float(filled_size), float(current_price), float(fee) * float(filled_size) * float(current_price), float(pnl))
-                            br.record(pos_snap['sg'], r, pos_snap.get('slippage', Decimal('0')), direction, factors=pos_snap.get('factors'), rgm=pos_snap.get('regime'))
+                            br.record(pos_snap['sg'], r, pos_snap.get('slippage', Decimal('0')), direction, factors=pos_snap.get('factors'), rgm=pos_snap.get('regime'), pnl=float(pnl))
                             # UPGRADE D: Record LLM prediction vs outcome for Brier scoring
                             _entry_llm = pos_snap.get('llm_score')
                             if _entry_llm is not None:
@@ -5196,11 +5888,15 @@ def stream(st, sym, br, ex, iv=2):
                                 exit_price=float(current_price), pnl=float(pnl),
                                 tp_hit=tp_hit, r_multiple=float(r)
                             )
+                        except Exception as post_err:
+                            logging.warning(f"{sym} post-trade processing error (position already cleared): {post_err}")
+                        # Close card in its own try — an earlier post-trade exception must not eat it
+                        try:
                             _send_trade_card_close(sym, direction, pos_snap, current_price,
                                                    pnl, r, tp_hit=tp_hit, exit_type=_xt)
                             _log_trade_marker('close', sym, direction, current_price, r=r, pnl=pnl)
-                        except Exception as post_err:
-                            logging.warning(f"{sym} post-trade processing error (position already cleared): {post_err}")
+                        except Exception as card_err:
+                            logging.warning(f"{sym} close card/marker error: {card_err}")
 
             time.sleep(iv)
         except Exception as e:
@@ -5349,9 +6045,10 @@ def _build_signals_panel(brs):
     t.add_column("Desc", min_width=10, style=_C['muted'])
     t.add_column("W/F", min_width=5, justify="right")
     t.add_column("WR%", min_width=4, justify="right")
+    _brs_snap = list(brs.values())  # snapshot — rescan may mutate brs
     for sig in AdaptiveBrain.SIG:
-        tf = sum(b.stats[sig]['f'] for b in brs.values())
-        tw = sum(b.stats[sig]['w'] for b in brs.values())
+        tf = sum(b.stats[sig]['f'] for b in _brs_snap)
+        tw = sum(b.stats[sig]['w'] for b in _brs_snap)
         wr = tw / tf * 100 if tf else 0
         wrc = _C['green'] if wr >= 50 else _C['amber'] if tf > 0 else _C['dim']
         t.add_row(sig.upper(), _SIG_DESC.get(sig, '—'), f"{tw}/{tf}",
@@ -5424,7 +6121,7 @@ def _build_trades_panel(m=None):
 
 def build_tui_layout(sts, brs, nm):
     live = get_live_metrics()
-    open_count = sum(1 for s in sts.values() if s.get_position() is not None)
+    open_count = sum(1 for s in list(sts.values()) if s.get_position() is not None)  # snapshot — rescan may mutate sts
     total_pnl = live.get('total_pnl', 0.0)
     wr = live['win_rate'] * 100
     pnl_sign = '+' if total_pnl >= 0 else ''
@@ -5509,6 +6206,11 @@ def register_thread(name: str):
     with _health_lock:
         _health_state[name] = {'last_beat': time.time(), 'alive': True, 'alerted': False}
 
+def _unregister_thread(name: str):
+    """Remove a deliberately-stopped thread from health tracking (rescan drop path)."""
+    with _health_lock:
+        _health_state.pop(name, None)
+
 def heartbeat(name: str):
     with _health_lock:
         if name in _health_state:
@@ -5547,7 +6249,14 @@ _health_snap_lock = Lock()
 
 def _update_health_snapshot():
     """Background job: rebuild health snapshot every 5s. Runs in its own thread."""
-    import psutil
+    # Audit item 32: import inside try — a missing psutil must degrade the
+    # snapshot (no cpu/mem fields), not kill this thread and wedge /health
+    # at "starting" forever.
+    try:
+        import psutil
+    except Exception as _psutil_err:
+        psutil = None
+        logging.warning(f"psutil unavailable — /health will omit cpu/memory: {_psutil_err}")
     while True:
         try:
             s = {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat() + "Z"}
@@ -5555,13 +6264,30 @@ def _update_health_snapshot():
                 s["uptime_seconds"] = (datetime.now() - _start_time).total_seconds()
             s["active_symbols"] = len(sts) if 'sts' in globals() else 0
             try:
-                s["cpu_percent"] = psutil.cpu_percent()
-                s["memory_percent"] = psutil.virtual_memory().percent
+                if psutil is not None:
+                    s["cpu_percent"] = psutil.cpu_percent()
+                    s["memory_percent"] = psutil.virtual_memory().percent
             except Exception:
                 pass
             if 'sts' in globals() and sts:
-                s["threads_healthy"] = sum(1 for st in sts.values() if not st.shutdown.is_set())
+                s["threads_healthy"] = sum(1 for st in list(sts.values()) if not st.shutdown.is_set())  # snapshot — rescan may mutate sts
                 s["total_threads"] = len(sts)
+            # Real thread liveness (audit item 32): shutdown-flag counting above
+            # makes dead threads look alive. Cross-check the heartbeat registry:
+            # every registered thread beats on a <=60s cadence (rescan/reconciler
+            # chunk their sleeps to 30s), so a beat older than 180s (3x cadence)
+            # means the thread is wedged or dead.
+            try:
+                _hb_now = time.time()
+                with _health_lock:
+                    _stale = sorted(n for n, hs in _health_state.items()
+                                    if _hb_now - hs.get('last_beat', 0) > 180)
+                    s["threads_registered"] = len(_health_state)
+                s["stale_threads"] = _stale
+                if _stale:
+                    s["status"] = "degraded"
+            except Exception as _stale_err:
+                logging.warning(f"health-snapshot staleness check failed: {_stale_err}")
             # Kraken: just check if exchange object has markets loaded
             s["kraken_api"] = "connected" if ('exchange' in globals() and exchange and getattr(exchange, 'markets', None)) else "error"
             s["trading_mode"] = "paper" if _is_paper() else "live"
@@ -5623,40 +6349,64 @@ def _run_http_health_server():
             self.send_response(200)
             self.end_headers()
         def do_GET(self):
+            # Build-body-first (audit item 35): _dispatch builds the full body
+            # BEFORE sending any headers, so an exception mid-build returns a
+            # clean 500 + error JSON instead of a truncated 200.
+            try:
+                self._dispatch()
+            except (BrokenPipeError, ConnectionResetError):
+                pass  # client went away mid-write — nothing to salvage
+            except Exception as _h_err:
+                logging.warning(f"HTTP handler {self.path} failed: {_h_err}")
+                try:
+                    _eb = json.dumps({'error': str(_h_err)}).encode()
+                    self.send_response(500)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(_eb)))
+                    self.end_headers()
+                    self.wfile.write(_eb)
+                except Exception:
+                    pass
+        def _finish_json(self, obj, code=200, ctype="application/json"):
+            """Serialize (if needed) then send headers+body. Serialization happens
+            before send_response, so a dumps() failure propagates to do_GET's
+            500 path with no headers yet on the wire."""
+            body = obj if isinstance(obj, (bytes, bytearray)) else json.dumps(obj).encode()
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        def _dispatch(self):
             if self.path == "/health":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 status = _get_expanded_health()
-                response = json.dumps(status)
-                self.wfile.write(response.encode())
+                self._finish_json(status)
             elif self.path == "/positions":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 positions = []
                 if 'sts' in globals() and 'brs' in globals():
-                    for sym, st in sts.items():
+                    for sym, st in list(sts.items()):  # snapshot — rescan may mutate sts
                         pos = st.get_position()
                         if pos:
                             br = brs.get(sym)
                             price, _ = st.get_price()
                             d = pos.get('direction', _MODE)
                             sz = float(pos.get('size', 0))
-                            fp, ep = float(price), float(pos['e'])
+                            # .get() defaults throughout — a partial position.json
+                            # must degrade to zeros, not 500 the whole endpoint.
+                            fp, ep = float(price), float(pos.get('e', 0) or 0)
                             upl = (fp - ep) * sz if d == 'long' else (ep - fp) * sz
-                            risk_dist = abs(ep - float(pos.get('orig_sl', pos['sl'])))
+                            risk_dist = abs(ep - float(pos.get('orig_sl', pos.get('sl', 0)) or 0))
                             r_mult = round((fp - ep) / risk_dist, 2) if d == 'long' and risk_dist > 0 else round((ep - fp) / risk_dist, 2) if risk_dist > 0 else 0
                             positions.append({
                                 'symbol': sym,
                                 'direction': d,
                                 'signals': pos.get('sg', []),
-                                'entry': _fp(pos['e']),
+                                'entry': _fp(pos.get('e', 0)),
                                 'size': sz,
                                 'size_usd': round(sz * ep, 2),
                                 'pnl': round(upl, 2),
                                 'r_mult': r_mult,
-                                'sl': _fp(pos['sl']),
+                                'sl': _fp(pos.get('sl', 0)),
                                 'tp1': _fp(pos['tp1']) if 'tp1' in pos else None,
                                 'tp2': _fp(pos['tp2']) if 'tp2' in pos else None,
                                 'tp3': _fp(pos['tp3']) if 'tp3' in pos else None,
@@ -5665,19 +6415,17 @@ def _run_http_health_server():
                                 'confidence': float(br.confidence) if br and hasattr(br, 'confidence') else 0.5,
                                 'regime': pos.get('regime', br.regime if br else 'chop'),
                             })
-                self.wfile.write(json.dumps(positions).encode())
+                self._finish_json(positions)
             elif self.path == "/analytics":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 m = get_live_metrics()
                 # Per-signal breakdown from in-memory brains (same data TUI reads)
                 per_signal = {}
                 sym_stats = []
                 if 'brs' in globals() and brs:
+                    _brs_snap = list(brs.values())  # snapshot — rescan may mutate brs
                     for sig in AdaptiveBrain.SIG:
-                        tf = sum(b.stats[sig]['f'] for b in brs.values())
-                        tw = sum(b.stats[sig]['w'] for b in brs.values())
+                        tf = sum(b.stats[sig]['f'] for b in _brs_snap)
+                        tw = sum(b.stats[sig]['w'] for b in _brs_snap)
                         per_signal[sig] = {'f': tf, 'w': tw}
                     for sym, br in sorted(brs.items()):
                         tf = sum(v['f'] for v in br.stats.values())
@@ -5706,18 +6454,12 @@ def _run_http_health_server():
                     'session_wr': round(m['session_wr'] * 100, 1),
                     'session_pnl': round(m['session_pnl'], 2),
                 }
-                self.wfile.write(json.dumps(data).encode())
+                self._finish_json(data)
             elif self.path == "/metrics":
-                self.send_response(200)
-                self.send_header("Content-Type", "text/plain")
-                self.end_headers()
                 status = _get_expanded_health()
                 metrics = "\n".join([f"goldeneye_{k} {v}" for k, v in status.items() if isinstance(v, (int, float))])
-                self.wfile.write(metrics.encode())
+                self._finish_json(metrics.encode(), ctype="text/plain")
             elif self.path == "/symbols":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 syms = []
                 if 'sts' in globals() and 'brs' in globals():
                     # Per-symbol historical P/L from trade log
@@ -5740,14 +6482,11 @@ def _run_http_health_server():
                             'regime': rgm,
                             'wr': round(w, 1),
                         })
-                self.wfile.write(json.dumps(syms).encode())
+                self._finish_json(syms)
             elif self.path.startswith("/api/ohlc/"):
                 # Recent OHLC tail for a single symbol. Returns last N candles
                 # (close + time) with the current position overlay (entry/SL/TPs)
                 # and regime so the UI can render the mini chart in one round trip.
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 raw = self.path[len("/api/ohlc/"):]
                 qpos = raw.find('?')
                 sym_enc = raw if qpos < 0 else raw[:qpos]
@@ -5772,8 +6511,8 @@ def _run_http_health_server():
                 out = {'symbol': sym_req, 'candles': [], 'position': None,
                        'regime': None, 'current_price': None, 'last_price': None}
                 try:
-                    if 'sts' in globals() and sym_req in sts:
-                        _st = sts[sym_req]
+                    _st = sts.get(sym_req) if 'sts' in globals() else None
+                    if _st is not None:
                         _br = brs.get(sym_req) if 'brs' in globals() else None
                         df = _st.df
                         if df is not None and len(df) > 0:
@@ -5848,20 +6587,14 @@ def _run_http_health_server():
                         out['regime'] = _br.regime if _br and hasattr(_br, 'regime') else None
                 except Exception as _ohlc_err:
                     logging.debug(f"/api/ohlc/{sym_req} error: {_ohlc_err}")
-                self.wfile.write(json.dumps(out).encode())
+                self._finish_json(out)
             elif self.path == "/decisions":
                 # Decision traceability — last N entry decisions with full factor breakdown
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 with _decision_log_lock:
                     decisions = list(_decision_log)
-                self.wfile.write(json.dumps(decisions).encode())
+                self._finish_json(decisions)
             elif self.path.startswith("/api/trades"):
                 # Broadcaster-compatible trade list for EOD card
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
                 today_start = datetime.strptime(today, "%Y-%m-%d").replace(
                     tzinfo=timezone.utc).timestamp()
@@ -5887,16 +6620,13 @@ def _run_http_health_server():
                             "fees": fees,
                             "exit_reason": tr.get('exit', ''),
                         })
-                self.wfile.write(json.dumps({"trades": trades}).encode())
+                self._finish_json({"trades": trades})
             elif self.path.startswith("/api/expectancy"):
                 # Broadcaster-compatible expectancy summary
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 m = get_live_metrics()
                 pnl_list = m.get('pnl_history', [])
                 avg_pnl = sum(pnl_list) / len(pnl_list) if pnl_list else 0
-                self.wfile.write(json.dumps({
+                self._finish_json({
                     "fleet_expectancy": round(avg_pnl, 4),
                     "total_trades": m['trades'],
                     "win_rate": round(m['win_rate'] * 100, 1),
@@ -5904,23 +6634,14 @@ def _run_http_health_server():
                     "bot_rankings": [{"bot": "goldeneye", "trades": m['trades'],
                                       "win_rate": round(m['win_rate'] * 100, 1),
                                       "net_pnl": round(m['total_pnl'], 2)}],
-                }).encode())
+                })
             elif self.path.startswith("/api/events/recent"):
                 # Stub — GoldenEye has no event bus, return empty
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(b"[]")
+                self._finish_json(b"[]")
             elif self.path == "/logs":
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(list(_tui_logs)).encode())
+                self._finish_json(list(_tui_logs))
             elif self.path.startswith("/signal/"):
                 sig = self.path[len("/signal/"):].lower()
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 result = {'error': 'Invalid signal'}
                 if sig in AdaptiveBrain.SIG and 'brs' in globals():
                     per_sym = []
@@ -5955,16 +6676,13 @@ def _run_http_health_server():
                         'wr': round(total_w / total_f * 100, 1) if total_f > 0 else 0,
                         'per_symbol': per_sym,
                     }
-                self.wfile.write(json.dumps(result).encode())
+                self._finish_json(result)
             elif self.path.startswith("/position/"):
                 from urllib.parse import unquote
                 sym = unquote(self.path[len("/position/"):])
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 result = {'error': 'Position not found'}
-                if 'sts' in globals() and 'brs' in globals() and sym in sts:
-                    st = sts[sym]
+                st = sts.get(sym) if ('sts' in globals() and 'brs' in globals()) else None
+                if st is not None:
                     br = brs.get(sym)
                     pos = st.get_position()
                     if pos:
@@ -6026,12 +6744,9 @@ def _run_http_health_server():
                             'funding_rate': round(float(pos['funding_rate']), 6) if pos.get('funding_rate') is not None else None,
                             'of_score': round(float(pos['of_score']), 4) if pos.get('of_score') is not None else None,
                         }
-                self.wfile.write(json.dumps(result).encode())
+                self._finish_json(result)
             elif self.path.startswith("/trade/"):
                 idx_str = self.path[len("/trade/"):]
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 result = {'error': 'Trade not found'}
                 try:
                     idx = int(idx_str)
@@ -6041,16 +6756,13 @@ def _run_http_health_server():
                         result = dict(tlog[idx])
                 except (ValueError, IndexError):
                     pass
-                self.wfile.write(json.dumps(result).encode())
+                self._finish_json(result)
             elif self.path.startswith("/symbol/"):
                 from urllib.parse import unquote
                 sym = unquote(self.path[len("/symbol/"):])
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 result = {'error': 'Symbol not found'}
-                if 'sts' in globals() and 'brs' in globals() and sym in sts:
-                    st = sts[sym]
+                st = sts.get(sym) if ('sts' in globals() and 'brs' in globals()) else None
+                if st is not None:
                     br = brs.get(sym)
                     price, last_price = st.get_price()
                     pos = st.get_position()
@@ -6101,7 +6813,7 @@ def _run_http_health_server():
                         'position': pos_data,
                         'indicators': indicators,
                     }
-                self.wfile.write(json.dumps(result).encode())
+                self._finish_json(result)
             elif self.path == "/api/equity":
                 # Equity curve time-series for the dashboard hero chart
                 with _equity_lock:
@@ -6134,7 +6846,7 @@ def _run_http_health_server():
             elif self.path == "/api/brain/global":
                 # Global fleet-wide Bayesian brain — proves cross-symbol learning
                 try:
-                    gb = _get_global_bayes('output')
+                    gb = _get_global_bayes(_OUTPUT_DIR)
                     out = {
                         'regime_n': {r: int(gb.n.get(r, 0)) for r in _REGIMES},
                         'total_n': int(sum(gb.n.values())),
@@ -6170,7 +6882,7 @@ def _run_http_health_server():
                     global_sig = {s: {'f': 0, 'w': 0} for s in 'abcdefghijklmnopqrstuvwxyz2'}
                     total_trades = 0
                     regime_update_counts = {r: 0 for r in ('bull', 'bear', 'range', 'chop')}
-                    for _sym, _br in brs.items():
+                    for _sym, _br in list(brs.items()):  # snapshot — rescan may mutate brs
                         try:
                             sym_stats = getattr(_br, 'stats', {}) or {}
                             tc = int(getattr(_br, 'trade_count', 0))
@@ -6227,9 +6939,6 @@ def _run_http_health_server():
                     self.wfile.write(body)
             elif self.path.startswith("/api/autopsy/recent"):
                 # Last N autopsies from the jsonl journal (tail, not full history)
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 limit = 20
                 try:
                     if '?' in self.path:
@@ -6254,20 +6963,14 @@ def _run_http_health_server():
                                 continue
                 except Exception as _ap_err:
                     logging.debug(f"autopsy read failed: {_ap_err}")
-                self.wfile.write(json.dumps(out).encode())
+                self._finish_json(out)
             elif self.path == "/api/regime/sanity":
                 # Latest regime-sanity snapshot
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 with _REGIME_SANITY_LOCK:
                     snap = dict(_REGIME_SANITY)
-                self.wfile.write(json.dumps(snap).encode())
+                self._finish_json(snap)
             elif self.path.startswith("/api/memory/similar"):
                 # Query fleet memory: given factors+regime+dir, return most similar past trades
-                self.send_response(200)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
                 factors = {}
                 regime = None
                 direction = None
@@ -6294,7 +6997,8 @@ def _run_http_health_server():
                 matches = find_similar_trades(factors, regime=regime, direction=direction, k=k, max_distance=max_dist)
                 summary = None
                 if matches:
-                    wins = sum(1 for m in matches if m['r'] > 0)
+                    # Fee-honest wins (audit item 15): net-pnl label, r-fallback
+                    wins = sum(1 for m in matches if m.get('win', m.get('r', 0) > 0))
                     avg_r = sum(m['r'] for m in matches) / len(matches)
                     summary = {
                         'n': len(matches),
@@ -6303,7 +7007,7 @@ def _run_http_health_server():
                         'win_rate': round(wins / len(matches), 3),
                         'avg_r': round(avg_r, 3),
                     }
-                self.wfile.write(json.dumps({'summary': summary, 'matches': matches}).encode())
+                self._finish_json({'summary': summary, 'matches': matches})
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -6314,7 +7018,9 @@ def _run_http_health_server():
             daemon_threads = True
             allow_reuse_address = True
         _health_port = 18095  # GoldenEye standalone — high port to avoid fleet conflicts
-        with _ThreadedTCP(("", _health_port), HealthHandler) as httpd:
+        # Audit item 33: bind loopback only — the dashboard proxies this API via
+        # localhost (dashboard.py GOLDENEYE_URL), nothing else needs LAN access.
+        with _ThreadedTCP(("127.0.0.1", _health_port), HealthHandler) as httpd:
             logging.info(f"Health server listening on port {_health_port}")
             while _http_server_running:
                 httpd.handle_request()
@@ -6377,7 +7083,27 @@ def main():
     _SIG_DESC = _SIG_DESC_SHORT if _MODE == 'short' else _SIG_DESC_LONG
     if a.output_dir is None:
         a.output_dir = 'output_short' if _MODE == 'short' else 'output'
-    _METRICS_FILE = os.path.join(a.output_dir, 'metrics.json')
+    # Unify output roots (audit M15 / dashboard L2): --output-dir must govern
+    # ALL state files (equity, balance, autopsy, sanity, CB, kill switch), not
+    # just metrics.json — otherwise a --mode short instance shares files with
+    # the long bot. Rebind the module global and every module-level constant
+    # derived from it BEFORE any thread starts or lazy path builder runs.
+    # (Lazy builders — live_balance.json, _EQUITY_FILE, _TRADE_MARKERS_FILE,
+    # _GLOBAL_BAYES_PATH — read _OUTPUT_DIR/a.output_dir at runtime and need no
+    # recompute here.)
+    global _OUTPUT_DIR, _CB_STATE_FILE, _KILL_SWITCH_FILE, _AUTOPSY_PATH, _REGIME_SANITY_PATH
+    _OUTPUT_DIR = os.path.abspath(a.output_dir if os.path.isabs(a.output_dir)
+                                  else os.path.join(_BOT_DIR, a.output_dir))
+    a.output_dir = _OUTPUT_DIR  # symbol dirs + rescan + restore scan share the same root
+    try:
+        os.makedirs(_OUTPUT_DIR, exist_ok=True)
+    except Exception as _od_err:
+        logging.warning(f"Could not create output dir {_OUTPUT_DIR}: {_od_err}")
+    _CB_STATE_FILE = os.path.join(_OUTPUT_DIR, 'circuit_breaker_state.json')
+    _KILL_SWITCH_FILE = os.path.join(_OUTPUT_DIR, 'kill_switch.json')
+    _AUTOPSY_PATH = os.path.join(_OUTPUT_DIR, 'autopsy.jsonl')
+    _REGIME_SANITY_PATH = os.path.join(_OUTPUT_DIR, 'regime_sanity.json')
+    _METRICS_FILE = os.path.join(_OUTPUT_DIR, 'metrics.json')
     # Log to file only — stdout is owned by the Rich TUI
     _log_file = 'goldeneye_short_err.log' if _MODE == 'short' else 'goldeneye_err.log'
     _log_file = os.path.join(_BOT_DIR, _log_file)
@@ -6397,6 +7123,17 @@ def main():
     c = yaml.safe_load(open(a.config)) if os.path.exists(a.config) else {}  # noqa: SIM115 — short-lived, GC'd immediately
     set_config(c)
     _load_metrics()
+    _load_circuit_breaker()  # restore CB state before trading starts (audit P0-2)
+
+    # Kill switch (audit C1): if a previous session tripped it, entries stay
+    # blocked until output/kill_switch.json is manually deleted. Exits and
+    # position management keep running — the switch only blocks NEW entries.
+    try:
+        if _kill_switch_engaged():
+            logging.critical(f"KILL SWITCH ACTIVE — no entries until {_KILL_SWITCH_FILE} is deleted "
+                             "(position management and exits keep running)")
+    except Exception as e:
+        logging.warning(f"Kill switch boot check failed: {e}")
 
     # Standalone live/paper toggle — reads from config.yaml
     global _STANDALONE_MODE
@@ -6410,7 +7147,9 @@ def main():
 
     for _retry in range(5):
         try:
-            exchange = ccxt.kraken(_ccxt_cfg)
+            # Wrap in _LockedExchange so every private Kraken call — current
+            # and future — is serialized through _kraken_api_lock (nonce safety).
+            exchange = _LockedExchange(ccxt.kraken(_ccxt_cfg))
             adapter = __import__('requests.adapters',fromlist=['HTTPAdapter']).HTTPAdapter(pool_connections=25,pool_maxsize=25)
             exchange.session.mount('https://',adapter)
             exchange.session.mount('http://',adapter)
@@ -6459,6 +7198,34 @@ def main():
     s = [x for x in s if not _is_blacklisted(x)]
     if len(s) < _bl_before:
         logging.info(f"Blacklist filtered {_bl_before - len(s)} pairs")
+
+    # Never abandon a saved position (audit H2): a position on a symbol that
+    # fell out of the top_sym ranking (or got blacklisted) must still be loaded,
+    # streamed, and order-monitored. Scan <output_dir>/<BASE>_<QUOTE>/position.json
+    # (dirs are created as sym.replace('/','_') — covers USD and USDT quotes)
+    # and force-include any symbol with a saved position.
+    if not a.backtest:
+        try:
+            import glob as _glob
+            for _pf in _glob.glob(os.path.join(a.output_dir, '*_*', 'position.json')):
+                _dname = os.path.basename(os.path.dirname(_pf))
+                _psym = '/'.join(_dname.rsplit('_', 1))
+                try:
+                    with open(_pf) as _f:
+                        json.load(_f)
+                except Exception as _pe:
+                    # Corrupt file — still include the symbol so BotState's own
+                    # loud load-warning fires and reconciliation can see it
+                    logging.warning(f"RESTORE: position file {_pf} unreadable ({_pe}) — including {_psym} anyway for reconciliation")
+                if _psym in s:
+                    continue
+                if _psym not in exchange.markets:
+                    logging.warning(f"RESTORE: saved position for {_psym} but market not on exchange — cannot stream it; manual action needed: {_pf}")
+                    continue
+                s.append(_psym)
+                logging.info(f"RESTORE: restored out-of-universe position symbol {_psym} — force-included at startup")
+        except Exception as _re:
+            logging.warning(f"RESTORE: saved-position scan failed: {_re}")
 
     logging.info(f"Symbols ({len(s)}): {', '.join(s)}")
 
@@ -6559,6 +7326,8 @@ def main():
     threading.Thread(target=_regime_sanity_loop, daemon=True).start()
     start_http_health_server()
     start_subscriber_api()
+    # Card send worker — renders + Telegram HTTP off the trade path
+    start_card_worker()
 
     # Launch Flask dashboard in background thread — no second terminal needed
     try:
@@ -6568,6 +7337,8 @@ def main():
             _lg.getLogger('werkzeug').setLevel(_lg.ERROR)  # suppress Flask request noise
             _dash_env = 'DASHBOARD_PORT_SHORT' if _MODE == 'short' else 'DASHBOARD_PORT'
             _dash_default = 18065  # GoldenEye standalone — high port to avoid fleet conflicts
+            # Deliberately LAN-visible (view layer, watched from other devices);
+            # the bot APIs on 18095/18096 are loopback-only (audit item 33).
             _dash_app.run(host='0.0.0.0', port=int(os.getenv(_dash_env, _dash_default)), debug=False, use_reloader=False)
         _dash_port = int(os.getenv('DASHBOARD_PORT_SHORT' if _MODE == 'short' else 'DASHBOARD_PORT', 18065))
         dash_thread = threading.Thread(target=_run_dashboard, daemon=True)
@@ -6611,7 +7382,7 @@ def _shutdown_all():
         except Exception:
             pass
     if 'sts' in globals() and sts:
-        for st in sts.values():
+        for st in list(sts.values()):  # snapshot — rescan may mutate sts
             st.shutdown.set()
     if 'ts' in globals() and ts:
         for t in ts:

@@ -398,7 +398,12 @@ var BOTS_DEF = [
   {id:"contrarian",name:"Contrarian",port:8084, color:"#ff1744",  trading:false, noHtml:true},
   {id:"arbitrageur",name:"Arbitrageur",port:8085,color:"#7c4dff", trading:true,  noHtml:true},
   {id:"chronos",   name:"Chronos",   port:8086, color:"#ffab00",  trading:false, noHtml:true},
-  {id:"inference", name:"Inference", port:9001, color:"#64b5f6", trading:false, noHtml:true}
+  {id:"inference", name:"Inference", port:9001, color:"#64b5f6", trading:false, noHtml:true},
+  /* Broadcaster had no entry here, so it had no orbital node — and because the
+     header counts _orbNodes rather than the API bot list, the fleet read
+     "17/17" while /api/master served 18 alive. The id must be
+     "signal_broadcaster" to match the API; "broadcaster" silently never binds. */
+  {id:"signal_broadcaster", name:"Broadcaster", port:9002, color:"#c8a96e", trading:false, noHtml:true}
 ];
 var POLL_MS = 30000;
 var SSE_RETRY_MS = 5000;
@@ -1984,8 +1989,20 @@ function _drawGravField(ctx,now){
 function _drawMetricsBar(ctx,W){
   var agg=state.aggregate||{};
   var port=state.portfolio||{};
+  /* Count from the API bot list, NOT from _orbNodes. _orbNodes only contains
+     bots that have a planet defined in BOTS_DEF, so a bot missing a planet was
+     silently excluded from the total — the fleet read "17/17" while
+     /api/master served 18 alive. The header must report what the fleet
+     actually is, not what this view happens to draw. Falls back to _orbNodes
+     only if the bot list is unavailable. */
   var aliveCount=0,totalCount=0;
-  for(var id in _orbNodes){var nd=_orbNodes[id];if(nd.id!=="cc"){totalCount++;if(nd.alive)aliveCount++;}}
+  var _apiBots=state.bots||[];
+  if(_apiBots.length){
+    totalCount=_apiBots.length;
+    for(var bi=0;bi<_apiBots.length;bi++){if(_apiBots[bi].alive)aliveCount++;}
+  }else{
+    for(var id in _orbNodes){var nd=_orbNodes[id];if(nd.id!=="cc"){totalCount++;if(nd.alive)aliveCount++;}}
+  }
   /* Pool: use portfolio.total (real pool), fallback to aggregate equity */
   var pool=port.total!=null?port.total:(agg.total_equity||0);
   /* WR: use avg_win_rate (0-100 scale), normalize to fraction */
@@ -2014,8 +2031,18 @@ function _drawMetricsBar(ctx,W){
   ctx.fillStyle="rgba(201,162,39,0.55)";
   ctx.fillText("Pool: $"+pool.toFixed(0),xp,y);xp+=ctx.measureText("Pool: $"+pool.toFixed(0)).width+18;
   /* WR */
-  var wrStr="WR: "+(wr*100).toFixed(1)+"%";
-  ctx.fillStyle=wr>=0.45?"rgba(0,191,165,0.7)":"rgba(201,162,39,0.55)";
+  /* Always show the sample size next to WR. "WR: 100.0%" on a single closed
+     trade reads as "this system wins everything" — it is the most misleading
+     number on the display. Below ~20 trades the figure is not meaningful, so
+     it is dimmed rather than shown in confident teal. */
+  var _wrN=(agg.total_trades!=null?agg.total_trades:0);
+  var wrStr="WR: "+(wr*100).toFixed(1)+"% (n="+_wrN+")";
+  if(_wrN<20){
+    /* Not enough trades to mean anything — grey, never the "good" colour. */
+    ctx.fillStyle="rgba(150,150,150,0.55)";
+  }else{
+    ctx.fillStyle=wr>=0.45?"rgba(0,191,165,0.7)":"rgba(201,162,39,0.55)";
+  }
   ctx.fillText(wrStr,xp,y);xp+=ctx.measureText(wrStr).width+18;
   /* PnL */
   var pnlStr="PnL: "+(pnl>=0?"+":"")+pnl.toFixed(2);
@@ -2818,7 +2845,10 @@ function renderHeader(agg){
   /* WR with color coding */
   var wrEl=document.getElementById("hWR");
   var wrVal=agg.avg_win_rate;
-  wrEl.textContent=wrVal!=null&&agg.total_trades>0?fmtPct(wrVal):"--%";
+  /* Carry the sample size: a win rate with no n invites reading 100% on one
+     trade as a real edge. */
+  wrEl.textContent=wrVal!=null&&agg.total_trades>0
+    ?fmtPct(wrVal)+" (n="+agg.total_trades+")":"--%";
   if(wrVal!=null&&agg.total_trades>0){
     if(wrVal<15){wrEl.style.color="#ff4466";wrEl.style.textShadow="0 0 8px rgba(255,68,102,0.4)";}
     else if(wrVal<30){wrEl.style.color="#fbbf24";wrEl.style.textShadow="0 0 8px rgba(251,191,36,0.3)";}
@@ -11894,6 +11924,14 @@ function _colorCodeWR(){
   var txt=el.textContent||'';
   var val=parseFloat(txt);
   if(isNaN(val)) return;
+  /* Below ~20 trades the win rate is noise. Paint it grey rather than a
+     confident green — otherwise 100% on a single trade lights up as a strong
+     edge, which is exactly the wrong signal. The (n=N) suffix is written by
+     the updater above; parse it back out. */
+  var _nm=txt.match(/n=(\d+)/);
+  if(_nm&&parseInt(_nm[1],10)<20){
+    el.style.color='#8a8a8a';el.style.textShadow='none';return;
+  }
   if(val>=30){el.style.color='#00ff88';el.style.textShadow='0 0 6px rgba(0,255,136,0.2)'}
   else if(val>=15){el.style.color='#fbbf24';el.style.textShadow='0 0 6px rgba(251,191,36,0.2)'}
   else{el.style.color='#ff4466';el.style.textShadow='0 0 6px rgba(255,68,102,0.2)'}

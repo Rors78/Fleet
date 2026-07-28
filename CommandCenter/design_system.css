@@ -1,0 +1,23 @@
+/* COSMOS v5 Design System — Font Size Tokens */
+/* All sizes scaled ×1.25 from base design spec */
+
+.display-xl  { font-size: 3.75rem; }
+.display-lg  { font-size: 2.75rem; }
+.display-md  { font-size: 2rem; }
+.heading-sm  { font-size: 1rem; }
+
+.data-lg     { font-size: 2.25rem; }
+.data-md     { font-size: 1.25rem; }
+.data-sm     { font-size: 1rem; }
+
+.label       { font-size: 1.06rem; }
+.section-header { font-size: 1rem; }
+.card-title  { font-size: 1.38rem; }
+
+.data-table th { font-size: 0.94rem; }
+.data-table td { font-size: 1.06rem; }
+
+.hero-stat .value { font-size: 3.5rem; }
+.hero-stat .label { font-size: 0.8rem; }
+
+.pill        { font-size: 0.88rem; }

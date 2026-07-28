@@ -1,0 +1,32 @@
+{
+  "cc_url": "http://localhost:9000",
+  "goldeneye_url": "http://localhost:18095",
+  "broadcaster_port": 9002,
+  "telegram_bot_token": "",
+  "telegram_free_chat_id": "",
+  "telegram_paid_chat_id": "",
+  "telegram_personal_chat_id": "",
+  "dedup_window_s": 3600,
+  "seen_ids_max": 1000,
+  "rate_limit_per_minute": 30,
+  "free_delay_hours": 4,
+  "min_conviction_threshold": 0.8,
+  "daily_summary_utc_hour": 8,
+  "weekly_report_utc_day": 6,
+  "weekly_report_utc_hour": 8,
+  "end_of_day_hour_utc": 23,
+  "end_of_day_minute_utc": 59,
+  "poll_fallback_interval_s": 30,
+  "enrichment_cache_ttl_s": 15,
+  "enrichment_timeout_s": 5,
+  "routing_overrides": {
+    "CHAOS_STATE":        {"free": false, "paid": true},
+    "MANIFOLD_WARNING":   {"free": false, "paid": true},
+    "STRUCTURE_FORMING":  {"free": false, "paid": false},
+    "CYCLE_DETECTED":     {"free": false, "paid": false},
+    "CAUSAL_FLOW":        {"free": false, "paid": false},
+    "EUCLID_LEVEL":       {"free": false, "paid": false},
+    "FLEET_ALERT":        {"free": false, "paid": false}
+  },
+  "enabled": true
+}

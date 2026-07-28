@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime state — regenerated on every fleet run
+pids/
+logs/
+*.log
+*.log.[0-9]
+*.jsonl
+
+# Test render output
+test_*.png
+
+# Stale dashboard backups (superseded by command_center_v4.html)
+backups/
+
+# Large media assets (190MB+) — COSMOS dashboard audio/imagery, not source
+audio/
+neutron_star.png
+
+# Generated audit reports
+audits/
+
+# Live fleet state — rewritten every cycle
+aegis_*.json
+aggregator_state.json
+bot_state.json
+portfolio.json
+portfolio_live.json
+kraken_promotions.json
+
+# Secrets — contains live Telegram bot token + private chat IDs.
+# Template committed as signal_config.example.json instead.
+signal_config.json
+
+# Session scratch
+.claude/
+eureka_for_sonnet.txt
+eureka_transcript_for_sonnet.md
+session-ses_*.md
+
+# Windows
+desktop.ini

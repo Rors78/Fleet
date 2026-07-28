@@ -1,0 +1,559 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Fleet Signals</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { height: 100%; overflow: hidden; background: #0d0d0d; color: #e8e8e8;
+  font-family: 'Inter', system-ui, sans-serif; font-size: 13px; }
+
+.shell { display: flex; flex-direction: column; height: 100vh; }
+.top-bar { display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; }
+.top-bar h1 { font-size: 14px; font-weight: 600; letter-spacing: 1.5px;
+  text-transform: uppercase; color: #888; }
+.top-bar .clock { font-family: 'Consolas','Monaco','Courier New',monospace;
+  color: #888; font-size: 12px; }
+
+.columns { display: flex; flex: 1; min-height: 0; }
+.col-left { width: 60%; display: flex; flex-direction: column;
+  border-right: 1px solid #2a2a2a; }
+.col-right { width: 40%; display: flex; flex-direction: column;
+  overflow-y: auto; }
+
+/* Feed header */
+.feed-hdr { display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 16px; border-bottom: 1px solid #2a2a2a; flex-shrink: 0; }
+.feed-hdr span { font-size: 11px; font-weight: 600; letter-spacing: 1.2px;
+  text-transform: uppercase; color: #888; }
+.live-btn { font-size: 10px; font-weight: 600; letter-spacing: 1px;
+  padding: 3px 10px; border: 1px solid #2a2a2a; background: transparent;
+  color: #888; cursor: pointer; text-transform: uppercase;
+  font-family: 'Inter', system-ui, sans-serif; }
+.live-btn.active { color: #4ade80; border-color: #4ade80; }
+
+/* Feed list */
+.feed-list { flex: 1; overflow-y: auto; }
+.feed-row { display: flex; align-items: center; gap: 10px;
+  padding: 6px 16px; border-bottom: 1px solid #1a1a1a; cursor: pointer;
+  font-family: 'Consolas','Monaco','Courier New',monospace; font-size: 12px; }
+.feed-row:hover { background: #1a1a1a; }
+.feed-row .ts { color: #555; width: 80px; flex-shrink: 0; }
+.feed-row .badge { font-size: 9px; font-weight: 600; letter-spacing: 0.8px;
+  padding: 1px 6px; border: 1px solid #2a2a2a; flex-shrink: 0; width: 48px;
+  text-align: center; }
+.feed-row .badge.pulse { color: #888; }
+.feed-row .badge.intel { color: #c8a96e; border-color: #c8a96e; }
+.feed-row .etype { color: #e8e8e8; flex: 1; }
+.feed-row .pair { color: #888; width: 80px; flex-shrink: 0; text-align: right; }
+.feed-row .pri { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.feed-row.intel-row { border-left: 2px solid #c8a96e; }
+.feed-row.pulse-row { color: #888; }
+.feed-row.pulse-row .etype { color: #888; }
+
+/* New-event highlight animation */
+.feed-row.fresh { border-left: 2px solid #c8a96e; }
+.feed-row.fade { transition: border-left-color 2s ease-out; border-left-color: transparent; }
+
+.feed-empty { padding: 40px 16px; color: #555; text-align: center;
+  font-size: 12px; }
+
+/* Right panels */
+.panel { padding: 14px 16px; border-bottom: 1px solid #2a2a2a; }
+.panel-title { font-size: 10px; font-weight: 600; letter-spacing: 1.2px;
+  text-transform: uppercase; color: #888; margin-bottom: 10px; }
+.panel-row { display: flex; justify-content: space-between; align-items: center;
+  padding: 3px 0; font-size: 12px; }
+.panel-row .label { color: #888; }
+.panel-row .val { font-family: 'Consolas','Monaco','Courier New',monospace;
+  color: #e8e8e8; }
+.mono { font-family: 'Consolas','Monaco','Courier New',monospace; }
+
+/* Status dots */
+.dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block;
+  margin-right: 6px; }
+.dot.green { background: #4ade80; }
+.dot.red { background: #ef4444; }
+.dot.gray { background: #555; }
+
+/* Rate bar */
+.rate-bar-track { height: 4px; background: #1a1a1a; border-radius: 2px;
+  margin-top: 6px; }
+.rate-bar-fill { height: 4px; border-radius: 2px; transition: width 0.3s; }
+
+/* Log tail */
+.log-tail { font-family: 'Consolas','Monaco','Courier New',monospace;
+  font-size: 11px; color: #888; line-height: 1.6; white-space: pre;
+  overflow-y: auto; max-height: 220px; }
+
+/* Priority dot colors */
+.pri-critical { background: #ef4444; }
+.pri-high { background: #f59e0b; }
+.pri-medium { background: #c8a96e; }
+.pri-low { background: #555; }
+
+/* Modal overlay */
+.modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,0.7);
+  display: none; align-items: center; justify-content: center; z-index: 100; }
+.modal-bg.show { display: flex; }
+.modal { background: #141414; border: 1px solid #2a2a2a; padding: 20px;
+  min-width: 380px; max-width: 520px; max-height: 80vh; overflow-y: auto; }
+.modal h3 { font-size: 12px; font-weight: 600; letter-spacing: 1px;
+  text-transform: uppercase; color: #888; margin-bottom: 14px; }
+.modal .detail-row { display: flex; justify-content: space-between;
+  padding: 5px 0; font-size: 12px; border-bottom: 1px solid #1a1a1a; }
+.modal .detail-row .dk { color: #888; }
+.modal .detail-row .dv { font-family: 'Consolas','Monaco','Courier New',monospace;
+  color: #e8e8e8; }
+.modal-close { position: absolute; top: 10px; right: 16px; color: #555;
+  cursor: pointer; font-size: 16px; }
+
+/* Config panel */
+.cfg-row { display: flex; justify-content: space-between; padding: 3px 0;
+  font-size: 12px; }
+.cfg-row .ck { color: #888; }
+.cfg-row .cv { font-family: 'Consolas','Monaco','Courier New',monospace;
+  color: #c8a96e; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <div class="top-bar">
+    <h1>Fleet Signals</h1>
+    <div class="clock" id="clock">--:--:--</div>
+  </div>
+  <div class="columns">
+    <!-- LEFT: Signal Feed -->
+    <div class="col-left">
+      <div class="feed-hdr">
+        <span>Signal Feed</span>
+        <button class="live-btn active" id="liveBtn" onclick="toggleLive()">LIVE</button>
+      </div>
+      <div class="feed-list" id="feedList">
+        <div class="feed-empty" id="feedEmpty">Waiting for signals...</div>
+      </div>
+    </div>
+    <!-- RIGHT: Panels -->
+    <div class="col-right">
+      <!-- Panel 1: Channel Health -->
+      <div class="panel">
+        <div class="panel-title">Channel Health</div>
+        <div class="panel-row">
+          <span class="label"><span class="dot gray" id="dotFree"></span>Free channel</span>
+          <span class="val" id="chFreeTs">--</span>
+        </div>
+        <div class="panel-row">
+          <span class="label"><span class="dot gray" id="dotPaid"></span>Paid channel</span>
+          <span class="val" id="chPaidTs">--</span>
+        </div>
+        <div class="panel-row" style="margin-top:6px">
+          <span class="label">Bot token</span>
+          <span class="val" id="chToken">--</span>
+        </div>
+      </div>
+      <!-- Panel 2: Rate Limiter -->
+      <div class="panel">
+        <div class="panel-title">Rate Limiter</div>
+        <div class="panel-row">
+          <span class="label">Current minute</span>
+          <span class="val" id="rateCount">-- / --</span>
+        </div>
+        <div class="rate-bar-track">
+          <div class="rate-bar-fill" id="rateBar" style="width:0%;background:#c8a96e"></div>
+        </div>
+      </div>
+      <!-- Panel 3: Today's Counts -->
+      <div class="panel">
+        <div class="panel-title">Today's Counts</div>
+        <div class="panel-row">
+          <span class="label">Free sent</span>
+          <span class="val" id="cntFree">0</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Paid sent</span>
+          <span class="val" id="cntPaid">0</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Failed</span>
+          <span class="val" id="cntFailed" style="color:#ef4444">0</span>
+        </div>
+      </div>
+      <!-- Panel 4: Broadcaster Status -->
+      <div class="panel">
+        <div class="panel-title">Broadcaster Status</div>
+        <div class="panel-row">
+          <span class="label"><span class="dot gray" id="dotSSE"></span>SSE</span>
+          <span class="val" id="stSSE">--</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Polling</span>
+          <span class="val" id="stPolling">--</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Reconnects</span>
+          <span class="val" id="stReconnects">0</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Events received</span>
+          <span class="val" id="stEvents">0</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Delayed queue</span>
+          <span class="val" id="stQueue">0</span>
+        </div>
+        <div class="panel-row">
+          <span class="label">Uptime</span>
+          <span class="val" id="stUptime">--</span>
+        </div>
+      </div>
+      <!-- Panel 5: Quick Config -->
+      <div class="panel">
+        <div class="panel-title">Quick Config</div>
+        <div class="cfg-row">
+          <span class="ck">min_conviction_threshold</span>
+          <span class="cv" id="cfgConviction">--</span>
+        </div>
+        <div class="cfg-row">
+          <span class="ck">free_delay_hours</span>
+          <span class="cv" id="cfgDelay">--</span>
+        </div>
+        <div class="cfg-row">
+          <span class="ck">rate_limit_per_minute</span>
+          <span class="cv" id="cfgRate">--</span>
+        </div>
+      </div>
+      <!-- Panel 6: Log Tail -->
+      <div class="panel" style="flex:1;display:flex;flex-direction:column;min-height:0">
+        <div class="panel-title">Log Tail</div>
+        <div class="log-tail" id="logTail">--</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Detail modal -->
+<div class="modal-bg" id="modalBg" onclick="closeModal(event)">
+  <div class="modal" style="position:relative">
+    <span class="modal-close" onclick="document.getElementById('modalBg').classList.remove('show')">&#x2715;</span>
+    <h3>Signal Detail</h3>
+    <div id="modalBody"></div>
+  </div>
+</div>
+
+<script>
+// ── State ────────────────────────────────────────────────────────────────────
+let live = true;
+let feedData = [];       // all entries we've seen (newest first)
+let seenKeys = new Set();
+let broadcasterOnline = false;
+
+// ── Clock ────────────────────────────────────────────────────────────────────
+function tickClock() {
+  const d = new Date();
+  document.getElementById('clock').textContent =
+    d.toISOString().slice(11, 19) + ' UTC';
+}
+setInterval(tickClock, 1000);
+tickClock();
+
+// ── Live toggle ──────────────────────────────────────────────────────────────
+function toggleLive() {
+  live = !live;
+  const btn = document.getElementById('liveBtn');
+  btn.textContent = live ? 'LIVE' : 'PAUSED';
+  btn.classList.toggle('active', live);
+}
+
+// ── Priority helpers ─────────────────────────────────────────────────────────
+function priClass(p) {
+  if (!p) return 'pri-low';
+  const s = String(p).toLowerCase();
+  if (s === 'critical') return 'pri-critical';
+  if (s === 'high') return 'pri-high';
+  if (s === 'medium') return 'pri-medium';
+  return 'pri-low';
+}
+
+function tierLabel(entry) {
+  // paid = INTEL, free-only = PULSE
+  if (entry.paid) return 'intel';
+  return 'pulse';
+}
+
+function entryKey(e) {
+  return (e.ts || '') + '|' + (e.type || '') + '|' + (e.pair || '') + '|' +
+         (e.event_id || '') + '|' + (e.tier || '');
+}
+
+// ── Relative time ────────────────────────────────────────────────────────────
+function relTime(isoStr) {
+  if (!isoStr) return 'never';
+  const then = new Date(isoStr).getTime();
+  if (isNaN(then)) return 'never';
+  const diff = Math.floor((Date.now() - then) / 1000);
+  if (diff < 0) return 'just now';
+  if (diff < 60) return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function channelDotClass(isoStr) {
+  if (!isoStr) return 'gray';
+  const diff = (Date.now() - new Date(isoStr).getTime()) / 1000;
+  if (isNaN(diff)) return 'gray';
+  return diff < 300 ? 'green' : 'red';
+}
+
+// ── Render feed ──────────────────────────────────────────────────────────────
+function renderFeed() {
+  const list = document.getElementById('feedList');
+  const empty = document.getElementById('feedEmpty');
+
+  if (feedData.length === 0) {
+    empty.style.display = 'block';
+    empty.textContent = broadcasterOnline
+      ? 'Waiting for signals...'
+      : 'Broadcaster offline';
+    return;
+  }
+  empty.style.display = 'none';
+
+  // Build rows — newest first
+  const frag = document.createDocumentFragment();
+  for (let i = 0; i < feedData.length; i++) {
+    const e = feedData[i];
+    const tier = tierLabel(e);
+    const row = document.createElement('div');
+    row.className = 'feed-row ' + (tier === 'intel' ? 'intel-row' : 'pulse-row');
+    if (e._fresh) row.classList.add('fresh');
+
+    // timestamp (HH:MM:SS)
+    let tsText = '--:--:--';
+    if (e.ts) {
+      try { tsText = e.ts.slice(11, 19); } catch (_) {}
+    }
+
+    row.innerHTML =
+      '<span class="ts">' + tsText + '</span>' +
+      '<span class="badge ' + tier + '">' + tier.toUpperCase() + '</span>' +
+      '<span class="etype">' + (e.type || e.event_type || '--') + '</span>' +
+      '<span class="pair">' + (e.pair || '') + '</span>' +
+      '<span class="pri ' + priClass(e.priority) + '"></span>';
+
+    row.addEventListener('click', () => showDetail(e));
+    frag.appendChild(row);
+
+    // Fade animation for fresh rows
+    if (e._fresh) {
+      e._fresh = false;
+      setTimeout(() => { row.classList.add('fade'); }, 50);
+    }
+  }
+
+  list.innerHTML = '';
+  list.appendChild(frag);
+
+  // Auto-scroll to top (newest)
+  if (live) list.scrollTop = 0;
+}
+
+// ── Detail modal ─────────────────────────────────────────────────────────────
+function showDetail(entry) {
+  const body = document.getElementById('modalBody');
+  const keys = ['ts', 'type', 'event_type', 'pair', 'tier', 'priority',
+    'category', 'free', 'paid', 'event_id', 'success', 'dedup_key'];
+  let html = '';
+  for (const k of keys) {
+    if (entry[k] !== undefined) {
+      html += '<div class="detail-row"><span class="dk">' + k +
+        '</span><span class="dv">' + String(entry[k]) + '</span></div>';
+    }
+  }
+  // Show any extra keys
+  for (const k of Object.keys(entry)) {
+    if (keys.includes(k) || k.startsWith('_')) continue;
+    html += '<div class="detail-row"><span class="dk">' + k +
+      '</span><span class="dv">' + String(entry[k]) + '</span></div>';
+  }
+  body.innerHTML = html;
+  document.getElementById('modalBg').classList.add('show');
+}
+
+function closeModal(ev) {
+  if (ev.target === document.getElementById('modalBg'))
+    document.getElementById('modalBg').classList.remove('show');
+}
+
+document.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape')
+    document.getElementById('modalBg').classList.remove('show');
+});
+
+// ── Fetch: Feed + Stats (every 5s) ──────────────────────────────────────────
+async function pollFeed() {
+  try {
+    const resp = await fetch('/api/signals/feed?n=200');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    broadcasterOnline = !data.error;
+
+    // Merge new entries
+    const entries = (data.feed || []).reverse(); // newest first
+    let newCount = 0;
+    for (const e of entries) {
+      const k = entryKey(e);
+      if (!seenKeys.has(k)) {
+        seenKeys.add(k);
+        e._fresh = true;
+        feedData.unshift(e);
+        newCount++;
+      }
+    }
+    // Cap at 500
+    if (feedData.length > 500) {
+      feedData = feedData.slice(0, 500);
+    }
+
+    if (newCount > 0 || feedData.length === 0) renderFeed();
+
+    // Update stats panels from inline stats
+    if (data.stats) updateStats(data.stats);
+  } catch (_) {
+    broadcasterOnline = false;
+    if (feedData.length === 0) renderFeed();
+  }
+}
+
+async function pollStats() {
+  try {
+    const resp = await fetch('/api/signals/broadcaster/stats');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const data = await resp.json();
+    broadcasterOnline = true;
+    updateStats(data);
+  } catch (_) {
+    broadcasterOnline = false;
+    document.getElementById('dotSSE').className = 'dot red';
+    document.getElementById('stSSE').textContent = 'Disconnected';
+  }
+}
+
+function updateStats(s) {
+  // Channel health
+  const ch = s.channel || {};
+  const freeTsRaw = ch.last_free_ts || '';
+  const paidTsRaw = ch.last_paid_ts || '';
+  document.getElementById('chFreeTs').textContent = relTime(freeTsRaw);
+  document.getElementById('chPaidTs').textContent = relTime(paidTsRaw);
+  document.getElementById('dotFree').className = 'dot ' + channelDotClass(freeTsRaw);
+  document.getElementById('dotPaid').className = 'dot ' + channelDotClass(paidTsRaw);
+
+  // Token status from config
+  const cfg = s.config || {};
+  document.getElementById('chToken').textContent =
+    cfg.enabled !== false ? 'verified' : 'not configured';
+
+  // Rate limiter
+  const rateLimit = cfg.rate_limit || 30;
+  // We don't have per-minute count from stats; approximate from channel totals
+  // The signals_log_size is a proxy
+  const logSize = s.signals_log_size || 0;
+  // Use the feed length as a rough proxy for recent activity
+  const minuteCount = Math.min(feedData.filter(e => {
+    if (!e.ts) return false;
+    return (Date.now() - new Date(e.ts).getTime()) < 60000;
+  }).length, rateLimit);
+  document.getElementById('rateCount').textContent = minuteCount + ' / ' + rateLimit;
+  const pct = Math.min((minuteCount / rateLimit) * 100, 100);
+  const bar = document.getElementById('rateBar');
+  bar.style.width = pct + '%';
+  bar.style.background = pct >= 80 ? '#ff6b6b' : '#c8a96e';
+
+  // Today's counts
+  document.getElementById('cntFree').textContent = ch.free_sent_today || 0;
+  document.getElementById('cntPaid').textContent = ch.paid_sent_today || 0;
+  const failEl = document.getElementById('cntFailed');
+  failEl.textContent = ch.failed_today || 0;
+  failEl.style.color = (ch.failed_today || 0) > 0 ? '#ef4444' : '#e8e8e8';
+
+  // Broadcaster status
+  const sse = s.sse || {};
+  const poll = s.polling || {};
+  const sseConn = sse.connected;
+  document.getElementById('dotSSE').className = 'dot ' + (sseConn ? 'green' : 'red');
+  document.getElementById('stSSE').textContent = sseConn ? 'Connected' : 'Disconnected';
+  document.getElementById('stPolling').textContent = poll.active ? 'Active' : 'Standby';
+  document.getElementById('stReconnects').textContent = sse.reconnects || 0;
+  document.getElementById('stEvents').textContent = sse.events_received || 0;
+  document.getElementById('stQueue').textContent = s.delayed_queue_size || 0;
+
+  // Uptime — compute from sse.last_event_ts or just show events
+  if (sse.last_event_ts) {
+    const upSec = Math.floor(Date.now() / 1000 - sse.last_event_ts);
+    if (upSec >= 0 && upSec < 86400 * 30) {
+      const h = Math.floor(upSec / 3600);
+      const m = Math.floor((upSec % 3600) / 60);
+      document.getElementById('stUptime').textContent = h + 'h ' + m + 'm';
+    }
+  }
+}
+
+// ── Fetch: Config (every 30s) ────────────────────────────────────────────────
+async function pollConfig() {
+  try {
+    const resp = await fetch('/api/signals/broadcaster/config');
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const cfg = await resp.json();
+    document.getElementById('cfgConviction').textContent =
+      cfg.min_conviction_threshold !== undefined ? cfg.min_conviction_threshold : '--';
+    document.getElementById('cfgDelay').textContent =
+      cfg.free_delay_hours !== undefined ? cfg.free_delay_hours : '--';
+    document.getElementById('cfgRate').textContent =
+      cfg.rate_limit_per_minute !== undefined ? cfg.rate_limit_per_minute : '--';
+
+    // Also update token status
+    const hasToken = !!(cfg.telegram_bot_token && cfg.telegram_bot_token !== '[REDACTED]'
+      && cfg.telegram_bot_token.length > 5);
+    document.getElementById('chToken').textContent =
+      hasToken ? 'configured' : 'not configured';
+  } catch (_) {
+    // Leave as-is
+  }
+}
+
+// ── Log tail ─────────────────────────────────────────────────────────────────
+function renderLogTail() {
+  const el = document.getElementById('logTail');
+  // Use the last 15 feed entries as log lines
+  const tail = feedData.slice(0, 15).reverse();
+  if (tail.length === 0) {
+    el.textContent = broadcasterOnline ? 'No signals yet' : 'Broadcaster offline';
+    return;
+  }
+  let lines = '';
+  for (const e of tail) {
+    const ts = (e.ts || '').slice(0, 19).replace('T', ' ');
+    const tier = e.tier || (e.paid ? 'paid' : 'free');
+    const etype = e.type || e.event_type || '??';
+    const ok = e.success === false ? 'FAIL' : 'OK';
+    lines += ts + '  ' + tier.padEnd(6) + '  ' + etype.padEnd(22) + '  ' + ok + '\n';
+  }
+  el.textContent = lines.trimEnd();
+}
+
+// ── Polling orchestration ────────────────────────────────────────────────────
+async function tick5s() {
+  await Promise.all([pollFeed(), pollStats()]);
+  renderLogTail();
+}
+
+pollConfig();
+tick5s();
+setInterval(tick5s, 5000);
+setInterval(pollConfig, 30000);
+</script>
+</body>
+</html>

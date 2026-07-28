@@ -41,6 +41,8 @@ CC_DIR = Path(r"D:\CommandCenter")
 NEXUS_DIR = Path(r"D:\Nexus")
 
 PROBE_PATHS = ["/api/snapshot", "/status", "/health", "/"]
+# TrekBot (3-endpoint bot) left the fleet — renamed GoldenEye, now standalone
+# on :18095. Kept as the probe order for any future multi-endpoint bot.
 TREKBOT_PATHS = ["/health", "/status", "/api/snapshot", "/"]
 
 COUNCIL_MODULES = {
@@ -59,7 +61,17 @@ COUNCIL_MODULES = {
     "causal_flow":          {"class": "CausalFlowNetwork",          "consumers": []},
 }
 
-TRADING_BOTS = ["turtlesue", "nexusbrain", "gridzilla", "trekbot", "rubberband", "arbitrageur"]
+# Sourced from fleet_config rather than duplicated here. This list had drifted:
+# it still carried retired "trekbot" and was missing "confluence", so audits
+# probed a dead bot and skipped a live one.
+try:
+    import sys as _sys
+    _sys.path.insert(0, str(CC_DIR))
+    from fleet_config import TRADING_BOTS as _TB
+    TRADING_BOTS = sorted(_TB)
+except Exception:
+    TRADING_BOTS = ["turtlesue", "nexusbrain", "gridzilla", "rubberband",
+                    "arbitrageur", "confluence"]
 
 
 # ---------------------------------------------------------------------------

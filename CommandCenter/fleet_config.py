@@ -215,7 +215,7 @@ def live_direction_allowed(direction: str) -> bool:
 FLEET_ENGAGE_STATE = "paper"
 
 # Bots that can execute real Kraken orders
-LIVE_CAPABLE_BOTS = {"turtlesue", "trekbot", "trekbot_short", "nexusbrain", "gridzilla", "rubberband", "arbitrageur"}
+LIVE_CAPABLE_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "rubberband", "arbitrageur", "confluence"}
 
 
 def set_fleet_mode(mode: str) -> str:

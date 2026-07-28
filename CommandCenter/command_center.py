@@ -2089,6 +2089,51 @@ def _briefing_worker():
 # Polling loop (background thread)
 # ---------------------------------------------------------------------------
 
+# Per-bot freshness budget in seconds: how old a bot's OWN snapshot timestamp
+# may be before we call its data stale. CC polls every POLL_INTERVAL (10s), but
+# several bots legitimately recompute far more slowly — flagging those against
+# the poll cadence would be a permanent false positive.
+#
+#   hivemind  — REOPTIMIZE_INTERVAL = 1800s (cli.py), so ~30min is by design
+#   oracle    — full universe scan, minutes per cycle
+#   sentinel  — forecast horizon recompute
+#   nexus     — 14-engine council pass
+# Anything unlisted is expected to refresh within DEFAULT_FRESHNESS_S.
+DEFAULT_FRESHNESS_S = 120
+_FRESHNESS_BUDGET_S = {
+    "hivemind": 2100,      # 1800s cadence + 300s slack
+    "oracle": 900,
+    "sentinel": 900,
+    "nexus": 900,
+    "deepblue": 900,
+    "phitex": 600,
+    "chronos": 600,
+}
+
+
+def _snapshot_staleness(bid: str, raw: dict) -> tuple:
+    """Return (age_seconds, is_stale) for a bot's own snapshot timestamp.
+
+    Returns (None, False) when the bot serves no timestamp — absence of the
+    field is not evidence of staleness, and guessing would be worse than
+    reporting nothing.
+    """
+    if not isinstance(raw, dict):
+        return None, False
+    ts = raw.get("timestamp")
+    try:
+        ts = float(ts)
+    except (TypeError, ValueError):
+        return None, False
+    if ts <= 0:
+        return None, False
+    age = time.time() - ts
+    if age < 0:                      # clock skew between processes
+        age = 0.0
+    budget = _FRESHNESS_BUDGET_S.get(bid, DEFAULT_FRESHNESS_S)
+    return round(age, 1), age > budget
+
+
 def _poll_all_bots() -> None:
     """Single poll cycle -- fetch all bots, normalize, aggregate."""
     new_bots = {}
@@ -2102,10 +2147,15 @@ def _poll_all_bots() -> None:
             raw = _sanitize(raw)
             normalizer = _NORMALIZERS.get(bid)
             normalized = normalizer(raw) if normalizer else {}
+            stale_age, is_stale = _snapshot_staleness(bid, raw)
             new_bots[bid] = {
                 "id": bid, "name": bot["name"], "port": bot["port"],
                 "color": bot["color"], "alive": True,
                 "last_seen": time.time(), "latency_ms": round(latency, 1),
+                # A bot answering HTTP is not the same as a bot serving fresh
+                # data. Without this, a bot whose internal refresh has stalled
+                # reads as fully healthy forever.
+                "data_stale": is_stale, "stale_age_s": stale_age,
                 "raw": raw, "normalized": normalized,
             }
         except Exception:
@@ -2667,6 +2717,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         "alive": entry["alive"],
                         "last_seen": entry["last_seen"],
                         "latency_ms": entry["latency_ms"],
+                        "data_stale": entry.get("data_stale", False),
+                        "stale_age_s": entry.get("stale_age_s"),
                         "normalized": entry.get("normalized"),
                     })
                 else:

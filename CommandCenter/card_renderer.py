@@ -19,7 +19,7 @@ from PIL import Image, ImageDraw, ImageFont
 # ── Bot display names — internal names never shown to subscribers ────────────
 
 BOT_DISPLAY_NAMES = {
-    'trekbot':       'Vanguard',
+    'confluence':    'Concord',
     'turtlesue':     'Stalker',
     'turtlebot':     'Stalker',
     'nexusbrain':    'Prism',
@@ -39,7 +39,6 @@ BOT_DISPLAY_NAMES = {
     'contrarian':    'Heretic',
     'arbitrageur':   'Ghost',
     'chronos':       'Meridian',
-    'trekbot_short': 'Vanguard-S',
     'inference':     'Inference',
 }
 

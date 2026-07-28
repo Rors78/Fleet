@@ -387,7 +387,7 @@ var BOTS_DEF = [
   {id:"trinity",   name:"Trinity",   port:8072, color:"#60a5fa",  trading:false, noHtml:true},
   {id:"hivemind",  name:"HiveMind",  port:8073, color:"#fbbf24",  trading:false, noHtml:true},
   {id:"nexusbrain",name:"NexusBrain",port:8074, color:"#c084fc",  trading:true,  noHtml:true},
-  {id:"trekbot",   name:"TrekBot",   port:8080, color:"#fb923c",  trading:true,  noHtml:true},
+  {id:"confluence",name:"Confluence",port:8088, color:"#ff6d00",  trading:true,  noHtml:true},
   {id:"oracle",    name:"Oracle",    port:8075, color:"#a3e635",  trading:false, noHtml:true},
   {id:"deepblue",  name:"Deep Blue", port:8076, color:"#22d3ee",  trading:false, noHtml:true},
   {id:"gridzilla", name:"Gridzilla", port:8077, color:"#facc15",  trading:true,  noHtml:true},
@@ -398,7 +398,6 @@ var BOTS_DEF = [
   {id:"contrarian",name:"Contrarian",port:8084, color:"#ff1744",  trading:false, noHtml:true},
   {id:"arbitrageur",name:"Arbitrageur",port:8085,color:"#7c4dff", trading:true,  noHtml:true},
   {id:"chronos",   name:"Chronos",   port:8086, color:"#ffab00",  trading:false, noHtml:true},
-  {id:"trekbot_short", name:"TrekBot SHORT", port:8087, color:"#ff3d00", trading:true, noHtml:true},
   {id:"inference", name:"Inference", port:9001, color:"#64b5f6", trading:false, noHtml:true}
 ];
 var POLL_MS = 30000;
@@ -797,8 +796,8 @@ function OrbNode(id,cfg,def,angle,cw,ch){
     /* Star-orbiting moons — placed away from their planet siblings */
     trinity:Math.PI*1.5, contrarian:Math.PI, phitex:-Math.PI/2,
     /* Planets — initial angles spread to avoid overlap within each system */
-    /* Oracle system: trekbot upper, gridzilla lower, turtlesue right */
-    trekbot:-Math.PI/2, gridzilla:Math.PI*2/3, turtlesue:Math.PI/6,
+    /* Oracle system: confluence upper, gridzilla lower, turtlesue right */
+    confluence:-Math.PI/2, gridzilla:Math.PI*2/3, turtlesue:Math.PI/6,
     /* Nexus system: nexusbrain upper-left (150°), rubberband lower-right (330°) — 180° apart, clear of PHITEX below */
     nexusbrain:Math.PI*(5/6), rubberband:-Math.PI/6,
     /* DeepBlue system: arbitrageur below */
@@ -858,7 +857,7 @@ OrbNode.prototype.migrateTo=function(targetStarId,reason){
 function _botDir(id,b){
   if(!b) return 0;
   var raw=b.raw||{},norm=b.normalized||{};
-  if(id==="trekbot"||id==="nexusbrain"||id==="turtlesue"||id==="gridzilla"||id==="rubberband"||id==="arbitrageur"){
+  if(id==="confluence"||id==="nexusbrain"||id==="turtlesue"||id==="gridzilla"||id==="rubberband"||id==="arbitrageur"){
     var lc=raw.long_count||norm.open_positions||0,sc=raw.short_count||0;
     return lc>sc?1:sc>lc?-1:0;
   }
@@ -1238,7 +1237,7 @@ function _orbScaleOrbits(){
     }
     /* Planets orbit at 33% of star distance — enough spread to avoid overlap */
     var planetScale=starScale*0.33;
-    var planetRatios={trekbot:1.10,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.30,rubberband:1.1,arbitrageur:0.90};
+    var planetRatios={confluence:1.10,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.30,rubberband:1.1,arbitrageur:0.90};
     for(var pid in planetRatios){
       if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
     }
@@ -1264,7 +1263,7 @@ function _orbScaleOrbits(){
       if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=Math.min(starScale*starRatios[sid],maxOrbit);
     }
     var planetScale=starScale*0.28;
-    var planetRatios={trekbot:1.1,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.35,rubberband:1.2,arbitrageur:1.05};
+    var planetRatios={confluence:1.1,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.35,rubberband:1.2,arbitrageur:1.05};
     for(var pid in planetRatios){
       if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
     }
@@ -1479,9 +1478,9 @@ function _orbHandleEvent(ev){
   if(srcNode) srcNode.onEvent();
   /* CC sun pulses on every event */
   if(_orbNodes.cc) _orbNodes.cc.eventBurst=Math.min(1,(_orbNodes.cc.eventBurst||0)+0.15);
-  var traders=["trekbot","gridzilla","nexusbrain","turtlesue"];
+  var traders=["confluence","gridzilla","nexusbrain","turtlesue"];
   /* Full pool of trading bots that react to whale intelligence */
-  var _whaleTradersAll=["turtlesue","nexusbrain","gridzilla","trekbot","trekbot_short","rubberband","arbitrageur"];
+  var _whaleTradersAll=["turtlesue","nexusbrain","gridzilla","confluence","rubberband","arbitrageur"];
   if(/WHALE_ALERT/.test(type)){
     _orbFireSynapses("deepblue",traders);
     var tier=(ev.data||{}).tier||"";
@@ -1489,7 +1488,7 @@ function _orbHandleEvent(ev){
       _orbNodes.deepblue.eventBurst=1.0;
     }
     /* Migration: whale activity pulls traders toward Deep Blue */
-    if(_orbNodes.trekbot) _orbNodes.trekbot.migrateTo("deepblue","whale intelligence dominant");
+    if(_orbNodes.confluence) _orbNodes.confluence.migrateTo("deepblue","whale intelligence dominant");
     if(tier==="EXTREME"&&_orbNodes.turtlesue) _orbNodes.turtlesue.migrateTo("deepblue","whale may trigger breakout");
     /* SignalLane burst: staggered arcs from deepblue to all pool traders */
     var _srcNode=_orbNodes.deepblue||_orbNodes[src];
@@ -1515,7 +1514,7 @@ function _orbHandleEvent(ev){
   if(/PHASE_TRANSITION/.test(type)){
     var pn=_orbNodes.phitex;
     if(pn){pn.eventBurst=1.0;_orbShockwaves.push({x:pn.x,y:pn.y,r:0,op:0.6,color:pn.color,rgb:pn.rgb});}
-    if(_orbNodes.trekbot) _orbNodes.trekbot.migrateTo("nexus","phase transition — watching math signals");
+    if(_orbNodes.confluence) _orbNodes.confluence.migrateTo("nexus","phase transition — watching math signals");
   }
   /* MANIFOLD_WARNING / QUANTUM_COLLAPSE: significant math events — fire one synapse */
   if(/MANIFOLD_WARNING|QUANTUM_COLLAPSE/.test(type)){
@@ -1532,8 +1531,8 @@ function _orbHandleEvent(ev){
   }
   /* REGIME_CHANGE: migration only, no synapses */
   if(/REGIME_CHANGE/.test(type)){
-    if((src==="oracle"||src==="trinity")&&_orbNodes.trekbot&&!_orbNodes.trekbot.migrating){
-      _orbNodes.trekbot.migrateTo("oracle","scanner intelligence dominant");
+    if((src==="oracle"||src==="trinity")&&_orbNodes.confluence&&!_orbNodes.confluence.migrating){
+      _orbNodes.confluence.migrateTo("oracle","scanner intelligence dominant");
     }
   }
   if(/EMERGENCY_REDUCE/.test(type)){
@@ -1566,7 +1565,7 @@ function _orbHandleEvent(ev){
       for(var tid in _orbNodes){var tnd=_orbNodes[tid];
         if(tnd.statusLabel&&tnd.statusLabel.indexOf&&trig&&tnd.statusLabel.indexOf(trig.split("/")[0])>=0) tn=tnd;
         if(tnd.statusLabel&&tnd.statusLabel.indexOf&&react&&tnd.statusLabel.indexOf(react.split("/")[0])>=0) rn=tnd;}
-      if(!tn) tn=_orbNodes.trekbot;if(!rn) rn=_orbNodes.nexusbrain;
+      if(!tn) tn=_orbNodes.confluence;if(!rn) rn=_orbNodes.nexusbrain;
       if(tn&&rn) _orbWormhole(tn,rn,d.force_transfer||1,d.expected_lag||2);
     }
   }
@@ -1596,8 +1595,8 @@ function _updateMigrations(){
     if(/SCAN_COMPLETE|REGIME_CHANGE/.test(t)) oracleInf++;
     if(/FORECAST_CONVICTION/.test(t)) oracleInf+=0.5;
   }
-  /* TrekBot follows dominant intelligence (only if not already migrating) */
-  var tb=_orbNodes.trekbot;
+  /* Confluence follows dominant intelligence (only if not already migrating) */
+  var tb=_orbNodes.confluence;
   if(tb&&!tb.migrating&&tb.alive){
     if(deepblueInf>oracleInf&&deepblueInf>nexusInf&&tb.currentParent!=="deepblue")
       tb.migrateTo("deepblue","whale intelligence dominant");
@@ -2151,8 +2150,8 @@ function _drawWormholes(ctx,dt){
 
 /* --- 3. GRAVITATIONAL LENSING (kept) --- */
 function _drawLensing(ctx){
-  /* No-halo archetypes: station (gridzilla) and ship (trekbot) are artificial — no atmosphere */
-  var noHalo={gridzilla:1,trekbot:1};
+  /* No-halo archetypes: station (gridzilla) is artificial — no atmosphere */
+  var noHalo={gridzilla:1};
   /* Comet gets a dedicated coma instead of the planetary limb */
   var cometType={rubberband:1};
 
@@ -2472,7 +2471,7 @@ function _orbRender(timestamp){
   }
 
   /* L14: Planets — cinema renderers always */
-  var planetIds=["trekbot","trekbot_short","nexusbrain","gridzilla","turtlesue","rubberband","arbitrageur"];
+  var planetIds=["confluence","nexusbrain","gridzilla","turtlesue","rubberband","arbitrageur"];
   for(var pi=0;pi<planetIds.length;pi++){
     var planet=_orbNodes[planetIds[pi]];
     if(!planet) continue;
@@ -2480,7 +2479,7 @@ function _orbRender(timestamp){
       /* Name + status always visible in cinema mode */
       if(planet.alive){
         /* Ships extend further — use larger offset */
-        var _plbOff=planet.id==="trekbot"?planet.currentSize*2.2+14:planet.currentSize*1.8+14;
+        var _plbOff=planet.currentSize*1.8+14;
         ctx.fillStyle=hexAlpha(planet.color,0.55);
         ctx.font='9px "IBM Plex Mono",monospace';
         ctx.textAlign="center";
@@ -2956,7 +2955,7 @@ function buildCard(def, b, alive, tabIdx){
 }
 
 /* ===== RENDER: BOT CARDS ===== */
-var TRADING_IDS=["turtlesue","nexusbrain","gridzilla","trekbot","sentinel"];
+var TRADING_IDS=["turtlesue","nexusbrain","gridzilla","confluence","sentinel"];
 var INTEL_IDS=["trinity","hivemind","oracle","deepblue","phitex","aegis"];
 
 function renderCards(bots){
@@ -3077,7 +3076,7 @@ function renderAggStats(agg,bots){
     html+=row("Available",'<span style="color:var(--green)">'+fmt$(p.available)+'</span>');
     html+=row("Deployed",'<span style="color:'+resolveVar(depColor)+'">'+fmt$(p.deployed)+' ('+p.deployed_pct+'%)</span>');
     html+='<div class="port-bar-track"><div class="port-bar-fill" style="width:'+clamp(p.deployed_pct,0,100)+'%;background:'+resolveVar(depColor)+'"></div></div>';
-    var tradingBots=["turtlesue","nexusbrain","gridzilla","trekbot"];
+    var tradingBots=["turtlesue","nexusbrain","gridzilla","confluence"];
     var maxBot=p.total*(p.limits&&p.limits.max_per_bot_pct||30)/100;
     for(var i=0;i<tradingBots.length;i++){
       var bid=tradingBots[i];
@@ -3302,7 +3301,7 @@ function fmtDur(s) {
 }
 
 /* Render a compact trade history table from event log trades.
-   Returns HTML string. Used by TrekBot, Gridzilla, Arbitrageur detail views. */
+   Returns HTML string. Used by Gridzilla, Arbitrageur detail views. */
 function renderTradeHistoryHTML(botId, color, limit) {
   var trades = getBotTrades(botId, limit || 10);
   if (!trades.length) {
@@ -3364,17 +3363,8 @@ function fetchBotData(botId,port){
   }).then(function(data){
     if(!data||!data.raw) return;
     var raw=data.raw;
-    /* TrekBot raw = {health:{}, positions:[], analytics:{}} */
-    if(botId==="trekbot"||botId==="trekbot_short"){
-      _botDataCache[botId]={
-        health:raw.health||{},
-        positions:raw.positions||[],
-        analytics:raw.analytics||{}
-      };
-    } else {
-      /* Other bots: raw IS the snapshot */
-      _botDataCache[botId]=raw;
-    }
+    /* All current bots (including Confluence): raw IS the flat snapshot */
+    _botDataCache[botId]=raw;
     /* Sound: data-reactive voice modulation */
     if(typeof _sound!=="undefined"&&_sound.initialized) _sound.modulate(botId,raw);
     /* Re-render if still on this tab */
@@ -3389,7 +3379,6 @@ function fetchBotData(botId,port){
         }
         if(def.id==="gridzilla") drawGridzillaPanel();
         if(def.id==="deepblue") drawDeepBluePanel();
-        if(def.id==="trekbot_short") _tksDrawEquity();
         /* Planet hero — all panels */
         renderPlanetHero(def.id,def.color,fb&&fb.alive,'ph-'+def.id+'-canvas');
         /* Refresh sidebar with newly cached raw data */
@@ -3403,8 +3392,7 @@ function fetchBotData(botId,port){
 var VOICE_CONFIG={
   oracle:     {f:55,   t:"sine",     desc:"Jovian rumble. Whistler descends on deep scan."},
   deepblue:   {f:40,   t:"sine",     desc:"Ocean sonar pulse. Clicks on whale detection."},
-  trekbot:    {f:65.4, t:"sine",     desc:"Low tactical hum. Steady recon tone."},
-  trekbot_short:{f:55.0,t:"sawtooth",desc:"Inverse descending growl. Bearish counter-fire."},
+  confluence: {f:65.4, t:"sine",     desc:"Low tactical hum. Steady recon tone."},
   phitex:     {f:110,  t:"sawtooth", desc:"Pulsar buzz through bandpass. Ticks on phase flip."},
   aegis:      {f:73.4, t:"sine",     desc:"Shield drone with close harmonic beat."},
   nexus:      {f:440,  t:"sine",     desc:"Council bell. High crystalline major third. Quiet deliberation."},
@@ -3421,7 +3409,7 @@ var VOICE_CONFIG={
 };
 
 var BOT_ROLES={
-  trekbot:"Signal Warfare \u00b7 Trader", trekbot_short:"Inverse Warfare \u00b7 SHORT Trader", oracle:"Quantitative Scanner \u00b7 Intel",
+  confluence:"Intel Aggregator \u00b7 Trader", oracle:"Quantitative Scanner \u00b7 Intel",
   trinity:"Multi-Pair Overwatch \u00b7 Scanner", sentinel:"Probability Forecaster \u00b7 Intel",
   rubberband:"Mean Reversion \u00b7 Trader", gridzilla:"Grid Trading \u00b7 Trader",
   deepblue:"Whale Detection \u00b7 Intel", turtlesue:"Channel Trading \u00b7 Trader",
@@ -3431,7 +3419,7 @@ var BOT_ROLES={
   arbitrageur:"Pair Spreads \u00b7 Trader", chronos:"Temporal Analysis \u00b7 Intel"
 };
 
-var TRADING_BOTS={trekbot:1,trekbot_short:1,turtlesue:1,nexusbrain:1,gridzilla:1,rubberband:1,contrarian:1,arbitrageur:1};
+var TRADING_BOTS={confluence:1,turtlesue:1,nexusbrain:1,gridzilla:1,rubberband:1,contrarian:1,arbitrageur:1};
 
 function computeEvolution(botId, snap, b){
   var s=snap||{}; var isTrader=!!TRADING_BOTS[botId];
@@ -9968,7 +9956,7 @@ function buildChronosView(def,b){
   h+='<div style="font-size:9px;color:#475569;margin-bottom:8px;line-height:1.5">Chronos publishes TIME_ANOMALY events to the event bus. All trading bots consume temporal bias before entry.</div>';
   /* Signal types and their fleet consumers */
   var _chronFleetData=[
-    {type:"TIME_ANOMALY",color:c,desc:"Hour bias alert — bull/bear lean for the current UTC hour",consumers:["TrekBot","TrekBot SHORT","NexusBrain","Rubberband","Contrarian"]},
+    {type:"TIME_ANOMALY",color:c,desc:"Hour bias alert — bull/bear lean for the current UTC hour",consumers:["Confluence","NexusBrain","Rubberband","Contrarian"]},
     {type:"SESSION_OPEN",color:"#34d399",desc:"Major session went live — potential volume surge",consumers:["Gridzilla","TurtleSue","Arbitrageur"]},
     {type:"SESSION_OVERLAP",color:"#ff1744",desc:"Two sessions live — peak volatility window",consumers:["All traders (high alert)"]}
   ];
@@ -10287,8 +10275,9 @@ function buildDetailView(def,b){
     return html.substring(0,secondEnd+6)+_offBanner+html.substring(secondEnd+6);
   };
   /* Bot-specific rich views */
-  if(def.id==="trekbot") return _injectOffline(buildTrekBotView(def,b));
-  if(def.id==="trekbot_short") return _injectOffline(buildTrekShortView(def,b));
+  /* Confluence has no bespoke view yet — falls through to the generic
+     normalized-fields view below (equity/pnl/positions/win_rate all present
+     in its /api/snapshot, verified against /api/master normalized block). */
   if(def.id==="turtlesue") return _injectOffline(buildTurtleSueView(def,b));
   if(def.id==="deepblue") return _injectOffline(buildDeepBlueView(def,b));
   if(def.id==="sentinel") return _injectOffline(buildSentinelView(def,b));
@@ -10429,7 +10418,6 @@ function setTab(idx){
         }
         if(def.id==="gridzilla") drawGridzillaPanel();
         if(def.id==="deepblue") drawDeepBluePanel();
-        if(def.id==="trekbot_short") _tksDrawEquity();
         renderPlanetHero(def.id,def.color,isAlive,'ph-'+def.id+'-canvas');
       } else {
         $focusFrame.innerHTML='<iframe src="http://localhost:'+def.port+'/" title="'+def.name+'"></iframe>';
@@ -10591,9 +10579,8 @@ function renderSidebar(botId){
   var b     = findBot(state.bots, botId) || {alive:false, last_seen:0, normalized:{}, raw:{}};
   var norm  = b.normalized || {};
   var raw   = _botDataCache[botId] || {};
-  /* TrekBot raw is {health:{}, positions:[], analytics:{}} */
-  var rawH  = (botId==="trekbot") ? (raw.health||{}) : raw;
-  var rawA  = (botId==="trekbot") ? (raw.analytics||{}) : raw;
+  var rawH  = raw;
+  var rawA  = raw;
 
   /* ── helpers ── */
   function sbRow(k, vHtml){ return '<div class="sb-row"><span class="sb-key">'+k+'</span><span class="sb-val">'+vHtml+'</span></div>'; }
@@ -10634,7 +10621,7 @@ function renderSidebar(botId){
 
   /* ── Section 2: STATE (varies by bot type) ── */
   /* Classify: trading / intel / engine */
-  var TRADING_BOTS = {turtlesue:1, nexusbrain:1, gridzilla:1, trekbot:1, rubberband:1, arbitrageur:1};
+  var TRADING_BOTS = {turtlesue:1, nexusbrain:1, gridzilla:1, confluence:1, rubberband:1, arbitrageur:1};
   var ENGINE_BOTS  = {aegis:1, nexus:1, phitex:1};
   var INTEL_BOTS   = {sentinel:1, trinity:1, hivemind:1, oracle:1, deepblue:1, chronos:1, contrarian:1};
 
@@ -10666,7 +10653,7 @@ function renderSidebar(botId){
     var coolStr = myCools.length ? myCools[0]+(myCools.length>1?" +"+(myCools.length-1):"") : "none";
 
     /* Direction from positions */
-    var positions = (botId==="trekbot") ? (raw.positions||[]) : (rawH.positions||[]);
+    var positions = rawH.positions||[];
     var dirs = {};
     for(var pi=0;pi<positions.length;pi++){ var pd=(positions[pi].direction||"").toUpperCase(); if(pd) dirs[pd]=(dirs[pd]||0)+1; }
     var dirKeys = Object.keys(dirs);
@@ -10885,7 +10872,7 @@ function _toggleFleetMode(){
   }
 }
 function _engageFleet(){
-  if(!confirm("ENGAGE LIVE TRADING?\n\nTrekBot and TurtleSue will place REAL Kraken orders with REAL money.\nLong spot only.\n\nThis is your final confirmation.")) return;
+  if(!confirm("ENGAGE LIVE TRADING?\n\nTurtleSue will place REAL Kraken orders with REAL money.\nLong spot only.\n\nThis is your final confirmation.")) return;
   _postFleetMode("engage");
 }
 function _disengageFleet(){
@@ -10933,7 +10920,7 @@ function fetchData(){
     if(firstLoad&&_orbSynapses.length>0){
       var allSynIds=["deepblue","oracle","nexus","aegis","sentinel","contrarian","chronos"];
       for(var _si=0;_si<allSynIds.length;_si++){
-        _orbFireSynapses(allSynIds[_si],["trekbot","gridzilla","nexusbrain","turtlesue"]);
+        _orbFireSynapses(allSynIds[_si],["confluence","gridzilla","nexusbrain","turtlesue"]);
       }
     }
     /* Update AEGIS from bot data */
@@ -10998,7 +10985,7 @@ var _sound=window._sound={
 
   /* Frequency bands for per-bot bandpass filters */
   _botBands:{
-    trekbot:      {lo:300,hi:900,pan:0.0},
+    confluence:   {lo:300,hi:900,pan:0.0},
     nexusbrain:   {lo:80,hi:250,pan:-0.3},
     gridzilla:    {lo:200,hi:600,pan:0.4},
     turtlesue:    {lo:500,hi:1500,pan:-0.5},
@@ -12110,14 +12097,15 @@ function _drawSunCinematic(ctx,x,y,baseR,now,eventRate){
 
 /* ── 1A: NEW BOT IDENTITIES ── */
 
-/* Ship — TrekBot */
 /* ═══════════════════════════════════════════════════════════════════════
    CINEMATIC BOT RENDERERS — Layered, lit, textured
    Every function receives sunAngle for directional lighting.
    ═══════════════════════════════════════════════════════════════════════ */
 
-/* Ship — TrekBot: Explorer with hull plating, engine exhaust, cockpit, 27 sensor tips */
-/* TrekBot / Earth — blue oceans, green-brown continents, cloud systems, atmospheric rim */
+/* Ship — retired (was TrekBot/Earth). Bot moved to standalone GoldenEye;
+   no longer dispatched from _botTypeMap. Function body kept, unreferenced —
+   see _botTypeMap below. Confluence uses PLANET_VISUALS.confluence instead
+   (solar_system.js), not a cinema entity. */
 function _drawShip(ctx,x,y,size,color,heading,deployed,sensors,sunX,sunY,now){
   var s=size*1.0;
   var sunA=Math.atan2((sunY||0)-y,(sunX||0)-x);
@@ -13893,7 +13881,8 @@ function _drawWormholeGate(ctx,x,y,size,color,spread,gatePhase,sunX,sunY,now){
   ctx.beginPath();ctx.arc(x,y,s,sunA-0.65,sunA+0.65);ctx.stroke();
 }
 
-/* TrekBot SHORT / Venus — yellowish-white cloud cover, sulfuric acid atmosphere, mirror-bright */
+/* Venus — retired (was TrekBot SHORT). Shorting is retired fleet-wide;
+   no replacement planet. Function body kept, unreferenced. */
 function _drawVenusPlanet(ctx,x,y,size,color,sunX,sunY,now){
   var s=size*1.0;
   var sunA=Math.atan2((sunY||0)-y,(sunX||0)-x);
@@ -14002,14 +13991,16 @@ function _drawVenusPlanet(ctx,x,y,size,color,sunX,sunY,now){
   ctx.beginPath();ctx.arc(x,y,s*0.98,sunA-0.70,sunA+0.70);ctx.stroke();
 }
 
-/* ── Bot type mapping ── */
+/* ── Bot type mapping ──
+   Confluence deliberately has no entry — it renders via the generic
+   PLANET_VISUALS.confluence path (solar_system.js), not a bespoke
+   cinema entity. See _drawFullscreenEntity: no _botTypeMap match
+   returns false, and callers fall back to drawPlanet()/_drawNode(). */
 var _botTypeMap={
-  trekbot:"ship", nexusbrain:"civ_planet", gridzilla:"station",
-  turtlesue:"armored_moon", rubberband:"comet", arbitrageur:"wormhole_gate",
-  trekbot_short:"venus_planet"
+  nexusbrain:"civ_planet", gridzilla:"station",
+  turtlesue:"armored_moon", rubberband:"comet", arbitrageur:"wormhole_gate"
 };
 var _botVisState={
-  trekbot:{heading:0,deployed:0,targetIdx:0,lastSwitch:0},
   nexusbrain:{phase:0,brightness:0.3},
   gridzilla:{state:"defensive",sectionsLit:0},
   turtlesue:{charge:0,erupting:false},
@@ -14480,7 +14471,6 @@ var ovData = {
   brainiacFunding: null,    /* from /api/brainiac/funding */
   brainiacCorr: null,       /* from /api/brainiac/correlations */
   ticker: {},               /* from /api/market/ticker — pair -> {price,...} */
-  trekbotPnlMap: {},        /* from http://localhost:8080/positions — pair -> pnl */
   lastFetch: 0
 };
 
@@ -15230,18 +15220,12 @@ function renderOvPositions(){
     var ageStr = r.reserved_at ? fmtAge(age) : "--";
     var feeEst = r.amount != null ? fmt$(r.amount * 0.0052) : "--";
 
-    /* Unrealized P/L — use TrekBot's live PnL if available, else compute from ticker */
+    /* Unrealized P/L — compute from ticker + bot's own reported position entry price */
     var unrealPnl = null;
     var pair = r.pair || "";
-    if(r.bot_id === "trekbot" || r.bot_id === "trekbot_short"){
-      var _tbPnl = ovData.trekbotPnlMap[pair];
-      if(_tbPnl != null) unrealPnl = _tbPnl;
-    }
-    if(unrealPnl === null && r.amount != null && pair){
-      /* Generic: compute from ticker price and estimated entry price */
+    if(r.amount != null && pair){
       /* Entry price estimated from reserved_at event is unavailable here;
-         only use ticker if bot exposes entry price via its own positions.
-         Currently only TrekBot does — show dash for others. */
+         only use ticker if bot exposes entry price via its own positions. */
       var _tick = ovData.ticker && ovData.ticker[pair];
       /* If the bot has open_positions in state.bots with entry price, use those */
       var _fb = findBot(state.bots, r.bot_id);
@@ -16537,22 +16521,6 @@ function fetchOverviewData(){
     .then(function(r){ return r.ok ? r.json() : null; })
     .then(function(d){
       if(d){ ovData.ticker = d; }
-      if(activeTab===0){ renderOvPositions(); }
-    })
-    .catch(function(){});
-
-  /* 10c. TrekBot live positions — has per-position pnl already computed */
-  fetch("http://localhost:8080/positions")
-    .then(function(r){ return r.ok ? r.json() : null; })
-    .then(function(arr){
-      if(!Array.isArray(arr)) return;
-      var m = {};
-      for(var _pi=0; _pi<arr.length; _pi++){
-        var _p = arr[_pi];
-        var _sym = _p.symbol || _p.pair || "";
-        if(_sym && _p.pnl != null) m[_sym] = _p.pnl;
-      }
-      ovData.trekbotPnlMap = m;
       if(activeTab===0){ renderOvPositions(); }
     })
     .catch(function(){});

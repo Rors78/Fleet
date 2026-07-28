@@ -37,7 +37,7 @@ var CELESTIAL_HIERARCHY={
   deepblue:  {type:"star",  parent:"cc",      orbitRadius:520, orbitSpeed:0.000115,mass:35,  sz:54, gravitationalRadius:160, grp:"intel",  pt:"ocean",      pers:"predatory"},
   nexus:     {type:"star",  parent:"cc",      orbitRadius:468, orbitSpeed:0.00007, mass:38,  sz:56, gravitationalRadius:170, grp:"novel",  pt:"binary",     pers:"omniscient"},
   /* PLANETS — Trading bots ×1.3, orbital radii ×1.3 */
-  trekbot:   {type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.004,  mass:15, sz:29, grp:"trader", pt:"terrestrial", pers:"aggressive"},
+  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.004,  mass:15, sz:29, grp:"trader", pt:"terrestrial", pers:"aggressive"},
   nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.005,  mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"analytical"},
   gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.006,  mass:10, sz:26, grp:"trader", pt:"crystal",     pers:"steady"},
   turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.002,  mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"patient"},
@@ -51,26 +51,24 @@ var CELESTIAL_HIERARCHY={
   chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.00029, mass:10, sz:14, grp:"intel",    pt:"pulsar",     pers:"rhythmic"},
   hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0014,  mass:8,  sz:13, grp:"optimizer",pt:"cluster",    pers:"swarm"},
   trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0017,  mass:8,  sz:13, grp:"intel",    pt:"trinary",    pers:"scattered"},
-  trekbot_short:{type:"planet",defaultParent:"oracle", orbitRadius:143,orbitSpeed:0.0035, mass:14, sz:27, grp:"trader",  pt:"terrestrial", pers:"aggressive"},
   inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.00065, mass:6,  sz:11, grp:"support",  pt:"nebula",     pers:"processing"}
 };
 
 /* --- Synapse definitions (event bus connections) --- */
 var _SYN_PAIRS=[
-  ["deepblue","trekbot"],["deepblue","gridzilla"],["deepblue","nexusbrain"],
-  ["sentinel","trekbot"],["sentinel","gridzilla"],["sentinel","nexusbrain"],
-  ["oracle","trekbot"],["oracle","nexusbrain"],
+  ["deepblue","gridzilla"],["deepblue","nexusbrain"],
+  ["sentinel","gridzilla"],["sentinel","nexusbrain"],
+  ["oracle","nexusbrain"],
   ["phitex","aegis"],
-  ["aegis","trekbot"],["aegis","gridzilla"],["aegis","nexusbrain"],["aegis","turtlesue"],
-  ["nexus","trekbot"],["nexus","gridzilla"],["nexus","nexusbrain"],["nexus","turtlesue"],
+  ["aegis","gridzilla"],["aegis","nexusbrain"],["aegis","turtlesue"],
+  ["nexus","gridzilla"],["nexus","nexusbrain"],["nexus","turtlesue"],
   ["deepblue","nexus"],["phitex","nexus"],
-  ["contrarian","trekbot"],["contrarian","rubberband"],["contrarian","gridzilla"],["contrarian","nexusbrain"],
-  ["chronos","trekbot"],["chronos","turtlesue"],["chronos","rubberband"],
+  ["contrarian","rubberband"],["contrarian","gridzilla"],["contrarian","nexusbrain"],
+  ["chronos","turtlesue"],["chronos","rubberband"],
   ["deepblue","rubberband"],["aegis","rubberband"],["aegis","arbitrageur"],
   ["phitex","rubberband"],["phitex","arbitrageur"],
-  ["deepblue","trekbot_short"],["aegis","trekbot_short"],["nexus","trekbot_short"],
-  ["oracle","trekbot_short"],["sentinel","trekbot_short"],["contrarian","trekbot_short"],
-  ["chronos","trekbot_short"],["trekbot","trekbot_short"]
+  /* Confluence — intel aggregator: wired to its four actual input sources */
+  ["oracle","confluence"],["deepblue","confluence"],["nexus","confluence"],["sentinel","confluence"]
 ];
 
 /* ═══════ COSMOS v5 — VISUAL UNIVERSE ═══════ */
@@ -91,9 +89,7 @@ var _nsDiskAngle = 0;
 var _nsImage = new Image();
 _nsImage.src = 'neutron_star.png';
 
-/* TrekBot — Planet Express ship sprite */
-var _trekbotShipImg = new Image();
-_trekbotShipImg.src = 'static/trekbot_ship.png';
+/* (TrekBot ship sprite retired — bot moved to standalone GoldenEye, replaced by Confluence) */
 
 /* TurtleSue — Death Star sprite */
 var _turtlesueDeathStarImg = new Image();
@@ -756,37 +752,46 @@ var PLANET_VISUALS = {
         }
     },
 
-    trekbot: {
-        baseColor: [160, 120, 70],
-        atmosphere: [180, 155, 120],
+    confluence: {
+        baseColor: [255, 109, 0],
+        atmosphere: [255, 160, 80],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            if (_trekbotShipImg.complete && _trekbotShipImg.naturalWidth > 0) {
-                ctx.save();
-                /* Orient along orbital tangent — light direction as proxy for orbital position */
-                var angle = Math.atan2(ly - y, lx - x) + Math.PI / 2;
-                ctx.translate(x, y);
-                ctx.rotate(angle);
-                var w = r * 3.5, h = r * 2;
-                ctx.drawImage(_trekbotShipImg, -w/2, -h/2, w, h);
-                ctx.restore();
+            /* Four converging intel beams — Oracle, Deep Blue, NEXUS, Sentinel —
+               sweep inward toward the core. Represents the aggregator reading
+               four upstream sources rather than a chart of its own. */
+            var beamAngles = [-Math.PI/2, 0, Math.PI/2, Math.PI]; /* N, E, S, W */
+            for (var bi = 0; bi < 4; bi++) {
+                var ba = beamAngles[bi] + now / 9000;
+                var phase = ((now / 1600 + bi * 0.25) % 1);
+                var bR = Math.max(0.1, r * (1.35 - phase * 1.1));
+                var bA = (1 - phase) * 0.4;
+                var bx = x + Math.cos(ba) * bR, by = y + Math.sin(ba) * bR;
+                ctx.strokeStyle = 'rgba(255, 150, 60, ' + bA.toFixed(3) + ')';
+                ctx.lineWidth = Math.max(0.3, 1.4 * (1 - phase));
+                ctx.beginPath();
+                ctx.moveTo(bx, by);
+                ctx.lineTo(x, y);
+                ctx.stroke();
             }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
-            /* Engine exhaust glow — breathes gently, flares on orbital motion */
-            var angle = Math.atan2(ly - y, lx - x) + Math.PI / 2;
-            ctx.save();
-            ctx.translate(x, y);
-            ctx.rotate(angle);
-            var pulse = 0.55 + 0.45 * Math.sin(now / 420);
-            var glow = ctx.createRadialGradient(0, r * 1.25, 0, 0, r * 1.25, r * 1.6);
-            glow.addColorStop(0, 'rgba(255, 200, 50, ' + (0.65 * pulse).toFixed(3) + ')');
-            glow.addColorStop(0.4, 'rgba(255, 100, 20, ' + (0.30 * pulse).toFixed(3) + ')');
-            glow.addColorStop(1, 'rgba(255, 50, 0, 0)');
+            /* Consensus core — pulses brighter when beams phase-align,
+               echoing the "2+ sources agree" entry gate. */
+            var align = 0;
+            for (var bi = 0; bi < 4; bi++) {
+                var phase = ((now / 1600 + bi * 0.25) % 1);
+                if (phase < 0.15) align++;
+            }
+            var pulse = align >= 2 ? 0.85 : (0.35 + 0.15 * Math.sin(now / 500));
+            var coreR = Math.max(0.1, r * 0.55);
+            var glow = ctx.createRadialGradient(x, y, 0, x, y, coreR);
+            glow.addColorStop(0, 'rgba(255, 200, 120, ' + (0.55 * pulse).toFixed(3) + ')');
+            glow.addColorStop(0.5, 'rgba(255, 109, 0, ' + (0.25 * pulse).toFixed(3) + ')');
+            glow.addColorStop(1, 'rgba(255, 60, 0, 0)');
             ctx.fillStyle = glow;
             ctx.beginPath();
-            ctx.arc(0, r * 1.25, r * 1.6, 0, Math.PI * 2);
+            ctx.arc(x, y, coreR, 0, Math.PI * 2);
             ctx.fill();
-            ctx.restore();
         }
     },
 
@@ -1663,52 +1668,6 @@ var PLANET_VISUALS = {
             ctx.beginPath();
             ctx.ellipse(x, y, r * 1.90, Math.max(0.1, r * 1.90 * tilt), ringRot,
                         Math.PI * 1.05, Math.PI * 1.95);
-            ctx.stroke();
-            ctx.restore();
-        }
-    },
-
-    trekbot_short: {
-        baseColor: [140, 40, 30],
-        atmosphere: [180, 60, 50],
-        surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Dark volcanic terrain — inverse of TrekBot's green highlands */
-            var patches = [
-                { dx: 0.2, dy: -0.3, s: 0.2, c: 'rgba(180, 30, 20, 0.18)' },
-                { dx: -0.3, dy: 0.1, s: 0.15, c: 'rgba(200, 50, 30, 0.15)' },
-                { dx: 0.1, dy: 0.3, s: 0.18, c: 'rgba(160, 25, 15, 0.15)' },
-                { dx: -0.1, dy: -0.15, s: 0.12, c: 'rgba(220, 60, 40, 0.18)' },
-                { dx: 0.35, dy: 0.1, s: 0.1, c: 'rgba(170, 35, 25, 0.12)' },
-            ];
-            for (var pi = 0; pi < patches.length; pi++) {
-                var p = patches[pi];
-                var px = x + p.dx * r, py = y + p.dy * r;
-                ctx.fillStyle = p.c;
-                ctx.beginPath();
-                ctx.ellipse(px, py, r * p.s, r * p.s * 0.7, 0.3, 0, Math.PI*2);
-                ctx.fill();
-            }
-            /* Lava cracks — glowing fissures */
-            ctx.strokeStyle = 'rgba(255, 80, 20, 0.12)';
-            ctx.lineWidth = 0.5;
-            for (var ci = 0; ci < 4; ci++) {
-                var ca = ci * 1.5 + now / 20000;
-                var cx1 = x + Math.cos(ca) * r * 0.3, cy1 = y + Math.sin(ca) * r * 0.3;
-                var cx2 = x + Math.cos(ca + 1.2) * r * 0.6, cy2 = y + Math.sin(ca + 0.8) * r * 0.5;
-                ctx.beginPath(); ctx.moveTo(cx1, cy1); ctx.lineTo(cx2, cy2); ctx.stroke();
-            }
-        },
-        overlay: function(ctx, x, y, r, nd, now) {
-            /* Downward arrow indicator — SHORT direction */
-            ctx.save();
-            ctx.strokeStyle = 'rgba(255, 60, 30, 0.35)';
-            ctx.lineWidth = 1.5;
-            ctx.beginPath();
-            ctx.moveTo(x, y + r * 1.3);
-            ctx.lineTo(x, y + r * 1.8);
-            ctx.moveTo(x - r * 0.25, y + r * 1.6);
-            ctx.lineTo(x, y + r * 1.8);
-            ctx.lineTo(x + r * 0.25, y + r * 1.6);
             ctx.stroke();
             ctx.restore();
         }

@@ -286,6 +286,13 @@ def get_universe():
             merged.append(p)
             seen.add(p)
 
+    # Drop blacklisted pairs before forecasting rather than after. Some entries
+    # are blacklisted precisely because Kraken has no OHLC for them (e.g.
+    # XNO/USD -> EQuery:Unknown asset pair), so every cycle would otherwise
+    # spend a fetch attempt on a pair that can never produce a forecast and can
+    # never be traded.
+    merged = [p for p in merged if not _is_blacklisted(p)]
+
     if merged:
         return merged
     # Genuine last resort — surface it, because a 3-pair forecast set is a

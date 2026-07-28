@@ -122,12 +122,22 @@ ENGINE_EVENT_MAP = {
 }
 
 # ── PAIR BLACKLIST ──
-# Pairs with 0% WR and deeply negative expectancy across fleet.
+# Two distinct reasons a pair lands here:
+#   (a) 0% WR and deeply negative expectancy across the fleet
+#   (b) not tradeable on Kraken at all — no OHLC, so no forecast and no fill
 # Checked by CC portfolio manager — blocks capital reservation for these pairs.
 BLACKLISTED_PAIRS = {
+    # (a) negative expectancy
     "SOL/USD",     # 0% WR, -$9.74 net, 5 trades across rubberband+trekbot
     "DOT/USD",     # 0% WR, -$9.69 net (as DOTUSD via nexusbrain)
     "GBP/USD",     # 0% WR, -$9.19 net, 6 trades (rubberband)
+
+    # (b) not on Kraken — Oracle signals these but they cannot be traded or
+    #     confirmed. Kraken OHLC returns EQuery:Unknown asset pair, so Sentinel
+    #     produces no forecast and Confluence can never reach multi-source
+    #     agreement on them. Left unblocked they burn a candidate slot every
+    #     cycle and show as a permanent overlap "miss".
+    "XNO/USD",     # Kraken: EQuery:Unknown asset pair (verified 2026-07-28)
 }
 
 

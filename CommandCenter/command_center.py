@@ -371,9 +371,12 @@ class PortfolioManager:
                 p: v for p, v in self._pair_cooldowns.items() if v["ts"] > cutoff
             }
 
-            # Blacklist check — fleet-wide protection
+            # Blacklist check — fleet-wide protection. Pairs are blacklisted for
+            # negative expectancy OR for not being tradeable on Kraken at all,
+            # so the reason stays generic rather than asserting "0% WR".
             if is_blacklisted(pair):
-                return {"ok": False, "reason": f"Pair {pair} is blacklisted (0% WR across fleet)"}
+                return {"ok": False,
+                        "reason": f"Pair {pair} is blacklisted (see fleet_config.BLACKLISTED_PAIRS)"}
 
             # Direction gate — shorts are retired fleet-wide (paper AND live).
             # Reports the specific rule that fired rather than always blaming

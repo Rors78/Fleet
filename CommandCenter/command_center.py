@@ -3669,6 +3669,9 @@ _watchdog_state: dict = {}  # shared state for /api/watchdog endpoint
 # bot_id -> last restart timestamp. Rehydrated from cc_state.json so the health
 # monitor doesn't re-restart a bot that was just restarted before CC rebooted.
 _restart_cooldowns: dict[str, float] = {}
+# bot_id -> True once we've logged that its directory is missing, so the health
+# monitor reports the failure once instead of every cooldown cycle.
+_missing_dir_logged: dict[str, bool] = {}
 try:
     _cd = _load_cc_state().get("restart_cooldowns", {})
     if isinstance(_cd, dict):
@@ -3791,6 +3794,15 @@ def _health_monitor() -> None:
                     continue
 
                 bcfg = bot_cmds.get(bid)
+                if bcfg and bcfg.get("dir") and not os.path.isdir(bcfg["dir"]):
+                    # Bot directory is gone (e.g. TrekBot removed from disk).
+                    # Popen would raise NotADirectoryError every cooldown forever,
+                    # so mark it permanently down instead of retrying.
+                    if not _missing_dir_logged.get(bid):
+                        log.error("Cannot restart %s — directory missing: %s (will not retry)",
+                                  bid, bcfg["dir"])
+                        _missing_dir_logged[bid] = True
+                    continue
                 if bcfg and bcfg.get("dir"):
                     try:
                         # Kill any zombie processes on this port first

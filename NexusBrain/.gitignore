@@ -1,0 +1,11 @@
+# Runtime state — regenerated on every run
+*.log
+*_state.json
+*_positions.json
+
+# Python
+__pycache__/
+*.pyc
+
+# Windows
+desktop.ini

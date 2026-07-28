@@ -24,7 +24,7 @@ import threading
 import time
 from collections import deque
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -687,7 +687,13 @@ def main():
     t = threading.Thread(target=_scan_loop, daemon=True, name="AegisScan")
     t.start()
 
-    server = HTTPServer(("0.0.0.0", PORT), AegisHandler)
+    # ThreadingHTTPServer, not HTTPServer: the plain server handles one request
+    # at a time, so while AEGIS is recomputing its score the port stops
+    # answering. Command Center's health check times out and reports the bot
+    # DOWN even though it is healthy — observed as 18/18 flickering to 15/18.
+    # daemon_threads so request threads never block shutdown.
+    server = ThreadingHTTPServer(("0.0.0.0", PORT), AegisHandler)
+    server.daemon_threads = True
     print(f"  Listening on http://localhost:{PORT}")
     print(f"  Press Ctrl+C to stop")
     print()

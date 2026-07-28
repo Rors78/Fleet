@@ -1884,7 +1884,7 @@ class DashboardServer:
 
     def start(self):
         """Start dashboard in a daemon thread."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler
+        from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
         engine = self.engine
         html = self._html
 
@@ -1914,7 +1914,11 @@ class DashboardServer:
                     self.send_response(404)
                     self.end_headers()
 
-        server = HTTPServer(("0.0.0.0", self.port), Handler)
+        # ThreadingHTTPServer: the plain HTTPServer serves one request at a time,
+        # so while this bot computes, its port stops answering and Command Center's
+        # health check reports it DOWN even though it is healthy.
+        server = ThreadingHTTPServer(("0.0.0.0", self.port), Handler)
+        server.daemon_threads = True
         t = threading.Thread(target=server.serve_forever, daemon=True)
         t.start()
 

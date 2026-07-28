@@ -1,7 +1,7 @@
 import json
 import threading
 import time
-from http.server import HTTPServer, SimpleHTTPRequestHandler
+from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 
@@ -244,8 +244,15 @@ def run_dashboard(port: int = 9090):
     scanner_thread = threading.Thread(target=backend.start, daemon=True)
     scanner_thread.start()
     
-    # Start HTTP server
-    server = HTTPServer(('0.0.0.0', port), DashboardHandler)
+    # Start HTTP server.
+    # ThreadingHTTPServer, not HTTPServer: the plain server handles one request
+    # at a time, so while the whale scan is running the port stops answering.
+    # Command Center's health check times out and reports Deep Blue DOWN even
+    # though it is healthy — observed as 18/18 flickering to 15/18, with probes
+    # returning sub-millisecond responses except for occasional 4s timeouts.
+    # daemon_threads so request threads never block shutdown.
+    server = ThreadingHTTPServer(('0.0.0.0', port), DashboardHandler)
+    server.daemon_threads = True
     
     print(f"\n{'='*60}")
     print(f"  [WHALE] MOBYWATCHBOT DASHBOARD")

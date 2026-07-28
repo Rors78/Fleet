@@ -39,7 +39,7 @@ import logging
 import threading
 import traceback
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlencode, urlparse, parse_qs
 from pathlib import Path
 
@@ -1572,7 +1572,14 @@ class GridzillaEngine:
             def log_message(self, fmt, *args):
                 pass  # silent
 
-        server = HTTPServer(("0.0.0.0", self.config["port"]), Handler)
+        # ThreadingHTTPServer, not HTTPServer: the plain server handles one
+        # request at a time, so while the grid recalculates its levels the port
+        # stops answering. Command Center's health check times out and reports
+        # the bot DOWN even though it is healthy. Measured worst case here was
+        # 7.8s — the longest stall of any bot in the fleet.
+        # daemon_threads so request threads never block shutdown.
+        server = ThreadingHTTPServer(("0.0.0.0", self.config["port"]), Handler)
+        server.daemon_threads = True
         server.serve_forever()
 
 

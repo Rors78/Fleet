@@ -35,7 +35,7 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Dict, List, Optional, Tuple
 
 import requests
@@ -1836,7 +1836,11 @@ def cmd_run_sim(args, cfg: Config):
                 self.send_response(404)
                 self.end_headers()
 
-    _http = HTTPServer(("0.0.0.0", port), _SimHandler)
+    # ThreadingHTTPServer: the plain HTTPServer serves one request at a time,
+    # so while this bot computes, its port stops answering and Command Center's
+    # health check reports it DOWN even though it is healthy.
+    _http = ThreadingHTTPServer(("0.0.0.0", port), _SimHandler)
+    _http.daemon_threads = True
     _http_t = threading.Thread(target=_http.serve_forever, daemon=True, name="sim-http")
     _http_t.start()
     print(f"  API:     http://localhost:{port}/api/snapshot")
@@ -2015,7 +2019,11 @@ def cmd_health(args, cfg: Config):
                 self.send_response(404)
                 self.end_headers()
 
-    server = HTTPServer(("0.0.0.0", port), HealthHandler)
+    # ThreadingHTTPServer: the plain HTTPServer serves one request at a time,
+    # so while this bot computes, its port stops answering and Command Center's
+    # health check reports it DOWN even though it is healthy.
+    server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
+    server.daemon_threads = True
     print(f"  Listening on http://localhost:{port}/health")
     print(f"  Press Ctrl+C to stop\n")
 
@@ -2137,7 +2145,11 @@ def cmd_dashboard(args, cfg: Config):
                 self.end_headers()
                 self.wfile.write(b"404 Not Found")
 
-    server = HTTPServer(("0.0.0.0", port), DashHandler)
+    # ThreadingHTTPServer: the plain HTTPServer serves one request at a time,
+    # so while this bot computes, its port stops answering and Command Center's
+    # health check reports it DOWN even though it is healthy.
+    server = ThreadingHTTPServer(("0.0.0.0", port), DashHandler)
+    server.daemon_threads = True
     print(f"  Dashboard: http://localhost:{port}")
     print(f"  API:       http://localhost:{port}/api/snapshot")
     print(f"  Health:    http://localhost:{port}/health")

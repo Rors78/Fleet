@@ -3,7 +3,7 @@
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What This Is
-Unified mission control for a 17-bot crypto trading fleet (16 original + TrekBot SHORT). Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), self-evolution analysis (Ultron), and a Telegram signal broadcaster (port 9002).
+Unified mission control for a 16-bot crypto trading fleet. (TrekBot and TrekBot SHORT were removed from the fleet — TrekBot lives on as the standalone GoldenEye project. Confluence on port 8088 is the newest trader.) Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), self-evolution analysis (Ultron), and a Telegram signal broadcaster (port 9002).
 
 See `README.md` for the high-level fleet overview and engine table. This file is the operational reference.
 
@@ -61,7 +61,7 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 - `collector.py` — Brainiac: 5 background threads collecting order book depth, recent trades, global metrics (CoinGecko), correlation matrix, and funding rates. Stores to `brainiac/` as JSONL. Also registers `/api/brainiac/*` endpoints on the HTTP handler.
 - `fleet_logger.py` — Writes snapshots (60s), events (trade opens/closes, regime changes), daily summaries, and AI trade journals to `logs/`. Imported by command_center.py.
 - `analyze.py` — CLI tool: 8 subcommands for fleet diagnostics reading `logs/` JSONL.
-- `ultron.py` — Self-evolution engine: analyzes gate effectiveness, signal quality, regime stability, portfolio efficiency, bot utilization, timing patterns, bus effectiveness, and shadow trades. Configurable TrekBot log paths via constructor or `TREKBOT_DIR` env var. Feeds findings to AI for synthesis.
+- `ultron.py` — Self-evolution engine: analyzes gate effectiveness, signal quality, regime stability, portfolio efficiency, bot utilization, timing patterns, bus effectiveness, and shadow trades. Configurable TrekBot log paths via constructor or `TREKBOT_DIR` env var (legacy — TrekBot is no longer in the fleet; those analyses no-op without its logs). Feeds findings to AI for synthesis.
 - `weekly_analysis.py` — Aggregates events + journals + Brainiac data + Ultron analysis into an AI-powered weekly report.
 - `evolution.py` — Evolution engine: 5-step cycle (measure→analyze→propose→simulate→recommend). Reads event logs, queries live bots, identifies profitable/losing patterns, generates ranked parameter change proposals. Saves reports to `logs/evolution/`.
 
@@ -86,7 +86,7 @@ Standalone modules that read event logs / live bot data and return structured in
 - `causal_flow.py` — Granger causality graph between bots, pairs, and events; answers "does X actually precede Y?" Wired in NEXUS; emits `CAUSAL_FLOW`.
 - `shannon.py` — Information theory: mutual information between signals, channel capacity per bot-to-bot link, entropy of the event stream. Wired in NEXUS; emits `SHANNON_ENTROPY` (fires when fleet noise ratio > 70%).
 - `denial_cost.py` — Portfolio denial opportunity cost analyzer. Reads `PORTFOLIO_RESERVE_DENIED` events, computes what denied trades would have netted. Usage: `python denial_cost.py --days 3 --hold-minutes 240`.
-- `regime_expectancy.py` — Regime-conditional expectancy. Joins TrekBot factor logs with expectancy data to produce per-regime E[V] net of fees.
+- `regime_expectancy.py` — Regime-conditional expectancy. Joins TrekBot factor logs with expectancy data to produce per-regime E[V] net of fees (legacy — depends on TrekBot logs that no longer update since TrekBot left the fleet).
 - `signal_attribution.py` — Fee-adjusted signal value. Attributes P/L to individual signals post-fees using `goldeneye_factors.log` + `logs/expectancy.json`.
 
 **Market geometry / physics:**
@@ -102,7 +102,7 @@ Standalone modules that read event logs / live bot data and return structured in
 - `fleet_audit.py` — 6-phase full-system diagnostic; outputs JSON + human-readable report. Run ad-hoc: `python fleet_audit.py`.
 
 ### Infrastructure
-- `launch_fleet.py` — Two-phase launcher. Imports `BOTS` from `fleet_config.py` (single source of truth). Phase 1: core bots. Phase 2 (after CC is up): CC-dependent bots (PHITEX, AEGIS, Inference, NEXUS, Rubberband, Contrarian, Arbitrageur, Chronos). Ctrl+C shuts down everything.
+- `launch_fleet.py` — Two-phase launcher. Imports `BOTS` from `fleet_config.py` (single source of truth). Phase 1: core bots. Phase 2 (after CC is up): CC-dependent bots (Sentinel, PHITEX, AEGIS, Confluence, Inference, NEXUS, Rubberband, Contrarian, Arbitrageur, Chronos, Broadcaster, Bot Responder). Ctrl+C shuts down everything. **Runs CC as a thread inside its own process** — restarting CC means restarting the launcher. Never run two launch_fleet processes: their watchdogs (plus CC's `_health_monitor`) will double-spawn support bots (caused duplicate Telegram sends 2026-07-28).
 - `inference_server.py` — Port 9001. Proxies to Ollama (Tesla P4). Endpoints: `/api/ai/trade-journal`, `/api/ai/post-mortem`, `/api/ai/fleet-assessment`.
 - `fleet_config.json` — Bot registry with ports/dirs/cmds/phases (read by `_health_monitor` for auto-restart). Also documents fleet-wide settings (portfolio limits, event bus, Brainiac intervals, market data) but these sections are **not loaded by code** — the corresponding constants are hardcoded in `command_center.py` and `collector.py`. Keep in sync manually.
 - `universe.json` — Config for auto-discovering top 50 Kraken USD pairs by volume.
@@ -130,26 +130,29 @@ Standalone modules that read event logs / live bot data and return structured in
 - All shared state protected by `_lock` (bots/aggregate/feed), `PortfolioManager._lock` (instance-level), `_universe_lock`
 
 ## Fleet
+Authoritative roster: `fleet_config.py` (`BOTS` dict) — trust it over this table if they disagree.
+
 | Bot | Port | API Route | Role |
 |---|---|---|---|
-| TurtleSue | 8070 | /api/snapshot | Trader (pool) |
-| Sentinel | 8071 | /api/snapshot | Forecast |
-| Trinity | 8072 | /api/snapshot | Scanner (intel only) |
-| HiveMind | 8073 | /api/snapshot | Optimizer (intel only, slow start ~30s) |
-| NexusBrain | 8074 | /api/snapshot | Trader (pool) |
-| TrekBot | 8080 | /health + /positions + /analytics | Trader (pool) |
-| Oracle | 8075 | /api/snapshot | Intel only |
-| Deep Blue | 8076 | /api/snapshot | Intel only (whale detection) |
+| TurtleSue | 8070 | /api/snapshot | Trader (pool), `turtlebot.py` |
+| Sentinel | 8071 | /api/snapshot | Forecast (Phase 2, slow start) |
+| Trinity | 8072 | /api/snapshot | Scanner (intel only), `overwatch.py` |
+| HiveMind | 8073 | /api/snapshot | Optimizer (intel only, slow start ~30s), `cli.py dashboard --synthetic` |
+| NexusBrain | 8074 | /api/snapshot | Trader (pool), `nexus_brain.py` — distinct from NEXUS |
+| Oracle | 8075 | /api/snapshot | Intel only, `server.py` (slow start) |
+| Deep Blue | 8076 | /api/snapshot | Intel only (whale detection), dir `D:\Whale Watcher\apex_whale_finder.dir\` |
 | Gridzilla | 8077 | /api/snapshot | Trader (pool) |
-| PHITEX | 8078 | /api/snapshot | Novel (thermodynamic, Phase 2) |
+| PHITEX | 8078 | /api/snapshot | Novel (thermodynamic, Phase 2, slow start) |
 | AEGIS | 8079 | /api/snapshot | Meta (self-assessment, Phase 2) |
-| NEXUS | 8082 | /api/snapshot | Novel (Phase 2) |
-| Rubberband | 8083 | /api/snapshot | Trader |
-| Contrarian | 8084 | /api/snapshot | Trader |
-| Arbitrageur | 8085 | /api/snapshot | Trader |
-| TrekBot SHORT | 8087 | /health + /positions + /analytics | Trader (pool, Phase 2) |
-| Chronos | 8086 | /api/snapshot | Temporal |
-| **Inference** | **9001** | /api/ai/* | **AI (Ollama, Phase 2)** |
+| NEXUS | 8082 | /api/snapshot | Novel (14-engine math council, Phase 2) — distinct from NexusBrain |
+| Rubberband | 8083 | /api/snapshot | Trader (pool, Phase 2) |
+| Contrarian | 8084 | /api/snapshot | Intel only (sentiment, Phase 2) |
+| Arbitrageur | 8085 | /api/snapshot | Trader (pool, Phase 2) |
+| Chronos | 8086 | /api/snapshot | Temporal (Phase 2) |
+| Confluence | 8088 | /api/snapshot | Trader (pool, Phase 2), dir `D:\Confluence\` — newest trader |
+| **Inference** | **9001** | /api/ai/* + /health | **AI (Ollama, Phase 2)** |
+| **Broadcaster** | **9002** | /health + /stats + /feed | **Telegram signals (Phase 2)** |
+| **Bot Responder** | — | (no port) | **Telegram commands (Phase 2)** |
 | **Command Center** | **9000** | serves all APIs below | **Aggregator** |
 
 ## HTTP API (Port 9000)
@@ -162,7 +165,7 @@ Standalone modules that read event logs / live bot data and return structured in
 - `/api/portfolio/available` — free capital
 - `/api/portfolio/exposure` — breakdown by bot/pair/direction
 - `/api/fleet/daily` — today's daily stats from FleetLogger
-- `/api/trades?bot=trekbot&limit=50` — persistent trade history from event logs (survives bot restarts)
+- `/api/trades?bot=confluence&limit=50` — persistent trade history from event logs (survives bot restarts)
 - `/api/expectancy` — fleet-wide and per-bot expectancy stats (alias for `/api/signals/expectancy`)
 - `/api/bot/<id>` — raw passthrough to individual bot
 - `/api/market/ohlc?pair=BTC/USD&interval=60&limit=100` — OHLC proxy
@@ -195,7 +198,7 @@ Standalone modules that read event logs / live bot data and return structured in
 - `GET /health` — inference server status + model info
 
 ## Central Portfolio
-7 trading bots (TurtleSue, NexusBrain, Gridzilla, TrekBot, TrekBot SHORT, Rubberband, Arbitrageur) share one $10,000 pool.
+6 trading bots (TurtleSue, NexusBrain, Gridzilla, Rubberband, Arbitrageur, Confluence) share one $10,000 pool.
 
 ### Risk Limits
 - Max total deployed: 80% (always keep 20% cash)
@@ -245,7 +248,7 @@ No test suite. Validation is runtime only:
 ## Key Patterns & Gotchas
 
 ### Normalizers
-Each bot gets a normalizer function (in `command_center.py` ~line 878-1184) that translates its raw API response into a standard schema: `{equity, pnl, pnl_pct, win_rate, drawdown_pct, sharpe, open_positions, total_trades, regime, signals_count, uptime, ...}`. Win rates arrive in different scales (0-1 vs 0-100) — normalizers handle this. TrekBot is special: it uses 3 endpoints (`/health`, `/positions`, `/analytics`) instead of the single `/api/snapshot` the others use. NEXUS reports `market_character` instead of `regime`.
+Each bot gets a normalizer function (in `command_center.py`, registered in the normalizer map ~line 1334) that translates its raw API response into a standard schema: `{equity, pnl, pnl_pct, win_rate, drawdown_pct, sharpe, open_positions, total_trades, regime, signals_count, uptime, ...}`. Win rates arrive in different scales (0-1 vs 0-100) — normalizers handle this. All bots use `/api/snapshot`; Inference and Broadcaster use `/health`. NEXUS reports `market_character` instead of `regime`.
 
 ### Thread Safety
 All shared state is protected by simple `threading.Lock()` (no RLock). Three locks: `_lock` (bots/aggregate/feed), `PortfolioManager._lock` (instance-level), and `_universe_lock`. Bot polling is serial within the poll loop, so aggregate state represents a ~1s window, not an atomic moment.
@@ -266,29 +269,35 @@ Reaction rules from `reactions.json` spawn in separate daemon threads to avoid b
 Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
 
 ### Dashboard v4 Editing Convention
-`command_center_v4.html` is ~16k lines of inline HTML/CSS/JS. When adding or upgrading bot panels:
+`command_center_v4.html` is ~15.6k lines of inline HTML/CSS/JS. When adding or upgrading bot panels:
 1. Canvas elements must be injected **after** the panel HTML is in the DOM (post-inject pattern — referencing the canvas in the same template string where it's declared will fail because the element doesn't exist yet at script parse time).
 2. After any edit, do a brace-balance check on the `<script>` block — unbalanced braces silently break the whole dashboard with no console error.
 3. Match existing v4 conventions (color palette, panel structure, data-binding pattern) rather than inventing new ones. Copy a working panel and modify it.
 4. Test by reloading the browser and checking that **all** bot panels still render — a single syntax error in one panel blacks out the whole page.
 
 ### Portfolio Reservation Leaks on Bot Restart
-When a bot crashes or is restarted mid-trade, its in-flight reservations in `portfolio.json` are orphaned (the bot has no memory of them after restart). Defense: bots must call `/api/portfolio/release` for any stale reservations on startup, or the portfolio manager will leak capital until manually cleared. Known offender was TrekBot — fixed in milestone v3. When wiring a new bot to the pool, verify restart hygiene.
+When a bot crashes or is restarted mid-trade, its in-flight reservations in `portfolio.json` are orphaned (the bot has no memory of them after restart). Defense: bots must call `/api/portfolio/release` for any stale reservations on startup, or the portfolio manager will leak capital until manually cleared. (Historical offender was TrekBot, fixed in milestone v3 before it left the fleet.) When wiring a new bot to the pool, verify restart hygiene. Note: the dashboard's "Stale reservations" counter flags any reservation older than 2h — long-held positions trip it legitimately; cross-check against the bot's actual open positions before treating it as a leak.
+
+### Watchdogs, Threaded Servers, and Silent Kills (learned 2026-07-28)
+- **Two watchdogs restart bots**: CC's `_health_monitor` thread AND `launch_fleet.py`'s monitor loop. A bot process that exits with **code 1 and no traceback was taskkilled by a watchdog**, not crashed — check both watchdogs' logs before hunting a Python bug.
+- **Every bot HTTP server must be threaded** (`ThreadingHTTPServer` / `ThreadingMixIn`). A plain `HTTPServer` gets its health probe blocked by browser keep-alive connections (the dashboard polls some bot ports directly) and the watchdog kills the healthy process. Fleet-wide fix in commit a2359e9; broadcaster was missed and crash-looped 18× until 5bcdeed.
+- **Support services should bind their port first thing at startup** as a single-instance mutex, with `allow_reuse_address = False` — on Windows, SO_REUSEADDR lets two processes bind the same port, and simultaneous watchdog spawns can otherwise both survive and double-send (broadcaster fix in d6c5d0f).
+- **CC's `/api/signals/broadcaster/stats` always serves from `signals_sent.log`** (`source: "log_fallback"` — the live proxy is disabled due to a Python 3.14 HTTP/1.0 quirk). Its counts are log-derived, not live process stats; the broadcaster's own `/stats` on port 9002 is the live source.
 
 ## Fleet Mode (Paper/Live Toggle)
 `fleet_config.FLEET_MODE` is the single source of truth for paper vs live trading. Default: `"paper"`.
 
 - **Paper mode** (default): all trades simulated, no Kraken orders placed even if API keys are present
-- **Live mode**: real Kraken orders via ccxt (TrekBot) and raw REST (TurtleSue)
+- **Live mode**: real Kraken orders via raw REST (TurtleSue only — the sole bot with live execution code since TrekBot left the fleet)
 - Toggle via: `POST http://localhost:9000/api/fleet/mode {"mode": "paper"|"live"}`
 - Read via: `GET http://localhost:9000/api/fleet/mode` or the `fleet_mode` field in `/api/master`
 - Dashboard: red pulsing LIVE button in header, header border turns red
 - Bots check `fleet_config.is_live()` dynamically at trade time (no restart needed to switch modes)
 - Going live requires `KRAKEN_API_KEY` set as environment variable; the API rejects live mode without it
-- Gridzilla, NexusBrain, Rubberband, Arbitrageur are paper-only (no live execution code)
+- Gridzilla, NexusBrain, Rubberband, Arbitrageur, Confluence are paper-only (no live execution code)
 
 ## Key Metrics to Watch
-- **Expectancy** (the primary health signal): Target positive E[V] per trade net of fees. Fee ratio was 650% → 385% → 272% as of 2026-04-04. Run `python expectancy.py` or hit `/api/signals/expectancy` for current state.
+- **Expectancy** (the primary health signal): Target positive E[V] per trade net of fees. Fee ratio arc: 650% → 385% → 272% (2026-04-04) → **~32% (2026-07-28)** — the fee crisis is solved; the open problem is negative expectancy (avg loss ≫ avg win). Run `python expectancy.py` or hit `/api/signals/expectancy` for current state.
 - **Fee floor:** $30 minimum trade size enforced in portfolio manager. NexusBrain min_confluence at 0.80.
 - **Gridzilla spacing floor:** 1.2% minimum grid spacing. Max 5 grid lines. $0.50 net profit floor per level.
 - **Trade frequency governor:** 10-min per-pair cooldown in portfolio manager after any trade closes. Adaptive: 5 min when AEGIS score > 0.7. Gridzilla exempt (fee gate handles its frequency).

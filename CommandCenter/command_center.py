@@ -3107,14 +3107,15 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                                 ts = entry.get("ts", "")
                                 if not ts.startswith(today_str):
                                     continue
-                                if entry.get("tier") == "paid":
-                                    paid_today += 1
-                                    last_paid = ts
-                                elif entry.get("tier") == "free":
-                                    free_today += 1
-                                    last_free = ts
+                                tier = entry.get("tier", "")
                                 if not entry.get("success"):
                                     failed += 1
+                                elif tier.startswith("paid"):
+                                    paid_today += 1
+                                    last_paid = ts
+                                elif tier.startswith("free"):
+                                    free_today += 1
+                                    last_free = ts
                             except Exception:
                                 pass
                 except Exception:

@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime, timezone, timedelta
-from http.server import HTTPServer, BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -365,7 +365,10 @@ class BroadcasterHealthServer:
                 self.end_headers()
                 self.wfile.write(body.encode("utf-8"))
 
-        self._server = HTTPServer(("0.0.0.0", self._port), Handler)
+        # ThreadingHTTPServer: a browser keep-alive connection (dashboard
+        # panel polling /stats + /feed) must not block the CC watchdog's
+        # /health probe — a blocked probe gets this process taskkilled.
+        self._server = ThreadingHTTPServer(("0.0.0.0", self._port), Handler)
         t = threading.Thread(target=self._server.serve_forever, daemon=True,
                              name="health-server")
         t.start()
@@ -2031,6 +2034,8 @@ class ChannelOps:
 
     def send_free(self, message: str, event_id: str = "",
                   event_type: str = "") -> bool:
+        if not self._free_chat:
+            return False
         ok = self._send(self._free_chat, message)
         self._log_attempt("free", event_type, event_id, ok)
         with self._stats_lock:
@@ -2044,6 +2049,8 @@ class ChannelOps:
 
     def send_paid(self, message: str, event_id: str = "",
                   event_type: str = "") -> bool:
+        if not self._paid_chat:
+            return False
         ok = self._send(self._paid_chat, message)
         self._log_attempt("paid", event_type, event_id, ok)
         with self._stats_lock:
@@ -2070,6 +2077,11 @@ class ChannelOps:
         Falls back to text sendMessage if the photo upload fails.
         Uses *text_fallback* for the fallback message.
         """
+        if not self._paid_chat:
+            # Unconfigured channel is a routing no-op — attempting the send
+            # would log a scary "sendPhoto failed" warning and inflate the
+            # failed counter on every signal.
+            return False
         if copyable_block:
             # Caption carries the copy values in Markdown so backticks
             # render as tap-to-copy in the fullscreen image view.
@@ -2096,6 +2108,8 @@ class ChannelOps:
     def send_free_image(self, png_bytes: bytes, caption: str = "",
                         event_id: str = "", event_type: str = "") -> bool:
         """Send a PNG image card to the free channel via sendPhoto."""
+        if not self._free_chat:
+            return False
         ok = self._send_photo(self._free_chat, png_bytes, caption)
         if not ok:
             log.warning("sendPhoto (free) failed, falling back to text for %s", event_type)

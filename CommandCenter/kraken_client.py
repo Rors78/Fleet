@@ -70,12 +70,31 @@ class KrakenSpotClient:
             return {"error": [str(e)]}
 
     def place_order(self, pair: str, side: str, volume: float,
-                    ordertype: str = "market") -> tuple:
-        """Place a spot order. side='buy' or 'sell'. Returns (ok, txid_or_error)."""
+                    ordertype: str = "limit", price: float = None) -> tuple:
+        """Place a spot order. side='buy' or 'sell'. Returns (ok, txid_or_error).
+
+        LIMIT ORDERS ONLY — fleet policy, no exceptions. `ordertype` defaults to
+        "limit" and anything else is refused here rather than sent to Kraken.
+        A market order is a blank cheque on fill price: on a thin book it can
+        slip far past the level the strategy decided on, and the fleet already
+        pays 0.40% taker per side.
+
+        `price` is REQUIRED. It is not defaulted, because a limit order without
+        an explicit price is exactly the mistake this gate exists to prevent —
+        silently falling back to market is how "limit only" becomes untrue.
+        """
+        if ordertype != "limit":
+            return False, (f"LIMIT_ONLY: ordertype={ordertype!r} refused — "
+                           f"fleet policy permits limit orders only")
+        if price is None or float(price) <= 0:
+            return False, ("LIMIT_ONLY: a limit order requires an explicit "
+                           "positive price")
+
         result = self._private("AddOrder", {
             "pair": pair,
             "type": side,
-            "ordertype": ordertype,
+            "ordertype": "limit",
+            "price": f"{float(price):.8f}",
             "volume": f"{volume:.8f}",
         })
         if result.get("error"):
@@ -87,13 +106,20 @@ class KrakenSpotClient:
         txids = result.get("result", {}).get("txid", [])
         return True, txids[0] if txids else "unknown"
 
-    def buy(self, pair: str, volume: float, ordertype: str = "market") -> tuple:
-        """Buy crypto (spot). Returns (ok, txid_or_error)."""
-        return self.place_order(pair, "buy", volume, ordertype)
+    def buy(self, pair: str, volume: float, price: float = None,
+            ordertype: str = "limit") -> tuple:
+        """Buy crypto (spot) as a LIMIT order. `price` is required.
 
-    def sell(self, pair: str, volume: float, ordertype: str = "market") -> tuple:
-        """Sell crypto (spot). Returns (ok, txid_or_error)."""
-        return self.place_order(pair, "sell", volume, ordertype)
+        Note the signature: price is the third positional arg. Callers that
+        pass only (pair, volume) now get a clear LIMIT_ONLY refusal instead of
+        silently placing a market order.
+        """
+        return self.place_order(pair, "buy", volume, ordertype, price)
+
+    def sell(self, pair: str, volume: float, price: float = None,
+             ordertype: str = "limit") -> tuple:
+        """Sell crypto (spot) as a LIMIT order. `price` is required."""
+        return self.place_order(pair, "sell", volume, ordertype, price)
 
     def get_fill_price(self, txid: str, fallback: float) -> float:
         """Query order to get actual fill price. Returns fallback on failure."""

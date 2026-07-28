@@ -442,6 +442,25 @@ def _is_live():
 _LIVE = _is_live()
 
 
+def _limit_price(reference_price, direction):
+    """Marketable limit price — see fleet_config.limit_price().
+
+    LIMIT ORDERS ONLY is fleet policy, so the pricing rule lives in
+    fleet_config and every bot uses the identical calculation. Falls back to a
+    local 15bps cross if fleet_config is unreachable, never to an unpriced
+    (market) order.
+    """
+    if _fc is not None and hasattr(_fc, "limit_price"):
+        return _fc.limit_price(reference_price, direction)
+    try:
+        ref = float(reference_price)
+    except (TypeError, ValueError):
+        return 0.0
+    if ref <= 0:
+        return 0.0
+    return ref * (1.0015 if (direction or "").upper() in ("LONG", "BUY") else 0.9985)
+
+
 class KrakenClient:
     """Signs and sends Kraken private API requests."""
 
@@ -480,16 +499,30 @@ class KrakenClient:
             return {"error": [str(e)]}
 
     def place_order(self, pair: str, direction: str, volume: float,
-                    ordertype: str = "market") -> tuple:
-        """Place a spot market order. Returns (ok, order_id_or_error).
+                    ordertype: str = "limit", price: float = None) -> tuple:
+        """Place a spot LIMIT order. Returns (ok, order_id_or_error).
+
+        LIMIT ORDERS ONLY — fleet policy, no exceptions. Anything other than
+        "limit" is refused here rather than sent to Kraken, and `price` is
+        required: a limit order with no price would otherwise be the silent
+        route back to market execution.
+
         Live mode is long spot only. SHORT entries are blocked at the portfolio
-        reserve gate (fleet_config.live_direction_allowed). Sells here are
-        closing existing longs, not opening shorts."""
+        reserve gate (fleet_config.direction_allowed). Sells here are closing
+        existing longs, not opening shorts."""
+        if ordertype != "limit":
+            return False, (f"LIMIT_ONLY: ordertype={ordertype!r} refused — "
+                           f"fleet policy permits limit orders only")
+        if price is None or float(price) <= 0:
+            return False, ("LIMIT_ONLY: a limit order requires an explicit "
+                           "positive price")
+
         side = "buy" if direction.upper() == "LONG" else "sell"
         result = self.private("AddOrder", {
             "pair": pair,
             "type": side,
-            "ordertype": ordertype,
+            "ordertype": "limit",
+            "price": f"{float(price):.8f}",
             "volume": f"{volume:.8f}",
         })
         if result.get("error"):
@@ -1098,7 +1131,8 @@ class TurtleEngine:
         # Live order execution
         fill_price = price
         if _is_live() and _kraken_client:
-            ok, txid = _kraken_client.place_order(pair, direction, unit_coins)
+            ok, txid = _kraken_client.place_order(
+                pair, direction, unit_coins, price=_limit_price(price, direction))
             if not ok:
                 self.errors.append(f"LIVE ORDER FAILED {pair}: {txid}")
                 if self._portfolio_client and reservation_id:
@@ -1161,7 +1195,9 @@ class TurtleEngine:
         # Live order execution
         fill_price = price
         if _is_live() and _kraken_client:
-            ok, txid = _kraken_client.place_order(pair, pos.direction, unit_coins)
+            ok, txid = _kraken_client.place_order(
+                pair, pos.direction, unit_coins,
+                price=_limit_price(price, pos.direction))
             if not ok:
                 self.errors.append(f"LIVE PYRAMID FAILED {pair}: {txid}")
                 return
@@ -1182,7 +1218,9 @@ class TurtleEngine:
         # Live order execution — close the full position
         if _is_live() and _kraken_client:
             close_dir = "SHORT" if pos.direction.upper() == "LONG" else "LONG"
-            ok, txid = _kraken_client.place_order(pair, close_dir, pos.total_size)
+            ok, txid = _kraken_client.place_order(
+                pair, close_dir, pos.total_size,
+                price=_limit_price(exit_price, close_dir))
             if ok:
                 time.sleep(1.5)
                 exit_price = _kraken_client.get_fill_price(txid, exit_price)

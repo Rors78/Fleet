@@ -61,6 +61,21 @@ try:
     import fleet_config as _fc
 except ImportError:
     _fc = None
+# LIMIT ONLY (fleet policy). Fallback keeps the 15bps cross rather than
+# vanishing — an unpriced order is refused by the client, which is the correct
+# failure, but losing the helper entirely would break every entry and exit.
+try:
+    from limit_order import limit_price as _limit_price
+except ImportError:
+    def _limit_price(ref, direction, cross_pct=None):
+        try:
+            ref = float(ref)
+        except (TypeError, ValueError):
+            return 0.0
+        if ref <= 0:
+            return 0.0
+        pct = 0.0015 if cross_pct is None else float(cross_pct)
+        return ref * (1.0 + pct) if (direction or "").upper() in ("LONG", "BUY") else ref * (1.0 - pct)
 try:
     from kraken_client import KrakenSpotClient as _KrakenSpotClient
 except ImportError:
@@ -859,7 +874,9 @@ class GridExecutor:
                     _kp = pair.replace("/", "")
                     if self._kraken_spot:
                         qty = level["size_usd"] / current_price
-                        ok, txid = self._kraken_spot.buy(_kp, qty)
+                        # LIMIT ONLY (fleet policy) — marketable limit, never market.
+                        ok, txid = self._kraken_spot.buy(
+                            _kp, qty, price=_limit_price(current_price, "BUY"))
                         if ok:
                             import time as _t; _t.sleep(1.5)
                             fill_price = self._kraken_spot.get_fill_price(txid, current_price)
@@ -900,7 +917,9 @@ class GridExecutor:
                     _kp = pair.replace("/", "")
                     if self._kraken_spot:
                         qty = level["size_usd"] / current_price
-                        ok, txid = self._kraken_spot.sell(_kp, qty)
+                        # LIMIT ONLY (fleet policy) — marketable limit, never market.
+                        ok, txid = self._kraken_spot.sell(
+                            _kp, qty, price=_limit_price(current_price, "SELL"))
                         if ok:
                             import time as _t; _t.sleep(1.5)
                             fill_price_sell = self._kraken_spot.get_fill_price(txid, current_price)

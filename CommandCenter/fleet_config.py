@@ -249,6 +249,42 @@ def live_direction_allowed(direction: str) -> bool:
     return direction_allowed(direction)[0]
 
 
+# ── ORDER EXECUTION ──
+# LIMIT ORDERS ONLY, fleet-wide, no exceptions. Market orders are refused at
+# the Kraken client. A market order is a blank cheque on fill price: on a thin
+# book it can slip well past the level the strategy chose, and the fleet
+# already pays 0.40% taker per side.
+#
+# A limit order placed exactly at the last trade may never fill. So orders are
+# priced MARKETABLE: cross the spread by this fraction, which fills like a
+# market order in normal conditions but caps the worst case — if the book has
+# gapped further than this, the order rests unfilled instead of eating the gap.
+LIMIT_CROSS_PCT = 0.0015        # 15 bps
+
+
+def limit_price(reference_price: float, direction: str,
+                cross_pct: float = None) -> float:
+    """Marketable limit price for `direction` around `reference_price`.
+
+    BUY  -> slightly ABOVE reference (willing to pay up to this)
+    SELL -> slightly BELOW reference (willing to accept down to this)
+
+    Returns 0.0 for a non-positive reference, which the client rejects rather
+    than turning into an unpriced order.
+    """
+    try:
+        ref = float(reference_price)
+    except (TypeError, ValueError):
+        return 0.0
+    if ref <= 0:
+        return 0.0
+    pct = LIMIT_CROSS_PCT if cross_pct is None else float(cross_pct)
+    d = (direction or "").upper()
+    if d in ("LONG", "BUY"):
+        return ref * (1.0 + pct)
+    return ref * (1.0 - pct)
+
+
 # 3-state engage model: paper → live_armed → live_engaged
 # paper: all bots on paper portfolio, normal operation
 # live_armed: live portfolio is display, but no trading until ENGAGE

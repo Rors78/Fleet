@@ -65,6 +65,21 @@ try:
     import fleet_config as _fc
 except ImportError:
     _fc = None
+# LIMIT ONLY (fleet policy). Fallback keeps the 15bps cross rather than
+# vanishing — an unpriced order is refused by the client, which is the correct
+# failure, but losing the helper entirely would break every entry and exit.
+try:
+    from limit_order import limit_price as _limit_price
+except ImportError:
+    def _limit_price(ref, direction, cross_pct=None):
+        try:
+            ref = float(ref)
+        except (TypeError, ValueError):
+            return 0.0
+        if ref <= 0:
+            return 0.0
+        pct = 0.0015 if cross_pct is None else float(cross_pct)
+        return ref * (1.0 + pct) if (direction or "").upper() in ("LONG", "BUY") else ref * (1.0 - pct)
 try:
     from kraken_client import KrakenSpotClient as _KrakenSpotClient
 except ImportError:
@@ -644,7 +659,8 @@ class ArbitrageurEngine:
         if self._kraken:
             _kp = pair.replace("/", "")
             qty = size_usd / price
-            ok, txid = self._kraken.buy(_kp, qty)
+            # LIMIT ONLY (fleet policy) — marketable limit, never market.
+            ok, txid = self._kraken.buy(_kp, qty, price=_limit_price(price, "BUY"))
             if ok:
                 time.sleep(1.5)
                 entry_price = self._kraken.get_fill_price(txid, price)
@@ -718,7 +734,9 @@ class ArbitrageurEngine:
         if self._kraken:
             _kp = pos.pair.replace("/", "")
             qty = pos.size_usd / pos.entry_price
-            ok, txid = self._kraken.sell(_kp, qty)
+            # LIMIT ONLY (fleet policy) — marketable limit, never market.
+            ok, txid = self._kraken.sell(
+                _kp, qty, price=_limit_price(current_price, "SELL"))
             if ok:
                 time.sleep(1.5)
                 exit_price = self._kraken.get_fill_price(txid, current_price)

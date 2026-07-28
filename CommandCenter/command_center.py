@@ -1009,12 +1009,15 @@ def _fetch_bot(bot: dict) -> tuple[dict, float]:
     """Fetch data for a single bot. Returns (raw_dict, latency_ms) or raises."""
     base = f"http://127.0.0.1:{bot['port']}"
 
-    if bot["id"] == "trekbot":
-        # TrekBot uses three separate endpoints
+    if len(bot.get("endpoints") or []) > 1:
+        # Multi-endpoint bots: merge each endpoint under its trailing path
+        # segment (e.g. /health -> "health"). TrekBot was the only such bot and
+        # has left the fleet, but the branch is kept generic rather than
+        # hardcoded to an id so a future multi-endpoint bot works unchanged.
         merged = {}
         total_latency = 0.0
         for ep in bot["endpoints"]:
-            key = ep.strip("/").split("/")[-1]  # "health", "positions", "analytics"
+            key = ep.strip("/").split("/")[-1]
             data, lat = _fetch_json(base + ep)
             merged[key] = data
             total_latency += lat
@@ -1135,22 +1138,29 @@ def _normalize_nexusbrain(raw: dict) -> dict:
     }
 
 
-def _normalize_trekbot(raw: dict) -> dict:
-    health = raw.get("health") or {}
-    positions = raw.get("positions") or []
-    analytics = raw.get("analytics") or {}
+def _normalize_confluence(raw: dict) -> dict:
+    """Confluence (port 8088) — intel-driven trader that replaced TrekBot.
+
+    Serves a flat snapshot, so most fields map straight across. `regime` is
+    INTEL_DRIVEN when its four upstream intel sources are reachable and
+    DEGRADED when they are not, so it doubles as an intel-health indicator.
+    """
     return {
-        "equity": health.get("paper_balance"),
-        "pnl": health.get("circuit_breaker_daily_pnl"),
-        "pnl_pct": None,
-        "win_rate": analytics.get("win_rate"),
+        "equity": raw.get("equity"),
+        "pnl": raw.get("pnl"),
+        "pnl_pct": raw.get("pnl_pct"),
+        "win_rate": raw.get("win_rate"),
         "drawdown_pct": None,
         "sharpe": None,
-        "open_positions": len(positions) if isinstance(positions, list) else 0,
-        "total_trades": analytics.get("trades"),
-        "regime": None,
-        "signals_count": None,
-        "uptime": health.get("uptime_seconds"),
+        "open_positions": raw.get("open_positions", 0),
+        "total_trades": raw.get("total_trades", 0),
+        "regime": raw.get("regime"),
+        "signals_count": raw.get("signals_count"),
+        "uptime": raw.get("uptime"),
+        # Confluence-specific extras
+        "fees_paid": raw.get("fees_paid"),
+        "intel_status": raw.get("intel_status"),
+        "candidates": raw.get("candidates"),
     }
 
 
@@ -1289,7 +1299,7 @@ _NORMALIZERS = {
     "trinity":    _normalize_trinity,
     "hivemind":   _normalize_hivemind,
     "nexusbrain": _normalize_nexusbrain,
-    "trekbot":    _normalize_trekbot,
+    "confluence": _normalize_confluence,
     "oracle":     _normalize_oracle,
     "deepblue":   _normalize_deepblue,
     "gridzilla":  _normalize_gridzilla,
@@ -1502,14 +1512,18 @@ def _extract_feed(bots_data: dict) -> list[dict]:
             msg = sig.get("message") or sig.get("signal") or str(sig)[:80]
         entries.append({"time": t, "bot_id": "nexusbrain", "bot_name": name, "message": msg, "bot_color": color})
 
-    # TrekBot recent_signals from analytics
-    tb_raw = (bots_data.get("trekbot") or {}).get("raw") or {}
-    analytics = tb_raw.get("analytics") or {}
-    for sig in (analytics.get("recent_signals") or [])[-10:]:
-        name, color = _bot_meta("trekbot")
-        t = sig.get("time") or sig.get("timestamp") or 0
-        msg = sig.get("message") or sig.get("signal") or sig.get("name") or str(sig)
-        entries.append({"time": t, "bot_id": "trekbot", "bot_name": name, "message": msg, "bot_color": color})
+    # Confluence candidates — each carries a plain-English thesis naming the
+    # intel sources that agreed, which reads better in the feed than a raw
+    # signal list. (Replaces the old TrekBot recent_signals block.)
+    cf_raw = (bots_data.get("confluence") or {}).get("raw") or {}
+    cf_ts = cf_raw.get("timestamp") or 0
+    for cand in (cf_raw.get("candidates") or [])[:10]:
+        name, color = _bot_meta("confluence")
+        srcs = ", ".join(cand.get("sources") or [])
+        msg = (f"{cand.get('pair')} conf {cand.get('confluence', 0):.2f} "
+               f"[{srcs}] — {cand.get('thesis', '')}")
+        entries.append({"time": cf_ts, "bot_id": "confluence", "bot_name": name,
+                        "message": msg, "bot_color": color})
 
     # Rubberband recent trades
     rb_raw = (bots_data.get("rubberband") or {}).get("raw") or {}
@@ -1575,7 +1589,7 @@ def _extract_feed(bots_data: dict) -> list[dict]:
 def _compute_factor_exposure(bots_data: dict) -> dict:
     """Aggregate factor scores across all active positions from bots that report them.
 
-    Reads factor data from TrekBot (analytics.positions), NexusBrain (open_positions),
+    Reads factor data from NexusBrain (open_positions),
     and any bot that exposes factor scores in its raw data.
 
     Returns dict with per-factor aggregation and concentration alerts.
@@ -1592,25 +1606,13 @@ def _compute_factor_exposure(bots_data: dict) -> dict:
         norm = bot.get("normalized") or {}
         bot_factors: dict[str, list[float]] = {}
 
-        # TrekBot: positions list, each may have "factors" dict
-        if bid == "trekbot":
-            positions = raw.get("positions") or []
-            analytics = raw.get("analytics") or {}
-            for pos in positions:
-                total_positions += 1
-                factors = pos.get("factors") or pos.get("detail", {}).get("factors") or {}
-                if factors:
-                    positions_with_factors += 1
-                    for fname, fval in factors.items():
-                        if isinstance(fval, (int, float)):
-                            factor_totals.setdefault(fname, []).append(fval)
-                            bot_factors.setdefault(fname, []).append(fval)
-            # Also check analytics-level factor summary
-            last_trade_factors = analytics.get("last_trade_factors") or {}
-            for fname, fval in last_trade_factors.items():
-                if isinstance(fval, (int, float)):
-                    factor_totals.setdefault(fname, []).append(fval)
-                    bot_factors.setdefault(fname, []).append(fval)
+        # Confluence: no 6-factor model of its own — its per-source weights are
+        # the analogue, exposed as candidate `confluence` scores rather than
+        # named factors. Counted for position totals only.
+        # (TrekBot's factor block was removed with the bot; it had the only
+        # per-position "factors" dict in the fleet.)
+        if bid == "confluence":
+            total_positions += len(raw.get("positions") or [])
 
         # NexusBrain: open_positions list, each may have factor scores
         elif bid == "nexusbrain":
@@ -2658,10 +2660,13 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         "normalized": None,
                     })
 
-            # Derive Kraken connection status from TrekBot's raw health
-            _tb = _state["bots"].get("trekbot")
-            _tb_health = ((_tb or {}).get("raw") or {}).get("health") or {} if _tb else {}
-            _kraken_status = _tb_health.get("kraken_api", "unknown") if _tb and _tb.get("alive") else "offline"
+            # Kraken connection status used to be derived from TrekBot's raw
+            # health block. TrekBot left the fleet (renamed GoldenEye, now
+            # standalone), so that lookup could only ever yield "offline" —
+            # a false negative, not a real reading. No remaining fleet bot
+            # reports exchange connectivity, so report it as unknown rather
+            # than asserting a state nothing measures.
+            _kraken_status = "unknown"
 
             payload = {
                 "timestamp": time.time(),
@@ -3120,7 +3125,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
     def _serve_trades(self, parsed) -> None:
         """Return per-bot trade history from the durable event bus log.
         Survives restarts via logs/event_bus/*.jsonl (written by EventBus.publish).
-        Query params: ?bot=trekbot&limit=50
+        Query params: ?bot=confluence&limit=50
 
         Two-stage dedup:
           1. By event id (catches the same event written twice to disk)

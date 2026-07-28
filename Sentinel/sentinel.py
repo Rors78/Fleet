@@ -55,6 +55,11 @@ except ImportError:
 PORT = 8071
 CC_URL = "http://127.0.0.1:9000"
 SCAN_INTERVAL = 300         # 5 minutes between forecast cycles
+# Cold-start tolerance: Sentinel can boot before Command Center has populated
+# /api/universe. Without a retry the first cycle silently degrades to three
+# majors and holds it for a full SCAN_INTERVAL.
+UNIVERSE_RETRIES = 5
+UNIVERSE_RETRY_WAIT_S = 3
 HORIZONS = [60, 240, 1440]  # minutes: 1h, 4h, 24h
 N_SIMULATIONS = 500         # Monte Carlo paths per pair
 # Forecast the full CC universe, not just the top slice by volume.
@@ -198,10 +203,19 @@ def get_universe():
     volume — they are precisely the pairs a forecast needs to cover for
     Confluence to reach genuine multi-source agreement.
     """
+    # On a cold fleet start Sentinel can reach this before Command Center has
+    # populated /api/universe. Accepting that empty answer silently collapses
+    # the forecast set to three majors and HOLDS it for a full SCAN_INTERVAL
+    # (5 min), which is indistinguishable from a healthy cycle downstream.
+    # Retry briefly instead — CC typically fills within a few seconds.
     base = []
-    data = fetch_json(f"{CC_URL}/api/universe")
-    if data and data.get("pairs"):
-        base = [p["display"] for p in data["pairs"][:TOP_PAIRS]]
+    for attempt in range(UNIVERSE_RETRIES):
+        data = fetch_json(f"{CC_URL}/api/universe")
+        if data and data.get("pairs"):
+            base = [p["display"] for p in data["pairs"][:TOP_PAIRS]]
+            break
+        if attempt < UNIVERSE_RETRIES - 1:
+            time.sleep(UNIVERSE_RETRY_WAIT_S)
 
     merged = list(base)
     seen = set(base)
@@ -212,8 +226,13 @@ def get_universe():
 
     if merged:
         return merged
-    # Last resort only — an empty universe here previously silently collapsed
-    # the whole forecast set to three majors.
+    # Genuine last resort — surface it, because a 3-pair forecast set is a
+    # degraded state, not a normal one, and it must not pass unnoticed.
+    # (Module-level function: no engine instance here, so print rather than
+    # self._log — stdout is captured to logs/bots/sentinel.log by the launcher.)
+    print(f"[WARN] Universe unavailable after {UNIVERSE_RETRIES} attempts "
+          f"(CC and Oracle both empty) — falling back to 3 majors this cycle",
+          flush=True)
     return ["BTC/USD", "ETH/USD", "SOL/USD"]
 
 

@@ -295,6 +295,7 @@ def reap(launchers, children, orphans, strays):
 # ── ports ─────────────────────────────────────────────────────────
 
 def port_busy(port, timeout=0.35):
+    """True if something is LISTENING on the port (i.e. a live service)."""
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
             s.settimeout(timeout)
@@ -304,19 +305,46 @@ def port_busy(port, timeout=0.35):
         return False
 
 
+def port_bindable(port):
+    """True if a fresh server could actually claim this port.
+
+    This is the question that matters before relaunching, and it is NOT the
+    same as "can I connect". A port with lingering TIME_WAIT connections
+    accepts a connect() while being perfectly bindable — connect-probing it
+    reports a false 'still occupied' and stalls the restart for the full
+    timeout. Conversely a port held by a live listener is not bindable.
+
+    SO_REUSEADDR matches how the launcher's servers bind (allow_reuse_address),
+    so this tests the same condition they will hit.
+    """
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(("127.0.0.1", port))
+            return True
+    except OSError:
+        return False
+
+
 def wait_ports_free(ports, timeout=PORT_FREE_TIMEOUT):
-    """A port in TIME_WAIT will refuse a fresh bind. Wait it out."""
+    """Wait until every fleet port can actually be bound.
+
+    Tests bindability, not connectability: a port with leftover TIME_WAIT
+    connections still answers connect() while being fine to bind, and
+    connect-probing it stalls here for the full timeout on a false positive.
+    """
     step("Waiting for ports to release")
     deadline = time.time() + timeout
     while time.time() < deadline:
-        busy = [p for p in ports if port_busy(p)]
-        if not busy:
-            ok(f"All {len(ports)} ports free")
+        blocked = [p for p in ports if not port_bindable(p)]
+        if not blocked:
+            ok(f"All {len(ports)} ports bindable")
             return True
         time.sleep(1)
-    busy = [p for p in ports if port_busy(p)]
-    warn(f"Still occupied after {timeout}s: {busy}")
-    warn("Launcher will attempt to reclaim these on start")
+    blocked = [p for p in ports if not port_bindable(p)]
+    warn(f"Still held after {timeout}s: {blocked}")
+    for p in blocked:
+        warn(f"  :{p} has a live listener — launcher will reclaim it")
     return False
 
 

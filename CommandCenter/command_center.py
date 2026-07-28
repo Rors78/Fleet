@@ -405,6 +405,18 @@ class PortfolioManager:
             if dir_exp + amount > max_dir:
                 return {"ok": False, "reason": f"Direction limit: {direction} at {dir_exp:.2f}+{amount:.2f} > {max_dir:.2f} max ({lim['max_directional_pct']}%)"}
 
+            # 4b. Pool sanity — every limit below is a percentage OF self.total,
+            #     and gates 6 and 7 divide by it. self.total is mutated by
+            #     `self.total += pnl` on every release, so a catastrophic
+            #     drawdown could drive it to zero or negative. Reject cleanly
+            #     here rather than raising ZeroDivisionError inside the reserve
+            #     path, which would surface to the bot as a transport error
+            #     rather than a refusal.
+            if self.total <= 0:
+                log.error("Pool is %.2f — refusing all reservations", self.total)
+                return {"ok": False,
+                        "reason": f"Pool exhausted (total ${self.total:.2f}) — no capital to reserve"}
+
             # 5. Per-trade limit (epsilon prevents float equality rejection at exact boundary)
             max_trade = self.total * lim["max_per_trade_pct"] / 100
             if amount > max_trade + 0.01:
@@ -487,10 +499,13 @@ class PortfolioManager:
             if not res:
                 return {"ok": False, "reason": f"Reservation '{reservation_id}' not found"}
 
-            # Calculate and log fee impact (Kraken taker 0.40% × 2 = 0.80% round-trip, tier 0)
+            # Calculate and log fee impact (Kraken taker 0.40% × 2 = 0.80% round-trip, tier 0).
+            # Sourced from fleet_config rather than a local literal so a fee-schedule
+            # change lands here too. This figure is REPORTING ONLY — bots already
+            # subtract fees before passing net pnl to release(), so applying it to
+            # the pool here would double-count.
             amount = res["amount"]
-            KRAKEN_TAKER = 0.0040
-            round_trip_fees = amount * KRAKEN_TAKER * 2
+            round_trip_fees = amount * _fleet_config.KRAKEN_FEE_TAKER * 2
             fee_pct = (round_trip_fees / amount * 100) if amount > 0 else 0
             
             # Log significant fee events (>2% of position is significant)
@@ -2238,13 +2253,19 @@ def _apply_aegis_adjustment():
         new_limit = base_limit
         throttle_reason = None
 
-    # Apply AEGIS adjustment to BOTH portfolios
+    # Apply AEGIS adjustment to BOTH portfolios.
+    # old_limit is captured OUTSIDE the loop: reading it inside leaves it bound
+    # to whichever portfolio happened to be processed last, and leaves it
+    # entirely unbound (NameError) when both portfolios are None — so the
+    # change-detection below would compare against the wrong value or crash.
+    old_limit = new_limit
     for _pm in [_portfolio_paper, _portfolio_live]:
         if not _pm:
             continue
         with _pm._lock:
-            old_limit = _pm.limits.get("max_deployed_pct", 80)
-            if old_limit != new_limit:
+            _pm_old = _pm.limits.get("max_deployed_pct", 80)
+            if _pm_old != new_limit:
+                old_limit = _pm_old
                 _pm.limits["max_deployed_pct"] = new_limit
             _pm.aegis_score = float(score)
 

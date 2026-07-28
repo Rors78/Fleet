@@ -2795,6 +2795,7 @@ class Broadcaster:
             paid_chat_id=self._config["telegram_paid_chat_id"],
             personal_chat_id=self._config.get("telegram_personal_chat_id", ""),
         )
+        self._seed_gate_from_log()
 
         # Report channel wiring once at startup so an unconfigured channel is
         # visible here rather than as a repeated error on every send attempt.
@@ -2872,7 +2873,56 @@ class Broadcaster:
             max_seen=self._config["seen_ids_max"],
             max_per_min=self._config["rate_limit_per_minute"],
         )
+        # A fresh gate has an empty seen-set — re-seed so a reload doesn't
+        # open a window where recently-sent events could be re-sent.
+        self._seed_gate_from_log()
         log.info("Config reloaded")
+
+    def _seed_gate_from_log(self) -> None:
+        """Pre-populate the dedup gate with recently-sent event ids.
+
+        The gate is in-memory and the watchdogs restart this process
+        freely. After a restart the polling fallback re-fetches recent bus
+        events, so without seeding, an event sent seconds before the
+        restart would be sent to Telegram again — the subscriber sees a
+        duplicate. Seed the seen-set from the tail of signals_sent.log so
+        already-delivered event ids are dropped on arrival.
+        """
+        try:
+            path = self._channel._log_path
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as f:
+                tail = f.readlines()[-1000:]
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
+            seeded = 0
+            for line in tail:
+                try:
+                    entry = json.loads(line)
+                except Exception:
+                    continue
+                # Only successful sends — a failed attempt may deserve a
+                # retry if the event is redelivered.
+                if not entry.get("success"):
+                    continue
+                try:
+                    when = datetime.strptime(
+                        entry.get("ts", ""), "%Y-%m-%dT%H:%M:%SZ"
+                    ).replace(tzinfo=timezone.utc)
+                except ValueError:
+                    continue
+                if when < cutoff:
+                    continue
+                eid = entry.get("event_id")
+                if eid:
+                    with self._gate_lock:
+                        self._gate.seen_event(eid)
+                    seeded += 1
+            if seeded:
+                log.info("Dedup gate seeded with %d recently-sent event ids",
+                         seeded)
+        except Exception:
+            log.warning("Gate seeding failed (non-fatal)", exc_info=True)
 
     def start(self) -> None:
         # Bind the status port before anything else — it doubles as a

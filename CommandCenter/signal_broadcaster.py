@@ -2138,8 +2138,14 @@ class ChannelOps:
             }
 
     def _send(self, chat_id: str, message: str) -> bool:
-        if not self._token or not chat_id:
-            log.error("Missing bot_token or chat_id")
+        if not self._token:
+            log.error("Cannot send: telegram_bot_token is not configured")
+            return False
+        if not chat_id:
+            # An unconfigured channel (e.g. no paid/personal chat set) is a
+            # routing no-op, not a failure. Logging it as an error every cycle
+            # buries real problems.
+            log.debug("Skipping send — chat_id not configured")
             return False
 
         url = f"https://api.telegram.org/bot{self._token}/sendMessage"
@@ -2193,8 +2199,11 @@ class ChannelOps:
         when the caption contains backtick code blocks that need to render
         as tap-to-copy on mobile.
         """
-        if not self._token or not chat_id:
-            log.error("Missing bot_token or chat_id for sendPhoto")
+        if not self._token:
+            log.error("Cannot sendPhoto: telegram_bot_token is not configured")
+            return False
+        if not chat_id:
+            log.debug("Skipping sendPhoto — chat_id not configured")
             return False
 
         url = f"https://api.telegram.org/bot{self._token}/sendPhoto"
@@ -2264,7 +2273,11 @@ class ChannelOps:
 
     def _send_code_block(self, chat_id: str, markdown_text: str) -> bool:
         """Send a Markdown code block message (for one-tap copy on mobile)."""
-        if not self._token or not chat_id:
+        if not self._token:
+            log.error("Cannot send code block: telegram_bot_token is not configured")
+            return False
+        if not chat_id:
+            log.debug("Skipping code block — chat_id not configured")
             return False
 
         url = f"https://api.telegram.org/bot{self._token}/sendMessage"
@@ -2755,6 +2768,21 @@ class Broadcaster:
             paid_chat_id=self._config["telegram_paid_chat_id"],
             personal_chat_id=self._config.get("telegram_personal_chat_id", ""),
         )
+
+        # Report channel wiring once at startup so an unconfigured channel is
+        # visible here rather than as a repeated error on every send attempt.
+        if not self._config.get("telegram_bot_token"):
+            log.error("telegram_bot_token is not configured — no messages will send")
+        _configured = [n for n, k in (
+            ("free", "telegram_free_chat_id"),
+            ("paid", "telegram_paid_chat_id"),
+            ("personal", "telegram_personal_chat_id"),
+        ) if self._config.get(k)]
+        _unconfigured = [n for n in ("free", "paid", "personal") if n not in _configured]
+        log.info("Telegram channels active: %s", ", ".join(_configured) or "none")
+        if _unconfigured:
+            log.info("Telegram channels not configured (sends will skip): %s",
+                     ", ".join(_unconfigured))
         self._formatter = CardFormatter()
         self._intel = IntelligenceBuilder(
             cc_url=cc_url,

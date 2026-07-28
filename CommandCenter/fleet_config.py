@@ -49,7 +49,7 @@ PORTFOLIO_LIMITS = {
     "max_directional_pct": 60,
     "max_per_trade_pct": 20,
 }
-TRADING_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "trekbot", "trekbot_short", "rubberband", "arbitrageur"}
+TRADING_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "rubberband", "arbitrageur", "confluence"}
 
 # ── TRADING LIMITS ──
 MAX_CONCENTRATION_PER_PAIR = 0.40
@@ -74,8 +74,11 @@ BOTS = {
     "gridzilla":   {"port": 8077, "dir": os.path.join(DATA_DRIVE, "Gridzilla"),                              "role": "trader",  "display": "Gridzilla",  "color": "#ffd600", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "gridzilla.py", "--auto"],                    "phase": 1, "slow": False},
     "phitex":      {"port": 8078, "dir": os.path.join(DATA_DRIVE, "PhiTex"),                                 "role": "support", "display": "PHITEX",     "color": "#e040fb", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "phitex.py"],                                 "phase": 2, "slow": True},
     "aegis":       {"port": 8079, "dir": os.path.join(DATA_DRIVE, "Aegis"),                                  "role": "support", "display": "AEGIS",      "color": "#e0e0e0", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "aegis.py"],                                  "phase": 2, "slow": False},
-    "trekbot":     {"port": 8080, "dir": os.path.join(DATA_DRIVE, "TrekBot"),                                "role": "trader",  "display": "TrekBot",    "color": "#ff6d00", "endpoints": ["/health", "/positions", "/analytics"],  "cmd": ["python", "trekbot.py"],                                "phase": 1, "slow": True},
-    "trekbot_short":{"port": 8087, "dir": os.path.join(DATA_DRIVE, "TrekBot"),                               "role": "trader",  "display": "TrekBot SHORT","color": "#ff3d00", "endpoints": ["/health", "/positions", "/analytics"],  "cmd": ["python", "trekbot.py", "--mode", "short"],             "phase": 2, "slow": True},
+    # TrekBot was renamed GoldenEye and now runs standalone from D:\GoldenEye on
+    # port 18095 with its own launcher (Desktop\launch.bat) and dashboard (18065).
+    # It is deliberately NOT fleet-managed. Its slot is filled by "confluence".
+    # Short mode is retired fleet-wide — no shorting.
+    "confluence":  {"port": 8088, "dir": os.path.join(DATA_DRIVE, "Confluence"),                             "role": "trader",  "display": "Confluence", "color": "#ff6d00", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "confluence.py"],                             "phase": 2, "slow": False},
     "inference":   {"port": 9001, "dir": os.path.join(CC_DIR),                                               "role": "support", "display": "Inference",  "color": "#b0bec5", "endpoints": ["/health"],                              "cmd": ["python", "inference_server.py"],                       "phase": 2, "slow": False},
     "nexus":       {"port": 8082, "dir": os.path.join(DATA_DRIVE, "Nexus"),                                  "role": "intel",   "display": "NEXUS",      "color": "#26c6da", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus.py"],                                  "phase": 2, "slow": False},
     "rubberband":  {"port": 8083, "dir": os.path.join(DATA_DRIVE, "Rubberband"),                             "role": "trader",  "display": "Rubberband", "color": "#00e5ff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "rubberband.py", "--auto"],                   "phase": 2, "slow": False},

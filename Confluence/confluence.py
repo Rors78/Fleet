@@ -88,6 +88,16 @@ MIN_ORACLE_SCORE = 55.0       # Oracle's own conviction floor
 MIN_RR = 1.8                  # reject thin reward:risk
 MIN_WHALE_SCORE = 60.0        # Deep Blue accumulation floor (when present)
 
+# Sentinel 1h expected-drift that counts as full conviction.
+#
+# Calibrated against the live forecast distribution (53 pairs, 2026-07-28):
+#   max 0.149% (MANA/USD) · p90 0.111% · median 0.037%
+# The original 1.0% was roughly 8x too large — no real forecast ever came
+# close, so conv_norm landed near 0.03 against a 0.5 floor and Sentinel could
+# never confirm anything. 0.12% sits just above p90, so the strongest ~10% of
+# bullish forecasts clear the bar and the rest scale proportionally.
+SENTINEL_FULL_CONVICTION_DRIFT = 0.0012
+
 # Source weights — Oracle is the only source giving a full trade thesis,
 # so it anchors. The rest confirm or veto.
 W_ORACLE = 0.45
@@ -488,8 +498,11 @@ class ConfluenceEngine:
                         drift = (exp - cur) / cur          # signed expected move
                         tail_dn = float(h1.get("tail_risk_down") or 0.0)
                         if drift > 0:
-                            # 1% expected upside ≈ full conviction, minus tail risk
-                            conv_norm = max(0.0, min(1.0, drift / 0.01)) * (1.0 - min(1.0, tail_dn))
+                            # Scale against the observed forecast distribution
+                            # (see SENTINEL_FULL_CONVICTION_DRIFT), damped by
+                            # downside tail risk.
+                            conv_norm = (max(0.0, min(1.0, drift / SENTINEL_FULL_CONVICTION_DRIFT))
+                                         * (1.0 - min(1.0, tail_dn)))
                 except (TypeError, ValueError, ZeroDivisionError):
                     conv_norm = None
 

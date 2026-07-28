@@ -20,6 +20,7 @@ Usage: python sentinel.py
 
 import json
 import math
+import os
 import random
 import sys
 import threading
@@ -71,6 +72,7 @@ UNIVERSE_RETRY_WAIT_S = 3
 # constant so the scan loop can detect that it ran a degraded cycle.
 _FALLBACK_PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD"]
 DEGRADED_RETRY_S = 30       # re-run soon after a fallback cycle
+ORACLE_CATCHUP_MAX = 15     # cap the end-of-cycle catch-up pass
 HORIZONS = [60, 240, 1440]  # minutes: 1h, 4h, 24h
 N_SIMULATIONS = 500         # Monte Carlo paths per pair
 # Forecast the full CC universe, not just the top slice by volume.
@@ -193,6 +195,33 @@ def _normalise_pair(p):
 # rotation instead.
 _ORACLE_SEEN = {}
 ORACLE_MEMORY_S = 1800      # keep a pair in the forecast set for 30 min
+# Persisted so the memory survives a restart. Held only in RAM, every cold boot
+# started blind: cycle 1 saw a single Oracle poll, and since Oracle rotates
+# faster than the 300s cycle, the forecast set was built against a top-10 that
+# had already changed by the time forecasts were served (measured 1/10 overlap
+# after a restart vs 7/10 on a warm process).
+_ORACLE_SEEN_FILE = Path(__file__).parent / "oracle_seen.json"
+
+
+def _load_oracle_seen():
+    try:
+        with open(_ORACLE_SEEN_FILE, encoding="utf-8") as f:
+            data = json.load(f)
+        now = time.time()
+        return {k: float(v) for k, v in data.items()
+                if now - float(v) <= ORACLE_MEMORY_S}
+    except Exception:
+        return {}
+
+
+def _save_oracle_seen():
+    try:
+        tmp = str(_ORACLE_SEEN_FILE) + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(_ORACLE_SEEN, f)
+        os.replace(tmp, _ORACLE_SEEN_FILE)
+    except Exception:
+        pass
 
 
 def get_oracle_pairs():
@@ -221,6 +250,8 @@ def get_oracle_pairs():
     # does not grow without bound.
     for p in [p for p, ts in _ORACLE_SEEN.items() if now - ts > ORACLE_MEMORY_S]:
         _ORACLE_SEEN.pop(p, None)
+
+    _save_oracle_seen()
 
     # Most-recently-seen first, so the freshest Oracle candidates are forecast
     # earliest in the cycle.
@@ -488,6 +519,27 @@ class SentinelEngine:
 
             time.sleep(0.1)  # don't hammer CC market data
 
+        # Catch-up pass: the main loop takes ~50s, and Oracle rotates its top-N
+        # faster than that, so pairs it started signalling DURING this cycle
+        # would otherwise wait a full SCAN_INTERVAL for a forecast — leaving
+        # Confluence without a confirming source on exactly the freshest
+        # candidates. Re-poll Oracle and forecast anything new before publishing.
+        try:
+            late = [p for p in get_oracle_pairs() if p not in forecasts]
+            for pair in late[:ORACLE_CATCHUP_MAX]:
+                candles = get_ohlc(pair, interval=60, limit=200)
+                if not candles:
+                    continue
+                forecast = forecast_pair(pair, candles, ctx)
+                if forecast:
+                    forecasts[pair] = forecast
+                time.sleep(0.1)
+            if late:
+                self._log(f"Catch-up: +{len([p for p in late[:ORACLE_CATCHUP_MAX] if p in forecasts])} "
+                          f"late Oracle pair(s)")
+        except Exception as e:
+            self._log(f"Catch-up pass failed: {e}")
+
         with self._lock:
             self.forecasts = forecasts
 
@@ -581,6 +633,12 @@ class ThreadedServer(ThreadingMixIn, HTTPServer):
 
 
 def _scan_loop():
+    # Restore Oracle memory before the first cycle so a cold boot does not
+    # build its universe from a single Oracle poll.
+    _ORACLE_SEEN.update(_load_oracle_seen())
+    if _ORACLE_SEEN:
+        print(f"[INFO] Restored {len(_ORACLE_SEEN)} remembered Oracle pair(s)",
+              flush=True)
     time.sleep(15)  # wait for fleet to boot
     while True:
         degraded = False

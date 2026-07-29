@@ -5458,8 +5458,19 @@ def stream(st, sym, br, ex, iv=2):
                             hd.set_btc_returns(btc_st.df)
                     if not hd.fitted or hd.needs_refit():
                         hd.fit(rgm_df)
-                    br.regime_proba = hd.predict_proba(rgm_df)
-                    br.regime = hd.dominant_regime(rgm_df)
+                    if hd.fitted:
+                        br.regime_proba = hd.predict_proba(rgm_df)
+                        br.regime = hd.dominant_regime(rgm_df)
+                    else:
+                        # Fit did not take (thin history, or fit() raised). Unfitted
+                        # predict_proba returns a uniform [0.25]*4, and argmax on a tie
+                        # picks index 0 — which is _REGIMES[0] == 'bull'. That silently
+                        # labels every affected symbol bull, starving the regime-keyed
+                        # TP tables, confidence floors, and Global Brain arming.
+                        # Fall back to the rule-based classifier, which reads real
+                        # EMA alignment + ADX instead of a degenerate tie.
+                        br.regime = regime(rgm_df)
+                        br.regime_proba = [1.0 if r == br.regime else 0.0 for r in _REGIMES]
                 else:
                     br.regime = regime(rgm_df)
                     br.regime_proba = [1.0 if r == br.regime else 0.0 for r in _REGIMES]

@@ -1540,6 +1540,33 @@ def get_live_metrics() -> dict:
         _dd_denom = float(_LIVE_PEAK) if float(_LIVE_PEAK) > 0 else float(_PAPER_START_BAL)
     max_dd_pct = (max_dd / _dd_denom) * 100.0 if max_dd > 0 and _dd_denom > 0 else 0
 
+    # Prefer the drawdown of the EQUITY CURVE (balance + unrealized) over the
+    # realized-only figure above. The dashboard plots bal+upnl, so a realized-only
+    # headline disagrees with the curve the user is looking at — an open position
+    # that dips and recovers never touches pnl_history but is plainly visible on
+    # the chart. Measured here: realized-only said 0.80% while the plotted curve
+    # had drawn down 1.27%.
+    try:
+        with _equity_lock:
+            _eq_rows = [e for e in _equity_series if e.get('bal', 0) > 0]
+        if len(_eq_rows) >= 2:
+            # Ignore pre-reset balance regimes (warm-up rows and stale default
+            # balances) the same way the dashboard does, so a config change is
+            # not reported as a 99% drawdown.
+            _anchor = _eq_rows[-1]['bal']
+            _eq_rows = [e for e in _eq_rows if _anchor > 0 and 0.33 <= e['bal'] / _anchor <= 3]
+            _peak_eq = 0.0
+            _curve_dd = 0.0
+            for _e in _eq_rows:
+                _v = _e['bal'] + _e.get('upnl', 0.0)
+                if _v > _peak_eq:
+                    _peak_eq = _v
+                if _peak_eq > 0:
+                    _curve_dd = max(_curve_dd, (_peak_eq - _v) / _peak_eq * 100.0)
+            max_dd_pct = max(max_dd_pct, _curve_dd)
+    except Exception as _dd_err:
+        logging.debug(f"equity-curve drawdown failed, keeping realized-only: {_dd_err}")
+
     # Session stats (this run only)
     s_trades = t - _session_baseline['trades']
     s_wins = w - _session_baseline['wins']
@@ -7196,7 +7223,16 @@ def _run_http_health_server():
                                 'tp3': _fp(pos['tp3']) if 'tp3' in pos else None,
                                 'tp_hit': pos.get('tp_hit', 0),
                                 'opened_at': pos.get('opened_at', 0),
-                                'confidence': float(br.confidence) if br and hasattr(br, 'confidence') else 0.5,
+                                # Entry confidence, NOT the live rolling brain value:
+                                # the question a position card answers is "what did we
+                                # believe when we took this?", and br.confidence drifts
+                                # with every scan tick after entry. Persistence already
+                                # stored the entry value; only this serializer was
+                                # dropping it (the /position/<sym> detail route was fine).
+                                'confidence': float(pos.get('confidence',
+                                    br.confidence if br and hasattr(br, 'confidence') else 0.5)),
+                                'factors': pos.get('factors', {}) or {},
+                                'whale_score': pos.get('whale_score', 0),
                                 'regime': pos.get('regime', br.regime if br else 'chop'),
                             })
                 self._finish_json(positions)

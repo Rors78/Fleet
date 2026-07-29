@@ -79,6 +79,12 @@ class ScannerBackend:
             
             indicators_dict = {
                 'adx': float(latest.get('ADX', 20)),
+                # +DI / -DI carry the DIRECTION that ADX only measures the
+                # strength of. Without them the brain had to infer direction
+                # from a short price-average comparison, which could never
+                # fire (see get_trend_direction). (2026-07-29 audit)
+                'plus_di': float(latest.get('+DI', 0) or 0),
+                'minus_di': float(latest.get('-DI', 0) or 0),
                 'chopiness': float(latest.get('chopiness', 50)),
                 'volume_surge': float(latest.get('volume_surge', 0)),
                 'whale_score': float(latest.get('whale_score', 0)),
@@ -91,10 +97,25 @@ class ScannerBackend:
             
             del df
             
+            # `volume` is BASE-ASSET volume for a single bar, so it is not
+            # comparable across pairs — live values ranged from BTC 0.166 to
+            # XRP 4836.191 purely because of unit price, making BTC look
+            # ~29,000x less active than XRP. Publish the USD notional
+            # alongside it (and keep the raw figure under an explicit name) so
+            # consumers can compare pairs without dividing by price
+            # themselves. volumeSurge is a ratio and was always the sound
+            # field. (2026-07-29 audit)
+            _vol_base = indicators_dict['volume']
+            _close = indicators_dict['close']
+            _vol_usd = (_vol_base * _close) if (_vol_base and _close) else 0.0
+
             return {
                 'pair': pair,
-                'close': indicators_dict['close'],
-                'volume': indicators_dict['volume'],
+                'close': _close,
+                # Kept for backwards compatibility with existing consumers.
+                'volume': _vol_base,
+                'volumeBase': _vol_base,
+                'volumeUsd': round(_vol_usd, 2),
                 'adx': indicators_dict['adx'],
                 'chopiness': indicators_dict['chopiness'],
                 'volumeSurge': indicators_dict['volume_surge'],

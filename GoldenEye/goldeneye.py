@@ -6803,20 +6803,34 @@ def build_tui_layout(sts, brs, nm):
     wr = live['win_rate'] * 100
     pnl_sign = '+' if total_pnl >= 0 else ''
 
-    # Get balance for display
+    # Header balance = EQUITY (cash + unrealized), not cash alone. With a
+    # position open, cash-only froze at the last closed trade and hid whatever
+    # the live position was doing. Same `bal + upnl` formula the equity curve
+    # and kill switch use, so the header can never disagree with them.
     if _is_paper():
-        bal = _PAPER_BALANCE
-        bal_str = f"${float(bal):,.0f} paper"
+        with _PAPER_BAL_LOCK:
+            _cash = float(_PAPER_BALANCE)
+        _mode_lbl = 'paper'
     else:
-        bal = _LIVE_BALANCE
-        bal_str = f"${float(bal):,.0f} live"
+        with _LIVE_BAL_LOCK:
+            _cash = float(_LIVE_BALANCE)
+        _mode_lbl = 'live'
+    _upnl = _compute_upnl()
+    bal = _cash + _upnl
+    bal_str = f"${bal:,.0f} {_mode_lbl}"
 
     # Header: logo + stats in a grid
     logo = _build_logo()
     stats = Text()
     _title = "G O L D E N E Y E  [SHORT]" if _MODE == 'short' else "G O L D E N E Y E"
     stats.append(f"{_title}\n", style=f"bold {_C['gold']}")
-    stats.append(f"{bal_str}  •  ", style=f"bold {_C['green']}")
+    stats.append(f"{bal_str}", style=f"bold {_C['green']}")
+    # Show the unrealized component inline so a moving balance is explained
+    # rather than mysterious. Omitted entirely when flat (nothing to explain).
+    if abs(_upnl) >= 0.005:
+        _uc = _C['green'] if _upnl >= 0 else _C['red']
+        stats.append(f" ({'+' if _upnl >= 0 else ''}{_upnl:,.2f} unreal)", style=_uc)
+    stats.append(f"  •  ", style=f"bold {_C['green']}")
     stats.append(f"{len(sts)} symbols  •  ", style=_C['muted'])
     stats.append(f"{open_count} open", style=f"bold {_C['text']}")
     stats.append(f"  •  P/L ", style=_C['muted'])
@@ -6995,6 +7009,17 @@ def _update_health_snapshot():
             else:
                 s["portfolio_heat"] = 0.0
                 s["open_positions"] = 0
+            # Unrealized P/L and equity (cash + unrealized). Consumers that show
+            # a "balance" should use `equity` — cash alone freezes at the last
+            # closed trade and hides what open positions are doing.
+            try:
+                _u = _compute_upnl()
+                _c = float(_PAPER_BALANCE) if _is_paper() else float(_LIVE_BALANCE)
+                s["unrealized_pnl"] = round(_u, 4)
+                s["equity"] = round(_c + _u, 4)
+            except Exception:
+                s["unrealized_pnl"] = 0.0
+                s["equity"] = 0.0
             s["drawdown_mult"] = get_drawdown_mult()
             s["max_positions"] = _MAX_OPEN_POS
             s["circuit_breaker_daily_pnl"] = _circuit_breaker.get('daily_pnl', 0.0)

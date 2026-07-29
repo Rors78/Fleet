@@ -1962,8 +1962,18 @@ function renderTopBar(h) {
   $('tb-kraken-dot').className = 'dot ' + (kOk ? 'ok' : 'err');
   $('tb-kraken-st').textContent = kOk ? 'CONNECTED' : 'ERROR';
 
-  const bal = h.live_balance != null ? h.live_balance : (h.paper_balance != null ? h.paper_balance : 0);
-  $('tb-balance').textContent = fmtUSD(bal);
+  // EQUITY (cash + unrealized), not cash alone: with a position open, cash
+  // freezes at the last closed trade and hides what the position is doing.
+  // Falls back to cash if an older bot build has no `equity` field.
+  const cash = h.live_balance != null ? h.live_balance : (h.paper_balance != null ? h.paper_balance : 0);
+  const bal = h.equity != null ? h.equity : cash;
+  const unreal = h.unrealized_pnl || 0;
+  // Append the unrealized component so a moving balance is explained rather
+  // than mysterious; omitted when flat, since there is nothing to explain.
+  $('tb-balance').textContent = fmtUSD(bal) +
+    (Math.abs(unreal) >= 0.005
+      ? ' (' + (unreal >= 0 ? '+' : '') + unreal.toFixed(2) + ')'
+      : '');
   if (_lastBal != null && Math.abs(bal - _lastBal) > 0.001) {
     const el = $('tb-balance');
     el.classList.add('pulse');
@@ -4224,9 +4234,17 @@ async function refresh() {
     if (h.uptime_seconds) uptimeSeconds = Math.floor(h.uptime_seconds);
 
     // --- Header stats ---
-    const bal = isLive ? (h.live_balance || 0) : (h.paper_balance || 0);
+    // EQUITY (cash + unrealized), not cash alone: with a position open, cash
+    // freezes at the last closed trade and hides what the position is doing.
+    // Falls back to cash if an older bot build has no `equity` field.
+    const cash = isLive ? (h.live_balance || 0) : (h.paper_balance || 0);
+    const bal = (h.equity != null) ? h.equity : cash;
+    const unreal = h.unrealized_pnl || 0;
     const tradeAmt = (h.live_trade_amt || (bal * 0.03)) || 0;
-    const startBal = isLive ? (h.live_balance || 100) : 10000;
+    // Colour by whether open positions are up or down, i.e. equity vs the cash
+    // it came from. The old baseline was a hardcoded `10000` (the pre-2026-07-28
+    // paper balance), which after the drop to $500 would have read red forever.
+    const startBal = cash;
     const totalPnl = a.total_pnl || 0;
     const trades = a.trades || 0;
     const wins = a.wins || 0;
@@ -4235,7 +4253,12 @@ async function refresh() {
     document.getElementById('tradeAmt').textContent = '$' + Math.round(tradeAmt);
 
     const balEl = document.getElementById('hdrBalance');
-    balEl.textContent = '$' + bal.toFixed(2);
+    // Append the unrealized component so a moving balance is explained rather
+    // than mysterious; omitted when flat, since there is nothing to explain.
+    balEl.textContent = '$' + bal.toFixed(2) +
+      (Math.abs(unreal) >= 0.005
+        ? ' (' + (unreal >= 0 ? '+' : '') + unreal.toFixed(2) + ')'
+        : '');
     balEl.className = 'stv ' + (bal >= startBal ? 'g' : 'r');
 
     const pnlEl = document.getElementById('hdrPnl');

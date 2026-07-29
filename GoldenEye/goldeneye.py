@@ -6462,11 +6462,17 @@ def stream(st, sym, br, ex, iv=2):
                             r = tp_hit if tp_hit > 0 else -1
 
                         if _is_paper():
-                            # Apply exit slippage (adverse direction)
+                            # Apply exit slippage (adverse direction).
+                            # float(_PAPER_SLIP) is load-bearing: _PAPER_SLIP is a
+                            # Decimal, so `1 - _PAPER_SLIP` is a Decimal and
+                            # `float * Decimal` raises TypeError. That exception was
+                            # swallowed by the stream loop's catch-all, so every paper
+                            # exit silently failed and positions could never close.
+                            _slip = float(_PAPER_SLIP)
                             if direction == 'long':
-                                current_price = float(current_price) * (1 - _PAPER_SLIP)
+                                current_price = float(current_price) * (1 - _slip)
                             else:
-                                current_price = float(current_price) * (1 + _PAPER_SLIP)
+                                current_price = float(current_price) * (1 + _slip)
                             # Recompute R with slippage-adjusted exit price
                             if risk_dist > 0:
                                 r = (float(current_price) - float(pos_snap['e'])) / risk_dist if direction == 'long' else (float(pos_snap['e']) - float(current_price)) / risk_dist

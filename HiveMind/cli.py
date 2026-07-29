@@ -376,7 +376,21 @@ def _build_snapshot(result, names, variants, objectives, args, backtest_data=Non
             "max_drawdown": safe_float(round(result.max_drawdown, 6)),
             "cvar_95": safe_float(round(result.cvar_95, 6)),
             "n_active": result.n_active,
+            # Equal-weight benchmark. run_hive_mind already computes this and
+            # the CLI prints it, but it was never published, so the dashboard
+            # showed a Sharpe with nothing to compare it against. On real data
+            # the optimizer currently trails equal-weight, which is the single
+            # most useful fact about this bot and was invisible (2026-07-29
+            # audit).
+            "benchmark_sharpe": safe_float(round(result.benchmark_sharpe, 4)),
+            "vs_benchmark": safe_float(round(result.sharpe_ratio - result.benchmark_sharpe, 4)),
         },
+        # Provenance. --synthetic feeds generate_synthetic_returns() (whose own
+        # docstring says "for testing") and then labels the random columns with
+        # real tickers, so "SOL: 37.1%" read as a live Solana call when it was
+        # random column 2. Every consumer must be able to tell which it is.
+        "data_source": "synthetic" if getattr(args, "synthetic", False) else "market",
+        "lookback_days": getattr(args, "days", None),
         "members": [
             {
                 "label": label,

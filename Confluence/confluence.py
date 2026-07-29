@@ -630,11 +630,22 @@ class ConfluenceEngine:
         return True
 
     def _price_for(self, pair, intel):
-        """Current price from Oracle's signal set (the only live quote we have)."""
+        """Current price from Oracle's signal set (the only live quote we have).
+
+        Skips rows whose entry is None. Non-directional Oracle strategies
+        (WATCH, SWING TRADE, TRAIL STOP, ...) publish null levels, and this
+        used to return that None on the first pair match — so manage_positions
+        would get no price and silently skip stop/target checks for a held
+        position, for as long as Oracle kept classifying that pair as
+        non-directional. Keep scanning for a row that actually has a quote.
+        (2026-07-29 audit)
+        """
         for sig in ((intel.get("oracle") or {}).get("all_signals")
                     or (intel.get("oracle") or {}).get("top_signals") or []):
             if self._normalize_pair(sig.get("pair")) == pair:
-                return sig.get("entry")
+                entry = sig.get("entry")
+                if entry is not None:
+                    return entry
         return None
 
     def manage_positions(self, intel):

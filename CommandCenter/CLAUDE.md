@@ -298,7 +298,7 @@ When a bot crashes or is restarted mid-trade, its in-flight reservations in `por
 
 ## Key Metrics to Watch
 - **Expectancy** (the primary health signal): Target positive E[V] per trade net of fees. Fee ratio arc: 650% → 385% → 272% (2026-04-04) → **~32% (2026-07-28)** — the fee crisis is solved; the open problem is negative expectancy (avg loss ≫ avg win). Run `python expectancy.py` or hit `/api/signals/expectancy` for current state.
-- **Fee floor:** $30 minimum trade size enforced in portfolio manager. NexusBrain min_confluence at 0.80.
+- **Fee floor:** $30 minimum trade size enforced in portfolio manager. NexusBrain `min_confluence` is **0.70** (lowered from 0.80 on 2026-04-08 after 8h with zero trades; note the real cause of that drought was two broken signal components, fixed 2026-07-29 — see `score_volume_confirmation` and `score_macd_momentum`).
 - **Gridzilla spacing floor:** 1.2% minimum grid spacing. Max 5 grid lines. $0.50 net profit floor per level.
 - **Trade frequency governor:** 10-min per-pair cooldown in portfolio manager after any trade closes. Adaptive: 5 min when AEGIS score > 0.7. Gridzilla exempt (fee gate handles its frequency).
 - **AEGIS score:** Controls deployment limit. Low score → DEFENSIVE → reduced max deployment.

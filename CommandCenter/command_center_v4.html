@@ -3530,6 +3530,41 @@ function getDurableTradeStats(botId, botStats) {
   };
 }
 
+/* Restart-amnesia guard, shared by every trader panel (2026-07-29 audit).
+   Bots that hold equity/pnl in memory report a pristine starting balance after
+   a restart, so a panel that trusts them renders a losing bot as flat. Given
+   the bot's own (equity, pnl) this returns what should actually be displayed:
+   the bot's figures when they agree with the durable log, otherwise realized
+   P&L reconstructed from /api/trades.
+
+   Returns {eq, pnl, dd, amnesia, stats}. `amnesia` is true only when the bot
+   claims flat AND the log disagrees — callers use it to disclose the swap
+   rather than silently substituting numbers. */
+function amnesiaGuard(botId, rawEq, rawPnl, rawDd, startEq, botStats) {
+  var stats = getDurableTradeStats(botId, botStats || {});
+  var eq = rawEq || 0, pnl = rawPnl || 0, dd = rawDd || 0;
+  var start = startEq || 10000;
+  var amnesia = (stats.source === 'log' && stats.total > 0 &&
+                 Math.abs(pnl) < 0.005 && Math.abs(stats.total_pnl) >= 0.01);
+  if (amnesia) {
+    pnl = stats.total_pnl;
+    eq  = start + pnl;
+    /* Drawdown from starting capital — a floor, not true peak-to-trough, but
+       strictly better than the 0.0% a restarted bot reports. */
+    dd  = pnl < 0 ? Math.abs(pnl) / start * 100 : 0;
+  }
+  return {eq: eq, pnl: pnl, dd: dd, amnesia: amnesia, stats: stats};
+}
+
+/* Orange disclosure strip shown under the KPI row when the guard fired. */
+function amnesiaBanner(g, rawEq) {
+  if (!g || !g.amnesia) return '';
+  return '<div style="font-family:var(--font-mono);font-size:0.58rem;color:#f97316;'
+    + 'padding:2px 8px;background:rgba(249,115,22,0.06);border-left:2px solid #f97316">'
+    + '* bot reports $' + fmtNum(rawEq || 0, 0) + ' / +0.00 after restart — showing realized P&amp;L from '
+    + g.stats.total + ' closed trade' + (g.stats.total === 1 ? '' : 's') + ' in the event log instead</div>';
+}
+
 /* Format unix timestamp as HH:MM:SS */
 function fmtTradeTime(ts) {
   if (!ts) return '--';
@@ -6609,6 +6644,11 @@ function buildNexusBrainView(def,b){
   var equity=perf.final_equity||perf.initial_capital||10000;
   var totalPnl=perf.total_pnl||0;
   var wrPct=(perf.win_rate||0)*100;
+  /* Restart-amnesia guard — see amnesiaGuard(). */
+  var _nbRawEq=equity;
+  var _nbG=amnesiaGuard('nexusbrain',equity,totalPnl,0,perf.initial_capital||10000,{});
+  equity=_nbG.eq; totalPnl=_nbG.pnl;
+  if(_nbG.amnesia){ wrPct=_nbG.stats.win_rate*100; }
 
   var h='<div class="dv2-frame">';
   var pnlC=totalPnl>=0?"#16a085":"#ef4444";
@@ -6622,13 +6662,14 @@ function buildNexusBrainView(def,b){
   h+='</div>';
 
   h+='<div class="dv2-stats-strip">';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmt$(equity)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value" style="color:'+pnlC+'">'+(totalPnl>=0?"+":"")+fmtNum(totalPnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wrPct>=50?'good':'bad')+'">'+fmtNum(wrPct,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_nbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmt$(equity)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_nbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value" style="color:'+pnlC+'">'+(totalPnl>=0?"+":"")+fmtNum(totalPnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_nbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wrPct>=50?'good':'bad')+'">'+fmtNum(wrPct,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SHARPE</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmtNum(perf.sharpe_ratio||0,3)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">POSITIONS</div><div class="dv2-kpi-value '+(positions.length?'good':'')+'">'+positions.length+'/'+(cfg.max_positions||5)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SIGNALS</div><div class="dv2-kpi-value cyan">'+sigs.length+'</div></div>';
   h+='</div>';
+  h+=amnesiaBanner(_nbG,_nbRawEq);
 
   /* THREE-ZONE BODY */
   h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
@@ -7229,6 +7270,12 @@ function buildGridzillaView(def,b){
 
   /* ── Summary values used across panels ── */
   var np=raw.net_pnl||0;
+  /* Restart-amnesia guard — see amnesiaGuard(). Gridzilla has no equity tile,
+     so only NET PNL is corrected. Its logged closes are currently $0.00 each,
+     so this is a no-op today; it exists so a future realized loss can't be
+     hidden by a restart the way TurtleSue's was. */
+  var _gzG=amnesiaGuard('gridzilla',0,np,0,10000,{});
+  if(_gzG.amnesia) np=_gzG.pnl;
   var npc=np>=0?'#16a085':'#ef4444';
   var grossPnl=exp.total_gross_pnl;
   var totalFees=exp.total_fees!=null?exp.total_fees:(exp.total_gross_pnl!=null&&exp.total_net_pnl!=null?(exp.total_gross_pnl-exp.total_net_pnl):null);
@@ -7270,7 +7317,7 @@ function buildGridzillaView(def,b){
   /* KPI strip */
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+monsterState+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">NET PNL</div><div class="dv2-kpi-value '+(np>=0?'good':'bad')+'">'+(np>=0?'+':'')+fmtNum(np,4)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">NET PNL'+(_gzG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(np>=0?'good':'bad')+'">'+(np>=0?'+':'')+fmtNum(np,4)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CYCLES</div><div class="dv2-kpi-value cyan">'+(raw.total_cycles||0)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ACTIVE GRIDS</div><div class="dv2-kpi-value">'+(raw.n_active_grids||0)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">UPTIME</div><div class="dv2-kpi-value">'+fmtNum(raw.uptime_hours||0,1)+'h</div></div>';
@@ -7757,24 +7804,10 @@ function buildTurtleSueView(def,b){
   var eq=raw.equity||10000;
   var pnl=raw.pnl||0;
   var dd=raw.drawdown_pct||0;
-  /* Restart amnesia guard (2026-07-29 audit). TurtleSue keeps equity/pnl in
-     memory only, so after a restart it reports a pristine $10,000 / +0.00 even
-     though the durable event log holds closed losing trades. Trust the bot's
-     own figures only while they are consistent with the log; if the bot claims
-     flat but the log shows realized P&L, show the realized number. Equity is
-     reconstructed from starting capital so the tile can't read $10,000 on a
-     bot that is actually down. */
-  var _tsDur=getDurableTradeStats('turtlesue',raw.trade_stats||{});
-  var _tsAmnesia=(_tsDur.source==='log' && _tsDur.total>0 &&
-                  Math.abs(pnl)<0.005 && Math.abs(_tsDur.total_pnl)>=0.01);
-  if(_tsAmnesia){
-    var _tsStart=raw.starting_equity||10000;
-    pnl=_tsDur.total_pnl;
-    eq=_tsStart+pnl;
-    /* Drawdown from starting capital — a floor, not the true peak-to-trough,
-       but strictly better than the 0.0% the bot reports after a restart. */
-    dd=pnl<0?Math.abs(pnl)/_tsStart*100:0;
-  }
+  var _tsRawEq=eq;
+  var _tsG=amnesiaGuard('turtlesue',eq,pnl,dd,raw.starting_equity||10000,raw.trade_stats||{});
+  eq=_tsG.eq; pnl=_tsG.pnl; dd=_tsG.dd;
+  var _tsAmnesia=_tsG.amnesia, _tsDur=_tsG.stats;
   var sc=raw.scan_count||0;
   var mode=raw.system_mode||'BOTH';
 
@@ -7834,11 +7867,7 @@ function buildTurtleSueView(def,b){
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">POSITIONS</div><div class="dv2-kpi-value '+(posKeys.length?'good':'')+'">'+posKeys.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">UNITS</div><div class="dv2-kpi-value">'+(riskLimits.long_units||0)+'L/'+(riskLimits.short_units||0)+'S</div></div>';
   h+='</div>';
-  if(_tsAmnesia){
-    h+='<div style="font-family:var(--font-mono);font-size:0.58rem;color:#f97316;padding:2px 8px;background:rgba(249,115,22,0.06);border-left:2px solid #f97316">'
-      +'* bot reports $'+fmtNum(raw.equity||10000,0)+' / +0.00 after restart — showing realized P&amp;L from '
-      +_tsDur.total+' closed trades in the event log instead</div>';
-  }
+  h+=amnesiaBanner(_tsG,_tsRawEq);
 
   /* Three-zone body */
   h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
@@ -8810,6 +8839,11 @@ function buildRubberbandView(def,b){
   var openP=raw.open_positions||0;
   var maxP=strat.max_positions||8;
   var dd=raw.drawdown_pct||0;
+  /* Restart-amnesia guard — see amnesiaGuard(). */
+  var _rbRawEq=eq;
+  var _rbG=amnesiaGuard('rubberband',eq,pnl,dd,raw.starting_equity||raw.initial_capital||10000,{});
+  eq=_rbG.eq; pnl=_rbG.pnl; dd=_rbG.dd;
+  if(_rbG.amnesia){ wr=_rbG.stats.win_rate*100; }
   var equityCurve=raw.equity_curve||[];
   var recentTrades=raw.recent_trades||[];
   var pairList=raw.pairs||Object.keys(indicators);
@@ -8858,13 +8892,14 @@ function buildRubberbandView(def,b){
   var regC2=busRegime==="RANGING"?'var(--green)':busRegime==="TRENDING"?'#f59e0b':'var(--text-secondary)';
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+botState+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_rbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_rbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_rbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value">'+openP+'/'+maxP+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC2+'">'+escHtml(busRegime)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCANS</div><div class="dv2-kpi-value">'+(raw.scan_count||0)+'</div></div>';
   h+='</div>';
+  h+=amnesiaBanner(_rbG,_rbRawEq);
 
   /* THREE-ZONE BODY */
   h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
@@ -9619,6 +9654,12 @@ function buildArbitrageurView(def,b){
   var eq=raw.equity||0;
   var pnl=raw.pnl||0;
   var wr=raw.win_rate||0;
+  /* Restart-amnesia guard — see amnesiaGuard(). Arbitrageur self-reports
+     0 trades / 0.0 while the event log holds a closed +3.26 trade. */
+  var _arbRawEq=eq;
+  var _arbG=amnesiaGuard('arbitrageur',eq,pnl,0,raw.starting_equity||raw.initial_capital||10000,{});
+  eq=_arbG.eq; pnl=_arbG.pnl;
+  if(_arbG.amnesia){ wr=_arbG.stats.win_rate*100; }
   var tracked=raw.tracked_pairs||0;
   var openS=raw.open_spreads||0;
   var topSpreads=raw.top_spreads||[];
@@ -9665,13 +9706,14 @@ function buildArbitrageurView(def,b){
   h+='</div>';
 
   h+='<div class="dv2-stats-strip">';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_arbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_arbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_arbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value '+(posKeys.length?'good':'')+'">'+posKeys.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">TRACKED</div><div class="dv2-kpi-value">'+tracked+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+arbRegimeC+'">'+escHtml(arbRegime)+'</div></div>';
   h+='</div>';
+  h+=amnesiaBanner(_arbG,_arbRawEq);
 
   /* Fix 1: CC connectivity error banner */
   if(ccFail){

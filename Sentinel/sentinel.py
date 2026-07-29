@@ -74,7 +74,29 @@ _FALLBACK_PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD"]
 DEGRADED_RETRY_S = 30       # re-run soon after a fallback cycle
 ORACLE_CATCHUP_MAX = 15     # cap the end-of-cycle catch-up pass
 HORIZONS = [60, 240, 1440]  # minutes: 1h, 4h, 24h
-N_SIMULATIONS = 500         # Monte Carlo paths per pair
+# Monte Carlo paths per pair. Raised 500 -> 2000 (2026-07-29 audit): at 500,
+# re-running an IDENTICAL input with different seeds moved the up-probability
+# by up to 9.6pp (sigma 2.2pp), so the whole-percent figures on the matrix
+# ("49%" vs "51%") were entirely inside the sampling noise floor.
+#   N=500  -> +/-2.24pp (1 s.e.)   N=2000 -> +/-1.12pp   N=5000 -> +/-0.71pp
+# 5000 was measured at ~164s of a 300s cycle — too close to the budget. 2000
+# costs ~65s (22%) and halves the error. prob_se is published per forecast so
+# consumers can check the noise floor themselves rather than trusting digits.
+N_SIMULATIONS = 2000
+# Width of the flat/dead band, in standard deviations of THIS pair over THIS
+# horizon. Replaces a hardcoded +/-0.1%, which meant 2.5 sigma for a stablecoin
+# but 0.01 sigma for a memecoin — see compute_distribution for the full note.
+# 0.25 sigma keeps the band meaningful without swallowing real moves.
+DEAD_BAND_SIGMA = 0.25
+# Reference per-minute volatility used to convert the absolute drift terms into
+# a per-sigma tilt. Roughly a mid-cap crypto pair (~1.2%/hr), so a pair at this
+# vol keeps the drift the terms were originally tuned for; quieter pairs stop
+# saturating and noisier ones stop having their signal washed out.
+DRIFT_REF_VOL = 0.012 / math.sqrt(60)
+# Hard cap on drift expressed in sigma-per-minute. 0.05 keeps a 4h forecast
+# well short of certainty even with every term maxed, so no combination of
+# fleet inputs can produce a 100% call.
+DRIFT_SNR_CAP = 0.05
 # Forecast the full CC universe, not just the top slice by volume.
 #
 # At 20 this covered only 14 of Oracle's scanned pairs, leaving 13 that CC
@@ -116,26 +138,71 @@ def monte_carlo_paths(price, vol_per_min, drift_per_min, horizon_min, n_paths):
     return sorted(finals)
 
 
-def compute_distribution(finals, current_price):
-    """Compute distribution statistics from Monte Carlo endpoints."""
+def _sigfig(x, sig=5):
+    """Round to significant figures, not fixed decimals.
+
+    round(x, 4) quantises every price to a 0.0001 tick, which is fine for BTC
+    but catastrophic for sub-cent pairs: PUMP at $0.0019 has a tick worth 5.3%
+    of its own price, so its whole 68% CI collapsed to [0.0018, 0.0020] — the
+    rounding error exceeded a typical 1h move (2026-07-29 audit).
+    """
+    if x is None:
+        return None
+    try:
+        if x == 0 or not math.isfinite(x):
+            return x
+        return round(x, -int(math.floor(math.log10(abs(x)))) + (sig - 1))
+    except (ValueError, OverflowError):
+        return x
+
+
+def compute_distribution(finals, current_price, sigma_horizon=None):
+    """Compute distribution statistics from Monte Carlo endpoints.
+
+    `sigma_horizon` is the log-return standard deviation over this horizon. It
+    sizes the flat/dead band; see the note below for why a fixed band is wrong.
+    """
     n = len(finals)
     if n < 10:
         return None
 
     mean = sum(finals) / n
+    p2_5 = finals[int(n * 0.025)]
     p5 = finals[int(n * 0.05)]
-    p25 = finals[int(n * 0.25)]
     p50 = finals[int(n * 0.50)]
-    p75 = finals[int(n * 0.75)]
     p95 = finals[int(n * 0.95)]
+    p97_5 = finals[int(n * 0.975)]
 
-    # 1-sigma (68%) and 2-sigma (95%) intervals
+    # 1-sigma (68%) interval
     p16 = finals[int(n * 0.16)]
     p84 = finals[int(n * 0.84)]
 
-    # Direction probability
-    up = sum(1 for f in finals if f > current_price * 1.001) / n
-    down = sum(1 for f in finals if f < current_price * 0.999) / n
+    # ── Direction probability ────────────────────────────────────────────
+    # The dead band separating "up" from "flat" is scaled by this horizon's
+    # sigma, NOT fixed at ±0.1%.
+    #
+    # With a fixed band, the threshold means something completely different
+    # per instrument, because sigma varies ~250x across the universe:
+    #     USDG  band = 2.50 sigma -> P(up) 100.0%
+    #     EUR   band = 0.33 sigma -> P(up)  67.3%
+    #     BTC   band = 0.04 sigma -> P(up)  51.8%
+    #     AKE   band = 0.01 sigma -> P(up)  48.5%
+    # ...all at the SAME drift. So "high conviction" (p > 0.65) was selecting
+    # purely for low volatility, and Sentinel's only two HC signals were EUR
+    # and a dollar-pegged stablecoin at 100% confidence. It was a volatility
+    # filter wearing a forecasting label (2026-07-29 audit).
+    #
+    # A sigma-proportional band asks the same question of every pair: "is the
+    # move meaningfully larger than this pair's own noise?"
+    if sigma_horizon and sigma_horizon > 0:
+        band = DEAD_BAND_SIGMA * sigma_horizon      # in log-return units
+    else:
+        band = 0.001                                # legacy fallback
+    up_thresh = current_price * math.exp(band)
+    dn_thresh = current_price * math.exp(-band)
+
+    up = sum(1 for f in finals if f > up_thresh) / n
+    down = sum(1 for f in finals if f < dn_thresh) / n
     flat = 1.0 - up - down
 
     # Skew: positive = bullish tilt
@@ -150,15 +217,31 @@ def compute_distribution(finals, current_price):
 
     expected_move_pct = (mean - current_price) / current_price * 100
 
+    # Monte Carlo standard error on a probability estimate: sqrt(p(1-p)/n).
+    # Published so consumers can tell signal from sampling noise instead of
+    # reading whole-percent differences that are inside the error bars.
+    p_hat = max(up, down)
+    prob_se = math.sqrt(max(p_hat * (1.0 - p_hat), 0.0) / n)
+
     return {
-        "expected": round(mean, 4),
-        "median": round(p50, 4),
-        "ci_68": [round(p16, 4), round(p84, 4)],
-        "ci_95": [round(p5, 4), round(p95, 4)],
+        "expected": _sigfig(mean),
+        "median": _sigfig(p50),
+        "ci_68": [_sigfig(p16), _sigfig(p84)],
+        # ci_95 used to be [p5, p95] — that is a 90% interval, not 95%.
+        # Verified against 20k ground-truth sims: actual coverage was 90.0%
+        # while the key said 95. Now genuinely 95% (p2.5..p97.5), with the
+        # 90% band published alongside rather than silently relabelled.
+        "ci_90": [_sigfig(p5), _sigfig(p95)],
+        "ci_95": [_sigfig(p2_5), _sigfig(p97_5)],
         "skew": round(skew, 4),
         "tail_risk_up": round(tail_up, 4),
         "tail_risk_down": round(tail_down, 4),
         "expected_move_pct": round(expected_move_pct, 3),
+        # Band actually used, as a percentage — makes the flat bucket auditable
+        # instead of an unexplained residual.
+        "flat_band_pct": round((math.exp(band) - 1.0) * 100, 4),
+        "prob_se": round(prob_se, 4),
+        "n_sims": n,
         "direction_probability": {
             "up": round(up, 3),
             "down": round(down, 3),
@@ -443,15 +526,36 @@ def forecast_pair(pair, candles, ctx, horizons=HORIZONS):
     deviation = (price - ema50) / ema50
     drift_reversion = -deviation * 0.000002  # mean revert gently
 
-    # Total drift
-    total_drift = base_drift + drift_book + drift_whale + drift_reversion
+    # ── Total drift, expressed in units of THIS pair's volatility ─────────
+    # The four terms above are absolute per-minute constants (1e-5 and
+    # friends), which silently made the forecast far more confident about
+    # low-volatility instruments than about anything that actually moves.
+    # Over 4h the same drift is worth 5.9 sigma to a stablecoin but 0.02
+    # sigma to a memecoin:
+    #     USDG  sigma_4h 0.0004  drift*H 0.0024 -> SNR 5.88 -> P(up) 100.0%
+    #     EUR   sigma_4h 0.0030  drift*H 0.0024 -> SNR 0.78 -> P(up)  70.3%
+    #     BTC   sigma_4h 0.0240  drift*H 0.0024 -> SNR 0.10 -> P(up)  43.5%
+    # That is why Sentinel's only two "high conviction" calls were EUR/USD
+    # and a dollar-pegged stablecoin at 100% (2026-07-29 audit). Sizing the
+    # dead band by sigma fixed the measurement; this fixes the signal.
+    #
+    # Treating the raw sum as a per-sigma tilt makes every pair answer the
+    # same question: "how large is this edge relative to my own noise?"
+    # DRIFT_SNR_CAP bounds the tilt so no single term can imply certainty.
+    drift_raw = base_drift + drift_book + drift_whale + drift_reversion
+    drift_snr = drift_raw / DRIFT_REF_VOL          # in reference-sigma units
+    drift_snr = max(-DRIFT_SNR_CAP, min(DRIFT_SNR_CAP, drift_snr))
     adjusted_vol = vol_per_min * vol_multiplier
+    total_drift = drift_snr * adjusted_vol         # now scales with the pair
 
     # Run Monte Carlo for each horizon
-    result = {"current": round(price, 4)}
+    result = {"current": _sigfig(price)}
     for horizon in horizons:
         finals = monte_carlo_paths(price, adjusted_vol, total_drift, horizon, N_SIMULATIONS)
-        dist = compute_distribution(finals, price)
+        # Log-return sigma over this horizon — sizes the flat band so the
+        # direction question is asked in units of each pair's own noise.
+        sigma_h = adjusted_vol * math.sqrt(horizon)
+        dist = compute_distribution(finals, price, sigma_horizon=sigma_h)
         if dist:
             label = f"{horizon // 60}h" if horizon >= 60 else f"{horizon}m"
             result[label] = dist
@@ -466,6 +570,7 @@ def forecast_pair(pair, candles, ctx, horizons=HORIZONS):
 class SentinelEngine:
     def __init__(self):
         self.forecasts = {}
+        self.high_conviction = []
         self.fleet_context = {}
         self.cycle = 0
         self.scan_duration = 0.0
@@ -563,6 +668,13 @@ class SentinelEngine:
         self.scan_duration = time.time() - t0
         self.status = "running"
 
+        # Persist for the snapshot. This used to live only in a local and in
+        # the emitted event, so the dashboard resorted to regex-scraping the
+        # human-readable log line (/(\d+) high conviction/) to render HC COUNT
+        # — a KPI that would silently read 0 if the log wording ever changed.
+        with self._lock:
+            self.high_conviction = list(high_conviction)
+
         # Publish
         if self._event_pub:
             try:
@@ -587,6 +699,7 @@ class SentinelEngine:
     def snapshot(self):
         with self._lock:
             fc = dict(self.forecasts)
+            hc = list(getattr(self, "high_conviction", []))
 
         # Sort by absolute expected move at 4h
         top = sorted(fc.items(),
@@ -599,6 +712,11 @@ class SentinelEngine:
             "status": self.status,
             "cycle": self.cycle,
             "pairs_forecast": len(fc),
+            # Structured fields — read these, don't parse the log lines.
+            "high_conviction": len(hc),
+            "high_conviction_list": hc,
+            "n_simulations": N_SIMULATIONS,
+            "dead_band_sigma": DEAD_BAND_SIGMA,
             # Serve every forecast computed, not just the top 20 by expected
             # move. Consumers (Confluence) look up specific pairs by name — a
             # forecast that was computed but withheld here is invisible to

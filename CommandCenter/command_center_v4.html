@@ -5041,12 +5041,20 @@ function buildSentinelView(def,b){
   var logs=raw.logs||[];
   var lastLogs=logs.slice(-3);
 
-  /* High conviction count from last log */
+  /* High conviction count — read the structured field. This used to regex the
+     human-readable log line (/(\d+) high conviction/), so a wording change
+     would have silently pinned the KPI at 0. Sentinel now publishes the count
+     on its snapshot; the log scrape stays only as a fallback for a bot that
+     hasn't been restarted onto the new build yet. */
   var hcCount=0;
-  for(var _li=logs.length-1;_li>=0;_li--){
-    var lm=logs[_li]||"";
-    var hcM=lm.match(/(\d+) high conviction/);
-    if(hcM){hcCount=parseInt(hcM[1]);break;}
+  if(raw.high_conviction!=null){
+    hcCount=raw.high_conviction;
+  } else {
+    for(var _li=logs.length-1;_li>=0;_li--){
+      var lm=logs[_li]||"";
+      var hcM=lm.match(/(\d+) high conviction/);
+      if(hcM){hcCount=parseInt(hcM[1]);break;}
+    }
   }
 
   /* Build HTML */
@@ -5128,14 +5136,28 @@ function buildSentinelView(def,b){
       var upP2=(dp2.up||0)*100;
       var dnP2=(dp2.down||0)*100;
       var mvP2=hd.expected_move_pct||0;
+      var flatP2=(dp2.flat||0)*100;
       var dominant=upP2>=dnP2?"up":"down";
       var domP=dominant==="up"?upP2:dnP2;
       var domC=domP>=65?(dominant==="up"?c:"#f59e0b"):domP>=55?(dominant==="up"?'rgba(0,191,165,0.7)':'rgba(245,158,11,0.7)'):'var(--text-muted)';
       var arr=dominant==="up"?'↑':'↓';
       var tailUp=hd.tail_risk_up||0; var tailDn=hd.tail_risk_down||0;
       var tail=tailUp>0.1||tailDn>0.1;
-      var out='<td style="text-align:right;padding:3px 4px 7px;border-bottom:1px solid rgba(0,191,165,0.04)">';
-      out+='<span style="color:'+domC+';font-size:0.65rem">'+arr+' '+fmtNum(domP,0)+'%</span>';
+      /* Is the up/down split distinguishable from a coin flip at this sim
+         count? 1.96 s.e. on the difference of the two proportions. Anything
+         inside that is sampling noise, and the matrix used to render it as a
+         confident-looking "↑ 51%". */
+      var _se=(hd.prob_se!=null?hd.prob_se:0)*100;
+      var _noise=_se>0 && Math.abs(upP2-dnP2) < 1.96*_se*Math.SQRT2;
+      var out='<td style="text-align:right;padding:3px 4px 7px;border-bottom:1px solid rgba(0,191,165,0.04)"'
+        +' title="up '+fmtNum(upP2,1)+'% · down '+fmtNum(dnP2,1)+'% · flat '+fmtNum(flatP2,1)+'%'
+        +(hd.flat_band_pct!=null?' (±'+fmtNum(hd.flat_band_pct,2)+'% band)':'')
+        +(_se>0?' · ±'+fmtNum(_se,2)+'pp s.e.':'')+'">';
+      out+='<span style="color:'+(_noise?'var(--text-muted)':domC)+';font-size:0.65rem">'+arr+' '+fmtNum(domP,0)+'%'
+        +(_noise?'<span style="opacity:0.5"> ~</span>':'')+'</span>';
+      /* Flat bucket shown whenever it is material — up+down never summed to
+         100% and the residual was invisible (mean 16.5% at 1h, max 100%). */
+      if(flatP2>=5) out+='<br><span style="color:var(--text-muted);opacity:0.65;font-size:0.6rem">flat '+fmtNum(flatP2,0)+'%</span>';
       out+='<br><span style="color:var(--text-muted);font-size:0.65rem">'+(mvP2>=0?'+':'')+fmtNum(mvP2,2)+'%</span>';
       if(tail) out+='<br><span style="color:#f59e0b;font-size:0.65rem">⚠'+(tailUp>0.1?'+'+fmtNum(tailUp*100,0)+'%':'')+(tailDn>0.1?' -'+fmtNum(tailDn*100,0)+'%':'')+'</span>';
       out+='</td>';
@@ -5258,7 +5280,9 @@ function buildSentinelView(def,b){
 
   /* BOTTOM BAR */
   h+='<div style="flex-shrink:0;padding:5px 10px;background:#000000;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:\'Courier New\',monospace;font-size:10px;color:#475569">';
-  h+='<span>500 sims × 3 horizons</span>';
+  /* Read the real sim count — this was hardcoded "500" and would have gone
+     stale the moment N_SIMULATIONS changed (it did: 500 -> 2000). */
+  h+='<span>'+(raw.n_simulations||500)+' sims × 3 horizons</span>';
   h+='<span style="color:'+c+'">'+hcCount+' high conviction</span>';
   h+='<span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+(lastLogs.length?escHtml(lastLogs[lastLogs.length-1]):'')+'</span>';
   h+='<span style="margin-left:auto">'+ago(b?b.last_seen:0)+'</span>';

@@ -153,6 +153,11 @@ TIMEFRAMES = {
 }
 
 # Signal component weights (must sum to 1.0)
+# Gain converting |macd_hist|/price into the 0.35-wide MACD bonus band.
+# Calibrated from 1120 samples on 1h bars across 8 majors (p90 = 0.352% of
+# price -> full bonus). See score_macd_momentum for why this exists.
+MACD_HIST_GAIN = 100.0
+
 COMPONENT_WEIGHTS = {
     "ema_alignment":   0.20,
     "rsi_momentum":    0.15,
@@ -396,13 +401,33 @@ def sf(v) -> float:
 
 
 def volume_momentum(candles: List[Candle], period: int = 20) -> float:
-    """Volume momentum -- ratio of recent vol to average vol."""
-    if len(candles) < period + 1:
+    """Volume momentum -- ratio of the last COMPLETED bar's volume to average.
+
+    Compares candles[-2], not candles[-1]. The final candle from the OHLC feed
+    is the bar currently forming, so it holds only the volume accumulated so
+    far this period. Measuring it against completed bars scaled the ratio down
+    by however much of the bar had elapsed, regardless of actual market
+    activity:
+
+        bar 27.6 min into a 60-min period
+        forming bar volume      677     -> ratio 0.296 -> score 0.20 (floor)
+        last completed bar     1502     -> ratio 0.616 -> score 0.35
+
+    The result was that score_volume_confirmation returned exactly 0.20 -- the
+    lowest bucket -- on every pair, every scan. That cost ~4.5pp of confluence
+    on every candidate against a 0.70 entry gate and is a large part of why
+    total_trades was 0. min_confluence had already been lowered 0.80 -> 0.70
+    on 2026-04-08 blaming "too conservative", when the real fault was here.
+    (2026-07-29 audit.)
+    """
+    if len(candles) < period + 2:
         return 1.0
-    avg_vol = sum(c.volume for c in candles[-period - 1:-1]) / period
+    # Last completed bar, and the `period` completed bars before it.
+    recent = candles[-2].volume
+    avg_vol = sum(c.volume for c in candles[-period - 2:-2]) / period
     if avg_vol == 0:
         return 1.0
-    return candles[-1].volume / avg_vol
+    return recent / avg_vol
 
 
 def compute_volatility(closes: List[float], period: int = 20) -> float:
@@ -511,17 +536,28 @@ def score_macd_momentum(closes: List[float], price: float) -> float:
     if price == 0:
         return 0.5
 
-    hist_pct = hist / price * 100
+    # Fraction of price, not percent. This previously computed
+    # `hist / price * 100` (a PERCENT) and then applied a gain of 15, which
+    # meant the 0.35 bonus band was fully consumed by a histogram worth just
+    # 0.0233% of price -- about $15 on BTC at $64k. MACD therefore read 0.950
+    # on 5 of 6 live pairs: a binary flag, not a graded score, wasting 20% of
+    # the confluence weight (2026-07-29 audit).
+    #
+    # MACD_HIST_GAIN is calibrated from 1120 samples of |hist|/price on 1h
+    # bars across 8 majors: p50 0.122%, p90 0.352%, p99 0.605%. A gain of 100
+    # maps the p90 move to the full 0.35 bonus and leaves p50 at ~0.12, so the
+    # score spans a useful range instead of pinning.
+    hist_frac = hist / price
 
     # Positive histogram = bullish momentum
     if hist > 0:
         if macd_line > signal_line:
-            score = 0.6 + min(hist_pct * 15, 0.35)
+            score = 0.6 + min(hist_frac * MACD_HIST_GAIN, 0.35)
         else:
             score = 0.55
     else:
         if macd_line < signal_line:
-            score = 0.4 - min(abs(hist_pct) * 15, 0.35)
+            score = 0.4 - min(abs(hist_frac) * MACD_HIST_GAIN, 0.35)
         else:
             score = 0.45
 
@@ -578,28 +614,44 @@ def score_volume_confirmation(candles: List[Candle]) -> float:
         return 0.20
 
 
+def _lerp(x: float, x0: float, x1: float, y0: float, y1: float) -> float:
+    """Linear interpolation of x from [x0,x1] onto [y0,y1], clamped."""
+    if x1 == x0:
+        return y0
+    t = (x - x0) / (x1 - x0)
+    t = max(0.0, min(1.0, t))
+    return y0 + (y1 - y0) * t
+
+
 def score_regime_alignment(regime: Regime, other_scores: Dict[str, float]) -> float:
-    """Score how well the other signals align with the detected regime."""
+    """Score how well the other signals align with the detected regime.
+
+    Continuous, not a step function. The previous version used hard cutoffs
+    (avg > 0.6 -> 1.0, avg > 0.5 -> 0.7, else 0.3), which put cliffs right
+    where decisions are made: avg_bullish moving 0.500 -> 0.501 jumped final
+    confluence by 0.061, and 0.600 -> 0.601 by 0.046. A 0.001 change in raw
+    evidence could carry a pair straight across the 0.70 entry gate, so two
+    setups with effectively identical signals landed on opposite sides of the
+    trade decision (2026-07-29 audit).
+
+    Note this component is deliberately NOT independent evidence -- it is a
+    function of the other five, i.e. a regime-conditioned re-weighting of the
+    same information. That is defensible as a consistency check, but it means
+    its 0.15 weight amplifies the other 0.85 rather than adding anything new.
+    Keep that in mind before increasing its weight.
+    """
     avg_bullish = sum(other_scores.values()) / max(len(other_scores), 1)
 
     if regime == Regime.TREND_UP:
-        # Reward bullish signals in uptrend
-        if avg_bullish > 0.6:
-            return 1.0
-        elif avg_bullish > 0.5:
-            return 0.7
-        else:
-            return 0.3
+        # Bullish evidence in an uptrend is corroborating; bearish contradicts.
+        # 0.3 at avg=0.4 rising smoothly to 1.0 at avg=0.7.
+        return _lerp(avg_bullish, 0.40, 0.70, 0.30, 1.00)
     elif regime == Regime.TREND_DOWN:
-        # Penalize bullish signals in downtrend
-        if avg_bullish < 0.4:
-            return 0.8
-        elif avg_bullish < 0.5:
-            return 0.5
-        else:
-            return 0.2
+        # Mirror image: bearish evidence (low avg) corroborates a downtrend.
+        return _lerp(avg_bullish, 0.30, 0.60, 0.80, 0.20)
     elif regime == Regime.VOLATILE:
-        # In volatile, moderate everything
+        # In volatile conditions, conviction either way is worth something;
+        # indecision is not. Already continuous.
         return 0.4 + abs(avg_bullish - 0.5) * 0.4
     else:
         # RANGE -- neutral

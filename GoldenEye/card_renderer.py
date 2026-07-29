@@ -217,11 +217,17 @@ class OracleCardRenderer:
     # Header block
     # ------------------------------------------------------------------
 
-    def _draw_header(self, draw, img, card_type, subtitle, ts, date):
+    def _draw_header(self, draw, img, card_type, subtitle, ts, date,
+                     type_color=None):
+        """type_color tints the title line and the accent bar. Used by the
+        position cards so the pair reads green for LONG / red for SHORT at a
+        glance; defaults to the standard palette when omitted."""
         y = self.MARGIN
         x = self.MARGIN
-        bar_h = 100
-        draw.rectangle([x, y, x + 4, y + bar_h], fill=self.ACCENT)
+        # Tall enough to span title + subtitle at their real line heights
+        # (was 100, which stopped short once the subtitle moved down).
+        bar_h = self.HEADER_SIZE + self.SUBHEADER_SIZE + 12
+        draw.rectangle([x, y, x + 4, y + bar_h], fill=type_color or self.ACCENT)
 
         fnt_type = _font("sans-bold", self.HEADER_SIZE)
         fnt_ts = _font("mono", self.SUBHEADER_SIZE)
@@ -229,12 +235,17 @@ class OracleCardRenderer:
         fnt_date = _font("mono", self.SECTION_SIZE)
 
         # Card type + timestamp on same line
-        draw.text((x + 24, y), card_type, fill=self.TEXT_PRIMARY, font=fnt_type)
+        draw.text((x + 24, y), card_type,
+                  fill=type_color or self.TEXT_PRIMARY, font=fnt_type)
         draw.text((self.RENDER_W - self.MARGIN, y + 6), ts,
                   fill=self.TEXT_SECONDARY, font=fnt_ts, anchor="ra")
 
-        # Subtitle + date on second line
-        draw.text((x + 24, y + 60), subtitle,
+        # Subtitle + date on second line. Offset must clear the 72px title
+        # glyphs -- at the old +60 the descenders of the title overlapped the
+        # subtitle's caps, which was visible once the pair moved into the
+        # title slot and the line got longer.
+        sub_y = y + self.HEADER_SIZE + 12
+        draw.text((x + 24, sub_y), subtitle,
                   fill=self.TEXT_SECONDARY, font=fnt_sub)
         draw.text((self.RENDER_W - self.MARGIN, y + 60 + 6), date,
                   fill=self.TEXT_SECONDARY, font=fnt_date, anchor="ra")
@@ -882,18 +893,29 @@ class OracleCardRenderer:
 
         img, draw = self._new_canvas()
 
-        y = self._draw_header(draw, img, "POSITION OPENED",
-                              f"Stalker \u00b7 {data.get('pair', '?')}",
-                              data.get("timestamp", ""),
-                              data.get("date", ""))
-
-        y, draw = self._draw_hero(draw, img, conv_pct, "CONVICTION", y)
-
-        # Data block
+        # The PAIR leads the card. It used to appear only in the small grey
+        # subtitle ("Stalker \u00b7 AKE/USD"), which is the least legible text on the
+        # card -- a subscriber could read "POSITION OPENED / 24% CONVICTION /
+        # LONG" and still not know what they were being told to trade. The pair
+        # is the single most important fact here, so it takes the title slot and
+        # the card type moves to the subtitle.
+        pair = data.get("pair", "?")
         direction = data.get("direction", "LONG")
         d_glyph = "\u25b2" if direction == "LONG" else "\u25bc"
         d_color = self.TEXT_POSITIVE if direction == "LONG" else self.TEXT_NEGATIVE
 
+        y = self._draw_header(draw, img, f"{pair} {direction}",
+                              "POSITION OPENED \u00b7 Stalker",
+                              data.get("timestamp", ""),
+                              data.get("date", ""),
+                              type_color=d_color)
+
+        y, draw = self._draw_hero(draw, img, conv_pct, "CONVICTION", y)
+
+        # Pair repeated in the data block on purpose: the block is what gets
+        # screenshotted and cropped, and it must stand alone without the header.
+        y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
+                                   "Pair", pair, self.TEXT_PRIMARY)
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
                                    "Direction", f"{d_glyph} {direction}",
                                    d_color)
@@ -983,10 +1005,15 @@ class OracleCardRenderer:
 
         img, draw = self._new_canvas()
 
-        y = self._draw_header(draw, img, card_label,
-                              f"Vanguard \u00b7 {data.get('pair', '?')}",
+        # Pair leads here too, matching the OPENED card \u2014 a subscriber scrolling
+        # a feed of cards should be able to tell which trade closed without
+        # reading the small print. WIN/LOSS moves to the subtitle.
+        _cl_pair = data.get("pair", "?")
+        y = self._draw_header(draw, img, _cl_pair,
+                              f"{card_label} \u00b7 Vanguard",
                               data.get("timestamp", ""),
-                              data.get("date", ""))
+                              data.get("date", ""),
+                              type_color=hero_color)
 
         y, draw = self._draw_hero(draw, img, hero_val, "R-MULTIPLE", y, hero_color)
 
@@ -1002,6 +1029,10 @@ class OracleCardRenderer:
         d_glyph = "\u25b2" if direction == "LONG" else "\u25bc"
         d_color = self.TEXT_POSITIVE if direction == "LONG" else self.TEXT_NEGATIVE
 
+        # Pair row, same as the OPENED card, so a cropped data block still
+        # names the instrument.
+        y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
+                                   "Pair", _cl_pair, self.TEXT_PRIMARY)
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
                                    "Direction", f"{d_glyph} {direction}",
                                    d_color)

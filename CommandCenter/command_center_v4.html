@@ -6282,7 +6282,13 @@ function buildTrinityView(def,b){
   var alerts=raw.alerts||[];
   var cfg=raw.config||{};
   var weights=cfg.weights||{};
-  var wr=raw.win_rate||0;
+  /* win_rate is null until a signal actually resolves. Rendering it as 0.0%
+     put a confident red "0.0%" next to "W/L 0/0" — an unmeasured quantity
+     displayed as a measured zero (2026-07-29 audit). Trinity's own CLI
+     already printed "N/A" here; only the API and this panel disagreed. */
+  var _trWrRaw=raw.win_rate;
+  var wrKnown=(_trWrRaw!=null);
+  var wr=wrKnown?_trWrRaw:0;
   var wsStatus=raw.ws_status||"--";
   var streaming=raw.symbols_streaming||0;
   var total=raw.symbols_total||0;
@@ -6317,7 +6323,9 @@ function buildTrinityView(def,b){
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value" style="color:'+c+'">'+streaming+'/'+total+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPENS</div><div class="dv2-kpi-value good">'+opens+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">W / L</div><div class="dv2-kpi-value"><span style="color:#16a085">'+wins+'</span>/<span style="color:#ef4444">'+losses+'</span></div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(wr>=50?'good':wr>=30?'warn':'')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(!wrKnown?'':(wr>=50?'good':wr>=30?'warn':''))+'"'
+    +(!wrKnown?' title="no signals resolved yet — nothing to measure"':'')+'>'
+    +(wrKnown?fmtNum(wr,1)+'%':'--')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ERRORS</div><div class="dv2-kpi-value '+(wsRecon>0?'warn':'good')+'">'+wsRecon+'</div></div>';
   h+='</div>';
 
@@ -6492,7 +6500,12 @@ function buildTrinityView(def,b){
     h+='<td style="padding:2px 3px;text-align:right;color:var(--text-secondary)">'+fmtNum(ts2.confluence||0,2)+'</td>';
     h+='<td style="padding:2px 3px;text-align:right;color:'+biasC3+'">'+escHtml(ts2.bias||"--")+'</td>';
     h+='<td style="padding:2px 3px;text-align:right;font-style:italic;color:var(--text-secondary)">'+escHtml(ts2.regime||"--")+'</td>';
-    h+='<td style="padding:2px 3px;text-align:right;color:'+(ts2.mtf_alignment>=0.8?'#34d399':'var(--text-muted)')+'">'+fmtNum(ts2.mtf_alignment||0,2)+'</td>';
+    /* A "⚠" marks timeframes actively disagreeing. The old abs(sum) metric
+       folded conflict into the same number as indecision, so a 2-bull/1-bear
+       split was indistinguishable from a flat read. */
+    h+='<td style="padding:2px 3px;text-align:right;color:'+(ts2.mtf_conflict?'#f59e0b':(ts2.mtf_alignment>=0.8?'#34d399':'var(--text-muted)'))+'"'
+      +(ts2.mtf_conflict?' title="timeframes disagree — some bullish, some bearish"':'')+'>'
+      +fmtNum(ts2.mtf_alignment||0,2)+(ts2.mtf_conflict?' ⚠':'')+'</td>';
     h+='<td style="padding:2px 3px;text-align:right;color:var(--text)">'+fmtPrice(ts2.price||0)+'</td>';
     h+='<td style="padding:2px 3px;text-align:right;color:#f87171">'+fmtPrice(ts2.stop_loss||0)+'</td>';
     h+='<td style="padding:2px 3px;text-align:right;color:#34d399">'+(tpT.length?fmtPrice(tpT[0]):"--")+'</td>';

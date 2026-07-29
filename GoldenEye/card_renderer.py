@@ -18,6 +18,14 @@ import os
 # Number of entry signals the system evaluates — single source of truth for
 # every footer/prose mention on the cards.
 SIGNAL_COUNT = 27
+# Number of entry gates in the funnel — must match _FUNNEL_GATE_ORDER in
+# goldeneye.py (16 as of 2026-07-28; was "7 gates" in older prose).
+GATE_COUNT = 16
+
+# Public track-record URL printed in every card footer. Set GOLDENEYE_VERIFY_URL
+# to your public host (e.g. "goldeneye.example.com/verify") once the page is
+# reachable from outside the LAN; unset falls back to the signals/gates line.
+VERIFY_URL = os.getenv("GOLDENEYE_VERIFY_URL", "").strip()
 
 # ---------------------------------------------------------------------------
 # Font resolution — Windows system fonts
@@ -427,8 +435,14 @@ class OracleCardRenderer:
     # Record bar (win/loss segment bar)
     # ------------------------------------------------------------------
 
-    def _draw_record_bar(self, draw, wins, losses, win_rate, net_total, y):
-        y = self._draw_section_header(draw, "SESSION RECORD", y)
+    def _draw_record_bar(self, draw, wins, losses, win_rate, net_total, y,
+                         header="TRACK RECORD", net_label="Net all time"):
+        # header/net_label are caller-supplied because the same bar serves two
+        # truths: the close card passes LIFETIME wins/losses ("TRACK RECORD" /
+        # "Net all time"), the EOD card passes TODAY's ("TODAY'S RECORD" /
+        # "Net today"). The old hardcoded "SESSION RECORD" label was wrong for
+        # both.
+        y = self._draw_section_header(draw, header, y)
 
         total = wins + losses
         if total == 0:
@@ -472,11 +486,11 @@ class OracleCardRenderer:
                   fill=self.TEXT_NEGATIVE, font=fnt_sm, anchor="ra")
         y += 52
 
-        # Net all time centered below
+        # Net line centered below (label supplied by caller)
         fnt_net = _font("mono-bold", self.DATA_SIZE)
-        sign = "+" if net_total >= 0 else ""
+        sign = "+" if net_total >= 0 else "-"
         nc = self.TEXT_POSITIVE if net_total >= 0 else self.TEXT_NEGATIVE
-        draw.text((cx, y), f"Net all time:  {sign}${abs(net_total):.2f}",
+        draw.text((cx, y), f"{net_label}:  {sign}${abs(net_total):.2f}",
                   fill=nc, font=fnt_net, anchor="mm")
         y += 72
 
@@ -527,7 +541,9 @@ class OracleCardRenderer:
 
     def _draw_sparkline(self, draw, values, x, y, w, h):
         if not values or len(values) < 2:
-            return y + h
+            # Must match the normal (y, draw) return shape — the caller
+            # unpacks a tuple, so a bare int here would crash the EOD card.
+            return y + h, draw
 
         min_v = min(values)
         max_v = max(values)
@@ -717,10 +733,14 @@ class OracleCardRenderer:
     # Footer — every card
     # ------------------------------------------------------------------
 
-    def _draw_footer(self, draw, h, channel="Fleet Intelligence",
+    def _draw_footer(self, draw, h, channel=None,
                      stats=None):
+        # channel defaults to None (nothing prepended): the old default
+        # "Fleet Intelligence" was a closed chat's name, and the extra ~21
+        # chars made the right-side text collide with the INTELLIGENCE
+        # wordmark on 1200px output.
         if stats is None:
-            stats = f"{SIGNAL_COUNT} signals \u00b7 live \u00b7 Kraken"
+            stats = VERIFY_URL or f"{SIGNAL_COUNT} signals \u00b7 {GATE_COUNT} gates \u00b7 Kraken"
         y = h - self.MARGIN - 40
         draw.line(
             [(self.MARGIN, y - 32), (self.RENDER_W - self.MARGIN, y - 32)],
@@ -754,7 +774,7 @@ class OracleCardRenderer:
                   "INTELLIGENCE", fill=self.TEXT_SECONDARY, font=fnt_dim)
 
         # Right side
-        right_text = f"{channel}  \u00b7  {stats}"
+        right_text = f"{channel}  \u00b7  {stats}" if channel else stats
         draw.text((self.RENDER_W - self.MARGIN, y + 12), right_text,
                   fill=self.TEXT_SECONDARY, font=fnt_right, anchor="ra")
 
@@ -767,18 +787,22 @@ class OracleCardRenderer:
         fnt_data = _font("mono", 48)
         fnt_why = _font("sans", 44)
 
-        for tag, trade, tc in [("BEST TRADE", best, self.TEXT_POSITIVE),
-                               ("WORST TRADE", worst, self.TEXT_NEGATIVE)]:
+        for tag, trade in [("BEST TRADE", best), ("WORST TRADE", worst)]:
             if trade is None:
                 continue
+            # Label reflects rank; COLOR reflects the actual sign. On an
+            # all-red day the "best" trade is still a loss \u2014 painting it green
+            # would misrepresent the day at a glance.
+            net_v = trade.get('net', 0)
+            tc = self.TEXT_POSITIVE if net_v >= 0 else self.TEXT_NEGATIVE
             draw.text((self.MARGIN, y), tag, fill=self.ACCENT_DIM, font=fnt_lbl)
             y += 44
 
             d_glyph = "\u25b2" if trade.get("direction", "LONG") == "LONG" else "\u25bc"
             info = (f"Pair ......... {trade.get('pair', '?')}  "
                     f"{d_glyph} {trade.get('direction', '?')}    "
-                    f"Net: {'+' if trade.get('net',0)>=0 else ''}"
-                    f"${abs(trade.get('net',0)):.2f}")
+                    f"Net: {'+' if net_v >= 0 else '-'}"
+                    f"${abs(net_v):.2f}")
             draw.text((self.MARGIN, y), info, fill=tc, font=fnt_data)
             y += 40
 
@@ -920,7 +944,9 @@ class OracleCardRenderer:
             gates_passed = data.get("gates_passed", 7)
             gates = [{"name": g, "passed": i < gates_passed}
                      for i, g in enumerate(gate_names)]
-        y = self._draw_gate_grid(draw, gates[:12], y)
+        # 18 = 6 rows x 3 cols — fits the full 16-gate chain (the old [:12] cap
+        # silently dropped 4 gates and rendered a false "12 / 12" header)
+        y = self._draw_gate_grid(draw, gates[:18], y)
 
         # Voice
         y = self._draw_voice_line(draw, voice, y)
@@ -1012,8 +1038,9 @@ class OracleCardRenderer:
 
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
                                    "Duration", data.get("duration", "?"))
+        # "Reason", not "Exit" — the exit PRICE row above already uses "Exit"
         y = self._draw_dot_leaders(draw, self.MARGIN, y, self.INNER_W,
-                                   "Exit", data.get("exit_reason", "?"))
+                                   "Reason", data.get("exit_reason", "?"))
 
         y += self.SECTION_GAP // 2
 
@@ -1039,8 +1066,9 @@ class OracleCardRenderer:
 
         img, draw = self._new_canvas()
 
-        card_type = ("\u25c6 WHALE ALERT" if magnitude == "EXTREME"
-                     else "WHALE ALERT")
+        # No glyph prefix \u2014 Segoe UI Bold lacks U+25C6, it rendered as a tofu
+        # box. EXTREME is already loud via the hero + magnitude scale.
+        card_type = "WHALE ALERT"
         y = self._draw_header(draw, img, card_type,
                               "Leviathan \u00b7 Detection",
                               data.get("timestamp", ""),
@@ -1152,9 +1180,11 @@ class OracleCardRenderer:
 
         y += self.SECTION_GAP // 2
 
-        # Record bar
+        # Record bar — today's stats, labeled as such (net_pnl here is TODAY's
+        # net, not all-time)
         y = self._draw_record_bar(draw, wins, losses, win_rate,
-                                  net_pnl, y)
+                                  net_pnl, y,
+                                  header="TODAY'S RECORD", net_label="Net today")
 
         y += self.SECTION_GAP // 2
 
@@ -1173,7 +1203,7 @@ class OracleCardRenderer:
             "THE ENGINE RAN ALL DAY",
             "",
             f"{SIGNAL_COUNT} signals evaluated on every setup.",
-            "7 gates checked on every entry.",
+            f"{GATE_COUNT} gates checked on every entry.",
             "Nothing qualified.",
             "",
             "Cash held.",
@@ -1332,6 +1362,12 @@ def send_card_telegram(token, chat_id, png_bytes, copy_values,
                 log.warning("Telegram HTTP error %d", e.code)
                 return False
             except Exception as e:
+                # Timeouts / DNS blips are transient — one retry before giving
+                # up (runs on the card worker thread, never the trade path).
+                if attempt == 0:
+                    log.warning("Telegram send error: %s — retrying once", e)
+                    time.sleep(2)
+                    continue
                 log.warning("Telegram send error: %s", e)
                 return False
         return False
@@ -1378,8 +1414,8 @@ def send_card_telegram(token, chat_id, png_bytes, copy_values,
         except urllib.error.HTTPError as e:
             if e.code == 429 and attempt == 0:
                 try:
-                    body = _json.loads(e.read().decode("utf-8"))
-                    wait = float(body.get("parameters", {}).get("retry_after", 5))
+                    err_body = _json.loads(e.read().decode("utf-8"))
+                    wait = float(err_body.get("parameters", {}).get("retry_after", 5))
                 except Exception:
                     wait = 5.0
                 wait = max(1.0, min(wait, 60.0))  # honor retry_after, capped at 60s
@@ -1389,6 +1425,11 @@ def send_card_telegram(token, chat_id, png_bytes, copy_values,
             log.warning("sendPhoto failed: HTTP %d", e.code)
             break
         except Exception as e:
+            # Transient network failure — one retry (worker thread only).
+            if attempt == 0:
+                log.warning("sendPhoto error: %s — retrying once", e)
+                time.sleep(2)
+                continue
             log.warning("sendPhoto failed: %s", e)
             break
 

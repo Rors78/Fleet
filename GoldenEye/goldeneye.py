@@ -23,10 +23,14 @@ def _is_paper():
 def _PAPER():
     return _is_paper()
 _PAPER_SLIP = Decimal('0.001')
-_PAPER_START_BAL = Decimal('10000')
-_PAPER_BALANCE = Decimal('10000')
+_PAPER_START_BAL = Decimal('500')
+_PAPER_BALANCE = Decimal('500')
 _PAPER_BAL_LOCK = Lock()
-_TRADE_AMT = Decimal('500')         # paper mode default
+_TRADE_AMT = Decimal('25')          # paper mode default — 5% of _PAPER_START_BAL,
+                                    # the same ratio the old $500-on-$10,000 default used.
+                                    # Keep it a fraction of the balance: it is the Kelly
+                                    # floor (~line 5199), so a value near the full balance
+                                    # would floor every trade at max size.
 _LIVE_BALANCE = Decimal('0')        # fetched from Kraken on startup + periodic refresh
 _OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'output')  # anchored to script location
 _BOT_DIR = os.path.dirname(os.path.abspath(__file__))  # root directory for log files
@@ -702,7 +706,7 @@ def _sync_live_balance(ex, force=False):
 
 def _get_trade_amt():
     """Return the base trade amount for the current mode.
-    Paper: $500 flat.  Live: 3% of Kraken balance (min $5, to respect Kraken order minimums)."""
+    Paper: $25 flat.  Live: 3% of Kraken balance (min $5, to respect Kraken order minimums)."""
     if _PAPER():
         return _TRADE_AMT
     with _LIVE_BAL_LOCK:
@@ -3901,7 +3905,7 @@ def _format_duration(seconds):
 _VOICE_OPEN = [
     "Whatever it takes.",
     "Built honest, runs honest.",
-    "27 signals. 7 gates. No shortcuts.",
+    "27 signals. 16 gates. No shortcuts.",
 ]
 _VOICE_WIN = [
     "The signals aligned. The brain learns. We move forward.",
@@ -3914,8 +3918,11 @@ _VOICE_LOSS = [
     "Loss absorbed. Brain recalibrates. We go again.",
 ]
 _VOICE_TP1 = [
-    "First target secured. Letting the rest ride.",
-    "TP1 hit. Risk is off the table now.",
+    # These fire on the CLOSE card of a trade that tagged TP1 — the position
+    # is already flat, so the lines must read as past tense (the old
+    # "Letting the rest ride." claimed an open position on a closed trade).
+    "First target secured. Profit banked before the turn.",
+    "TP1 tagged. Locked profit stayed locked.",
 ]
 
 def _pick_voice(pool, seed=None):
@@ -3988,6 +3995,12 @@ def _card_worker_loop():
                 _send_trade_card_open_now(**kwargs)
             elif kind == 'close':
                 _send_trade_card_close_now(**kwargs)
+            elif kind == 'whale':
+                _send_whale_alert_now(**kwargs)
+            elif kind == 'eod':
+                _send_eod_card_now(**kwargs)
+            elif kind == 'ping':
+                _send_ping_now(**kwargs)
             else:
                 logging.warning(f"Card worker: unknown job kind {kind!r}")
         except Exception as e:
@@ -4009,6 +4022,15 @@ def _send_trade_card_open(sym, direction, entry, stop, tp1, tp2, tp3,
                           size, confidence, regime, signals, factors=None,
                           gates_passed=None, gates_failed=None, sig_weights=None):
     """Enqueue a POSITION OPENED card — render + send happen on the card worker."""
+    if not _CARDS_ENABLED:
+        # Renderer unavailable — subscribers must still hear about entries.
+        # Mirrors the plain-text send_alert fallback the SL/TP close paths
+        # already have; without this, a failed card_renderer import silently
+        # killed all OPEN notifications.
+        send_alert(f"OPEN — {sym} {str(direction).upper()} @ {float(entry):,.6f} | "
+                   f"SL {float(stop):,.6f} | TP1 {float(tp1):,.6f} "
+                   f"TP2 {float(tp2):,.6f} TP3 {float(tp3):,.6f}\n— {_BRAND}")
+        return
     try:
         _enqueue_card('open', {
             'sym': sym, 'direction': direction,
@@ -4041,7 +4063,7 @@ def _send_trade_card_open_now(sym, direction, entry, stop, tp1, tp2, tp3,
 
         sig_weights = sig_weights or {}
         sig_bars = []
-        for s in signals[:4]:
+        for s in signals[:6]:  # renderer draws up to 6 bars
             name = _SIG_DESC.get(s, s.upper())
             try:
                 strength = float(sig_weights.get(s, 0.75))
@@ -4086,6 +4108,274 @@ def _send_trade_card_open_now(sym, direction, entry, stop, tp1, tp2, tp3,
                 logging.error(f"Telegram OPEN card FAILED: group={sub_id} {sym} {direction}: {e}")
     except Exception as e:
         logging.warning(f"Card send (open) failed: {e}")
+
+
+# --- In-flight position pings -------------------------------------------------
+# Between the OPEN card and the CLOSE card a subscriber trading alongside us is
+# flying blind: targets get tagged, stops ratchet, and nothing is said. These are
+# lightweight TEXT messages (not PNG cards) so they arrive instantly and read
+# well on a phone lock screen.
+#
+# Text, not cards, is deliberate: a card takes ~1-2s to render and is visually
+# heavy. A TP hit is time-sensitive — the subscriber needs it NOW, and needs to
+# be able to read it without opening an image.
+_PING_MAX_PER_TRADE = 8   # hard cap per position — anti-spam backstop
+_ping_counts = {}         # {(sym, opened_at): count}
+_ping_lock = threading.Lock()
+
+
+def _tg_send_text(text, signal_type='exit'):
+    """Send a plain-text Telegram message to every subscribed channel.
+
+    Uses sendMessage directly (no PNG) — called from the card worker thread.
+    Markdown, so `code spans` stay tap-to-copy on mobile.
+    """
+    import urllib.request
+    import urllib.error
+    sent = 0
+    for sub_id, token, chat_id in _iter_telegram_targets(signal_type):
+        try:
+            payload = json.dumps({
+                'chat_id': chat_id,
+                'text': text,
+                'parse_mode': 'Markdown',
+                'disable_web_page_preview': True,
+            }).encode('utf-8')
+            req = urllib.request.Request(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                data=payload,
+                headers={'Content-Type': 'application/json'},
+                method='POST')
+            for attempt in range(2):
+                try:
+                    with urllib.request.urlopen(req, timeout=10) as resp:
+                        if resp.status == 200:
+                            sent += 1
+                    break
+                except urllib.error.HTTPError as e:
+                    if e.code == 429 and attempt == 0:
+                        try:
+                            _b = json.loads(e.read().decode('utf-8'))
+                            _w = float(_b.get('parameters', {}).get('retry_after', 5))
+                        except Exception:
+                            _w = 5.0
+                        time.sleep(max(1.0, min(_w, 60.0)))
+                        continue
+                    logging.warning(f"Ping HTTP {e.code} to {sub_id}")
+                    break
+                except Exception as e:
+                    if attempt == 0:
+                        time.sleep(2)
+                        continue
+                    logging.warning(f"Ping send failed to {sub_id}: {e}")
+                    break
+        except Exception as e:
+            logging.warning(f"Ping build failed for {sub_id}: {e}")
+    return sent
+
+
+def _enqueue_ping(sym, opened_at, text):
+    """Queue a position ping. Never blocks the trade path; capped per trade."""
+    if not _CARDS_ENABLED:
+        return
+    key = (sym, float(opened_at or 0))
+    with _ping_lock:
+        n = _ping_counts.get(key, 0)
+        if n >= _PING_MAX_PER_TRADE:
+            return
+        _ping_counts[key] = n + 1
+        # Bound the dict — a long-running bot must not accumulate keys forever
+        if len(_ping_counts) > 500:
+            for _k in sorted(_ping_counts, key=lambda k: k[1])[:250]:
+                _ping_counts.pop(_k, None)
+    _enqueue_card('ping', {'text': text}, sym)
+
+
+def _send_ping_now(text):
+    """Deliver a position ping. Card-worker thread only."""
+    try:
+        n = _tg_send_text(text, signal_type='exit')
+        if n:
+            _log_telegram_message("Position update", text.replace('*', '').replace('`', ''))
+    except Exception as e:
+        logging.warning(f"Ping send failed: {e}")
+
+
+def _ping_tp_hit(sym, direction, lvl, price, entry, tp_hit_total, opened_at):
+    """TP level tagged — the subscriber's cue to take partial profit."""
+    try:
+        entry_f, price_f = float(entry), float(price)
+        pct = ((price_f - entry_f) / entry_f * 100.0) if entry_f else 0.0
+        if str(direction).lower() != 'long':
+            pct = -pct
+        remaining = {1: "Trailing the rest — stop stays at plan.",
+                     2: "Trailing stop now active behind price.",
+                     3: "Final target. Position closing."}.get(lvl, "")
+        _enqueue_ping(sym, opened_at,
+                      f"🎯 *TP{lvl} HIT* — {sym} {str(direction).upper()}\n"
+                      f"Price `{_fp(price_f)}`  ({pct:+.2f}% from entry)\n"
+                      f"{remaining}")
+    except Exception as e:
+        logging.debug(f"{sym} TP ping build failed: {e}")
+
+
+def _ping_stop_moved(sym, direction, new_sl, entry, reason, opened_at):
+    """Stop ratcheted — risk materially changed, so subscribers must know."""
+    try:
+        entry_f, sl_f = float(entry), float(new_sl)
+        locked = ((sl_f - entry_f) / entry_f * 100.0) if entry_f else 0.0
+        if str(direction).lower() != 'long':
+            locked = -locked
+        state = (f"Now locking in `{locked:+.2f}%`" if locked > 0
+                 else f"Risk reduced to `{locked:+.2f}%`")
+        _enqueue_ping(sym, opened_at,
+                      f"🛡️ *STOP MOVED* — {sym} {str(direction).upper()}\n"
+                      f"New stop `{_fp(sl_f)}`  ({reason})\n{state}")
+    except Exception as e:
+        logging.debug(f"{sym} stop ping build failed: {e}")
+
+
+def _ping_targets_raised(sym, direction, tp2, tp3, opened_at):
+    """Dynamic TP ratchet moved published targets — say so, don't move silently."""
+    try:
+        _enqueue_ping(sym, opened_at,
+                      f"📈 *TARGETS RAISED* — {sym} {str(direction).upper()}\n"
+                      f"Volatility expanded, so upper targets moved out:\n"
+                      f"TP2 `{_fp(float(tp2))}`   TP3 `{_fp(float(tp3))}`\n"
+                      f"TP1 and stop unchanged.")
+    except Exception as e:
+        logging.debug(f"{sym} target ping build failed: {e}")
+
+
+# --- Whale alert card ---------------------------------------------------------
+# Fires when a symbol's whale score crosses into HIGH/EXTREME territory. The
+# score is already computed once per stream cycle per symbol (see `_ws` in
+# stream()), so this costs nothing extra — it only watches the value.
+_WHALE_ALERT_MIN = 70.0      # HIGH threshold — below this, no card
+_WHALE_ALERT_EXTREME = 85.0  # EXTREME banner threshold
+_WHALE_ALERT_COOLDOWN = 3600 # 1h per symbol — whale scores move slowly (2min cache)
+_whale_alert_last = {}       # {sym: (ts, score)} — last alert sent per symbol
+_whale_alert_lock = threading.Lock()
+
+_VOICE_WHALE = [
+    "Size moved. The tape does not lie.",
+    "Large orders hitting the book. Worth watching.",
+    "Volume signature says someone big is positioning.",
+]
+
+
+def _maybe_send_whale_alert(sym, whale_score, regime, price=None, volume_usd=None):
+    """Send a WHALE ALERT card if `whale_score` crossed the alert threshold.
+
+    Called from the stream loop right after the score is computed. Cheap and
+    non-blocking: rejects below threshold / inside cooldown before touching the
+    card queue, and the queue put itself never blocks the trade path.
+
+    Rising-edge only — re-alerts on the same symbol require either the cooldown
+    to lapse or a materially higher score (+10), so a symbol parked at 72 does
+    not spam the channel every cycle.
+    """
+    if not _CARDS_ENABLED or whale_score is None:
+        return
+    try:
+        ws = float(whale_score)
+    except (TypeError, ValueError):
+        return
+    if ws < _WHALE_ALERT_MIN:
+        return
+    now = time.time()
+    with _whale_alert_lock:
+        last_ts, last_score = _whale_alert_last.get(sym, (0.0, 0.0))
+        fresh = (now - last_ts) > _WHALE_ALERT_COOLDOWN
+        escalated = ws >= last_score + 10.0
+        if not (fresh or escalated):
+            return
+        _whale_alert_last[sym] = (now, ws)
+    _enqueue_card('whale', {
+        'sym': sym,
+        'whale_score': ws,
+        'regime': regime or 'chop',
+        'price': float(price) if price is not None else None,
+        'volume_usd': float(volume_usd) if volume_usd is not None else None,
+    }, sym)
+
+
+def _send_whale_alert_now(sym, whale_score, regime, price=None, volume_usd=None):
+    """Render + send a WHALE ALERT card. Card-worker thread only."""
+    if not _CARDS_ENABLED:
+        return
+    try:
+        # Whale alerts are market intelligence, not a trade instruction — they
+        # go to subscribers opted into either direction.
+        targets = list(_iter_telegram_targets('long'))
+        if not targets:
+            logging.info(f"No active telegram subscribers for whale alert — {sym} card not sent")
+            return
+
+        ws = float(whale_score)
+        magnitude = "EXTREME" if ws >= _WHALE_ALERT_EXTREME else "HIGH"
+
+        # Prefer real 24h quote volume; fall back to the score itself only for
+        # the magnitude scale (hero shows "—" rather than inventing a number).
+        vol = volume_usd
+        if vol is None:
+            try:
+                _tk = _exchange.fetch_ticker(sym) if _exchange else None
+                if _tk:
+                    vol = _tk.get('quoteVolume')
+                    if vol is None and _tk.get('baseVolume') and _tk.get('last'):
+                        vol = float(_tk['baseVolume']) * float(_tk['last'])
+            except Exception:
+                vol = None
+
+        now = datetime.now(timezone.utc)
+        data = {
+            'pair': sym,
+            'volume': float(vol) if vol else 0.0,
+            'magnitude': magnitude,
+            'side': None,  # whale_indicators gives magnitude, not directional side
+            'regime': (regime or 'chop').upper(),
+            'deployed_pct': _deployed_pct(),
+            'voice': _pick_voice(_VOICE_WHALE),
+            'timestamp': now.strftime('%H:%M UTC'),
+            'date': now.strftime('%d %b %Y'),
+        }
+
+        png = _card_renderer.render_whale_alert(data)
+        copy_vals = _card_renderer.copy_values_whale(data)
+        for sub_id, token, chat_id in targets:
+            try:
+                ok = send_card_telegram(token, chat_id, png, copy_vals)
+                if ok:
+                    logging.info(f"Telegram WHALE card sent: {sub_id} {sym} score={ws:.1f} {magnitude}")
+                    _log_telegram_message(f"Whale {sym}", f"WHALE ALERT: {sym} score={ws:.1f} ({magnitude})")
+                else:
+                    logging.error(f"Telegram WHALE card FAILED: group={sub_id} {sym} — send_card_telegram returned False")
+            except Exception as e:
+                logging.error(f"Telegram WHALE card FAILED: group={sub_id} {sym}: {e}")
+    except Exception as e:
+        logging.warning(f"Card send (whale) failed: {e}")
+
+
+def _deployed_pct():
+    """Percent of balance currently deployed in open positions (0-100)."""
+    try:
+        sts_ref = globals().get('sts') or {}
+        deployed = 0.0
+        for _st in list(sts_ref.values()):
+            _p = _st.get_position()
+            if _p:
+                deployed += float(_p.get('e', 0)) * float(_p.get('size', 0))
+        if _is_paper():
+            with _PAPER_BAL_LOCK:
+                bal = float(_PAPER_BALANCE)
+        else:
+            with _LIVE_BAL_LOCK:
+                bal = float(_LIVE_BALANCE)
+        equity = bal + deployed
+        return round(deployed / equity * 100, 1) if equity > 0 else 0.0
+    except Exception:
+        return 0.0
 
 
 def _send_trade_card_close(sym, direction, pos, exit_price, pnl, r_mult,
@@ -4133,13 +4423,22 @@ def _send_trade_card_close_now(sym, direction, pos, exit_price, pnl, r_mult,
         duration_s = (closed_at or time.time()) - pos.get('opened_at', time.time())
         duration_str = _format_duration(max(0, duration_s))
 
-        is_win = net >= 0
+        # Win/loss must match the renderer's definition (r_mult > 0 or any TP
+        # hit) — the old `net >= 0` picked a mourning LOSS voice line for
+        # fee-eaten small winners whose card header said WIN.
+        is_win = float(r_mult) > 0 or int(tp_hit or 0) > 0
+        # Internal exit codes are jargon — subscribers get plain English.
+        _EXIT_HUMAN = {
+            'SL': 'Stop loss', 'TP': 'Target hit',
+            'EXH': 'Momentum exhausted', 'FDEC': 'Signal decay',
+            'AI': 'AI risk exit', 'TIME': 'Time stop',
+            'RECON_SL': 'Stop loss', 'RECON_TP': 'Target hit',
+        }
         if tp_hit > 0:
             exit_reason = f"TP{tp_hit} tagged"
-        elif exit_type == 'SL':
-            exit_reason = "Stop loss"
         else:
-            exit_reason = exit_type
+            exit_reason = _EXIT_HUMAN.get(str(exit_type).upper(),
+                                          str(exit_type).replace('_', ' ').title())
 
         with _metrics_lock:
             wins = _live_metrics.get('wins', 0)
@@ -4192,6 +4491,190 @@ def _send_trade_card_close_now(sym, direction, pos, exit_price, pnl, r_mult,
                 logging.error(f"Telegram CLOSE card FAILED: group={sub_id} {sym} {direction}: {e}")
     except Exception as e:
         logging.warning(f"Card send (close) failed: {e}")
+
+
+# --- End of day card ----------------------------------------------------------
+# One card per day summarizing every trade closed since UTC midnight. This is
+# the accountability artifact: it publishes losing days as readily as winning
+# ones, and on a no-trade day it explains why holding cash was the right call.
+_EOD_STATE_FILE = os.path.join(_OUTPUT_DIR, 'eod_state.json')
+_EOD_HOUR_UTC = 23        # send at 23:5x UTC — end of the trading day
+_EOD_MINUTE_UTC = 55
+_eod_lock = threading.Lock()
+
+
+def _eod_last_sent():
+    """Date string ('YYYY-MM-DD') of the last EOD card sent, or '' if none."""
+    try:
+        with open(_EOD_STATE_FILE) as f:
+            return str(json.load(f).get('last_sent', ''))
+    except Exception:
+        return ''
+
+
+def _eod_mark_sent(day):
+    """Persist the last-sent day so a restart cannot double-send."""
+    try:
+        tmp = _EOD_STATE_FILE + '.tmp'
+        with open(tmp, 'w') as f:
+            json.dump({'last_sent': day, 'ts': time.time()}, f)
+        os.replace(tmp, _EOD_STATE_FILE)
+    except Exception as e:
+        logging.warning(f"EOD state save failed: {e}")
+
+
+def _build_eod_data(day_start_ts, date_label):
+    """Assemble the EOD card payload from trades closed since `day_start_ts`."""
+    with _metrics_lock:
+        log = list(_live_metrics.get('trade_log', []))
+    todays = [t for t in log if t.get('t', 0) >= day_start_ts]
+
+    trades, gross_total, fees_total = [], 0.0, 0.0
+    best = worst = None
+    wins = losses = 0
+    for t in todays:
+        det = t.get('detail', {}) or {}
+        net = float(t.get('pnl', 0))
+        entry_p = float(det.get('entry', 0) or 0)
+        exit_p = float(det.get('exit_price', 0) or 0)
+        size = float(det.get('size', 0) or 0)
+        # Fees are not stored per trade — reconstruct with the same both-legs
+        # formula the close card uses, so gross/fees/net reconcile exactly.
+        fees = get_fee(t.get('sym', '')) * Decimal(str(size)) * (Decimal(str(abs(entry_p))) + Decimal(str(abs(exit_p))))
+        fees = float(fees)
+        gross = net + fees
+        gross_total += gross
+        fees_total += fees
+        if net > 0:
+            wins += 1
+        else:
+            losses += 1
+        direction = 'LONG' if str(t.get('dir', 'L')).upper().startswith('L') else 'SHORT'
+        rec = {
+            'net': round(net, 2),
+            'pair': t.get('sym', '?'),
+            'direction': direction,
+            'r': float(t.get('r', 0)),
+            'exit': t.get('exit', ''),
+        }
+        trades.append(rec)
+        if best is None or net > best['net']:
+            best = rec
+        if worst is None or net < worst['net']:
+            worst = rec
+
+    net_total = sum(t['net'] for t in trades)
+    total = wins + losses
+    win_rate = (wins / total * 100) if total else 0.0
+
+    def _why(rec):
+        if not rec:
+            return ''
+        _EXIT_WHY = {
+            'TP': 'Target hit — the move ran as read.',
+            'SL': 'Stop loss — thesis invalidated, risk capped at plan.',
+            'EXH': 'Momentum exhausted before target.',
+            'FDEC': 'Entry factors decayed — exited rather than hope.',
+            'AI': 'AI risk model flagged deterioration.',
+            'TIME': 'Time stop — setup went stale without resolving.',
+            'RECON_SL': 'Stop loss (reconciled against exchange).',
+            'RECON_TP': 'Target hit (reconciled against exchange).',
+        }
+        base = _EXIT_WHY.get(str(rec.get('exit', '')).upper(), str(rec.get('exit', '')) or 'Closed.')
+        # R is gross (price movement); net is after both fee legs. When they
+        # disagree in sign, say so plainly rather than printing "+0.1R" under a
+        # red loss and letting the subscriber think the card is broken.
+        if rec['r'] > 0 and rec['net'] < 0:
+            return (f"{base} Gross {rec['r']:+.1f}R on {rec['pair']}, "
+                    f"but fees turned it negative.")
+        return f"{base} {rec['r']:+.1f}R on {rec['pair']}."
+
+    if best:
+        best = dict(best, why=_why(best))
+    if worst:
+        worst = dict(worst, why=_why(worst))
+    # A single trade is simultaneously best and worst — showing it twice reads
+    # as a bug to a subscriber.
+    if len(trades) < 2:
+        worst = None
+
+    return {
+        'date': date_label,
+        'trades': trades,
+        'wins': wins,
+        'losses': losses,
+        'win_rate': win_rate,
+        'gross_pnl': round(gross_total, 2),
+        'fees': round(fees_total, 2),
+        'net_pnl': round(net_total, 2),
+        'best_trade': best,
+        'worst_trade': worst,
+    }
+
+
+def _send_eod_card_now(day_start_ts, date_label):
+    """Render + send the END OF DAY card. Card-worker thread only."""
+    if not _CARDS_ENABLED:
+        return
+    try:
+        targets = list(_iter_telegram_targets('exit'))
+        if not targets:
+            logging.info("No active telegram subscribers for EOD — card not sent")
+            return
+        data = _build_eod_data(day_start_ts, date_label)
+        png = _card_renderer.render_end_of_day(data)
+        copy_vals = _card_renderer.copy_values_eod(data)
+        n = len(data['trades'])
+        for sub_id, token, chat_id in targets:
+            try:
+                ok = send_card_telegram(token, chat_id, png, copy_vals)
+                if ok:
+                    logging.info(f"Telegram EOD card sent: {sub_id} {n} trades net=${data['net_pnl']:.2f}")
+                    _log_telegram_message("End of Day",
+                                          f"END OF DAY: {n} trades, {data['wins']}W/{data['losses']}L, net=${data['net_pnl']:.2f}")
+                else:
+                    logging.error(f"Telegram EOD card FAILED: group={sub_id} — send_card_telegram returned False")
+            except Exception as e:
+                logging.error(f"Telegram EOD card FAILED: group={sub_id}: {e}")
+    except Exception as e:
+        logging.warning(f"Card send (EOD) failed: {e}")
+
+
+def _eod_scheduler_loop():
+    """Daemon: enqueue the EOD card once per UTC day at _EOD_HOUR_UTC:_EOD_MINUTE_UTC.
+
+    Guarded by a persisted last-sent date, so a restart inside the send window
+    cannot produce a second card for the same day.
+    """
+    register_thread('eod_scheduler')
+    while True:
+        heartbeat('eod_scheduler')
+        try:
+            now = datetime.now(timezone.utc)
+            today = now.strftime('%Y-%m-%d')
+            due = (now.hour > _EOD_HOUR_UTC or
+                   (now.hour == _EOD_HOUR_UTC and now.minute >= _EOD_MINUTE_UTC))
+            with _eod_lock:
+                if due and _eod_last_sent() != today:
+                    day_start = now.replace(hour=0, minute=0, second=0,
+                                            microsecond=0).timestamp()
+                    # Mark BEFORE enqueueing: a card that fails to send is
+                    # preferable to one that sends twice.
+                    _eod_mark_sent(today)
+                    _enqueue_card('eod', {
+                        'day_start_ts': day_start,
+                        'date_label': now.strftime('%d %b %Y'),
+                    }, 'EOD')
+                    logging.info(f"EOD card enqueued for {today}")
+        except Exception as e:
+            logging.warning(f"EOD scheduler error: {e}")
+        time.sleep(60)
+
+
+def start_eod_scheduler():
+    t = threading.Thread(target=_eod_scheduler_loop, daemon=True)
+    t.start()
+    logging.info(f"EOD scheduler started (sends {_EOD_HOUR_UTC:02d}:{_EOD_MINUTE_UTC:02d} UTC daily)")
 
 
 # =============================================================================
@@ -4469,31 +4952,61 @@ def _run_subscriber_api():
             else:
                 self.send_response(404)
                 self.end_headers()
+        def _read_json_body(self):
+            """Parse the request body; None (after a 400 reply) on bad JSON."""
+            try:
+                length = int(self.headers.get('Content-Length', 0))
+                return json.loads(self.rfile.read(length))
+            except (ValueError, KeyError, json.JSONDecodeError):
+                self.send_response(400)
+                self.send_header('Content-Type', 'application/json')
+                self.end_headers()
+                self.wfile.write(json.dumps({'error': 'invalid JSON body'}).encode())
+                return None
+
+        def _send_json(self, code, obj):
+            self.send_response(code)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(json.dumps(obj).encode())
+
         def do_POST(self):
             if self.path == '/register':
-                length = int(self.headers.get('Content-Length', 0))
-                body = json.loads(self.rfile.read(length))
+                body = self._read_json_body()
+                if body is None:
+                    return
+                if 'sub_id' not in body or 'channels' not in body:
+                    self._send_json(400, {'error': 'sub_id and channels required'})
+                    return
                 api_key = register_subscriber(body['sub_id'], body['channels'], body.get('preferences'))
-                self.send_response(201)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({'api_key': api_key}).encode())
+                self._send_json(201, {'api_key': api_key})
             elif self.path == '/unsubscribe':
-                length = int(self.headers.get('Content-Length', 0))
-                body = json.loads(self.rfile.read(length))
+                body = self._read_json_body()
+                if body is None:
+                    return
+                # Destructive op — require the api_key issued at registration.
+                # (verify_api_key existed since day one but nothing called it.)
+                if not verify_api_key(body.get('sub_id', ''), body.get('api_key', '')):
+                    self._send_json(403, {'error': 'invalid sub_id or api_key'})
+                    return
                 remove_subscriber(body['sub_id'])
-                self.send_response(200)
-                self.send_header('Content-Type', 'application/json')
-                self.end_headers()
-                self.wfile.write(json.dumps({'status': 'unsubscribed'}).encode())
+                self._send_json(200, {'status': 'unsubscribed'})
             else:
                 self.send_response(404)
                 self.end_headers()
         def do_PUT(self):
             if self.path.startswith('/preferences/'):
                 sub_id = self.path.split('/')[-1]
-                length = int(self.headers.get('Content-Length', 0))
-                prefs = json.loads(self.rfile.read(length))
+                body = self._read_json_body()
+                if body is None:
+                    return
+                # api_key rides alongside the prefs payload; strip it out so it
+                # never lands inside the stored preferences dict.
+                api_key = body.pop('api_key', '')
+                prefs = body
+                if not verify_api_key(sub_id, api_key):
+                    self._send_json(403, {'error': 'invalid sub_id or api_key'})
+                    return
                 with _subscribers_lock:
                     _load_subscribers()
                     found = sub_id in _subscribers
@@ -4909,6 +5422,13 @@ def stream(st, sym, br, ex, iv=2):
                     of_score = compute_order_flow_factor(ex, sym)
                     _fr = get_funding_rate(sym)
                     _ws = get_whale_score(sym)
+                    # Whale alert card — independent of the entry gate below.
+                    # Big flow is worth publishing even when no trade follows;
+                    # enqueue-only, cooldown-guarded, never blocks this loop.
+                    try:
+                        _maybe_send_whale_alert(sym, _ws, br.regime, price=float(current_price))
+                    except Exception as _wa_err:
+                        logging.debug(f"{sym} whale alert check failed: {_wa_err}")
                     factors = compute_factors(st.df, float(current_price), vp_data, ob_data, htf_bias, br.regime, of_score=of_score, funding_rate=_fr, whale_score=_ws, short_mode=(_MODE == 'short'))
                     confidence = compute_confidence(factors, br.regime, rgm_proba=br.regime_proba, brain=br)
 
@@ -5573,6 +6093,9 @@ def stream(st, sym, br, ex, iv=2):
                 _sl_update_id = None
                 _sl_new_price = None
                 _sl_filled_size = None
+                # Subscriber pings are COLLECTED under the lock and enqueued after
+                # it releases — never do queue work while holding the position lock.
+                _pending_pings = []
                 with st._lock:
                     current_pos = st.pos  # re-read inside lock
                     if current_pos is None:
@@ -5596,22 +6119,35 @@ def stream(st, sym, br, ex, iv=2):
                                 _tp_regime = current_pos.get('regime', 'chop')
                                 _, _dtp2m, _dtp3m = _get_tp_mults(_tp_regime)
                                 _d_tp_dist = _entry_price * _cur_atr_pct * 1.2  # current ATR-based distance
+                                _tp_raised = False
                                 if direction == 'long':
                                     _new_tp2 = Decimal(str(_entry_price + _d_tp_dist * float(_dtp2m)))
                                     _new_tp3 = Decimal(str(_entry_price + _d_tp_dist * float(_dtp3m)))
                                     # Only ratchet UP — never shrink targets
                                     if _new_tp2 > current_pos.get('tp2', Decimal('0')):
                                         current_pos['tp2'] = _new_tp2
+                                        _tp_raised = True
                                     if _new_tp3 > current_pos.get('tp3', Decimal('0')):
                                         current_pos['tp3'] = _new_tp3
+                                        _tp_raised = True
                                 else:
                                     _new_tp2 = Decimal(str(_entry_price - _d_tp_dist * float(_dtp2m)))
                                     _new_tp3 = Decimal(str(_entry_price - _d_tp_dist * float(_dtp3m)))
                                     # Only ratchet DOWN (toward more profit for shorts)
                                     if _new_tp2 < current_pos.get('tp2', Decimal('999999')):
                                         current_pos['tp2'] = _new_tp2
+                                        _tp_raised = True
                                     if _new_tp3 < current_pos.get('tp3', Decimal('999999')):
                                         current_pos['tp3'] = _new_tp3
+                                        _tp_raised = True
+                                # Published targets moved — tell subscribers rather
+                                # than silently changing a number they wrote down.
+                                # Only for untagged targets (a hit TP is history).
+                                if _tp_raised and tp_hit < 2:
+                                    _pending_pings.append(('targets', {
+                                        'tp2': current_pos.get('tp2'),
+                                        'tp3': current_pos.get('tp3'),
+                                    }))
 
                     prev_tp_hit = tp_hit
                     for lvl in [3, 2, 1]:
@@ -5627,6 +6163,11 @@ def stream(st, sym, br, ex, iv=2):
                                 current_pos['last_tp_time'] = time.time()
                                 tp_hit = lvl
                                 logging.info(f"{sym} TP{lvl} HIT @ {current_price:,.2f}")
+                                _pending_pings.append(('tp', {
+                                    'lvl': lvl,
+                                    'price': current_price,
+                                    'entry': current_pos.get('e'),
+                                }))
                     # Apply side effects for all newly crossed TP levels
                     if tp_hit >= 1 and prev_tp_hit < 1:
                         _sl_moved = False  # no SL move at TP1 — original SL stays
@@ -5666,11 +6207,35 @@ def stream(st, sym, br, ex, iv=2):
                                 _trail_moved = True
                         if _trail_moved:
                             st._save_position()
+                            _pending_pings.append(('stop', {
+                                'sl': current_pos['sl'],
+                                'entry': current_pos.get('e'),
+                                'reason': 'trailing stop, tightened behind price',
+                            }))
                         # Snapshot for trailing SL update (API calls done outside lock)
                         if _trail_moved and not _is_paper() and current_pos.get('sl_order_id'):
                             _sl_update_id = current_pos['sl_order_id']
                             _sl_new_price = float(current_pos['sl'])
                             _sl_filled_size = float(current_pos.get('filled', current_pos.get('size', 0)))
+
+                # Subscriber pings — lock released, safe to enqueue. Each is
+                # best-effort and can never affect position management.
+                if _pending_pings:
+                    _p_open = current_pos.get('opened_at', 0) if current_pos else 0
+                    for _kind, _pd in _pending_pings:
+                        try:
+                            if _kind == 'tp':
+                                _ping_tp_hit(sym, direction, _pd['lvl'], _pd['price'],
+                                             _pd['entry'], tp_hit, _p_open)
+                            elif _kind == 'stop':
+                                _ping_stop_moved(sym, direction, _pd['sl'], _pd['entry'],
+                                                 _pd['reason'], _p_open)
+                            elif _kind == 'targets':
+                                _ping_targets_raised(sym, direction, _pd['tp2'],
+                                                     _pd['tp3'], _p_open)
+                        except Exception as _ping_err:
+                            logging.debug(f"{sym} ping dispatch failed: {_ping_err}")
+                    _pending_pings = []
 
                 # Exchange SL cancel+create outside lock to avoid holding lock during API calls
                 if _sl_update_id and _sl_new_price is not None:
@@ -5970,7 +6535,10 @@ def _build_symbols_table(sts, brs):
         pc = _C['green'] if up else _C['red']
         arrow = "↑" if up else "↓"
         price_t = Text(f"{arrow}{_fp(price)}", style=pc)
-        if pos:
+        if pos and price > 0:
+            # price > 0 guard: StreamState.price inits to Decimal(0), so before the
+            # first tick lands this renders (0 - entry) * size — the whole position
+            # as a phantom loss. Show "—" until we have a real price.
             d = pos.get('direction', _MODE)
             sz = float(pos.get('size', 0))
             fp, ep = float(price), float(pos['e'])
@@ -6012,8 +6580,14 @@ def _build_positions_table(sts, brs):
         price, _ = s.get_price()
         fp, ep = float(price), float(pos['e'])
         sz = float(pos.get('size', 0))
-        upl = (fp - ep) * sz if d == 'long' else (ep - fp) * sz
-        plc = _C['green'] if upl >= 0 else _C['red']
+        # price > 0 guard: StreamState.price inits to Decimal(0). Without this the
+        # row shows (0 - entry) * size at boot — the full position as a fake loss.
+        if fp > 0:
+            upl = (fp - ep) * sz if d == 'long' else (ep - fp) * sz
+            pl_t = Text(f"{'+' if upl >= 0 else ''}{upl:,.2f}",
+                        style=_C['green'] if upl >= 0 else _C['red'])
+        else:
+            pl_t = Text("—", style=_C['dim'])
         def tp_val(key, lvl):
             v = pos.get(key)
             if v is None: return Text("—", style=_C['dim'])
@@ -6026,7 +6600,7 @@ def _build_positions_table(sts, brs):
         t.add_row(
             sy, Text(d[0].upper(), style=f"bold {dc}"),
             Text(_fp(ep), style=_C['muted']),
-            Text(f"{'+' if upl >= 0 else ''}{upl:,.2f}", style=plc),
+            pl_t,
             Text(_fp(pos['sl']), style=_C['red']),
             tp_val('tp1', 1), tp_val('tp2', 2), tp_val('tp3', 3),
             Text(age_str, style=age_c)
@@ -7328,6 +7902,8 @@ def main():
     start_subscriber_api()
     # Card send worker — renders + Telegram HTTP off the trade path
     start_card_worker()
+    # Daily END OF DAY card (whale alerts fire from the stream loop directly)
+    start_eod_scheduler()
 
     # Launch Flask dashboard in background thread — no second terminal needed
     try:

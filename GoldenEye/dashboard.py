@@ -209,6 +209,180 @@ tbody tr:hover td { background: var(--graphite); }
 FONTS = '<link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;700;900&family=Rajdhani:wght@300;400;600;700&family=JetBrains+Mono:wght@300;400;700&display=swap" rel="stylesheet">'
 
 # =============================================================================
+# PUBLIC TRACK RECORD — /verify
+# =============================================================================
+# Deliberately plain. This page's only job is to be believed: every closed
+# trade, fees counted, losses shown with the same weight as wins. No controls,
+# no internals, nothing that could be mistaken for a sales page.
+
+VERIFY_TEMPLATE = r"""<!DOCTYPE html>
+<html lang="en"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>GoldenEye — Verified Track Record</title>
+{{ fonts|safe }}
+<style>
+  :root{--bg:#070707;--panel:#0e0e0e;--line:#1b1b1b;--gold:#c8a96e;--dim:#606060;
+        --text:#efefef;--pos:#4caf7d;--neg:#c0392b;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font-family:'Rajdhani',system-ui,sans-serif;
+       padding:28px 16px 64px;line-height:1.5}
+  .wrap{max-width:1000px;margin:0 auto}
+  .mono{font-family:'JetBrains Mono',monospace}
+  header{border-left:3px solid var(--gold);padding-left:16px;margin-bottom:8px}
+  h1{font-family:'Orbitron',sans-serif;font-size:26px;font-weight:900;letter-spacing:.06em}
+  .sub{color:var(--dim);font-size:14px;letter-spacing:.04em}
+  .promise{background:var(--panel);border-left:3px solid var(--gold);padding:16px 20px;
+           margin:22px 0;color:#d4b896;font-size:15px}
+  .promise b{color:var(--gold)}
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin:20px 0}
+  .stat{background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:14px}
+  .stat .k{color:var(--dim);font-size:11px;letter-spacing:.14em;text-transform:uppercase}
+  .stat .v{font-size:26px;font-weight:700;margin-top:4px}
+  .pos{color:var(--pos)} .neg{color:var(--neg)} .gold{color:var(--gold)}
+  h2{font-family:'JetBrains Mono',monospace;font-size:13px;letter-spacing:.16em;
+     color:var(--gold);margin:30px 0 10px;text-transform:uppercase}
+  table{width:100%;border-collapse:collapse;font-size:13px}
+  th{text-align:left;color:var(--dim);font-size:11px;letter-spacing:.1em;
+     text-transform:uppercase;padding:8px 10px;border-bottom:1px solid var(--line)}
+  td{padding:9px 10px;border-bottom:1px solid #121212}
+  td.num{text-align:right}
+  tr:hover{background:#0c0c0c}
+  .tag{font-size:10px;padding:2px 7px;border-radius:3px;background:#161616;color:var(--dim);
+       letter-spacing:.06em}
+  .note{color:var(--dim);font-size:13px;margin-top:10px}
+  footer{margin-top:44px;padding-top:18px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:12px}
+  .curve{width:100%;height:150px;display:block;margin:6px 0 2px}
+  .banner{background:#1a1207;border:1px solid #3a2c10;color:#e8a838;padding:11px 16px;
+          border-radius:5px;margin-bottom:18px;font-size:14px}
+  .empty{color:var(--dim);padding:26px 0;text-align:center;font-size:14px}
+  @media(max-width:620px){.hide-sm{display:none}h1{font-size:21px}}
+</style></head>
+<body><div class="wrap">
+  <header>
+    <h1>GOLDENEYE</h1>
+    <div class="sub">Verified Track Record &middot; every closed trade, fees counted</div>
+  </header>
+
+  <div id="mode-banner"></div>
+
+  <div class="promise">
+    <b>What this page is.</b> Every trade below was published to Telegram
+    <b>before</b> its outcome was known &mdash; entry, stop and targets, timestamped
+    by Telegram itself. Nothing here is back-tested, curve-fitted, or selected
+    after the fact. Losses appear exactly as prominently as wins, because a
+    track record that hides them is not a track record.
+  </div>
+
+  <div class="grid" id="stats"></div>
+
+  <h2>Cumulative net P&amp;L</h2>
+  <svg class="curve" id="curve" preserveAspectRatio="none"></svg>
+  <div class="note" id="curve-note"></div>
+
+  <h2>Every closed trade</h2>
+  <div id="table-wrap"></div>
+
+  <footer>
+    <div id="foot-meta"></div>
+    <div style="margin-top:8px">
+      Net P&amp;L is after Kraken taker fees on both legs (0.40% each way).
+      R-multiple measures price movement against the stop distance set at entry.
+      Past results never guarantee future results &mdash; this is published for
+      transparency, not as financial advice.
+    </div>
+  </footer>
+</div>
+<script>
+const $=s=>document.querySelector(s);
+const money=v=>(v>=0?'+':'-')+'$'+Math.abs(v).toFixed(2);
+const cls=v=>v>=0?'pos':'neg';
+const esc=s=>String(s==null?'':s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+const EXIT_LABEL={TP:'Target hit',SL:'Stop loss',EXH:'Exhausted',FDEC:'Signal decay',
+  AI:'AI risk exit',TIME:'Time stop',RECON_SL:'Stop loss',RECON_TP:'Target hit',
+  TP1:'TP1 hit',TP2:'TP2 hit',TP3:'TP3 hit'};
+
+function drawCurve(cum){
+  const svg=$('#curve');
+  if(!cum||cum.length<2){svg.innerHTML='';$('#curve-note').textContent=
+    'The curve appears once at least two trades have closed.';return;}
+  const W=1000,H=150,P=6;
+  const min=Math.min(0,...cum),max=Math.max(0,...cum),span=(max-min)||1;
+  const x=i=>P+i*(W-2*P)/(cum.length-1);
+  const y=v=>H-P-((v-min)/span)*(H-2*P);
+  const pts=cum.map((v,i)=>x(i)+','+y(v)).join(' ');
+  const up=cum[cum.length-1]>=0, col=up?'#4caf7d':'#c0392b';
+  const zero=y(0);
+  svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+  svg.innerHTML=
+    `<line x1="0" y1="${zero}" x2="${W}" y2="${zero}" stroke="#242424" stroke-width="1"/>`+
+    `<polygon points="${x(0)},${zero} ${pts} ${x(cum.length-1)},${zero}" fill="${col}" opacity=".13"/>`+
+    `<polyline points="${pts}" fill="none" stroke="${col}" stroke-width="2"/>`;
+  $('#curve-note').textContent='Each point is one closed trade, in order.';
+}
+
+fetch('/api/track-record').then(r=>r.json()).then(d=>{
+  if(d.online===false&&d.error){
+    $('#mode-banner').innerHTML='<div class="banner">The bot is currently offline. '+
+      'Figures below are the last known state.</div>';
+  }else if(d.mode==='paper'){
+    $('#mode-banner').innerHTML='<div class="banner"><b>Paper trading.</b> '+
+      'These are simulated fills with real market prices, real spreads and real '+
+      'Kraken fees applied &mdash; but no live capital is at risk yet. '+
+      'Stated plainly here rather than buried.</div>';
+  }
+
+  const n=d.trades||0;
+  $('#stats').innerHTML=[
+    ['Closed trades',n,''],
+    ['Win rate',n?d.win_rate.toFixed(1)+'%':'—','gold'],
+    ['Net P&L',n?money(d.net_pnl):'—',n?cls(d.net_pnl):''],
+    ['Fees paid',n?'-$'+d.fees_paid.toFixed(2):'—','neg'],
+    ['Avg R',n?(d.avg_r>=0?'+':'')+d.avg_r.toFixed(2)+'R':'—',n?cls(d.avg_r):''],
+    ['Expectancy / trade',n?money(d.expectancy):'—',n?cls(d.expectancy):''],
+    ['Max drawdown',n?money(d.max_drawdown):'—','neg'],
+    ['Record',n?d.wins+'W / '+d.losses+'L':'—',''],
+  ].map(([k,v,c])=>`<div class="stat"><div class="k">${k}</div>
+      <div class="v ${c}">${v}</div></div>`).join('');
+
+  drawCurve(d.cumulative||[]);
+
+  const rows=(d.trade_log||[]);
+  if(!rows.length){
+    $('#table-wrap').innerHTML='<div class="empty">No closed trades yet. '+
+      'This table fills itself as trades close &mdash; nothing is added by hand.</div>';
+  }else{
+    $('#table-wrap').innerHTML='<table><thead><tr>'+
+      '<th>Date (UTC)</th><th>Pair</th><th>Side</th>'+
+      '<th class="num">R</th><th class="num hide-sm">Gross</th>'+
+      '<th class="num hide-sm">Fees</th><th class="num">Net</th><th>Exit</th>'+
+      '</tr></thead><tbody>'+rows.map(t=>{
+        const dt=new Date((t.ts||0)*1000);
+        const ds=isNaN(dt)?'—':dt.toISOString().slice(0,16).replace('T',' ');
+        const ex=EXIT_LABEL[String(t.exit||'').toUpperCase()]||esc(t.exit||'—');
+        return `<tr><td class="mono">${ds}</td><td>${esc(t.sym)}</td>`+
+          `<td><span class="tag">${esc(t.dir)}</span></td>`+
+          `<td class="num mono ${cls(t.r)}">${t.r>=0?'+':''}${t.r.toFixed(2)}R</td>`+
+          `<td class="num mono hide-sm ${cls(t.gross)}">${money(t.gross)}</td>`+
+          `<td class="num mono neg hide-sm">-$${Math.abs(t.fees).toFixed(2)}</td>`+
+          `<td class="num mono ${cls(t.net)}">${money(t.net)}</td>`+
+          `<td>${ex}</td></tr>`;
+      }).join('')+'</tbody></table>';
+  }
+
+  $('#foot-meta').textContent='Live from the running bot. '+
+    (d.symbol_count?d.symbol_count+' pairs tracked. ':'')+
+    'Updated '+new Date().toISOString().slice(0,16).replace('T',' ')+' UTC.';
+}).catch(()=>{
+  $('#mode-banner').innerHTML='<div class="banner">Track record is temporarily '+
+    'unavailable &mdash; the bot is not reachable right now.</div>';
+});
+</script></body></html>
+"""
+
+# =============================================================================
 # AUDIT DASHBOARD — CINEMATIC COMMAND DISPLAY v3
 # =============================================================================
 
@@ -3555,7 +3729,7 @@ const VOICE_GEN = [
   "Whatever it takes.",
   "Built honest, runs honest.",
   "I got scammed twice by signal services. Paid real money for signals that were fabricated. So I built an honest one. \u2014 GoldenEye Intelligence",
-  "27 signals. 7 gates. No shortcuts."
+  "27 signals. 16 gates. No shortcuts."
 ];
 
 function pickVoice(arr, seed) { return arr[Math.abs(seed) % arr.length]; }
@@ -4885,6 +5059,108 @@ def fetch_positions():
 @app.route('/')
 def public():
     return AUDIT_TEMPLATE
+
+# =============================================================================
+# Public track record — /verify
+# =============================================================================
+# The subscriber-facing proof page. Read-only, no internals, no controls: just
+# every closed trade and the honest aggregate. Linked from every Telegram card
+# footer so anyone can check the claims without asking.
+
+@app.route('/api/track-record')
+def api_track_record():
+    """Aggregate public track record. Losses included, fees counted."""
+    a = fetch_analytics()
+    if not a.get('bot_online') and a.get('error'):
+        return jsonify({'online': False, 'error': a.get('error')}), 502
+
+    log = a.get('trade_log', []) or []
+    FEE = 0.0040  # Kraken taker, both legs — same rate the bot trades on
+
+    trades, cum, running = [], [], 0.0
+    wins = losses = 0
+    gross_sum = fees_sum = 0.0
+    best = worst = None
+
+    for t in log:
+        det = t.get('detail', {}) or {}
+        net = float(t.get('pnl', 0) or 0)
+        entry = float(det.get('entry', 0) or 0)
+        exit_p = float(det.get('exit_price', 0) or 0)
+        size = float(det.get('size', 0) or 0)
+        fees = FEE * size * (abs(entry) + abs(exit_p)) if entry else 0.0
+        gross = net + fees
+        gross_sum += gross
+        fees_sum += fees
+        running += net
+        cum.append(round(running, 4))
+        if net > 0:
+            wins += 1
+        else:
+            losses += 1
+        rec = {
+            'ts': t.get('t', 0),
+            'sym': t.get('sym', '?'),
+            'dir': 'LONG' if str(t.get('dir', 'L')).upper().startswith('L') else 'SHORT',
+            'r': round(float(t.get('r', 0) or 0), 2),
+            'net': round(net, 2),
+            'gross': round(gross, 2),
+            'fees': round(fees, 2),
+            'exit': t.get('exit', ''),
+            'entry': entry,
+            'exit_price': exit_p,
+            'duration_h': det.get('duration_h', 0),
+            'confidence': det.get('confidence', 0),
+            'regime': det.get('regime', ''),
+            'sigs': det.get('sigs', []),
+        }
+        trades.append(rec)
+        if best is None or net > best['net']:
+            best = rec
+        if worst is None or net < worst['net']:
+            worst = rec
+
+    total = wins + losses
+    net_sum = round(running, 2)
+    r_list = [t['r'] for t in trades]
+    avg_r = round(sum(r_list) / len(r_list), 3) if r_list else 0.0
+    win_r = [t['r'] for t in trades if t['net'] > 0]
+    loss_r = [t['r'] for t in trades if t['net'] <= 0]
+    # Max drawdown on the cumulative NET curve (the money curve, not gross)
+    peak = 0.0
+    max_dd = 0.0
+    for v in cum:
+        peak = max(peak, v)
+        max_dd = min(max_dd, v - peak)
+
+    return jsonify({
+        'online': bool(a.get('bot_online')),
+        'mode': (fetch_health() or {}).get('trading_mode', 'unknown'),
+        'trades': total,
+        'wins': wins,
+        'losses': losses,
+        'win_rate': round(wins / total * 100, 1) if total else 0.0,
+        'net_pnl': net_sum,
+        'gross_pnl': round(gross_sum, 2),
+        'fees_paid': round(fees_sum, 2),
+        'avg_r': avg_r,
+        'avg_win_r': round(sum(win_r) / len(win_r), 2) if win_r else 0.0,
+        'avg_loss_r': round(sum(loss_r) / len(loss_r), 2) if loss_r else 0.0,
+        'max_drawdown': round(max_dd, 2),
+        'expectancy': round(net_sum / total, 3) if total else 0.0,
+        'best': best,
+        'worst': worst,
+        'cumulative': cum,
+        'trade_log': list(reversed(trades)),  # newest first for the table
+        'uptime_hours': a.get('uptime_hours', 0),
+        'symbol_count': a.get('symbol_count', 0),
+    })
+
+
+@app.route('/verify')
+def verify_page():
+    return render_template_string(VERIFY_TEMPLATE, fonts=FONTS)
+
 
 @app.route('/symbol/<path:sym>')
 def symbol_detail(sym):

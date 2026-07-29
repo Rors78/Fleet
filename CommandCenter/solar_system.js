@@ -28,6 +28,198 @@ function _darken(hex,p){
   return "rgb("+Math.max(0,r-p)+","+Math.max(0,g-p)+","+Math.max(0,b-p)+")";
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   SPHERICAL SURFACE PROJECTION (2026-07-29)
+   ───────────────────────────────────────────────────────────────────────
+   Every planet surface used to be painted in flat screen space: bands as
+   ctx.fillRect, craters as fixed-offset ellipses, groove lines dead
+   straight. Nothing knew it was on a ball, so the planets read as stickers
+   — correct colors, zero volume.
+
+   This is the geometry layer that fixes it. A point on the planet is now
+   addressed by latitude/longitude, converted to a real 3D unit vector,
+   rotated for spin and axial tilt, and orthographically projected to the
+   disk. That gives, for free, the three cues that actually sell a sphere:
+
+     1. LIMB COMPRESSION — features bunch up toward the edge, because
+        screen_x = cos(lat)*sin(lon) falls off as |lon| → 90°.
+     2. BACKFACE CULLING — z < 0 means the far side of the planet; those
+        points are simply not drawn, so features rotate *around* the body
+        instead of sliding across a flat cutout.
+     3. FORESHORTENING — a circular crater near the limb projects to a
+        squashed ellipse, tilted along the local surface normal.
+
+   All of it is plain trig on the CPU — no WebGL, no textures, no deps,
+   consistent with the rest of this file being stdlib canvas. Cost is a few
+   hundred multiply-adds per planet per frame, which is nothing next to the
+   gradient fills already happening.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Project lat/lon (radians) on a sphere of radius r to screen offsets.
+   `spin` rotates about the polar axis (planet rotation), `tilt` leans the
+   pole toward/away from the viewer (axial tilt).
+   Returns {x,y,z,vis,fore} where:
+     x,y  — screen-space offsets from planet center (add to cx,cy)
+     z    — depth; > 0 is the near face, < 0 the far face
+     vis  — 0..1 visibility ramp, fading right at the limb so features
+            don't pop in/out with a hard edge as they rotate over
+     fore — foreshortening factor (= z), how much to squash a feature
+            drawn at this point along the view direction */
+function _sphProject(lat, lon, r, spin, tilt) {
+    var la = lat, lo = lon + (spin || 0);
+    var cla = Math.cos(la), sla = Math.sin(la);
+    /* Unit sphere point, +z toward viewer */
+    var px = cla * Math.sin(lo);
+    var py = sla;
+    var pz = cla * Math.cos(lo);
+    /* Axial tilt — rotate about the screen-x axis */
+    if (tilt) {
+        var ct = Math.cos(tilt), st = Math.sin(tilt);
+        var ny = py * ct - pz * st;
+        var nz = py * st + pz * ct;
+        py = ny; pz = nz;
+    }
+    /* Fade features over the last few degrees of the limb */
+    var vis = pz <= 0 ? 0 : Math.min(1, pz / 0.16);
+    return { x: px * r, y: py * r, z: pz, vis: vis, fore: pz };
+}
+
+/* Lambert diffuse shading for a surface point, given the light direction in
+   screen space (lx,ly point from the planet toward the sun). Returns 0..1.
+   Used so a band or crater actually dims as it wraps onto the dark side,
+   instead of every feature being uniformly bright across the terminator. */
+function _sphLambert(px, py, pz, r, lx, ly) {
+    var nx = px / r, ny = py / r, nz = pz;
+    /* Light vector: screen-space direction plus a little toward the viewer,
+       so the lit side has a soft rolloff rather than a hard half-disk. */
+    var Lz = 0.35;
+    var Ln = Math.sqrt(lx * lx + ly * ly + Lz * Lz) || 1;
+    var d = (nx * lx + ny * ly + nz * Lz) / Ln;
+    return d < 0 ? 0 : d;
+}
+
+/* Draw one latitude band as a proper spherical zone: two small-circle arcs
+   (top and bottom edge) joined into a closed ribbon that curves with the
+   sphere and pinches at the limb. This replaces fillRect for banded worlds.
+   latC/latH are in radians (center latitude and half-height).
+   `shade` enables per-vertex Lambert darkening toward the terminator. */
+function _sphBand(ctx, cx, cy, r, latC, latH, spin, tilt, style, lx, ly, shade, turb, tSeed, tPhase) {
+    var STEPS = 64;
+    /* Sweep slightly past the visible hemisphere. Ending exactly at ±90° puts
+       the ribbon's last vertices right on the silhouette, where sub-pixel
+       differences between the two edges leave a ragged stair-step; a small
+       overshoot lands them behind the limb where the disk clip removes them.
+       Kept small — a large overshoot folds the ribbon back on itself, because
+       past ±90° the projected x starts moving backwards. */
+    var SPAN = Math.PI / 2 + 0.10;
+    /* Turbulent edges. Real belt/zone boundaries are sheared and wavy, not
+       clean parallels — without this the planet reads as concentric stripes.
+       The wobble is a function of LONGITUDE (not screen x), so it is locked
+       to the surface and rides around with the rotation. */
+    var tb = turb || 0, ts = tSeed || 0, tp = tPhase || 0;
+    /* Low frequencies only. High-frequency terms (the old 13.7x harmonic)
+       change faster than the 64-step tessellation can follow, so adjacent
+       quads land at visibly different latitudes and the band edge breaks into
+       rectangular step-notches. Keeping every wavelength long relative to the
+       step size makes the boundary read as a smooth atmospheric shear. */
+    function wob(lon, edge) {
+        if (!tb) return 0;
+        return (Math.sin(lon * 1.7 + ts * 1.7 + tp + edge * 1.3) * 0.62
+              + Math.sin(lon * 3.3 - ts * 2.3 + tp * 1.6 + edge) * 0.28
+              + Math.sin(lon * 5.1 + ts * 0.9 - tp * 0.7) * 0.10) * tb;
+    }
+    /* Clamp latitude just inside the poles. Turbulence can otherwise push a
+       high-latitude band past ±90°, which flips its longitude to the far side
+       of the sphere and tears the ribbon open with a vertical seam. */
+    var LATMAX = Math.PI / 2 - 0.001;
+    function cl(v) { return v < -LATMAX ? -LATMAX : (v > LATMAX ? LATMAX : v); }
+    var top = [], bot = [], any = false;
+    for (var i = 0; i <= STEPS; i++) {
+        var lon = -SPAN + (i / STEPS) * (SPAN * 2);
+        var a = _sphProject(cl(latC - latH + wob(lon, 0)), lon, r, spin, tilt);
+        var b = _sphProject(cl(latC + latH + wob(lon, 1)), lon, r, spin, tilt);
+        if (a.z > 0 || b.z > 0) any = true;
+        top.push(a); bot.push(b);
+    }
+    /* A band entirely behind the sphere must draw NOTHING. Without this guard
+       a fully-hidden band still emits a closed path spanning the disk, which
+       showed up as black polar slabs on tilted planets (Neptune, 28°). */
+    if (!any) return;
+
+    /* Ribbon construction, kept deliberately dumb.
+       Two earlier attempts failed here and both failure modes are worth
+       recording, because the clever versions LOOKED right in code:
+         (a) clamping off-limb points radially and stitching them with arc
+             segments produced black polar slabs on tilted planets — a band
+             entirely behind the sphere still emitted a disk-spanning path;
+         (b) closing each end by walking the limb arc produced hard diagonal
+             wedges, because the short way around the circle is frequently
+             the WRONG way for a ribbon whose two ends sit near the same angle.
+       What actually works: emit the projected quad strip segment-by-segment,
+       skipping only segments that are fully behind the sphere, and let the
+       caller's existing disk clip trim the result. Each quad is tiny, so an
+       overshooting quad is trimmed to the disk edge as a smooth curve — the
+       clip does the geometry that the hand-rolled closure kept getting wrong. */
+    /* ONE continuous path: top edge left→right, then bottom edge right→left.
+       (Per-quad filling was tried and leaves antialiasing gaps; stroking those
+       gaps paints a ladder of bright rungs. A single path avoids both.)
+
+       The endpoints are pushed radially out past the disk edge as they near the
+       limb. Without this, both edges converge toward the same silhouette point
+       and the ribbon pinches shut into a lens, leaving wedge-shaped gaps at the
+       planet's edge — clearly visible when the band layer is rendered alone.
+       Overshooting lets the caller's disk clip cut a clean curved edge instead.
+
+       Note this fixes the LIMB gaps only. Gaps BETWEEN bands are a separate
+       issue and are handled by the caller overlapping adjacent latitude spans
+       (see the `bleed` term where the band tables are consumed) — a band table
+       that merely abuts (row N ends where row N+1 starts) leaves hairline
+       wedges once asin() compresses the rows toward the poles. */
+    var OVER = 1.16;
+    function ext(p) {
+        /* Scale every point by the SAME smooth function of longitude-depth, so
+           there is no threshold to step across. An earlier version only nudged
+           points below a |z| cutoff, which put a discontinuity right where the
+           ribbon meets the limb and produced a black stair-step at the band's
+           end. Here the factor rises smoothly from 1 at the disk centre to OVER
+           at the silhouette, so the ribbon always overshoots the edge and the
+           caller's disk clip trims it to the true curve. */
+        var m = Math.sqrt(p.x * p.x + p.y * p.y) || 1;
+        var edgeness = Math.min(1, m / r);          /* 0 centre → 1 at limb */
+        var f = 1 + (OVER - 1) * edgeness * edgeness;
+        return { x: p.x * f, y: p.y * f };
+    }
+    ctx.beginPath();
+    var s0 = ext(top[0]);
+    ctx.moveTo(cx + s0.x, cy + s0.y);
+    for (var k = 1; k <= STEPS; k++) { var pt = ext(top[k]); ctx.lineTo(cx + pt.x, cy + pt.y); }
+    for (var k2 = STEPS; k2 >= 0; k2--) { var pb = ext(bot[k2]); ctx.lineTo(cx + pb.x, cy + pb.y); }
+    ctx.closePath();
+    ctx.fillStyle = style;
+    ctx.fill();
+    void shade; void lx; void ly;
+}
+
+/* Draw a filled ellipse that is correctly foreshortened for its position on
+   the sphere — the single strongest cue for craters, spots and storms.
+   `rad` is the feature's angular radius as a fraction of the planet radius. */
+function _sphBlob(ctx, cx, cy, r, lat, lon, rad, spin, tilt, style) {
+    var p = _sphProject(lat, lon, r, spin, tilt);
+    if (p.vis <= 0) return null;
+    var rr = rad * r;
+    /* Squash along the view-radial direction by the foreshortening factor */
+    var ang = Math.atan2(p.y, p.x);
+    ctx.save();
+    ctx.translate(cx + p.x, cy + p.y);
+    ctx.rotate(ang);
+    ctx.scale(Math.max(0.06, p.fore), 1);
+    ctx.beginPath();
+    ctx.arc(0, 0, rr, 0, Math.PI * 2);
+    ctx.restore();
+    if (style) { ctx.fillStyle = style; ctx.fill(); }
+    return p;
+}
+
 /* --- Celestial hierarchy — solar system structure --- */
 /* Orbital speeds follow true Kepler's-third-law scaling (T = k * radius^1.5,
    k anchored to oracle's pre-existing period so the star tier — already
@@ -385,51 +577,122 @@ var PLANET_VISUALS = {
               /* Polar cap tint */
               {y:0.83,h:0.17,c:[148,118,80],a:0.22}
             ];
+            /* Bands are drawn as true spherical zones (2026-07-29). The band
+               table above is NASA-accurate and unchanged; what changed is
+               that b.y/b.h are now read as *latitudes* and swept as small
+               circles on the sphere, so each belt curves with the surface
+               and compresses toward the limb instead of being a fillRect.
+               Jupiter's 3.1° axial tilt is negligible — the visible curvature
+               comes from the projection itself. */
+            var jTilt=0.055;
+            /* Undercoat. Each band is a small circle, so a high-latitude band
+               legitimately spans much less screen width than the equator (at
+               -67° it covers ~40% of the disk). That is correct foreshortening,
+               but it means the band set alone cannot cover the disk: the polar
+               rows end mid-face and the bare sphere shows through as hard
+               rectangular blocks. Laying down a vertical ramp of the band
+               palette first guarantees full coverage, so the projected bands
+               read as detail on a continuous atmosphere instead of as tiles. */
+            var jBase=ctx.createLinearGradient(0,y-r,0,y+r);
+            jBase.addColorStop(0.00,'rgba(150,116,74,0.55)');
+            jBase.addColorStop(0.14,'rgba(168,128,80,0.50)');
+            jBase.addColorStop(0.30,'rgba(196,160,104,0.45)');
+            jBase.addColorStop(0.46,'rgba(226,198,142,0.42)');
+            jBase.addColorStop(0.56,'rgba(206,166,106,0.45)');
+            jBase.addColorStop(0.72,'rgba(176,132,78,0.48)');
+            jBase.addColorStop(0.88,'rgba(158,120,74,0.52)');
+            jBase.addColorStop(1.00,'rgba(146,112,72,0.55)');
+            ctx.fillStyle=jBase;
+            ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
             for(var bi=0;bi<bands.length;bi++){
               var b=bands[bi];
-              /* Each band drifts at slightly different speed — differential rotation */
-              var drift=(bi%2===0?1:-1)*Math.sin(now/18000+bi*0.9)*r*0.04
-                       +(bi<8?1:-1)*Math.sin(now/11000+bi*1.7)*r*0.02;
-              var bG=ctx.createLinearGradient(x-r,y+b.y*r,x+r,y+(b.y+b.h)*r);
-              bG.addColorStop(0,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.45)+')');
-              bG.addColorStop(0.15,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
-              bG.addColorStop(0.85,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
-              bG.addColorStop(1,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.45)+')');
-              ctx.save();
-              ctx.translate(drift,0);
-              ctx.fillStyle=bG;
-              ctx.fillRect(x-r-Math.abs(drift)-2,y+b.y*r,r*2+Math.abs(drift)*2+4,b.h*r+1);
-              ctx.restore();
+              /* Map the band's normalized y (-1..1 across the disk) to a real
+                 latitude. asin gives the correct non-linear spacing: bands
+                 near the poles occupy far more latitude per unit of screen y. */
+              var yTop=Math.max(-0.999,Math.min(0.999,b.y));
+              var yBot=Math.max(-0.999,Math.min(0.999,b.y+b.h));
+              var latT=Math.asin(yTop), latB=Math.asin(yBot);
+              var latC=(latT+latB)/2;
+              /* Overlap each band into its neighbours. The table's rows merely
+                 abut, and once turbulence displaces the shared edge in opposite
+                 directions the two bands separate, leaving hairline wedges of
+                 bare sphere. Bleeding past the nominal edge guarantees the
+                 zones always overlap; the later band simply paints over the
+                 earlier one, so the visible boundary is still correct. */
+              var latH=Math.abs(latB-latT)/2;
+              var bleed=latH*0.55+0.012;
+              latH+=bleed;
+              /* Differential rotation — each band spins at its own rate, which
+                 is real for Jupiter (equator laps the poles every few days). */
+              var jSpin=now/26000*(1+Math.cos(latC)*0.55)
+                       +Math.sin(now/18000+bi*0.9)*0.05;
+              /* Cross-band gradient so a belt isn't one dead flat tone */
+              var bG=ctx.createLinearGradient(x,y+Math.sin(latT)*r,x,y+Math.sin(latB)*r);
+              bG.addColorStop(0,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.55)+')');
+              bG.addColorStop(0.5,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
+              bG.addColorStop(1,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.55)+')');
+              /* Belts (dark) shear harder than zones (bright) — belts are the
+                 turbulent downwelling regions on the real planet. Kept below
+                 the bleed above so a displaced edge still overlaps its
+                 neighbour rather than tearing a gap open. */
+              var jTurb=Math.min(bleed*0.75,latH*(0.22+0.16*(bi%2)));
+              _sphBand(ctx,x,y,r,latC,latH,jSpin,jTilt,bG,lx,ly,true,jTurb,bi,now/9000);
             }
-            /* Inter-band turbulence: festoon waves at belt/zone boundaries */
-            ctx.lineWidth=0.7;
+            /* Limb darkening — the single cheapest, strongest sphere cue.
+               A real gas giant falls off sharply at the edge because you are
+               looking through vastly more atmosphere at grazing incidence. */
+            var jLimb=ctx.createRadialGradient(x,y,r*0.55,x,y,r);
+            jLimb.addColorStop(0,'rgba(0,0,0,0)');
+            jLimb.addColorStop(0.72,'rgba(40,24,8,0.10)');
+            jLimb.addColorStop(0.92,'rgba(28,16,5,0.30)');
+            jLimb.addColorStop(1,'rgba(18,10,3,0.52)');
+            ctx.fillStyle=jLimb;
+            ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
+            /* Inter-band turbulence: festoon waves at belt/zone boundaries.
+               Now traced along a real small circle of latitude, so the wave
+               follows the sphere's curve and dies at the limb rather than
+               running dead-straight off the edge. */
+            var jTurbSpin=now/26000;
             var turbBands=[-0.43,-0.29,0.09,0.25];
             for(var ti=0;ti<turbBands.length;ti++){
-              var ty=y+turbBands[ti]*r;
-              ctx.strokeStyle='rgba(200,165,95,0.09)';
+              var tLat=Math.asin(Math.max(-0.999,Math.min(0.999,turbBands[ti])));
+              ctx.strokeStyle='rgba(200,165,95,0.10)';
+              ctx.lineWidth=Math.max(0.4,r*0.006);
               ctx.beginPath();
-              for(var tx=x-r;tx<=x+r;tx+=2){
-                var tw=Math.sin((tx-x)/r*8+now/5000+ti*2.1)*r*0.025
-                      +Math.sin((tx-x)/r*14+now/3200+ti)*r*0.012;
-                if(tx===x-r) ctx.moveTo(tx,ty+tw); else ctx.lineTo(tx,ty+tw);
+              var tStarted=false;
+              for(var tstep=0;tstep<=40;tstep++){
+                var tlon=-Math.PI/2+(tstep/40)*Math.PI;
+                /* Ripple the latitude itself — the wave rides the surface */
+                var tw=Math.sin(tlon*6+now/5000+ti*2.1)*0.030
+                      +Math.sin(tlon*11+now/3200+ti)*0.014;
+                var tp=_sphProject(tLat+tw,tlon,r,jTurbSpin,jTilt);
+                if(tp.vis<=0){tStarted=false;continue;}
+                if(!tStarted){ctx.moveTo(x+tp.x,y+tp.y);tStarted=true;}
+                else ctx.lineTo(x+tp.x,y+tp.y);
               }
               ctx.stroke();
-              /* Festoon wisps: short curved filaments dipping south */
-              for(var fi=0;fi<5;fi++){
-                var fx=x-r*0.7+fi*r*0.35+Math.sin(now/8000+fi+ti)*r*0.05;
-                var festA=now/12000+fi*0.8+ti;
-                ctx.strokeStyle='rgba(175,130,65,0.08)';
-                ctx.lineWidth=0.5;
-                ctx.beginPath();
-                ctx.moveTo(fx,ty);
-                ctx.bezierCurveTo(fx+r*0.04,ty+r*0.05,fx+r*0.07,ty+r*0.06,fx+r*0.08,ty+r*0.04);
-                ctx.stroke();
-              }
             }
-            /* Great Red Spot — oval storm, 1.5x planet-width, south equatorial belt */
-            var grsPhase=now/18000; /* slow westward drift */
-            var spotX=x+Math.cos(grsPhase)*r*0.28;
-            var spotY=y+r*0.17;
+            /* Great Red Spot — anchored at a fixed lat/lon and carried around
+               by the planet's rotation, so it genuinely disappears over the
+               limb and returns, foreshortening as it goes. This is the single
+               most convincing "it's a ball" cue on the whole planet. */
+            var grsLat=Math.asin(0.17);
+            var grsLon=0.0;
+            var grsSpin=now/26000*1.55; /* GRS sits near the fast equator */
+            var grsP=_sphProject(grsLat,grsLon,r,grsSpin,jTilt);
+            if(grsP.vis>0){
+            var spotX=x+grsP.x, spotY=y+grsP.y;
+            var grsVis=grsP.vis;
+            /* Foreshorten along the view-radial direction and tilt to match
+               the local surface orientation */
+            var grsAng=Math.atan2(grsP.y,grsP.x);
+            ctx.save();
+            ctx.translate(spotX,spotY);
+            ctx.rotate(grsAng);
+            ctx.scale(Math.max(0.07,grsP.fore),1);
+            ctx.rotate(-grsAng);
+            ctx.translate(-spotX,-spotY);
+            ctx.globalAlpha=grsVis;
             var grsA=r*0.22, grsB=r*0.135; /* semi-axes */
             /* GRS outer wake — oval halo before the storm */
             var grsWake=ctx.createRadialGradient(spotX,spotY,grsA*0.7,spotX,spotY,grsA*1.5);
@@ -462,17 +725,29 @@ var PLANET_VISUALS = {
               ctx.ellipse(spotX,spotY,swA,swB,swRot,0,Math.PI*1.7);
               ctx.stroke();
             }
-            /* White oval storms — smaller BTB ovals in south temperate belt */
+            ctx.restore(); /* end GRS foreshorten transform */
+            }
+            /* White oval storms — smaller BTB ovals, each anchored to its own
+               longitude so they rotate with the planet like the GRS. */
             var baSeed=[[0.3,0.40],[0.68,0.43],[-0.35,0.38]];
             for(var ba=0;ba<baSeed.length;ba++){
-              var baX=x+baSeed[ba][0]*r+Math.sin(now/25000+ba)*r*0.03;
-              var baY=y+baSeed[ba][1]*r;
+              var baLat=Math.asin(Math.max(-0.99,Math.min(0.99,baSeed[ba][1])));
+              var baLon=baSeed[ba][0]*Math.PI;
+              var baP=_sphProject(baLat,baLon,r,now/26000*1.2,jTilt);
+              if(baP.vis<=0) continue;
+              var baX=x+baP.x, baY=y+baP.y;
               var baG=ctx.createRadialGradient(baX,baY,0,baX,baY,r*0.07);
               baG.addColorStop(0,'rgba(240,232,210,0.22)');
               baG.addColorStop(0.6,'rgba(220,210,185,0.08)');
               baG.addColorStop(1,'rgba(0,0,0,0)');
               ctx.fillStyle=baG;
-              ctx.beginPath();ctx.ellipse(baX,baY,r*0.07,r*0.045,0,0,Math.PI*2);ctx.fill();
+              ctx.save();
+              ctx.globalAlpha=baP.vis;
+              var baAng=Math.atan2(baP.y,baP.x);
+              ctx.translate(baX,baY);ctx.rotate(baAng);
+              ctx.scale(Math.max(0.07,baP.fore),1);
+              ctx.beginPath();ctx.ellipse(0,0,r*0.07,r*0.045,0,0,Math.PI*2);ctx.fill();
+              ctx.restore();
             }
             /* Scanner beam — oracle's 93-pair scanning pulse */
             var scA=now/7000;
@@ -508,33 +783,73 @@ var PLANET_VISUALS = {
               {y:0.56,h:0.14,c:[22,78,182],a:0.18},
               {y:0.70,h:0.15,c:[18,65,170],a:0.16}
             ];
+            /* Spherical zones (2026-07-29) — same conversion as Jupiter.
+               Neptune's 28.3° axial tilt is significant and visible, so the
+               bands lean, which reads as a genuinely 3D orientation. */
+            var nTilt=0.494;
+            /* Undercoat — same reason as Jupiter: polar small-circles cannot
+               cover the disk on their own. See the note there. */
+            var nBase=ctx.createLinearGradient(0,y-r,0,y+r);
+            nBase.addColorStop(0.00,'rgba(16,58,160,0.55)');
+            nBase.addColorStop(0.22,'rgba(20,72,178,0.50)');
+            nBase.addColorStop(0.45,'rgba(30,98,206,0.45)');
+            nBase.addColorStop(0.60,'rgba(24,84,190,0.48)');
+            nBase.addColorStop(0.80,'rgba(18,64,170,0.52)');
+            nBase.addColorStop(1.00,'rgba(14,52,152,0.55)');
+            ctx.fillStyle=nBase;
+            ctx.beginPath();ctx.arc(x,y,r,0,Math.PI*2);ctx.fill();
             for(var bi=0;bi<dbBands.length;bi++){
               var b=dbBands[bi];
-              /* Neptune has fastest winds in solar system — strong differential rotation */
-              var drift=(bi%2===0?1.2:-0.8)*Math.sin(now/10000+bi*0.7)*r*0.06;
-              ctx.fillStyle='rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')';
-              ctx.fillRect(x-r+drift,y+b.y*r,r*2,b.h*r);
+              var nyT=Math.max(-0.999,Math.min(0.999,b.y));
+              var nyB=Math.max(-0.999,Math.min(0.999,b.y+b.h));
+              var nLatT=Math.asin(nyT), nLatB=Math.asin(nyB);
+              var nLatC=(nLatT+nLatB)/2;
+              /* Same neighbour-overlap as Jupiter — see the bleed note there. */
+              var nLatH=Math.abs(nLatB-nLatT)/2;
+              nLatH+=nLatH*0.55+0.012;
+              /* Fastest winds in the solar system — strong differential rotation */
+              var nSpin=now/17000*(1+Math.cos(nLatC)*0.9)
+                       +Math.sin(now/10000+bi*0.7)*0.06;
+              var nG=ctx.createLinearGradient(x,y+Math.sin(nLatT)*r,x,y+Math.sin(nLatB)*r);
+              nG.addColorStop(0,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.55)+')');
+              nG.addColorStop(0.5,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+b.a+')');
+              nG.addColorStop(1,'rgba('+b.c[0]+','+b.c[1]+','+b.c[2]+','+(b.a*0.55)+')');
+              _sphBand(ctx,x,y,r,nLatC,nLatH,nSpin,nTilt,nG,lx,ly,true,nLatH*0.22,bi*1.7,now/7000);
             }
-            /* Bright cloud streaks — methane ice high-altitude cirrus */
+            /* Bright cloud streaks — methane ice high-altitude cirrus. Traced
+               along small circles of latitude so each streak curves with the
+               sphere and vanishes over the limb. */
             for(var ci=0;ci<6;ci++){
-              var cy2=y+(-0.6+ci*0.22)*r;
-              var cdrift=Math.sin(now/6000+ci*2.8)*r*0.15; /* fast wind drift */
-              /* Streak length varies — wispy and discontinuous */
-              var cLen=r*(0.3+0.4*((ci*7+13)%5/5));
-              var cxStart=x-cLen*0.5+Math.cos(ci*1.4)*r*0.2;
-              ctx.strokeStyle='rgba(195,220,252,'+(0.12+0.06*Math.sin(now/3000+ci))+')';
-              ctx.lineWidth=Math.max(0.5,1.5-ci*0.15);
+              var cLat=Math.asin(Math.max(-0.95,Math.min(0.95,-0.6+ci*0.22)));
+              var cLonC=Math.cos(ci*1.4)*1.1;         /* where the streak sits */
+              var cSpan=0.45+0.5*((ci*7+13)%5/5);     /* how far it runs */
+              var cSpin=now/17000*2.4+ci*0.9;         /* fast wind drift */
+              ctx.strokeStyle='rgba(195,220,252,'+(0.13+0.06*Math.sin(now/3000+ci))+')';
+              ctx.lineWidth=Math.max(0.5,r*0.014-ci*r*0.0015);
               ctx.beginPath();
-              for(var cx2=cxStart;cx2<cxStart+cLen;cx2+=1.5){
-                var cw=Math.sin((cx2-x)/r*12+now/2500+ci)*r*0.012;
-                if(cx2===cxStart)ctx.moveTo(cx2+cdrift,cy2+cw);
-                else ctx.lineTo(cx2+cdrift,cy2+cw);
+              var cStarted=false;
+              for(var cs=0;cs<=26;cs++){
+                var clon=cLonC-cSpan+(cs/26)*cSpan*2;
+                var cw=Math.sin(clon*10+now/2500+ci)*0.014;
+                var cp=_sphProject(cLat+cw,clon,r,cSpin,nTilt);
+                if(cp.vis<=0){cStarted=false;continue;}
+                if(!cStarted){ctx.moveTo(x+cp.x,y+cp.y);cStarted=true;}
+                else ctx.lineTo(x+cp.x,y+cp.y);
               }
               ctx.stroke();
             }
-            /* Great Dark Spot — deep anticyclone (Voyager discovered, later disappeared) */
-            var gdX=x+Math.cos(now/14000)*r*0.18;
-            var gdY=y-r*0.12;
+            /* Great Dark Spot — deep anticyclone (Voyager discovered, later
+               disappeared). Anchored to a fixed lat/lon so it rotates around
+               the limb with the planet instead of sliding across the disk. */
+            var gdP=_sphProject(Math.asin(-0.12),0.35,r,now/17000*1.6,nTilt);
+            if(gdP.vis>0){
+            var gdX=x+gdP.x, gdY=y+gdP.y;
+            ctx.save();
+            ctx.globalAlpha=gdP.vis;
+            var gdAng=Math.atan2(gdP.y,gdP.x);
+            ctx.translate(gdX,gdY);ctx.rotate(gdAng);
+            ctx.scale(Math.max(0.07,gdP.fore),1);
+            ctx.rotate(-gdAng);ctx.translate(-gdX,-gdY);
             /* Outer ring — dark blue oval depression */
             var gdOuter=ctx.createRadialGradient(gdX,gdY,r*0.08,gdX,gdY,r*0.19);
             gdOuter.addColorStop(0,'rgba(8,30,95,0.35)');
@@ -547,14 +862,25 @@ var PLANET_VISUALS = {
             gdCore.addColorStop(0.6,'rgba(8,28,90,0.20)');
             gdCore.addColorStop(1,'rgba(0,0,0,0)');
             ctx.fillStyle=gdCore;ctx.beginPath();ctx.ellipse(gdX,gdY,r*0.09,r*0.055,0.2,0,Math.PI*2);ctx.fill();
-            /* Companion bright cloud — "scooter" feature just south, moving faster */
-            var scootX=x+Math.cos(now/8000)*r*0.22;
-            var scootY=gdY+r*0.14;
-            var scootG=ctx.createRadialGradient(scootX,scootY,0,scootX,scootY,r*0.055);
-            scootG.addColorStop(0,'rgba(210,228,252,0.25)');
-            scootG.addColorStop(0.5,'rgba(185,215,250,0.10)');
-            scootG.addColorStop(1,'rgba(0,0,0,0)');
-            ctx.fillStyle=scootG;ctx.beginPath();ctx.ellipse(scootX,scootY,r*0.055,r*0.032,0,0,Math.PI*2);ctx.fill();
+            ctx.restore(); /* end GDS foreshorten transform */
+            }
+            /* Companion bright cloud — the "scooter", south of the GDS and
+               moving faster; also surface-anchored so it laps the dark spot. */
+            var scootP=_sphProject(Math.asin(0.02),-0.5,r,now/17000*2.1,nTilt);
+            if(scootP.vis>0){
+              var scootX=x+scootP.x, scootY=y+scootP.y;
+              var scootG=ctx.createRadialGradient(0,0,0,0,0,r*0.055);
+              scootG.addColorStop(0,'rgba(210,228,252,'+(0.25*scootP.vis)+')');
+              scootG.addColorStop(0.5,'rgba(185,215,250,'+(0.10*scootP.vis)+')');
+              scootG.addColorStop(1,'rgba(0,0,0,0)');
+              ctx.save();
+              var scAng=Math.atan2(scootP.y,scootP.x);
+              ctx.translate(scootX,scootY);ctx.rotate(scAng);
+              ctx.scale(Math.max(0.07,scootP.fore),1);
+              ctx.fillStyle=scootG;
+              ctx.beginPath();ctx.ellipse(0,0,r*0.055,r*0.032,0,0,Math.PI*2);ctx.fill();
+              ctx.restore();
+            }
             /* Triton teal glow — atmospheric influence from largest moon */
             var tritonG=ctx.createRadialGradient(x+r*0.35,y-r*0.55,0,x+r*0.35,y-r*0.55,r*0.28);
             tritonG.addColorStop(0,'rgba(80,210,195,0.06)');
@@ -1559,6 +1885,62 @@ function drawPlanet(ctx, body, sunX, sunY, now, planetType) {
         ctx.arc(x, y, r, 0, Math.PI * 2);
         ctx.clip();
         vis.surface(ctx, x, y, r, lx, ly, now);
+        ctx.restore();
+    }
+
+    /* ═══ PHOTOMETRIC FINISH (2026-07-29) ═══
+       Applied to EVERY body, over whatever the surface function painted.
+       Surface detail is drawn flat-bright by design (it has to be legible),
+       so without this pass the texture fights the base sphere's shading and
+       the planet flattens back out. Three cheap layers restore the volume:
+
+       1. Limb darkening — real spheres fall off at the edge (grazing
+          incidence through more atmosphere / less normal-facing surface).
+          This is what makes an edge read as curvature instead of a cut-out.
+       2. Terminator — the day/night boundary swept across the disk from the
+          actual sun direction, so shading agrees with the lighting.
+       3. Specular sheen — a soft off-center highlight giving a wet/gaseous
+          sense of a curved surface catching the light. */
+    if (!_skipSurf || vis.surface) {
+        /* 1. Limb darkening, centered on the disk. Deliberately strong — this
+           is the layer doing most of the work of turning a flat colored circle
+           into a ball, and at 50" viewing distance a subtle falloff reads as
+           no falloff at all. */
+        var ldG = ctx.createRadialGradient(x, y, r * 0.30, x, y, r);
+        ldG.addColorStop(0, 'rgba(0,0,0,0)');
+        ldG.addColorStop(0.55, 'rgba(0,0,0,0.10)');
+        ldG.addColorStop(0.78, 'rgba(0,0,0,0.30)');
+        ldG.addColorStop(0.92, 'rgba(0,0,0,0.52)');
+        ldG.addColorStop(1, 'rgba(0,0,0,0.72)');
+        ctx.fillStyle = ldG;
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+
+        /* 2. Terminator — shadow ramps in from the anti-solar side */
+        var tmG = ctx.createLinearGradient(
+            x + lx * r, y + ly * r,
+            x - lx * r, y - ly * r
+        );
+        tmG.addColorStop(0, 'rgba(0,0,0,0)');
+        tmG.addColorStop(0.42, 'rgba(0,0,0,0)');
+        tmG.addColorStop(0.72, 'rgba(0,0,0,0.26)');
+        tmG.addColorStop(0.90, 'rgba(0,0,0,0.50)');
+        tmG.addColorStop(1, 'rgba(0,0,0,0.66)');
+        ctx.save();
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();
+        ctx.fillStyle = tmG;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
+        ctx.restore();
+
+        /* 3. Specular sheen toward the sun */
+        var spX = x + lx * r * 0.42, spY = y + ly * r * 0.42;
+        var shG = ctx.createRadialGradient(spX, spY, 0, spX, spY, r * 0.78);
+        shG.addColorStop(0, 'rgba(255,252,244,0.10)');
+        shG.addColorStop(0.45, 'rgba(255,250,238,0.035)');
+        shG.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.save();
+        ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();
+        ctx.fillStyle = shG;
+        ctx.fillRect(x - r, y - r, r * 2, r * 2);
         ctx.restore();
     }
 

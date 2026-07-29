@@ -2856,7 +2856,20 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Type", mime)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "public, max-age=3600")
+            # Revalidate every time, keyed on mtime+size. The dashboard HTML is
+            # already served no-store, but its JS (solar_system.js) was getting
+            # "max-age=3600" -- so an edit to a renderer silently did nothing for
+            # an hour and the browser kept executing the old file. That cost real
+            # debugging time on 2026-07-29 (planet changes appeared not to apply).
+            # no-cache still allows a 304 via ETag, so we keep the bandwidth win
+            # without ever serving stale code.
+            try:
+                st = os.stat(file_path)
+                etag = '"%x-%x"' % (int(st.st_mtime), st.st_size)
+                self.send_header("ETag", etag)
+            except OSError:
+                pass
+            self.send_header("Cache-Control", "no-cache, must-revalidate")
             self.send_header("Access-Control-Allow-Origin", "*")
             self.end_headers()
             self.wfile.write(data)

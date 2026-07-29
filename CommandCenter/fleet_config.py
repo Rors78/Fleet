@@ -67,7 +67,14 @@ BOTS = {
     "turtlesue":   {"port": 8070, "dir": os.path.join(DATA_DRIVE, "TurtleSue"),                             "role": "trader",  "display": "TurtleSue",  "color": "#00e676", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "turtlebot.py", "--auto"],                    "phase": 1, "slow": False},
     "sentinel":    {"port": 8071, "dir": os.path.join(DATA_DRIVE, "Sentinel"),                               "role": "support", "display": "Sentinel",   "color": "#00bfa5", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "sentinel.py"],                               "phase": 2, "slow": True},   # needs CC market data
     "trinity":     {"port": 8072, "dir": os.path.join(DATA_DRIVE, "Trinity"),                                "role": "support", "display": "Trinity",    "color": "#00b0ff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "overwatch.py", "--auto"],                    "phase": 1, "slow": False},
-    "hivemind":    {"port": 8073, "dir": os.path.join(DATA_DRIVE, "HiveMind"),                               "role": "support", "display": "HiveMind",   "color": "#ffab00", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "cli.py", "dashboard", "--synthetic"],        "phase": 1, "slow": True},
+    # HiveMind ran with --synthetic in production until 2026-07-29. That feeds
+    # generate_synthetic_returns() -- random Student-t draws with a +27.4%/yr
+    # drift baked in by construction -- and labels the columns BTC/ETH/SOL/...
+    # so the output read as live allocations. It reported Sharpe 2.83 and a
+    # "bull" regime while the same code on real Kraken prices gave Sharpe -1.01
+    # and BEAR: a 3.84-unit swing of pure fiction, published into the fleet's
+    # REGIME SOURCES panel next to genuinely-measured regimes.
+    "hivemind":    {"port": 8073, "dir": os.path.join(DATA_DRIVE, "HiveMind"),                               "role": "support", "display": "HiveMind",   "color": "#ffab00", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "cli.py", "dashboard"],                       "phase": 1, "slow": True},
     "nexusbrain":  {"port": 8074, "dir": os.path.join(DATA_DRIVE, "NexusBrain"),                             "role": "trader",  "display": "NexusBrain", "color": "#d500f9", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus_brain.py", "run-sim", "--auto"],       "phase": 1, "slow": False},
     "oracle":      {"port": 8075, "dir": os.path.join(DATA_DRIVE, "Oracle"),                                 "role": "intel",   "display": "Oracle",     "color": "#76ff03", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "server.py"],                                 "phase": 1, "slow": True},
     "deepblue":    {"port": 8076, "dir": os.path.join(DATA_DRIVE, "Whale Watcher", "apex_whale_finder.dir"), "role": "intel",   "display": "Deep Blue",  "color": "#18ffff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "main.py", "--headless"],                       "phase": 1, "slow": False},

@@ -5542,12 +5542,32 @@ function buildHiveMindView(def,b){
 
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC+'">'+regLabel+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SHARPE</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmtNum(cons.sharpe_ratio||0,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ANN RET</div><div class="dv2-kpi-value good">'+fmtNum((cons.annualized_return||0)*100,1)+'%</div></div>';
+  /* Sign-coloured, not hardcoded. ANN RET was fixed to the "good" class, so a
+     -51.6% return would have rendered green (2026-07-29 audit). */
+  var _hmSh=cons.sharpe_ratio||0;
+  var _hmRet=(cons.annualized_return||0)*100;
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SHARPE</div><div class="dv2-kpi-value '+(_hmSh>0?'good':'bad')+'">'+fmtNum(_hmSh,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ANN RET</div><div class="dv2-kpi-value '+(_hmRet>=0?'good':'bad')+'">'+fmtNum(_hmRet,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ANN VOL</div><div class="dv2-kpi-value">'+fmtNum((cons.annualized_vol||0)*100,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">MAX DD</div><div class="dv2-kpi-value bad">'+fmtNum((cons.max_drawdown||0)*100,1)+'%</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CVaR 95</div><div class="dv2-kpi-value">'+fmtNum((cons.cvar_95||0)*100,2)+'%</div></div>';
+  /* vs equal-weight — the number that says whether optimising beat doing
+     nothing. run_hive_mind always computed it; it was simply never published. */
+  if(cons.vs_benchmark!=null){
+    var _hmVs=cons.vs_benchmark;
+    h+='<div class="dv2-kpi"><div class="dv2-kpi-label">vs EQUAL-WT</div><div class="dv2-kpi-value '+(_hmVs>0?'good':'bad')+'"'
+      +' title="consensus Sharpe minus equal-weight Sharpe ('+fmtNum(cons.benchmark_sharpe||0,2)+'). Negative means the optimiser is losing to putting equal money in everything.">'
+      +(_hmVs>=0?'+':'')+fmtNum(_hmVs,2)+'</div></div>';
+  }
   h+='</div>';
+  /* Provenance banner — synthetic output is labelled with real tickers, so
+     without this "SOL: 37.1%" reads as a live Solana allocation. */
+  if(raw.data_source==='synthetic'){
+    h+='<div style="font-family:var(--font-mono);font-size:0.6rem;color:#f97316;padding:3px 10px;background:rgba(249,115,22,0.08);border-left:2px solid #f97316">'
+      +'⚠ SYNTHETIC DATA — random returns with drift baked in, labelled with real tickers. Not market state.</div>';
+  } else if(raw.data_source==='market'){
+    h+='<div style="font-family:var(--font-mono);font-size:0.58rem;color:var(--text-muted);opacity:0.7;padding:2px 10px">'
+      +'live Kraken data'+(raw.lookback_days?' · '+raw.lookback_days+'d lookback':'')+'</div>';
+  }
 
   /* THREE-ZONE BODY */
   h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';

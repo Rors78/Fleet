@@ -46,3 +46,28 @@ archive/
 # Local launcher overrides
 launch.bat
 launch_desktop.bat
+
+# Stray downloads that land in this directory.
+# Deliberately specific rather than a blanket *.png/*.zip: rendered cards and
+# screenshots are worth committing when we choose to, and a broad rule would
+# silently swallow them.
+download*.png
+download*.jpg
+download*.jpeg
+image
+*.exe
+*.msi
+*.zip
+*.7z
+*.rar
+
+# Scratch/debug artifacts
+*.tmp
+*.tmp.*
+# PowerShell string-interpolation slip can create files literally named
+# "@{restarts=System.Object[]; ...}.tmp" — covered by *.tmp above, but the
+# leading-@ form is caught here too in case the suffix differs.
+@{*
+card_*.png
+wired_*.png
+preview_*.png

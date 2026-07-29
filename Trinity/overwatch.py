@@ -574,6 +574,20 @@ def track_signals():
                     track.result = "LOSS"
                     updates.append((sym, track, "LOSS"))
 
+    # Mutate history under the lock, then emit alerts AFTER releasing it.
+    #
+    # add_alert() acquires state_lock itself, and state_lock is a plain
+    # threading.Lock (not an RLock), so calling it from inside this block
+    # self-deadlocks the ranking worker. The worker dies holding the lock,
+    # every other consumer blocks on it, and the ThreadingHTTPServer stops
+    # answering — the process keeps the port bound but /api/snapshot hangs
+    # forever, which is exactly what took Trinity to 17/18 on 2026-07-29
+    # (curl exit 28, PID alive, port bound, no response).
+    #
+    # This was latent for as long as no signal ever resolved. The TP1
+    # resolution fix in the same audit made WIN/LOSS reachable for the first
+    # time, so `updates` became non-empty and the deadlock finally fired.
+    pending_alerts = []
     with state_lock:
         for sym, track, result in updates:
             if sym in signal_history:
@@ -581,8 +595,14 @@ def track_signals():
                     if t.entry_time == track.entry_time and t.result == "OPEN":
                         t.result = result
                         t.peak_pnl = track.peak_pnl
-            add_alert(sym, f"Signal {result}: {track.bias} @ {track.entry_price:.4f} -> P/L {track.peak_pnl:.2f}%",
-                       "EXIT" if result == "LOSS" else "SIGNAL")
+            pending_alerts.append((
+                sym,
+                f"Signal {result}: {track.bias} @ {track.entry_price:.4f} -> P/L {track.peak_pnl:.2f}%",
+                "EXIT" if result == "LOSS" else "SIGNAL",
+            ))
+
+    for sym, msg, level in pending_alerts:
+        add_alert(sym, msg, level)
 
 
 def get_win_rate() -> Tuple[int, int, int]:

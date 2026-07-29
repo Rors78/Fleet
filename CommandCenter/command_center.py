@@ -3333,14 +3333,28 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         # and the release record is canonical (real fees, real direction
         # casing, real reservation_id). The 90s same-pair OPEN cooldown in
         # PortfolioManager makes faster legitimate turnover impossible.
+        # Pair comparison MUST be normalized. The two emitters use different
+        # pair formats for the same instrument — the bot's event_publisher
+        # sends Kraken-native "AAVEUSD" while the release path sends "AAVE/USD"
+        # — so a raw string compare never matched and BOTH copies survived.
+        # That double-counted every snapshot-diffed close: TurtleSue's AAVE
+        # short showed up twice (-227.24 and -227.37, same second), inflating
+        # its realized loss by ~57% (2026-07-29 audit). normalize_pair collapses
+        # AAVEUSD/AAVE/USD/XXBTZUSD to one canonical form.
+        def _npair(p: str) -> str:
+            try:
+                return normalize_pair(p or "")
+            except Exception:
+                return p or ""
+
         rid_lookup: list[tuple[str, str, float]] = [
-            (t.get("bot", ""), t.get("pair", ""), float(t.get("ts") or 0))
+            (t.get("bot", ""), _npair(t.get("pair", "")), float(t.get("ts") or 0))
             for t in by_rid.values()
         ]
         deduped_no_rid: list[dict] = []
         for t in no_rid:
             tb = t.get("bot", "")
-            tp = t.get("pair", "")
+            tp = _npair(t.get("pair", ""))
             try:
                 tts = float(t.get("ts") or 0)
             except (ValueError, TypeError):
@@ -3356,7 +3370,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 # would otherwise both survive.
                 already = False
                 for kept in deduped_no_rid:
-                    if (kept.get("bot") == tb and kept.get("pair") == tp
+                    if (kept.get("bot") == tb
+                            and _npair(kept.get("pair", "")) == tp
                             and abs(float(kept.get("ts") or 0) - tts) < 600):
                         already = True
                         break

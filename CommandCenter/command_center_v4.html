@@ -3478,6 +3478,58 @@ function getBotTrades(botId, limit) {
   return limit ? trades.slice(0, limit) : trades;
 }
 
+/* ── Durable trade stats (2026-07-29 audit) ───────────────────────────────
+   Bot panels used to read raw.trade_stats straight from the bot's snapshot.
+   Most bots hold that in memory only, so a restart resets it to zero — and
+   the panel then renders "NO TRADES YET / total PnL $0.00" for a bot that had
+   actually closed losing trades. TurtleSue showed EQUITY $10,000 / PNL +0.00
+   while the event log held 3 closed shorts worth about -$401. A losing bot
+   that reads as flat is the single most dangerous thing this dashboard can
+   display, so stats are now recomputed from /api/trades, which is written to
+   disk per event and survives restarts.
+
+   Returns the same shape the panels already consume, plus `source` so a panel
+   can tell the viewer where the numbers came from. Falls back to the bot's own
+   figures only when the durable log has nothing for that bot. */
+function getDurableTradeStats(botId, botStats) {
+  var trades = getBotTrades(botId);
+  botStats = botStats || {};
+  if (!_tradeCacheLoaded || !trades.length) {
+    /* Nothing durable yet — pass the bot's own numbers through untouched. */
+    return {
+      total:        botStats.total || 0,
+      win_rate:     botStats.win_rate || 0,
+      profit_factor:botStats.profit_factor || 0,
+      avg_win:      botStats.avg_win || 0,
+      avg_loss:     botStats.avg_loss || 0,
+      total_pnl:    botStats.total_pnl || 0,
+      source:       _tradeCacheLoaded ? 'bot' : 'loading'
+    };
+  }
+  var wins = 0, losses = 0, gross_win = 0, gross_loss = 0, total_pnl = 0;
+  for (var i = 0; i < trades.length; i++) {
+    var p = Number(trades[i].pnl) || 0;
+    total_pnl += p;
+    /* Zero-PnL closes (scratch exits) count as trades but as neither a win
+       nor a loss — folding them into losses would understate win rate. */
+    if (p > 0)      { wins++;   gross_win  += p; }
+    else if (p < 0) { losses++; gross_loss += -p; }
+  }
+  var decided = wins + losses;
+  return {
+    total:         trades.length,
+    win_rate:      decided > 0 ? (wins / decided) : 0,   /* 0-1, as panels expect */
+    profit_factor: gross_loss > 0 ? (gross_win / gross_loss)
+                                  : (gross_win > 0 ? Infinity : 0),
+    avg_win:       wins   > 0 ? (gross_win  / wins)   : 0,
+    avg_loss:      losses > 0 ? (gross_loss / losses) : 0,
+    total_pnl:     total_pnl,
+    wins:          wins,
+    losses:        losses,
+    source:        'log'
+  };
+}
+
 /* Format unix timestamp as HH:MM:SS */
 function fmtTradeTime(ts) {
   if (!ts) return '--';
@@ -7693,7 +7745,10 @@ function buildTurtleSueView(def,b){
   var posKeys=Object.keys(positions);
   var channelData=raw.channel_data||{};
   var strengthRank=raw.strength_rank||[];
-  var tradeStats=raw.trade_stats||{};
+  /* Durable stats, not raw.trade_stats — TurtleSue resets its in-memory
+     counters on restart and was reporting "NO TRADES YET / $0.00" while the
+     event log held three closed losing shorts. See getDurableTradeStats. */
+  var tradeStats=getDurableTradeStats('turtlesue',raw.trade_stats||{});
   var expectancy=raw.expectancy||{};
   var equityCurve=raw.equity_curve||[];
   var signals=raw.signals||[];
@@ -7702,6 +7757,24 @@ function buildTurtleSueView(def,b){
   var eq=raw.equity||10000;
   var pnl=raw.pnl||0;
   var dd=raw.drawdown_pct||0;
+  /* Restart amnesia guard (2026-07-29 audit). TurtleSue keeps equity/pnl in
+     memory only, so after a restart it reports a pristine $10,000 / +0.00 even
+     though the durable event log holds closed losing trades. Trust the bot's
+     own figures only while they are consistent with the log; if the bot claims
+     flat but the log shows realized P&L, show the realized number. Equity is
+     reconstructed from starting capital so the tile can't read $10,000 on a
+     bot that is actually down. */
+  var _tsDur=getDurableTradeStats('turtlesue',raw.trade_stats||{});
+  var _tsAmnesia=(_tsDur.source==='log' && _tsDur.total>0 &&
+                  Math.abs(pnl)<0.005 && Math.abs(_tsDur.total_pnl)>=0.01);
+  if(_tsAmnesia){
+    var _tsStart=raw.starting_equity||10000;
+    pnl=_tsDur.total_pnl;
+    eq=_tsStart+pnl;
+    /* Drawdown from starting capital — a floor, not the true peak-to-trough,
+       but strictly better than the 0.0% the bot reports after a restart. */
+    dd=pnl<0?Math.abs(pnl)/_tsStart*100:0;
+  }
   var sc=raw.scan_count||0;
   var mode=raw.system_mode||'BOTH';
 
@@ -7755,12 +7828,17 @@ function buildTurtleSueView(def,b){
 
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+tsState+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY</div><div class="dv2-kpi-value" style="color:'+eqC+'">'+fmt$(eq)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL</div><div class="dv2-kpi-value" style="color:'+pnlC+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">DRAWDOWN</div><div class="dv2-kpi-value" style="color:'+ddC+'">'+fmtNum(dd,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_tsAmnesia?' *':'')+'</div><div class="dv2-kpi-value" style="color:'+eqC+'">'+fmt$(eq)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_tsAmnesia?' *':'')+'</div><div class="dv2-kpi-value" style="color:'+pnlC+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">DRAWDOWN'+(_tsAmnesia?' *':'')+'</div><div class="dv2-kpi-value" style="color:'+ddC+'">'+fmtNum(dd,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">POSITIONS</div><div class="dv2-kpi-value '+(posKeys.length?'good':'')+'">'+posKeys.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">UNITS</div><div class="dv2-kpi-value">'+(riskLimits.long_units||0)+'L/'+(riskLimits.short_units||0)+'S</div></div>';
   h+='</div>';
+  if(_tsAmnesia){
+    h+='<div style="font-family:var(--font-mono);font-size:0.58rem;color:#f97316;padding:2px 8px;background:rgba(249,115,22,0.06);border-left:2px solid #f97316">'
+      +'* bot reports $'+fmtNum(raw.equity||10000,0)+' / +0.00 after restart — showing realized P&amp;L from '
+      +_tsDur.total+' closed trades in the event log instead</div>';
+  }
 
   /* Three-zone body */
   h+='<div style="display:flex;flex:1;overflow:hidden;min-height:0;padding:5px;gap:5px">';
@@ -7959,18 +8037,31 @@ function buildTurtleSueView(def,b){
   h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:'+(_tsNoTrades?'0.8':'1.1')+'rem;color:'+wrC+'">'+(_tsNoTrades?'NO TRADES YET':fmtNum(wr2*100,1)+'%')+'</div>';
   h+='</div>';
   h+='<div style="height:3px;background:rgba(255,255,255,0.05);border-radius:2px;margin-bottom:8px"><div style="height:100%;width:'+wrFill+'%;background:'+wrC+';border-radius:2px"></div></div>';
+  /* profit_factor is Infinity when there are wins but no losses yet — render
+     that as ∞ rather than the literal string "Infinity". */
+  var _pf=tradeStats.profit_factor;
+  var _pfStr=(_pf===Infinity)?'∞':fmtNum(_pf||0,2);
+  var _tsPnlV=tradeStats.total_pnl||0;
   var statsRows=[
-    ['profit factor',fmtNum(tradeStats.profit_factor||0,2)],
+    ['profit factor',_pfStr],
     ['expectancy R',expectancy.avg_r!=null?fmtNum(expectancy.avg_r,3)+'R':'--'],
     ['avg win',fmt$(tradeStats.avg_win||0)],
     ['avg loss',fmt$(tradeStats.avg_loss||0)],
     ['total trades',tradeStats.total||0],
-    ['total PnL',fmt$(tradeStats.total_pnl||0)]
+    ['total PnL',fmt$(_tsPnlV)]
   ];
   statsRows.forEach(function(row){
+    /* Total PnL carries sign colour — a realized loss shown in neutral grey
+       is exactly how a losing bot reads as flat. */
+    var _vc='var(--text-secondary)';
+    if(row[0]==='total PnL') _vc=_tsPnlV>0?'var(--green)':(_tsPnlV<0?'var(--red)':'var(--text-secondary)');
     h+='<div style="display:flex;justify-content:space-between;font-family:var(--font-mono);font-size:0.65rem;padding:2px 0;border-bottom:1px solid rgba(201,162,39,0.03)">';
-    h+='<span style="color:var(--text-muted)">'+row[0]+'</span><span style="color:var(--text-secondary)">'+row[1]+'</span></div>';
+    h+='<span style="color:var(--text-muted)">'+row[0]+'</span><span style="color:'+_vc+'">'+row[1]+'</span></div>';
   });
+  /* Provenance — makes it obvious the numbers outlived the bot's own memory. */
+  if(tradeStats.source==='log'){
+    h+='<div style="font-family:var(--font-mono);font-size:0.55rem;color:var(--text-muted);opacity:0.6;padding-top:3px">from event log · survives restarts</div>';
+  }
   h+='</div>';
 
   /* Equity curve canvas */

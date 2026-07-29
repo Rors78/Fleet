@@ -1190,6 +1190,13 @@ _REGIME_SANITY_PATH = os.path.join(_OUTPUT_DIR, 'regime_sanity.json')
 _REGIME_SANITY_LOCK = threading.Lock()
 _REGIME_SANITY = {'ts': 0, 'checked': 0, 'mismatched': 0, 'details': [], 'summary': 'pending'}
 
+# Shadow trade ledger — counterfactual outcomes for gate-blocked entries.
+# Shadows were previously resolved, logged, then discarded, so the question
+# "is this gate actually saving money?" could never be answered from data.
+# Persisting them turns each blocked entry into a measurable counterfactual.
+_SHADOW_PATH = os.path.join(_OUTPUT_DIR, 'shadow_trades.jsonl')
+_SHADOW_LEDGER_LOCK = threading.Lock()
+
 def _factors_vec(f):
     """6-element factor vector in canonical order (must match across callers)."""
     if not f: return [0.0]*6
@@ -1297,6 +1304,44 @@ def _autopsy_narrative(r, exit_type, detail, similar):
         wr_pct = (wins / len(s_r) * 100) if s_r else 0
         parts.append(f"Similar historical setups: {len(similar)} found, {wins}W/{len(similar)-wins}L ({wr_pct:.0f}% WR, avg {avg_r:+.2f}R).")
     return ' '.join(parts)
+
+def record_shadow_outcome(sym, shadow, r, exit_price, resolved_how):
+    """Append a resolved shadow (counterfactual) trade to output/shadow_trades.jsonl.
+
+    A shadow is an entry a gate REJECTED, tracked forward as if it had been
+    taken. Persisting the outcome is what makes a gate falsifiable: if blocked
+    setups would have won, the gate is costing money; if they would have lost,
+    it is earning its place.
+
+    `gate` is parsed from block_reason (e.g. "whale_score_29.6<30" -> "whale")
+    so outcomes can be grouped per gate without changing the recording sites.
+
+    Best-effort; never raises into the scan loop."""
+    try:
+        reason = (shadow or {}).get('block_reason', '') or ''
+        gate = reason.split('_')[0] if reason else 'unknown'
+        rec = {
+            'ts': time.time(),
+            'sym': sym,
+            'gate': gate,
+            'block_reason': reason,
+            'direction': (shadow or {}).get('direction'),
+            'entry': (shadow or {}).get('entry_price'),
+            'exit': exit_price,
+            'r': r,
+            'win': bool(r > 0),
+            'resolved': resolved_how,          # 'tp1' | 'sl' | 'expired'
+            'signals': (shadow or {}).get('signals', []),
+            'regime': (shadow or {}).get('regime'),
+            'factors': (shadow or {}).get('factors', {}),
+            'held_h': round((time.time() - (shadow or {}).get('timestamp', time.time())) / 3600, 2),
+        }
+        with _SHADOW_LEDGER_LOCK:
+            with open(_SHADOW_PATH, 'a', encoding='utf-8') as f:
+                f.write(json.dumps(rec) + '\n')
+    except Exception as e:
+        logging.debug(f"shadow ledger write failed for {sym}: {type(e).__name__}: {e}")
+
 
 def record_autopsy(sym, direction, r, pnl, exit_type, detail):
     """Append a post-trade autopsy record to output/autopsy.jsonl.
@@ -5460,6 +5505,12 @@ def stream(st, sym, br, ex, iv=2):
 
                     if _sh_resolved:
                         _resolved_indices.append(_sh_idx)
+                        # Persist the counterfactual before it is discarded — this
+                        # is the only record that a blocked entry ever existed.
+                        record_shadow_outcome(
+                            sym, _sh, _sh_r, _sh_price,
+                            'expired' if _sh_r == 0 else ('tp1' if _sh_r > 0 else 'sl')
+                        )
                         if _sh_r != 0:
                             # br.record(_sh["signals"], _sh_r, Decimal('0'), _sh["direction"],
                             #           factors=_sh["factors"], rgm=_sh["regime"])  # NEUTERED: shadow learning poisons global_stats via 1% SL noise
@@ -5484,15 +5535,22 @@ def stream(st, sym, br, ex, iv=2):
             _llm_cached = None  # cached Ollama score from prior cycle
             factors = None
             confidence = 0.0
-            # Debug: log signal count even if below threshold
+            # Debug: log signal count even if below threshold.
+            # Rate-limited per symbol — this fires on every scan tick for every
+            # symbol with a signal, which was writing ~8 MB/day of duplicate
+            # lines to the log with no cap. The decision log and /api/funnel
+            # carry the same information without the disk cost.
             if len(sg) > 0:
-                logging.info(f"{sym} signals: {sg} (len={len(sg)}, pos={current_pos is not None}, cd_ok={cd_ok})")
+                _now_sig = time.time()
+                if _now_sig - _gate_block_last_log.get((sym, 'sigdbg'), 0) > 300:
+                    logging.info(f"{sym} signals: {sg} (len={len(sg)}, pos={current_pos is not None}, cd_ok={cd_ok})")
+                    _gate_block_last_log[(sym, 'sigdbg')] = _now_sig
             if _circuit_breaker_tripped and current_pos is None:
                 logging.debug(f"{sym} entry blocked: circuit breaker tripped")
                 time.sleep(iv)
                 continue
             if len(sg) >= 2 and current_pos is None and cd_ok:
-                logging.info(f"{sym} signals: {sg} (len={len(sg)}, pos={current_pos is not None}, cd_ok={cd_ok})")
+                # (the identical line above already covers this case)
 
                 # Bus intelligence layer — fleet context modifies entry decisions
                 _bus_boost = Decimal('1')
@@ -5701,7 +5759,14 @@ def stream(st, sym, br, ex, iv=2):
                                 "timestamp": time.time(),
                                 "block_reason": f"whale_score_{_ws:.1f}<30",
                             })
-                        logging.info(f"{sym} SHADOW: whale blocked at {float(current_price):.4f} (whale_score={_ws:.1f})")
+                        # Rate-limited: the shadow itself is still recorded every
+                        # time above (bounded by _MAX_SHADOWS_PER_SYM) — only the
+                        # log line is throttled, since a symbol sitting below the
+                        # whale floor re-emits this on every scan tick.
+                        _now_sh = time.time()
+                        if _now_sh - _gate_block_last_log.get((sym, 'shadow_whale'), 0) > 300:
+                            logging.info(f"{sym} SHADOW: whale blocked at {float(current_price):.4f} (whale_score={_ws:.1f})")
+                            _gate_block_last_log[(sym, 'shadow_whale')] = _now_sh
 
                     # Factor confidence: logged for analysis, NOT used as gate
                     # Data shows confidence is anti-predictive (low conf = better trades)
@@ -7672,6 +7737,60 @@ def _run_http_health_server():
                 except Exception as _ap_err:
                     logging.debug(f"autopsy read failed: {_ap_err}")
                 self._finish_json(out)
+            elif self.path.startswith("/api/shadow/verdict"):
+                # Gate scorecard from counterfactual outcomes.
+                # For each gate: what WOULD the trades it blocked have done?
+                #   avg_r > 0  -> the gate is rejecting winners (costing money)
+                #   avg_r < 0  -> the gate is rejecting losers (earning its place)
+                # Expired shadows (r == 0, never hit TP or SL) are counted
+                # separately: they are "no information", not neutral outcomes.
+                verdict = {}
+                recent = []
+                try:
+                    if os.path.exists(_SHADOW_PATH):
+                        with open(_SHADOW_PATH, 'r', encoding='utf-8') as f:
+                            lines = f.readlines()
+                        rows = []
+                        for ln in lines:
+                            ln = ln.strip()
+                            if not ln: continue
+                            try:
+                                rows.append(json.loads(ln))
+                            except Exception:
+                                continue
+                        recent = rows[-25:]
+                        by_gate = {}
+                        for r_ in rows:
+                            by_gate.setdefault(r_.get('gate', 'unknown'), []).append(r_)
+                        for g, rs in by_gate.items():
+                            decided = [x for x in rs if x.get('resolved') in ('tp1', 'sl')]
+                            expired = len(rs) - len(decided)
+                            wins = sum(1 for x in decided if x.get('win'))
+                            avg_r = (sum(float(x.get('r') or 0) for x in decided) / len(decided)) if decided else None
+                            if not decided:
+                                call = 'no data'
+                            elif len(decided) < 20:
+                                call = 'insufficient sample'
+                            elif avg_r > 0.10:
+                                call = 'GATE IS COSTING MONEY'
+                            elif avg_r < -0.10:
+                                call = 'gate is earning its place'
+                            else:
+                                call = 'gate is neutral'
+                            verdict[g] = {
+                                'blocked_total': len(rs),
+                                'resolved': len(decided),
+                                'expired': expired,
+                                'wins': wins,
+                                'losses': len(decided) - wins,
+                                'win_rate': round(wins / len(decided) * 100, 1) if decided else None,
+                                'avg_r': round(avg_r, 3) if avg_r is not None else None,
+                                'verdict': call,
+                                'min_sample': 20,
+                            }
+                except Exception as _sh_err:
+                    logging.debug(f"shadow verdict read failed: {_sh_err}")
+                self._finish_json({'gates': verdict, 'recent': recent})
             elif self.path == "/api/regime/sanity":
                 # Latest regime-sanity snapshot
                 with _REGIME_SANITY_LOCK:
@@ -7815,7 +7934,14 @@ def main():
     # Log to file only — stdout is owned by the Rich TUI
     _log_file = 'goldeneye_short_err.log' if _MODE == 'short' else 'goldeneye_err.log'
     _log_file = os.path.join(_BOT_DIR, _log_file)
-    _err_fh = logging.handlers.RotatingFileHandler(_log_file, maxBytes=10*1024*1024, backupCount=5, encoding="utf-8")
+    # Rotate at midnight, keep 7 days. Time-based (not size-based) is what
+    # actually guarantees a week of history: with size rotation a noisy day
+    # can evict the whole window in hours, which is precisely when you want
+    # to look back. Suffix is the date, so backups are goldeneye_err.log.2026-07-29.
+    _err_fh = logging.handlers.TimedRotatingFileHandler(
+        _log_file, when='midnight', interval=1, backupCount=7, encoding="utf-8"
+    )
+    _err_fh.suffix = "%Y-%m-%d"
     # Force handlers directly to bypass basicConfig no-op behavior
     root = logging.getLogger()
     root.setLevel(a.log_level.upper())

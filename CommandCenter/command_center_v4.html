@@ -1246,20 +1246,25 @@ function _orbScaleOrbits(){
     for(var sid in starRatios){
       if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=starScale*starRatios[sid];
     }
-    /* Planets orbit at 33% of star distance — enough spread to avoid overlap */
-    var planetScale=starScale*0.33;
+    /* Planets orbit at 42% of star distance — widened from 33% to give the
+       upscaled bodies room; at the old spacing 30px planets overlapped their
+       own star's moons. */
+    var planetScale=starScale*0.42;
     var planetRatios={confluence:1.10,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.30,rubberband:1.1,arbitrageur:0.90};
     for(var pid in planetRatios){
       if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
     }
-    /* CC-orbiting moons — layered rings between sun and stars */
+    /* CC-orbiting moons — layered rings between sun and stars. Inner ring
+       pushed out from 0.38 to 0.46 so HiveMind clears the upscaled 95px sun
+       instead of orbiting inside its corona. */
     var ccMoonScale=starScale*0.50;
-    var ccMoonRatios={hivemind:0.38,aegis:0.52,sentinel:0.66,chronos:0.80};
+    var ccMoonRatios={hivemind:0.46,aegis:0.60,sentinel:0.73,chronos:0.86};
     for(var cmid in ccMoonRatios){
       if(_orbNodes[cmid]) _orbNodes[cmid].orbitRadius=ccMoonScale*ccMoonRatios[cmid];
     }
-    /* Star-orbiting moons — 22% of star orbit distance (inside planet orbits) */
-    var moonScale=starScale*0.22;
+    /* Star-orbiting moons — 28% of star orbit distance (inside planet orbits).
+       Widened with the upscale so a 16px moon clears its 56px parent star. */
+    var moonScale=starScale*0.28;
     var moonRatios={phitex:0.9,contrarian:0.8,trinity:0.75};
     for(var mid in moonRatios){
       if(_orbNodes[mid]) _orbNodes[mid].orbitRadius=moonScale*moonRatios[mid];
@@ -1291,11 +1296,15 @@ function _orbScaleOrbits(){
   }
 
   /* --- Responsive body sizes — strict hierarchy enforced --- */
-  /* On 1080p: sun=54, star=45, planet=17, moon=11 → ratios 3.2x / 2.6x / 1.5x */
-  var sunSz=Math.max(44,minDim*0.05);
-  var starSz=Math.max(30,minDim*0.042);
-  var planetSz=Math.max(12,minDim*0.016);
-  var moonSz=Math.max(9,minDim*0.011);
+  /* UPSCALED 2026-07-29: bodies were sized for a laptop widget and read as
+     specks on the 50" wall (planets 17px, moons 11px). Every tier is scaled
+     up ~1.75x and the floors raised to match, so a planet is a *planet* at
+     viewing distance. Hierarchy ratios preserved: sun > star > planet > moon.
+     On 1080p fullscreen: sun=95, star=76, planet=30, moon=19. */
+  var sunSz=Math.max(76,minDim*0.088);
+  var starSz=Math.max(56,minDim*0.070);
+  var planetSz=Math.max(24,minDim*0.028);
+  var moonSz=Math.max(16,minDim*0.0175);
   for(var nid in _orbNodes){
     var nd=_orbNodes[nid],hier=CELESTIAL_HIERARCHY[nid];
     if(!hier) continue;
@@ -1692,10 +1701,32 @@ function _posRings(ctx,nd,x,y,sz){
    and upper-left (Gridzilla/NEXUS) collision clusters, plus NexusBrain/
    Rubberband, all reported as unreadable on the 50" display 2026-07-28. */
 var _orbLabelQueue=[];
+/* ═══ HOVER-ONLY LABELS (2026-07-29) ═══
+   18 permanent labels turned the starfield into a text wall — the whole point
+   of the cosmos view is the cosmos, and the names were competing with it.
+   Labels are now revealed on hover only: _labelReveal[id] is a 0→1 eased
+   amount driven per-frame by which body the mouse is over, so a name fades
+   in/out rather than popping. A body is queued only while its reveal is
+   non-zero, which means the common case (nothing hovered) queues nothing and
+   the collision pass costs nothing. */
+var _labelReveal={};      /* id → current 0..1 reveal amount */
+var _labelRevealSpeed=9;  /* per second — ~110ms to full fade */
+function _updateLabelReveals(dt){
+  var d=Math.min(1,dt*_labelRevealSpeed);
+  for(var id in _orbNodes){
+    var target=(_orbHover===id)?1:0;
+    var cur=_labelReveal[id]||0;
+    cur+=(target-cur)*d;
+    if(cur<0.004) cur=0;
+    _labelReveal[id]=cur;
+  }
+}
 function _queueLabel(nd,x,y,sz,priority){
   if(!nd||!nd.label) return;
+  var reveal=_labelReveal[nd.id]||0;
+  if(reveal<=0) return; /* not hovered — nothing to draw, nothing to resolve */
   _orbLabelQueue.push({
-    nd:nd, x:x, y:y, sz:sz,
+    nd:nd, x:x, y:y, sz:sz, reveal:reveal,
     priority:priority!=null?priority:(nd.celestialType==="star"?3:nd.celestialType==="planet"?2:1),
     text:nd.label, status:nd.statusLabel||"",
     alive:nd.alive, rgb:nd.rgb,
@@ -1707,10 +1738,12 @@ function _queueLabel(nd,x,y,sz,priority){
    good enough for collision testing without a ctx.measureText() per body
    per frame (that would force font-switch thrash across 18 bodies/frame). */
 function _labelBoxSize(entry){
-  var charW=entry.nd.celestialType==="star"?6.2:5.6;
+  /* Char widths track the upscaled hover fonts below (13px name / 10px
+     status), not the old 9px inline labels. */
+  var charW=entry.nd.celestialType==="star"?8.6:7.9;
   var nameW=entry.text.length*charW;
-  var statusW=entry.status?entry.status.length*(charW*0.9):0;
-  return {w:Math.max(nameW,statusW), h:entry.status?24:13};
+  var statusW=entry.status?entry.status.length*6.2:0;
+  return {w:Math.max(nameW,statusW), h:entry.status?32:18};
 }
 function _boxesOverlap(a,b){
   return !(a.x2<b.x1||a.x1>b.x2||a.y2<b.y1||a.y1>b.y2);
@@ -1761,30 +1794,50 @@ function _drawLabelsWithCollisionAvoidance(ctx){
     /* Leader line — only drawn when the label was pushed to a radial slot,
        so a viewer can still trace which body it names. */
     if(chosen.lx!=null){
-      ctx.strokeStyle="rgba("+e.rgb+",0.18)";
-      ctx.lineWidth=0.75;
+      ctx.strokeStyle="rgba("+e.rgb+","+(0.34*(e.reveal!=null?e.reveal:1))+")";
+      ctx.lineWidth=0.9;
       ctx.beginPath();ctx.moveTo(chosen.lx,chosen.ly);ctx.lineTo(chosen.cx,chosen.cy-box.h/2+4);ctx.stroke();
     }
-    /* Text backing plate — small translucent dark pill behind the text so
-       a pale/grey body (AEGIS #e2e8f0) or a busy starfield background
-       never swallows the label, without resorting to a solid box that
-       would look like UI chrome floating in space. */
-    var padX=4,padY=2;
-    ctx.fillStyle="rgba(4,6,14,0.42)";
+    /* Reveal transform — the label rises a few px into place as it fades in,
+       so it reads as *emerging from* the body rather than blinking on. */
+    var rv=e.reveal!=null?e.reveal:1;
+    var rise=(1-rv)*6;
+    var lx=chosen.cx, ly=chosen.cy+rise;
+
+    /* Text backing plate — translucent dark pill behind the text so a pale
+       body (AEGIS #e2e8f0) or a busy starfield never swallows the label,
+       without a solid box that would look like UI chrome floating in space.
+       Now that only one label is up at a time it can afford a hairline
+       accent border in the body's own color. */
+    var padX=7,padY=4;
+    var plateX=lx-box.w/2-padX, plateY=ly-box.h/2-padY;
+    var plateW=box.w+padX*2, plateH=box.h+padY*2;
+    ctx.fillStyle="rgba(4,6,14,"+(0.78*rv)+")";
     ctx.beginPath();
-    ctx.roundRect?ctx.roundRect(chosen.cx-box.w/2-padX,chosen.cy-box.h/2-padY,box.w+padX*2,box.h+padY*2,3):
-      ctx.rect(chosen.cx-box.w/2-padX,chosen.cy-box.h/2-padY,box.w+padX*2,box.h+padY*2);
+    ctx.roundRect?ctx.roundRect(plateX,plateY,plateW,plateH,5):ctx.rect(plateX,plateY,plateW,plateH);
     ctx.fill();
-    var labelAlpha=e.alive?(0.55+(e.nd.energy||0)*0.25):0.28;
-    ctx.fillStyle="rgba("+e.rgb+","+labelAlpha+")";
-    ctx.font=e.font;
+    ctx.strokeStyle="rgba("+e.rgb+","+(0.34*rv)+")";
+    ctx.lineWidth=1;
+    ctx.beginPath();
+    ctx.roundRect?ctx.roundRect(plateX,plateY,plateW,plateH,5):ctx.rect(plateX,plateY,plateW,plateH);
+    ctx.stroke();
+
+    /* Name — full brightness. A hovered label is deliberate, so it gets a
+       soft color glow instead of the muted alpha the always-on labels used. */
+    ctx.save();
+    ctx.shadowColor="rgba("+e.rgb+","+(0.55*rv)+")";
+    ctx.shadowBlur=8;
+    ctx.fillStyle="rgba("+e.rgb+","+((e.alive?1:0.5)*rv)+")";
+    ctx.font=(e.nd.celestialType==="star"?'bold 13':'bold 12')+'px "IBM Plex Mono",monospace';
     ctx.textAlign="center";
-    var nameY=e.status?chosen.cy-box.h/2+9:chosen.cy;
-    ctx.fillText(e.text,chosen.cx,nameY);
+    var nameY=e.status?ly-box.h/2+12:ly+4;
+    ctx.fillText(e.text,lx,nameY);
+    ctx.restore();
     if(e.status){
-      ctx.fillStyle="rgba("+e.rgb+","+(e.alive?0.34:0.1)+")";
-      ctx.font='8px "IBM Plex Mono",monospace';
-      ctx.fillText(e.status,chosen.cx,chosen.cy+box.h/2-3);
+      ctx.fillStyle="rgba(255,255,255,"+((e.alive?0.62:0.2)*rv)+")";
+      ctx.font='10px "IBM Plex Mono",monospace';
+      ctx.textAlign="center";
+      ctx.fillText(e.status,lx,ly+box.h/2-2);
     }
   }
   q.length=0;
@@ -2457,6 +2510,10 @@ function _orbRender(timestamp){
   /* === SOUND: spatial positioning every frame === */
   if(typeof _sound!=="undefined"&&_sound.initialized) _sound.updateSpatial(_orbNodes,W,H);
 
+  /* === LABEL REVEAL: ease each body's hover-label toward 0 or 1. Must run
+     before the draw pass, since _queueLabel reads the reveal amount. === */
+  _updateLabelReveals(dt);
+
   /* === DRAW — COSMOS v5 render pipeline === */
   var _drawNow=Date.now();
 
@@ -2589,15 +2646,20 @@ function _orbRender(timestamp){
     {id:"deepblue",lbl:"FLOW SYSTEM"},
     {id:"nexus",lbl:"MATH SYSTEM"}
   ];
-  ctx.font='bold 9px "IBM Plex Mono",monospace';
+  /* System names follow the same hover-only rule as body labels — they reuse
+     the star's own reveal amount, so "MATH SYSTEM" appears when NEXUS is
+     hovered and fades with it. */
+  ctx.font='bold 11px "IBM Plex Mono",monospace';
   ctx.textAlign="center";
   for(var sli=0;sli<_sysLabels.length;sli++){
     var slStar=_orbNodes[_sysLabels[sli].id];
     if(!slStar) continue;
+    var slRv=_labelReveal[_sysLabels[sli].id]||0;
+    if(slRv<=0) continue;
     /* Label floats above the star glow ring — use gravitational radius if available */
     var slOffset=slStar.currentSize+(slStar.gravitationalRadius?slStar.gravitationalRadius*0.25:30)+8;
-    ctx.fillStyle="rgba("+slStar.rgb+",0.28)";
-    ctx.fillText(_sysLabels[sli].lbl,slStar.x,slStar.y-slOffset);
+    ctx.fillStyle="rgba("+slStar.rgb+","+(0.72*slRv)+")";
+    ctx.fillText(_sysLabels[sli].lbl,slStar.x,slStar.y-slOffset-(1-slRv)*6);
   }
 
   /* L14: Planets — cinema renderers always */
@@ -2785,8 +2847,15 @@ if($orbitalCanvas){
     for(var id in _orbNodes){
       var nd=_orbNodes[id];
       var d=Math.sqrt((mx-nd.x)*(mx-nd.x)+(my-nd.y)*(my-nd.y));
-      var hitR=nd.currentSize*Math.max(1.5,2.5/_orbZoom);
-      if(d<hitR&&d<bestD){bestD=d;best=nd;}
+      /* Hit radius tightened from 1.5–2.5x to 1.15–1.6x now that bodies are
+         ~1.75x larger — at the old multiplier a planet's hit disc swallowed
+         its neighbors and hovering became ambiguous. The 14px floor keeps
+         small moons targetable when zoomed out. */
+      var hitR=Math.max(14,nd.currentSize*Math.max(1.15,1.6/_orbZoom));
+      /* Prefer the body whose edge you're nearest, not whose center — without
+         this a big star always wins over a small moon sitting on top of it. */
+      var edgeD=d-nd.currentSize;
+      if(d<hitR&&edgeD<bestD){bestD=edgeD;best=nd;}
     }
     _orbHover=best?best.id:null;
     if(best&&best.alive){if(typeof _sound!=="undefined") _sound.playHover(best.id);}

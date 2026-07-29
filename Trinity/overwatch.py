@@ -71,6 +71,35 @@ TIMEFRAMES = {
     "1h":  {"interval": "1h",  "limit": 50, "weight": 0.25},
 }
 
+# ── Score gains for the four continuous indicators (2026-07-29 audit) ────────
+# These four convert a price-relative magnitude into a 0..1 score via
+# `0.5 + x * gain`. They previously computed x as a PERCENT (`... * 100`) and
+# then applied a gain sized for a FRACTION, so every one of them saturated on
+# moves far below market noise:
+#     ema_cross  x10  -> pinned at 1.00 by a 0.050% EMA gap
+#     macd       x20  -> pinned at 1.00 by a 0.025% histogram
+#     vwap        x5  -> pinned at 1.00 by a 0.100% deviation
+#     momentum    x5  -> pinned at 1.00 by a 0.100% 10-bar move
+# Live proof: ema_cross read exactly 1.00 on all five top symbols, vwap 0.95,
+# momentum 0.90. Four of ten indicators — 0.44 of total weight — had degraded
+# into binary on/off flags, so the "10-indicator confluence" was really six
+# graded scores plus four stuck switches. It also biased everything long,
+# because all four are momentum-style and pin high the moment price ticks up.
+#
+# Inputs are now fractions, and each gain is calibrated from the measured
+# distribution of that quantity on 15m bars across BTC/ETH/UNI/XLM/SUI/LINK,
+# so the 90th-percentile move maps to ~0.90 and the score spans a useful range:
+#     ema_gap   p50 0.158%  p90 0.642%   -> gain  62
+#     macd_hist p50 0.162%  p90 0.654%   -> gain  61
+#     vwap_dev  p50 0.315%  p90 1.390%   -> gain  29
+#     roc_10    p50 0.415%  p90 1.552%   -> gain  26
+SCORE_GAIN = {
+    "ema_cross": 62.0,
+    "macd":      61.0,
+    "vwap":      29.0,
+    "momentum":  26.0,
+}
+
 WEIGHTS = {
     "ema_cross":    0.12,
     "rsi":          0.10,
@@ -103,6 +132,10 @@ class SignalResult:
     take_profit_tiers: List[float] = field(default_factory=list)
     position_size: float = 0.0
     indicators: Dict[str, float] = field(default_factory=dict)
+    # True when timeframes actively disagree (some bullish, some bearish),
+    # as opposed to merely being undecided. The old abs(sum) alignment metric
+    # could not express this — see generate_signal.
+    mtf_conflict: bool = False
     timestamp: str = ""
 
     def __post_init__(self):
@@ -128,6 +161,9 @@ class SignalTrack:
     tiers: List[float] = field(default_factory=list)
     peak_pnl: float = 0.0
     result: str = "OPEN"   # "WIN", "LOSS", "OPEN"
+    # Set once price tags TP1. The stop moves to breakeven at that point, so a
+    # later retrace cannot re-score a banked win as a loss. See track_signals.
+    tp1_hit: bool = False
 
 
 # ─────────────────────────────────────────────
@@ -175,8 +211,9 @@ def score_single_tf(candles: List[Candle], price: float) -> Dict[str, float]:
     ema_fast = ema(closes, 9)
     ema_slow = ema(closes, 21)
     if ema_slow != 0:
-        cross_pct = (ema_fast - ema_slow) / ema_slow * 100
-        scores["ema_cross"] = max(0, min(1, 0.5 + cross_pct * 10))
+        # Fraction, not percent. See SCORE_GAIN for why this mattered.
+        cross_frac = (ema_fast - ema_slow) / ema_slow
+        scores["ema_cross"] = max(0, min(1, 0.5 + cross_frac * SCORE_GAIN["ema_cross"]))
     else:
         scores["ema_cross"] = 0.5
 
@@ -193,8 +230,8 @@ def score_single_tf(candles: List[Candle], price: float) -> Dict[str, float]:
     # 3. MACD
     macd_line, signal_line, hist = macd(closes)
     if price != 0:
-        hist_pct = hist / price * 100
-        scores["macd"] = max(0, min(1, 0.5 + hist_pct * 20))
+        hist_frac = hist / price
+        scores["macd"] = max(0, min(1, 0.5 + hist_frac * SCORE_GAIN["macd"]))
     else:
         scores["macd"] = 0.5
 
@@ -250,8 +287,8 @@ def score_single_tf(candles: List[Candle], price: float) -> Dict[str, float]:
     # 8. VWAP
     vwap_val = vwap(candles, 20)
     if vwap_val != 0:
-        vwap_dev = (price - vwap_val) / vwap_val * 100
-        scores["vwap"] = max(0, min(1, 0.5 + vwap_dev * 5))
+        vwap_dev = (price - vwap_val) / vwap_val
+        scores["vwap"] = max(0, min(1, 0.5 + vwap_dev * SCORE_GAIN["vwap"]))
     else:
         scores["vwap"] = 0.5
 
@@ -269,8 +306,8 @@ def score_single_tf(candles: List[Candle], price: float) -> Dict[str, float]:
 
     # 10. Momentum (Rate of Change)
     if len(closes) >= 10 and closes[-10] != 0:
-        roc = (closes[-1] - closes[-10]) / closes[-10] * 100
-        scores["momentum"] = max(0, min(1, 0.5 + roc * 5))
+        roc = (closes[-1] - closes[-10]) / closes[-10]
+        scores["momentum"] = max(0, min(1, 0.5 + roc * SCORE_GAIN["momentum"]))
     else:
         scores["momentum"] = 0.5
 
@@ -309,15 +346,35 @@ def generate_signal(symbol: str, candle_data: Dict[str, List[Candle]], price: fl
     # Overall confluence
     confluence = sum(composite[k] * WEIGHTS[k] for k in WEIGHTS) / sum(WEIGHTS.values())
 
-    # MTF alignment — how many TFs agree on direction
+    # MTF alignment — the largest bloc of timeframes agreeing on one direction.
+    #
+    # This used to be abs(sum(directions))/len(directions), which cannot tell
+    # agreement from cancellation because opposing votes annihilate:
+    #     [1, 1, 1] -> 1.00  genuine agreement
+    #     [1, 1,-1] -> 0.33  a real CONFLICT, reads as weak agreement
+    #     [1,-1, 0] -> 0.00  direct conflict, scores the same as all-neutral
+    #     [0, 0, 0] -> 0.00  no opinion at all
+    # So a signal whose timeframes actively disagreed was indistinguishable
+    # from one that simply had no view (2026-07-29 audit).
+    #
+    # max(bull, bear)/n answers the question the name implies: what fraction of
+    # timeframes actually point the same way? Conflict now scores strictly
+    # lower than indecision on the winning side, and [1,1,-1] -> 0.67 with a
+    # dissent flag rather than masquerading as 0.33 of agreement.
     tf_directions = []
     for tf_name in tf_scores:
         tf_total = sum(tf_scores[tf_name].get(k, 0.5) * WEIGHTS[k] for k in WEIGHTS) / sum(WEIGHTS.values())
         tf_directions.append(1 if tf_total > 0.55 else (-1 if tf_total < 0.45 else 0))
     if tf_directions:
-        mtf_alignment = abs(sum(tf_directions)) / len(tf_directions)
+        n_bull = sum(1 for d in tf_directions if d > 0)
+        n_bear = sum(1 for d in tf_directions if d < 0)
+        mtf_alignment = max(n_bull, n_bear) / len(tf_directions)
+        # True when at least one timeframe points the opposite way to the
+        # majority — the case the old metric silently folded away.
+        mtf_conflict = (n_bull > 0 and n_bear > 0)
     else:
         mtf_alignment = 0.0
+        mtf_conflict = False
 
     # Bias
     if confluence > 0.58:
@@ -388,6 +445,7 @@ def generate_signal(symbol: str, candle_data: Dict[str, List[Candle]], price: fl
         take_profit_tiers=[tp1, tp2, tp3],
         position_size=position_size,
         indicators=composite,
+        mtf_conflict=mtf_conflict,
     )
 
 
@@ -485,21 +543,36 @@ def track_signals():
                 pnl = (track.entry_price - price) / track.entry_price * 100
             track.peak_pnl = max(track.peak_pnl, pnl)
 
-            # Check stop
-            if track.bias == "LONG" and price <= track.stop:
-                track.result = "LOSS"
-                updates.append((sym, track, "LOSS"))
-            elif track.bias == "SHORT" and price >= track.stop:
-                track.result = "LOSS"
-                updates.append((sym, track, "LOSS"))
-            # Check TP tiers
-            elif track.tiers:
-                if track.bias == "LONG" and price >= track.tiers[-1]:
+            # ── Resolution ──────────────────────────────────────────────────
+            # A WIN used to require reaching tiers[-1] (TP3) while a LOSS only
+            # required touching the stop. With a 1:2.50 risk:reward that made
+            # the win condition ~2.5x harder to satisfy than the loss
+            # condition, so the recorded win rate was structurally pessimistic:
+            # a signal could run to TP1, reverse, and be booked as a pure loss
+            # despite having been in profit (2026-07-29 audit).
+            #
+            # Now TP1 counts as the win — that is the first target a real
+            # trade would bank — and once TP1 is tagged the stop moves to
+            # breakeven, so the same track can no longer be re-scored a loss
+            # on a later retrace. Verified live: TP1 sits ~0.3-1.0% away vs a
+            # stop ~0.4-1.3% away, which is a fair symmetric test.
+            tp1 = track.tiers[0] if track.tiers else None
+
+            if tp1 is not None and not track.tp1_hit:
+                if ((track.bias == "LONG" and price >= tp1) or
+                        (track.bias == "SHORT" and price <= tp1)):
+                    track.tp1_hit = True
+                    track.stop = track.entry_price      # stop to breakeven
                     track.result = "WIN"
                     updates.append((sym, track, "WIN"))
-                elif track.bias == "SHORT" and price <= track.tiers[-1]:
-                    track.result = "WIN"
-                    updates.append((sym, track, "WIN"))
+                    continue
+
+            # Stop (or breakeven stop after TP1) — only a loss if TP1 never hit
+            if not track.tp1_hit:
+                if ((track.bias == "LONG" and price <= track.stop) or
+                        (track.bias == "SHORT" and price >= track.stop)):
+                    track.result = "LOSS"
+                    updates.append((sym, track, "LOSS"))
 
     with state_lock:
         for sym, track, result in updates:
@@ -1146,6 +1219,7 @@ def build_snapshot() -> dict:
                 "bias": sig_r.bias,
                 "regime": sig_r.regime,
                 "mtf_alignment": round(_safe_float(sig_r.mtf_alignment), 2),
+                "mtf_conflict": bool(getattr(sig_r, "mtf_conflict", False)),
                 "stop_loss": round(_safe_float(sig_r.stop_loss), 8),
                 "take_profit_tiers": [round(_safe_float(t), 8) for t in sig_r.take_profit_tiers],
                 "position_size": round(_safe_float(sig_r.position_size), 4),
@@ -1201,7 +1275,13 @@ def build_snapshot() -> dict:
         "wins": wins,
         "losses": losses,
         "opens": opens,
-        "win_rate": round(_safe_float(wins / total * 100), 1) if total > 0 else 0,
+        # null, not 0, when nothing has resolved yet. Sending 0 made the
+        # dashboard render a confident red "WIN RATE 0.0%" next to "W/L 0/0"
+        # for a bot that has simply never closed a signal — an unmeasured
+        # quantity displayed as a measured zero. The CLI already got this
+        # right (prints "N/A"); only the API lied (2026-07-29 audit).
+        "win_rate": round(_safe_float(wins / total * 100), 1) if total > 0 else None,
+        "resolved_trades": total,
         "equity_curve": eq_curve,
         "config": {
             "universe_size": UNIVERSE_SIZE,

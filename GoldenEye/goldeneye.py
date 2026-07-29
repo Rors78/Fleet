@@ -4677,6 +4677,109 @@ def start_eod_scheduler():
     logging.info(f"EOD scheduler started (sends {_EOD_HOUR_UTC:02d}:{_EOD_MINUTE_UTC:02d} UTC daily)")
 
 
+# --- External heartbeat (dead man's switch) -----------------------------------
+# The watchdog can only act while this machine is alive. Power loss, an ISP
+# outage, or a dead PSU look identical to "everything is fine" from the inside.
+#
+# So the bot pings an external service on a schedule. If the pings STOP, that
+# service alerts you. Outbound HTTPS only: nothing is exposed to the internet
+# and no router changes are needed.
+#
+# Works with healthchecks.io, cronitor, betteruptime, or any URL that treats a
+# GET as "still alive". Set GOLDENEYE_HEARTBEAT_URL to enable; unset = disabled.
+#
+# IMPORTANT: this pings only when the bot is genuinely HEALTHY. A process that
+# is running but has wedged threads must NOT report itself alive — that would
+# make the monitor a liar at the exact moment you need it.
+_HEARTBEAT_URL = os.getenv('GOLDENEYE_HEARTBEAT_URL', '').strip()
+_HEARTBEAT_INTERVAL = int(os.getenv('GOLDENEYE_HEARTBEAT_INTERVAL', '300'))  # 5 min
+
+
+def _heartbeat_assess():
+    """Return (ok, summary). ok=False means do NOT ping (let the switch trip)."""
+    problems = []
+    now = time.time()
+    with _health_lock:
+        stale = sorted(n for n, hs in _health_state.items()
+                       if now - hs.get('last_beat', 0) > 180)
+    if stale:
+        problems.append(f"stale threads: {', '.join(stale[:4])}")
+    if not _kraken_status.get('ok', True):
+        problems.append("kraken disconnected")
+    try:
+        if os.path.exists(_KILL_SWITCH_FILE):
+            problems.append("kill switch active")
+    except Exception:
+        pass
+    if _is_paper():
+        with _PAPER_BAL_LOCK:
+            bal = float(_PAPER_BALANCE)
+    else:
+        with _LIVE_BAL_LOCK:
+            bal = float(_LIVE_BALANCE)
+    open_n = 0
+    try:
+        open_n = sum(1 for s in list(globals().get('sts', {}).values())
+                     if s.get_position() is not None)
+    except Exception:
+        pass
+    summary = (f"{'paper' if _is_paper() else 'live'} ${bal:,.0f} | "
+               f"{open_n} open | threads ok")
+    if problems:
+        return False, "; ".join(problems)
+    return True, summary
+
+
+def _heartbeat_loop():
+    """Daemon: ping the external dead man's switch while healthy."""
+    register_thread('heartbeat')
+    import urllib.request
+    import urllib.error
+    base = _HEARTBEAT_URL.rstrip('/')
+    consecutive_fail = 0
+    # Stagger the first ping so a boot storm does not race the health snapshot
+    time.sleep(45)
+    while True:
+        heartbeat('heartbeat')
+        try:
+            ok, summary = _heartbeat_assess()
+            if ok:
+                url = base
+            else:
+                # healthchecks.io convention: /fail marks the check down
+                # immediately rather than waiting for the grace period. On other
+                # services an unknown suffix simply 404s, which is harmless —
+                # we just stop pinging and the switch trips on schedule.
+                url = base + '/fail'
+                logging.warning(f"HEARTBEAT degraded — {summary}")
+            req = urllib.request.Request(
+                url, data=summary.encode('utf-8')[:1000],
+                headers={'User-Agent': 'GoldenEye/1.0'}, method='POST')
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                if resp.status < 300:
+                    consecutive_fail = 0
+                    logging.debug(f"heartbeat sent ({summary})")
+                else:
+                    consecutive_fail += 1
+        except Exception as e:
+            consecutive_fail += 1
+            # Only shout once it is clearly not a blip — a failed heartbeat is
+            # not a trading problem, and must never spam the log.
+            if consecutive_fail in (3, 12):
+                logging.warning(
+                    f"heartbeat failed {consecutive_fail}x (monitor may alert): {e}")
+        time.sleep(_HEARTBEAT_INTERVAL)
+
+
+def start_heartbeat():
+    if not _HEARTBEAT_URL:
+        logging.info("External heartbeat disabled (set GOLDENEYE_HEARTBEAT_URL to enable)")
+        return
+    t = threading.Thread(target=_heartbeat_loop, daemon=True)
+    t.start()
+    logging.info(f"External heartbeat started -> every {_HEARTBEAT_INTERVAL}s")
+
+
 # =============================================================================
 # Subscriber Signal Delivery System
 # =============================================================================
@@ -7904,6 +8007,8 @@ def main():
     start_card_worker()
     # Daily END OF DAY card (whale alerts fire from the stream loop directly)
     start_eod_scheduler()
+    # External dead man's switch — the only thing that survives this machine dying
+    start_heartbeat()
 
     # Launch Flask dashboard in background thread — no second terminal needed
     try:

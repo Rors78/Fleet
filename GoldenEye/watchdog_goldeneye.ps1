@@ -27,8 +27,17 @@ $BOT_DIR     = 'D:\GoldenEye'
 $LAUNCHER    = 'C:\Users\Miner\Desktop\launch.bat'
 $HEALTH_URL  = 'http://localhost:18095/health'
 $LOG         = Join-Path $BOT_DIR 'output\watchdog.log'
-$STATE_FILE       = Join-Path $BOT_DIR 'output\watchdog_state.json'
+$STATE_FILE  = Join-Path $BOT_DIR 'output\watchdog_state.json'
 $PORTS       = @(18095, 18065, 18096)
+
+# Optional SECOND dead man's switch, pinged by the watchdog rather than the bot.
+# The bot's own heartbeat (GOLDENEYE_HEARTBEAT_URL) goes silent whenever the bot
+# is down - including the seconds while the watchdog is legitimately restarting
+# it. This one reports "the machine and watchdog are alive", which is a
+# different fact, and it is what distinguishes "bot crashed, being handled"
+# from "the whole box is gone".
+# Set the GOLDENEYE_WATCHDOG_HEARTBEAT_URL environment variable to enable.
+$WATCHDOG_HEARTBEAT_URL = $env:GOLDENEYE_WATCHDOG_HEARTBEAT_URL
 
 # Restart-storm guard: if the bot dies immediately over and over (bad config,
 # corrupt state, Kraken lockout), hammering it makes things worse and floods
@@ -103,6 +112,15 @@ function Send-Alert($text) {
         Invoke-RestMethod -Uri "https://api.telegram.org/bot$token/sendMessage" `
             -Method Post -Body $body -TimeoutSec 20 | Out-Null
     } catch { Log "alert send failed: $($_.Exception.Message)" 'WARN' }
+}
+
+function Send-WatchdogHeartbeat($summary) {
+    # Fire-and-forget. A monitoring failure must never affect healing.
+    if (-not $WATCHDOG_HEARTBEAT_URL) { return }
+    try {
+        Invoke-RestMethod -Uri $WATCHDOG_HEARTBEAT_URL -Method Post -Body $summary `
+            -TimeoutSec 12 -UserAgent 'GoldenEye-Watchdog/1.0' | Out-Null
+    } catch { Log "watchdog heartbeat failed: $($_.Exception.Message)" 'WARN' }
 }
 
 function Get-BotProcesses {
@@ -184,6 +202,8 @@ if ($status -eq 'Healthy') {
     # readable; nothing sent to Telegram.
     $h = $script:LastHealth
     Log ("healthy - {0} mode, {1}/{2} threads, {3} positions, kraken {4}" -f `
+         $h.trading_mode, $h.threads_healthy, $h.total_threads, $h.open_positions, $h.kraken_api)
+    Send-WatchdogHeartbeat ("bot healthy | {0} | {1}/{2} threads | {3} open | kraken {4}" -f `
          $h.trading_mode, $h.threads_healthy, $h.total_threads, $h.open_positions, $h.kraken_api)
     # Recovery notice: if we had been in backoff, say we're better now.
     $state = Read-State

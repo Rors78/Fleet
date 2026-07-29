@@ -8,6 +8,36 @@ GoldenEye is a **standalone** live crypto trading bot for Kraken. No dependency 
 
 As of 2026-04-22, it has a **self-learning brain** composed of three cooperating subsystems: post-trade autopsy journal, regime sanity cross-check, and fleet memory query. Every entry decision carries a similarity-query readout from the closed trade log; every closed trade writes a narrative to `output/autopsy.jsonl`.
 
+## Branches — SPOT vs FUTURES (read before pushing or pulling)
+
+`origin` (`github.com/Rors78/GoldenEye.git`, formerly `TrekBot`) holds **two
+unrelated histories with no common ancestor**. They are different products, not
+different versions. Do not merge them.
+
+| Branch | Instrument | Status |
+|--------|-----------|--------|
+| `fleet-master` | **Kraken spot** | This tree. Live paper-running. Local `master` tracks it. |
+| `master` (remote) | **Kraken Futures perps** | Paper-only, never live-validated. |
+
+The futures line (`f7f7792`) swaps the ccxt client to `krakenfutures`, trades
+~55 perps, uses post-only maker entries / `reduceOnly` exits / `triggerPrice`
+stops, reads positions via `fetch_positions`, and adds a funding-rate edge
+(perps have funding; spot does not). Porting it does not improve this bot — it
+replaces it. Per-pair leverage from `d0540d9` is likewise futures-only (spot has
+no `set_leverage`, and margin-vs-notional does not apply here).
+
+**Local `master` tracks `origin/fleet-master`**, so plain `git push` / `git pull`
+are correct. Never `git pull origin master` — that pulls the futures history.
+
+Fixes worth harvesting from the futures line have been ported by hand; check
+`git log --oneline HEAD..origin/master` for anything new. Already taken:
+- HMM unfitted fallback (`7b9e812`) — the argmax-tie bug described below
+- Equity-curve drawdown + `/positions` entry-state serializer (from `d0540d9`)
+
+Note the futures-only trap in `f7f7792`: it changed stops from `price` to
+`triggerPrice`. That is correct for futures and **wrong for spot** — this tree
+should keep using `price`.
+
 ## Running the Bot
 
 Actual launcher is `C:\Users\Miner\Desktop\launch.bat` (sets Kraken/Telegram env vars, cd's to D:\GoldenEye). There is no local launch.bat.
@@ -67,7 +97,7 @@ A full five-domain audit with file:line findings lives in `AUDIT_2026-07-28.md`;
 1. `top_sym(n=20)` ranks Kraken USD pairs by movement score (0.75× volatility + 0.25× spread tightness), refreshed every 2h by `_universe_rescan`
 2. `ind(df)` — EMA9/21/200, RSI, MACD, BB, ATR, OBV, MFI, Stoch, ADX
 3. `sigs(df)` → `_sigs_long` / `_sigs_short` — 27 signals (a–z, 2); disabled signals are commented-out blocks
-4. `regime(df)` — HMM 4-state classifier via `HMMRegimeDetector`
+4. `regime(df)` — HMM 4-state classifier via `HMMRegimeDetector`. **Never call `dominant_regime()` without checking `hd.fitted` first.** Unfitted, `predict_proba()` returns a uniform `[0.25]*4`, and `np.argmax` on a four-way tie returns index 0 — which is `_REGIMES[0] == 'bull'`. That silently labels the symbol bull instead of reporting unknown, starving `_TP_BY_REGIME`, `_RGM_CONF_MIN`, and Global Brain arming. The scan loop falls back to the rule-based `regime()` when the fit did not take. Also keep the 4h regime fetch at 720 bars: `_MIN_BARS=200` is measured *after* feature engineering + dropna, so a 100-bar fetch never fits.
 5. `compute_factors(df, ...)` — 6 continuous factor scores [0,1]: trend, momentum, volume, volatility, structure, order_flow
 6. `compute_confidence(factors, rgm)` — regime-weighted factor sum + interactions → [0,1]
 7. Entry gate chain (15 gates, funnel ordering: correlation → factor_floors → confluence → dir_wr → regime_mult → whale → ai_conf → max_positions → drawdown → sentiment → atr_fees → min_size → notional → duplicate → entry)

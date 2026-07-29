@@ -2323,9 +2323,15 @@ function _drawWormholes(ctx,dt){
       ctx.fillStyle="rgba(120,170,255,"+pa+")";
       ctx.beginPath();ctx.arc(px+sw,py+sh,1.5,0,Math.PI*2);ctx.fill();
     });
-    if(w.lag>0){var mx=(ax+bx)/2,my=(ay+by)/2;
-      ctx.fillStyle="rgba(100,150,255,"+(alpha*0.6)+")";ctx.font='8px "IBM Plex Mono",monospace';
-      ctx.textAlign="center";ctx.fillText(w.lag+" bar lag",mx,my-8);}
+    /* "N bar lag" caption follows the same hover-only rule as body labels
+       (2026-07-29) — it was the last always-on text floating in the
+       starfield. The portal rings and particle stream still show the causal
+       link at a glance; the number is detail, revealed on demand by hovering
+       either endpoint. */
+    var _wRv=Math.max(_labelReveal[w.a.id]||0,_labelReveal[w.b.id]||0);
+    if(w.lag>0&&_wRv>0){var mx=(ax+bx)/2,my=(ay+by)/2;
+      ctx.fillStyle="rgba(140,180,255,"+(alpha*0.85*_wRv)+")";ctx.font='10px "IBM Plex Mono",monospace';
+      ctx.textAlign="center";ctx.fillText(w.lag+" bar lag",mx,my-8-(1-_wRv)*5);}
     alive.push(w);
   }
   _orbWormholes=alive;

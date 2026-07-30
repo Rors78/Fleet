@@ -231,26 +231,31 @@ function _sphBlob(ctx, cx, cy, r, lat, lon, rad, spin, tilt, style) {
 var CELESTIAL_HIERARCHY={
   /* THE SUN — Command Center at absolute center, never moves */
   cc:        {type:"sun",   parent:null,      orbitRadius:0,   orbitSpeed:0,      mass:100, sz:104, gravitationalRadius:0},
-  /* THREE STARS — intelligence giants ×1.5, orbital radii ×1.3 */
-  oracle:    {type:"star",  parent:"cc",      orbitRadius:585, orbitSpeed:0.000085,mass:40,  sz:57, gravitationalRadius:180, grp:"intel",  pt:"gas_giant",  pers:"deliberate"},
-  deepblue:  {type:"star",  parent:"cc",      orbitRadius:520, orbitSpeed:0.000115,mass:35,  sz:54, gravitationalRadius:160, grp:"intel",  pt:"ocean",      pers:"predatory"},
-  nexus:     {type:"star",  parent:"cc",      orbitRadius:468, orbitSpeed:0.00007, mass:38,  sz:56, gravitationalRadius:170, grp:"novel",  pt:"binary",     pers:"omniscient"},
-  /* PLANETS — Trading bots ×1.3, orbital radii ×1.3. orbitSpeed = Kepler(orbitRadius). */
-  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.0008114,mass:15, sz:29, grp:"trader", pt:"terrestrial", pers:"aggressive"},
-  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"analytical"},
-  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.0010284,mass:10, sz:26, grp:"trader", pt:"crystal",     pers:"steady"},
-  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.0006173,mass:12, sz:27, grp:"trader", pt:"terrestrial", pers:"patient"},
-  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:10, sz:25, grp:"trader", pt:"elastic",     pers:"bouncy"},
-  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.0008710,mass:10, sz:25, grp:"trader", pt:"binary_pair", pers:"paired"},
-  /* MOONS — Small support bots ×1.2, orbital radii ×1.3. orbitSpeed = Kepler(orbitRadius). */
-  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.0009503, mass:14, sz:36, grp:"novel",    pt:"magnetar",   pers:"guardian"},
-  phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.0010284, mass:12, sz:16, grp:"novel",    pt:"variable",   pers:"pulsing"},
-  sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.0006173, mass:10, sz:14, grp:"intel",    pt:"nebula",     pers:"watchful"},
-  contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.0011340, mass:10, sz:14, grp:"intel",    pt:"dark_nebula",pers:"contrarian",ecc:0.22},
-  chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.0004898, mass:10, sz:14, grp:"intel",    pt:"pulsar",     pers:"rhythmic"},
-  hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0012397, mass:8,  sz:13, grp:"optimizer",pt:"cluster",    pers:"swarm"},
-  trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0011340, mass:8,  sz:13, grp:"intel",    pt:"trinary",    pers:"scattered"},
-  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:11, grp:"support",  pt:"nebula",     pers:"processing"}
+  /* THREE STARS — Round 2 (2026-07-30 redesign): size cap is now a hard
+     rule — largest body (CC, the hub, exempt) vs smallest bot <= 2.5x.
+     With smallest bot floor at 20, stars capped to ~34-36 so role tiers
+     survive as SUBTLE differences instead of a giant-vs-pebble spread. */
+  oracle:    {type:"star",  parent:"cc",      orbitRadius:585, orbitSpeed:0.000085,mass:40,  sz:36, gravitationalRadius:180, grp:"intel",  pt:"gas_giant",  pers:"deliberate"},
+  deepblue:  {type:"star",  parent:"cc",      orbitRadius:520, orbitSpeed:0.000115,mass:35,  sz:34, gravitationalRadius:160, grp:"intel",  pt:"ocean",      pers:"predatory"},
+  nexus:     {type:"star",  parent:"cc",      orbitRadius:468, orbitSpeed:0.00007, mass:38,  sz:35, gravitationalRadius:170, grp:"novel",  pt:"binary",     pers:"omniscient"},
+  /* PLANETS — Trading bots. orbitSpeed = Kepler(orbitRadius). */
+  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.0008114,mass:15, sz:27, grp:"trader", pt:"terrestrial", pers:"aggressive"},
+  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"analytical"},
+  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.0010284,mass:10, sz:25, grp:"trader", pt:"crystal",     pers:"steady"},
+  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.0006173,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"patient"},
+  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:10, sz:24, grp:"trader", pt:"elastic",     pers:"bouncy"},
+  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.0008710,mass:10, sz:24, grp:"trader", pt:"binary_pair", pers:"paired"},
+  /* MOONS — Small support bots. Compressed further Round 2: 18-22 -> 20-26
+     band so AEGIS (still largest moon by design, hex shield untouched per
+     directive) is only 1.3x the smallest moon, not 2x. */
+  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.0009503, mass:14, sz:26, grp:"novel",    pt:"magnetar",   pers:"guardian"},
+  phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.0010284, mass:12, sz:23, grp:"novel",    pt:"variable",   pers:"pulsing"},
+  sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.0006173, mass:10, sz:22, grp:"intel",    pt:"nebula",     pers:"watchful"},
+  contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.0011340, mass:10, sz:22, grp:"intel",    pt:"dark_nebula",pers:"contrarian",ecc:0.22},
+  chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.0004898, mass:10, sz:22, grp:"intel",    pt:"pulsar",     pers:"rhythmic"},
+  hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0012397, mass:8,  sz:21, grp:"optimizer",pt:"cluster",    pers:"swarm"},
+  trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0011340, mass:8,  sz:21, grp:"intel",    pt:"trinary",    pers:"scattered"},
+  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:20, grp:"support",  pt:"nebula",     pers:"processing"}
 };
 
 /* --- Synapse definitions (event bus connections) --- */
@@ -749,7 +754,9 @@ var PLANET_VISUALS = {
               ctx.beginPath();ctx.ellipse(0,0,r*0.07,r*0.045,0,0,Math.PI*2);ctx.fill();
               ctx.restore();
             }
-            /* Scanner beam — oracle's 93-pair scanning pulse */
+            /* Scanner beam — oracle's 93-pair scanning pulse. Was alpha
+               0.02-0.05 (invisible) — real identity now lives in the
+               overlay iris below, this stays as a faint ambient wash. */
             var scA=now/7000;
             var scLen=r*1.3;
             var scG=ctx.createLinearGradient(x,y,x+Math.cos(scA)*scLen,y+Math.sin(scA)*scLen);
@@ -758,6 +765,56 @@ var PLANET_VISUALS = {
             scG.addColorStop(1,'rgba(0,0,0,0)');
             ctx.fillStyle=scG;ctx.beginPath();ctx.moveTo(x,y);
             ctx.arc(x,y,scLen,scA-0.06,scA+0.06);ctx.closePath();ctx.fill();
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* ═══ THE ALL-SEEING IRIS (Round 2 redesign, 2026-07-30) ═══
+               Oracle was a photorealistic Jupiter clone — a stock-solar-
+               system lookalike, exactly the failure mode flagged. This
+               overlay stamps a giant scanning eye across the whole disk:
+               an iris ring + pupil that dilates on a slow forecast cadence,
+               plus a rotating radial "scanning" sweep of short spokes (like
+               an iris contracting/reading) so it visibly moves within 2s.
+               Sized to occupy the full disk (iris ring at 0.86r, pupil at
+               0.30-0.42r) so it clears the 40%-footprint / alpha>=0.5 bar
+               even from across the room. */
+            var pupilPulse = 0.30 + 0.12*Math.sin(now/2600);
+            var pupilR = Math.max(0.1, r*pupilPulse);
+            /* Sclera wash — warm gold, distinguishes from a plain dark eye */
+            var scleraG = ctx.createRadialGradient(x,y,r*0.55,x,y,r*0.90);
+            scleraG.addColorStop(0,'rgba(0,0,0,0)');
+            scleraG.addColorStop(1,'rgba(235,205,130,0.16)');
+            ctx.fillStyle=scleraG;ctx.beginPath();ctx.arc(x,y,r*0.90,0,Math.PI*2);ctx.fill();
+            /* Iris ring — bold, high-alpha, radial striations like a real iris */
+            var irisR = r*0.62;
+            var spokeCount = 24;
+            var spokeSpin = now/9000;
+            for (var si=0; si<spokeCount; si++){
+                var sa = spokeSpin + (si/spokeCount)*Math.PI*2;
+                var flick = 0.55+0.30*Math.sin(now/1400+si*0.7);
+                ctx.strokeStyle = 'rgba(255,214,140,'+(0.30*flick).toFixed(3)+')';
+                ctx.lineWidth = Math.max(0.8, r*0.028);
+                ctx.beginPath();
+                ctx.moveTo(x+Math.cos(sa)*pupilR*1.15, y+Math.sin(sa)*pupilR*1.15);
+                ctx.lineTo(x+Math.cos(sa)*irisR, y+Math.sin(sa)*irisR);
+                ctx.stroke();
+            }
+            /* Iris outer ring — crisp edge, alpha 0.55+, this is the primary
+               silhouette element that must read at a glance */
+            ctx.strokeStyle = 'rgba(255,225,160,0.62)';
+            ctx.lineWidth = Math.max(1.2, r*0.045);
+            ctx.beginPath(); ctx.arc(x,y,irisR,0,Math.PI*2); ctx.stroke();
+            /* Pupil — near-black, dilates slowly (the "forecast confidence"
+               breathing), always the strongest single feature on the disk */
+            var pupG = ctx.createRadialGradient(x,y,0,x,y,pupilR);
+            pupG.addColorStop(0,'rgba(10,6,2,0.92)');
+            pupG.addColorStop(0.75,'rgba(20,12,4,0.80)');
+            pupG.addColorStop(1,'rgba(30,18,6,0)');
+            ctx.fillStyle=pupG; ctx.beginPath(); ctx.arc(x,y,pupilR,0,Math.PI*2); ctx.fill();
+            /* Single bright catch-light — sells "eye" over "target reticle" */
+            ctx.fillStyle='rgba(255,250,235,0.55)';
+            ctx.beginPath();
+            ctx.arc(x-pupilR*0.32,y-pupilR*0.32,Math.max(0.1,pupilR*0.18),0,Math.PI*2);
+            ctx.fill();
         }
     },
 
@@ -915,27 +972,56 @@ var PLANET_VISUALS = {
             ctx.fillStyle=capG;ctx.beginPath();ctx.arc(x,y-r*0.78,r*0.25,0,Math.PI*2);ctx.fill();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
-            /* ═══ WHALE ALERT PULSE RING — bright blue expanding ring ═══
-               Fires when Deep Blue's whaleCount > 0. Check global node data. */
+            /* ═══ WHALE HUNTER SONAR (Round 2 redesign, 2026-07-30) ═══
+               Old version only rendered when whaleCount>0 — meaning Deep
+               Blue read as a plain Neptune clone essentially all the time
+               (whale detections are rare events, not a steady state). This
+               is now a PERMANENT identity: continuous sonar rings sweep
+               outward always, intensifying (brighter, faster, bluer-white)
+               when whales are actually detected, plus a breaching whale-
+               tail silhouette on the disk so the body reads as "hunter"
+               even completely idle within 2s of watching. */
             var dbNode = _orbNodes && _orbNodes.deepblue;
             var wc     = dbNode ? (dbNode.whaleCount || 0) : 0;
-            if(wc > 0) {
-                /* 2-3 concentric expanding rings, pulsing at ~1s interval */
-                var nRings = Math.min(3, wc);
-                for(var wi=0; wi<nRings; wi++){
-                    var wPhase = ((now / 1400 + wi * 0.33) % 1);
-                    var wR     = r * (1.1 + wPhase * 2.0);
-                    var wA     = (1 - wPhase) * (1 - wPhase) * 0.45;
-                    ctx.strokeStyle = 'rgba(50,180,255,' + wA.toFixed(3) + ')';
-                    ctx.lineWidth   = 1.5 - wPhase;
-                    ctx.beginPath(); ctx.arc(x, y, Math.max(0.1, wR), 0, Math.PI * 2); ctx.stroke();
-                }
-                /* Steady inner glow when whales active */
+            var hot    = wc > 0;
+            /* Continuous sonar rings — always sweeping, this is the primary
+               silhouette element (extends to 2.4r so it dominates the
+               body's visual footprint, not just a thin decoration) */
+            var nRings = hot ? 4 : 3;
+            var pingPeriod = hot ? 1000 : 1900;
+            for(var wi=0; wi<nRings; wi++){
+                var wPhase = ((now / pingPeriod + wi/nRings) % 1);
+                var wR     = r * (0.7 + wPhase * 1.7);
+                var baseA  = hot ? 0.55 : 0.30;
+                var wA     = (1 - wPhase) * baseA;
+                ctx.strokeStyle = hot ? ('rgba(150,220,255,' + wA.toFixed(3) + ')')
+                                      : ('rgba(60,170,255,' + wA.toFixed(3) + ')');
+                ctx.lineWidth   = Math.max(0.8, r*0.05*(1-wPhase*0.5));
+                ctx.beginPath(); ctx.arc(x, y, Math.max(0.1, wR), 0, Math.PI * 2); ctx.stroke();
+            }
+            if(hot){
                 var wGlow = ctx.createRadialGradient(x,y,r*0.9,x,y,r*1.6);
-                wGlow.addColorStop(0,'rgba(30,140,255,0.08)');
+                wGlow.addColorStop(0,'rgba(80,180,255,0.16)');
                 wGlow.addColorStop(1,'rgba(0,0,0,0)');
                 ctx.fillStyle=wGlow;ctx.beginPath();ctx.arc(x,y,r*1.6,0,Math.PI*2);ctx.fill();
             }
+            /* Breaching whale-tail silhouette — a bold dark fluke shape
+               rising through the disk, slowly rocking. This is the
+               feature-scale element: occupies ~45% of the disk width. */
+            var rockA = Math.sin(now/2600)*0.12;
+            ctx.save();
+            ctx.translate(x + r*0.08, y + r*0.18);
+            ctx.rotate(rockA);
+            ctx.fillStyle = 'rgba(8,22,45,0.55)';
+            ctx.beginPath();
+            ctx.moveTo(0, 0);
+            ctx.quadraticCurveTo(r*0.10, -r*0.55, r*0.44, -r*0.66);
+            ctx.quadraticCurveTo(r*0.20, -r*0.38, r*0.16, -r*0.10);
+            ctx.quadraticCurveTo(r*0.20, -r*0.40, -r*0.02, -r*0.62);
+            ctx.quadraticCurveTo(-r*0.34, -r*0.50, -r*0.10, 0);
+            ctx.closePath();
+            ctx.fill();
+            ctx.restore();
         }
     },
 
@@ -943,42 +1029,83 @@ var PLANET_VISUALS = {
         baseColor: [255, 109, 0],
         atmosphere: [255, 160, 80],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* Left intentionally minimal — the real identity feature (the 4
+               converging beams) lives in overlay(), not here. surface() is
+               clipped to the disk (drawPlanet clips to arc(x,y,r) before
+               calling it), so anything drawn here that needs to extend
+               PAST the sphere's edge — which the beams must, to read as
+               "arriving from outside" — is silently cut off. Confirmed live
+               2026-07-30 round 2: the beams were coded correctly (verified
+               the math directly) but invisible on screen because they were
+               in surface() and every pixel past radius r was being clipped
+               away before it ever reached the canvas. Moving them to
+               overlay() (unclipped, drawn after the sphere) was the actual
+               fix — do not move beam/ring/corona-style effects back into
+               surface() for this or any other body. */
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
             /* Four converging intel beams — Oracle, Deep Blue, NEXUS, Sentinel —
                sweep inward toward the core. Represents the aggregator reading
-               four upstream sources rather than a chart of its own. */
+               four upstream sources rather than a chart of its own. Reach
+               past the disk edge on purpose (this is why it must live in
+               overlay, see surface() comment above) so they read as signals
+               arriving from off-body, thick and bright with a short
+               comet-tail so the sweep itself is legible as motion. */
             var beamAngles = [-Math.PI/2, 0, Math.PI/2, Math.PI]; /* N, E, S, W */
+            var align = 0;
             for (var bi = 0; bi < 4; bi++) {
                 var ba = beamAngles[bi] + now / 9000;
                 var phase = ((now / 1600 + bi * 0.25) % 1);
-                var bR = Math.max(0.1, r * (1.35 - phase * 1.1));
-                var bA = (1 - phase) * 0.4;
+                if (phase < 0.15) align++;
+                var bR = Math.max(0.1, r * (1.85 - phase * 1.55));
+                var bA = (1 - phase) * 0.85;
                 var bx = x + Math.cos(ba) * bR, by = y + Math.sin(ba) * bR;
-                ctx.strokeStyle = 'rgba(255, 150, 60, ' + bA.toFixed(3) + ')';
-                ctx.lineWidth = Math.max(0.3, 1.4 * (1 - phase));
+                /* Tail — a few trailing segments so it reads as a moving
+                   streak, not a static spoke */
+                for (var tt=1; tt<=3; tt++){
+                    var tPhase = Math.min(0.98, phase + tt*0.05);
+                    var tR = Math.max(0.1, r * (1.85 - tPhase * 1.55));
+                    var tx = x + Math.cos(ba) * tR, ty = y + Math.sin(ba) * tR;
+                    var tA = bA * (1 - tt/4);
+                    ctx.strokeStyle = 'rgba(255, 170, 70, ' + tA.toFixed(3) + ')';
+                    ctx.lineWidth = Math.max(0.4, 2.6 * (1 - phase) * (1-tt/4));
+                    ctx.beginPath();
+                    ctx.moveTo(tt===1?bx:tx, tt===1?by:ty);
+                    ctx.lineTo(x, y);
+                    ctx.stroke();
+                }
+                ctx.strokeStyle = 'rgba(255, 220, 160, ' + bA.toFixed(3) + ')';
+                ctx.lineWidth = Math.max(0.6, 2.6 * (1 - phase));
                 ctx.beginPath();
                 ctx.moveTo(bx, by);
                 ctx.lineTo(x, y);
                 ctx.stroke();
+                /* Bright pip at the beam's leading edge — the actual
+                   "signal arriving" cue */
+                var pipG = ctx.createRadialGradient(bx,by,0,bx,by,Math.max(0.1,r*0.16));
+                pipG.addColorStop(0,'rgba(255,235,190,'+(0.9*(1-phase)).toFixed(3)+')');
+                pipG.addColorStop(1,'rgba(255,150,60,0)');
+                ctx.fillStyle=pipG;
+                ctx.beginPath();ctx.arc(bx,by,r*0.16,0,Math.PI*2);ctx.fill();
             }
-        },
-        overlay: function(ctx, x, y, r, lx, ly, now) {
             /* Consensus core — pulses brighter when beams phase-align,
-               echoing the "2+ sources agree" entry gate. */
-            var align = 0;
-            for (var bi = 0; bi < 4; bi++) {
-                var phase = ((now / 1600 + bi * 0.25) % 1);
-                if (phase < 0.15) align++;
-            }
-            var pulse = align >= 2 ? 0.85 : (0.35 + 0.15 * Math.sin(now / 500));
-            var coreR = Math.max(0.1, r * 0.55);
+               echoing the "2+ sources agree" entry gate. Drawn after the
+               beams so it sits on top, reading as "where the beams land". */
+            var pulse = align >= 2 ? 1.0 : (0.55 + 0.25 * Math.sin(now / 500));
+            var coreR = Math.max(0.1, r * 0.72);
             var glow = ctx.createRadialGradient(x, y, 0, x, y, coreR);
-            glow.addColorStop(0, 'rgba(255, 200, 120, ' + (0.55 * pulse).toFixed(3) + ')');
-            glow.addColorStop(0.5, 'rgba(255, 109, 0, ' + (0.25 * pulse).toFixed(3) + ')');
+            glow.addColorStop(0, 'rgba(255, 225, 170, ' + (0.85 * pulse).toFixed(3) + ')');
+            glow.addColorStop(0.45, 'rgba(255, 140, 40, ' + (0.55 * pulse).toFixed(3) + ')');
             glow.addColorStop(1, 'rgba(255, 60, 0, 0)');
             ctx.fillStyle = glow;
             ctx.beginPath();
             ctx.arc(x, y, coreR, 0, Math.PI * 2);
             ctx.fill();
+            /* Ring marking the 4-source convergence boundary — gives the
+               beams a visible target to land on */
+            ctx.strokeStyle = 'rgba(255,190,110,'+(0.4*pulse).toFixed(3)+')';
+            ctx.lineWidth = Math.max(0.8, r*0.05);
+            ctx.beginPath();ctx.arc(x,y,coreR*1.15,0,Math.PI*2);ctx.stroke();
         }
     },
 
@@ -1389,8 +1516,12 @@ var PLANET_VISUALS = {
                     var pa = pts[e[0]], pb = pts[e[1]];
                     var avgZ = (pa.z+pb.z)/2;
                     var depthA = 0.3 + 0.6*((avgZ+latR)/(latR*2));
-                    ctx.strokeStyle = 'rgba(80,220,210,' + (0.16*depthA).toFixed(3) + ')';
-                    ctx.lineWidth = 0.6;
+                    /* Boosted 2026-07-30 (round 2 redesign): was 0.16*depthA
+                       (~0.05-0.13) — sub-perceptual. This wireframe IS
+                       NEXUS's stated identity (14-engine council lattice),
+                       so it needs to actually read. */
+                    ctx.strokeStyle = 'rgba(110,240,230,' + (0.55*depthA).toFixed(3) + ')';
+                    ctx.lineWidth = Math.max(0.8, r*0.035);
                     ctx.beginPath();
                     ctx.moveTo(x+pa.x, y+pa.y);
                     ctx.lineTo(x+pb.x, y+pb.y);
@@ -1417,8 +1548,11 @@ var PLANET_VISUALS = {
                    they clearly fire independently, not in lockstep */
                 var flarePhase = ((now / 4200) + ei2 / numEngines) % 1;
                 var flareBright = Math.max(0, 1 - flarePhase*3.5);
-                var moteA = 0.28 + flareBright*0.55;
-                var moteR = Math.max(0.1, 1.3 + flareBright*1.6);
+                /* Motes boosted 2026-07-30 (round 2): base alpha/size raised
+                   so the ring of 14 lights reads as a clear halo around the
+                   core at a glance, not just during flare peaks. */
+                var moteA = 0.45 + flareBright*0.50;
+                var moteR = Math.max(0.1, r*0.09 + flareBright*r*0.10);
                 var moteG = ctx.createRadialGradient(ex, ey, 0, ex, ey, Math.max(0.1, moteR*2.6));
                 moteG.addColorStop(0, 'rgba(190,245,235,' + moteA.toFixed(3) + ')');
                 moteG.addColorStop(0.5, 'rgba(80,210,195,' + (moteA*0.5).toFixed(3) + ')');
@@ -1876,9 +2010,17 @@ function drawPlanet(ctx, body, sunX, sunY, now, planetType) {
     }
 
     /* ═══ SURFACE DETAIL — unique per planet ═══ */
-    /* Skip surface for planets/moons with custom fullscreen renderers;
-       keep it for stars (oracle, deepblue, nexus) which still use drawPlanet */
-    var _skipSurf=(planetType!=="oracle"&&planetType!=="deepblue"&&planetType!=="nexus");
+    /* Round 2 (2026-07-30): this used to hardcode "only oracle/deepblue/nexus
+       get a surface", which silently killed PLANET_VISUALS.turtlesue's Death
+       Star sprite (and any future non-star entry) even when drawPlanet was
+       the actual live renderer for that body — turtlesue currently has a
+       _botTypeMap cinema override so it never reaches drawPlanet anyway, but
+       that override is being removed alongside this fix (see html
+       _botTypeMap), and the surface must not silently no-op once it does.
+       Gate is now "does this body's own PLANET_VISUALS entry define a
+       surface", not a hardcoded star allowlist — every body decides for
+       itself via its own vis object. */
+    var _skipSurf=!vis.surface;
     if (vis.surface && !_skipSurf) {
         ctx.save();
         ctx.beginPath();
@@ -1944,8 +2086,10 @@ function drawPlanet(ctx, body, sunX, sunY, now, planetType) {
         ctx.restore();
     }
 
-    /* ═══ OVERLAY — drawn AFTER planet, not clipped (rings, etc.) ═══ */
-    if (vis.overlay && !_skipSurf) {
+    /* ═══ OVERLAY — drawn AFTER planet, not clipped (rings, etc.) ═══
+       Independent of _skipSurf now: a body can have an overlay (e.g. rings,
+       whale sonar) without a bespoke surface function, or vice versa. */
+    if (vis.overlay) {
         vis.overlay(ctx, x, y, r, lx, ly, now);
     }
 }

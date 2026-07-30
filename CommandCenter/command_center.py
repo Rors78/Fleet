@@ -45,7 +45,7 @@ from fleet_intel_score import FleetIntelScore
 import urllib.request as _urlreq  # UPGRADE: Fleet Intelligence — for LLM briefing
 
 from fleet_config import (
-    BOTS, CC_PORT, CC_URL, INFERENCE_URL as _FC_INFERENCE_URL,
+    CC_PORT, INFERENCE_URL as _FC_INFERENCE_URL,
     POLL_INTERVAL as _FC_POLL_INTERVAL, REQUEST_TIMEOUT as _FC_REQUEST_TIMEOUT,
     UNIVERSE_REFRESH_HOURS as _FC_UNIVERSE_REFRESH_HOURS,
     KRAKEN_REST as _FC_KRAKEN_REST, PORTFOLIO_TOTAL as _FC_PORTFOLIO_TOTAL,
@@ -223,7 +223,7 @@ class PortfolioManager:
     PAIR_COOLDOWN_SECS = 600        # 10 min base cooldown after any trade closes
     PAIR_COOLDOWN_AGGRESSIVE = 300  # 5 min when AEGIS score > 0.7 (fast market)
     PAIR_OPEN_COOLDOWN_SECS = 90    # 90 s cooldown after any OPEN on a pair (prevents burst re-entry before first close)
-    COOLDOWN_EXEMPT_BOTS = {"gridzilla"}  # grid bots manage their own frequency via fee gate
+    COOLDOWN_EXEMPT_BOTS = {"gridzilla"}  # grid bots manage their own entry frequency internally
 
     def __init__(self, total: float, limits: dict[str, int], filepath: str, mode_tag: str = "paper"):
         self._lock = threading.Lock()
@@ -325,7 +325,7 @@ class PortfolioManager:
             #     any trade has closed (the CLOSE cooldown can't fire if nothing closed yet).
             #     Catches e.g. 4×ENJ/USD opens in 60 s — entry 1 allowed, entries 2-4 blocked.
             #     Gridzilla exempt — grid bots legitimately open multiple levels on the same pair.
-            # FEE_SLAYER: added OPEN-gate cooldown — prevents burst same-pair entries before first close
+            # OPEN-gate cooldown — prevents burst same-pair entries before the first close.
             if bot_id.lower() not in self.COOLDOWN_EXEMPT_BOTS:
                 op = self._pair_opens.get(pair)
                 if op:
@@ -343,7 +343,7 @@ class PortfolioManager:
 
             # 0b. Per-pair CLOSE-time cooldown — first check, before all capital arithmetic and
             #     blacklist lookups (no point running any of that for a pair still cooling down).
-            #     Gridzilla exempt — fee gate handles its frequency.
+            #     Gridzilla exempt — it manages its own entry frequency internally.
             #     Duration adapts to AEGIS: 5 min when aggressive, 10 min otherwise.
             if bot_id.lower() not in self.COOLDOWN_EXEMPT_BOTS:
                 cooldown_secs = (
@@ -402,7 +402,7 @@ class PortfolioManager:
             max_deployed = self.total * lim["max_deployed_pct"] / 100
             if deployed + amount > max_deployed:
                 avail = max_deployed - deployed
-                return {"ok": False, "reason": f"Deployment limit: {deployed+amount:.2f} > {max_deployed:.2f} max ({lim['max_deployed_pct']}%). Available: {avail:.2f}"}
+                return {"ok": False, "reason": f"Fleet deployment limit: {deployed:.2f} deployed + {amount:.2f} requested > {max_deployed:.2f} cap ({lim['max_deployed_pct']}% of pool, AEGIS-adjusted). Fleet headroom: {avail:.2f}"}
 
             # 2. Per-bot limit
             bot_exp = self.exposure_by_bot().get(bot_id, 0)
@@ -454,7 +454,9 @@ class PortfolioManager:
             if dir_after > self.total * 0.60:
                 return {"ok": False, "reason": f"Directional cap: {direction} would be ${dir_after:.0f} ({dir_after/self.total:.0%} of pool, max 60%)"}
 
-            # 8. Size floor — minimum 5% of pool to keep fees proportional
+            # 8. Size floor — minimum 5% of pool. Position-sizing hygiene:
+            #    keeps every signal's stake large enough to matter to the
+            #    pool and filters out dust-sized noise entries.
             min_trade = self.total * 0.05
             if amount < min_trade:
                 return {"ok": False, "reason": f"Size floor: ${amount:.2f} < 5% of pool (${min_trade:.2f})"}
@@ -516,19 +518,7 @@ class PortfolioManager:
             if not res:
                 return {"ok": False, "reason": f"Reservation '{reservation_id}' not found"}
 
-            # Calculate and log fee impact (Kraken taker 0.40% × 2 = 0.80% round-trip, tier 0).
-            # Sourced from fleet_config rather than a local literal so a fee-schedule
-            # change lands here too. This figure is REPORTING ONLY — bots already
-            # subtract fees before passing net pnl to release(), so applying it to
-            # the pool here would double-count.
             amount = res["amount"]
-            round_trip_fees = amount * _fleet_config.KRAKEN_FEE_TAKER * 2
-            fee_pct = (round_trip_fees / amount * 100) if amount > 0 else 0
-            
-            # Log significant fee events (>2% of position is significant)
-            if fee_pct > 2:
-                log.warning(f"Fee alert: {res['bot_id']} {res['pair']} "
-                           f"fees ${round_trip_fees:.2f} ({fee_pct:.1f}%) on ${amount:.0f}")
 
             self.total += pnl
 
@@ -542,7 +532,10 @@ class PortfolioManager:
                 "pair": res["pair"],
                 "amount": amount,
                 "pnl": pnl,
-                "fees": round_trip_fees,
+                # Signal product (2026-07-30): no fees calculated or deducted —
+                # subscribers pay their own exchange. Key kept at 0.0 so
+                # history readers don't break on a missing field.
+                "fees": 0.0,
                 "new_total": self.total,
                 "timestamp": time.time(),
             })
@@ -1190,7 +1183,9 @@ def _normalize_confluence(raw: dict) -> dict:
         "signals_count": raw.get("signals_count"),
         "uptime": raw.get("uptime"),
         # Confluence-specific extras
-        "fees_paid": raw.get("fees_paid"),
+        # fees_paid: legacy field — bots are dropping fee reporting (signal
+        # product, gross P/L). Default 0 so absence never breaks consumers.
+        "fees_paid": raw.get("fees_paid", 0) or 0,
         "intel_status": raw.get("intel_status"),
         "candidates": raw.get("candidates"),
     }
@@ -1835,12 +1830,13 @@ def _compute_bot_correlations(bots_data: dict) -> dict:
 # --- C. Automated Performance Attribution ---
 
 def _compute_performance_attribution(bots_data: dict) -> dict:
-    """Decompose fleet PnL into Alpha (signal quality), Beta (market exposure),
-    and Cost (estimated fees/slippage).
+    """Decompose fleet PnL into Alpha (signal quality) and Beta (market exposure).
 
     Alpha = PnL from position selection (excess return above market)
     Beta  = PnL attributable to market direction (what a passive holder would earn)
-    Cost  = Estimated trading costs (fees + slippage estimate)
+    Cost  = always 0.0 — signal product (2026-07-30): the fleet models no
+            execution costs; subscribers pay their own exchange's fees.
+            The key is kept in the output shape for consumers.
 
     Uses the latest market data and bot positions to estimate these components.
     """
@@ -1890,21 +1886,12 @@ def _compute_performance_attribution(bots_data: dict) -> dict:
     # This approximates what passive market exposure would have returned
     beta_pnl = market_return_pct * deployed_capital / 100.0 if deployed_capital > 0 else 0.0
 
-    # Cost estimate: 0.40% per side Kraken taker fee (tier 0) per trade
-    # plus 0.05% slippage estimate
-    FEE_RATE = 0.0040
-    SLIPPAGE_RATE = 0.0005
-    # Estimate average trade size from portfolio
-    avg_trade_size = deployed_capital / max(fleet_open_positions, 1) if deployed_capital > 0 else 0
-    # Only count new trades (approximation: use total_trades as proxy)
-    # For a running system, this gives cumulative cost
-    estimated_cost = fleet_total_trades * avg_trade_size * (FEE_RATE + SLIPPAGE_RATE)
-    # Cap at reasonable fraction of total PnL magnitude to avoid absurd estimates
-    if abs(fleet_total_pnl) > 0:
-        estimated_cost = min(estimated_cost, abs(fleet_total_pnl) * 0.5)
+    # Cost: always 0 — signal product, no execution costs modeled.
+    # P/L is gross price movement; subscribers pay their own venue's fees.
+    estimated_cost = 0.0
 
-    # Alpha = total PnL - beta - (-cost)  =>  Alpha = total PnL - beta + cost
-    alpha_pnl = fleet_total_pnl - beta_pnl + estimated_cost
+    # Alpha = total PnL - beta (no cost adjustment in gross semantics)
+    alpha_pnl = fleet_total_pnl - beta_pnl
 
     # Per-bot attribution (simplified: proportional to their share of total PnL)
     per_bot = {}
@@ -1940,7 +1927,7 @@ def _compute_performance_attribution(bots_data: dict) -> dict:
         "explanation": {
             "alpha": "PnL from position selection skill (signal quality)",
             "beta": "PnL from market direction exposure (passive component)",
-            "cost": "Estimated trading costs (fees + slippage)",
+            "cost": "Always 0 — gross signal P/L; subscribers pay their own exchange's fees",
             "edge_status": f"Alpha {'exceeds' if alpha_pnl > 0 else 'trails'} passive exposure — edge is {edge_status.lower()}",
         },
     }
@@ -2237,29 +2224,6 @@ except Exception:
     _last_aegis_adjust = 0
 
 
-def _get_fleet_fee_ratio():
-    """Calculate fleet fee ratio from portfolio history.
-    Returns: fee_ratio (total_fees / abs(total_gross_pnl))
-    Returns None if insufficient data.
-    """
-    if not _active_portfolio():
-        return None
-    try:
-        with _active_portfolio()._lock:
-            history = _active_portfolio().reservations.get("history", [])
-        if not history:
-            return None
-        # Get last 100 trades for recent fee ratio
-        recent = history[-100:] if len(history) > 100 else history
-        total_fees = sum(h.get("fees", 0) for h in recent)
-        total_gross = sum(h.get("gross_pnl", 0) for h in recent)
-        if abs(total_gross) < 0.01:  # Avoid division by near-zero
-            return None
-        return total_fees / abs(total_gross)
-    except Exception:
-        return None
-
-
 def _apply_aegis_adjustment():
     """Read AEGIS score and dynamically adjust portfolio deployment limits."""
     global _last_aegis_adjust
@@ -2282,9 +2246,6 @@ def _apply_aegis_adjustment():
     if score is None:
         return
 
-    # Get fleet fee ratio for throttle calculation
-    fee_ratio = _get_fleet_fee_ratio()
-
     # Base deployment limit from AEGIS score
     if score >= 0.8:
         base_limit = 90
@@ -2299,26 +2260,13 @@ def _apply_aegis_adjustment():
         base_limit = 30
         regime = "DEFENSIVE"
 
-    # Apply fee ratio throttle - reduce deployment when fees are unhealthy
-    # fee_ratio > 1.0 means fees > gross profit (bad)
-    # fee_ratio > 2.0 means fees are 2x gross profit (catastrophic)
-    if fee_ratio is not None and fee_ratio > 1.0:
-        if fee_ratio > 2.0:
-            fee_multiplier = 0.3  # Severe throttle - 30% of base
-            throttle_reason = "FEE_CATASTROPHIC"
-        elif fee_ratio > 1.5:
-            fee_multiplier = 0.5  # Moderate throttle - 50% of base
-            throttle_reason = "FEE_CRITICAL"
-        elif fee_ratio > 1.0:
-            fee_multiplier = 0.7  # Light throttle - 70% of base
-            throttle_reason = "FEE_HIGH"
-        else:
-            fee_multiplier = 1.0
-            throttle_reason = None
-        new_limit = int(base_limit * fee_multiplier)
-    else:
-        new_limit = base_limit
-        throttle_reason = None
+    # Signal product (2026-07-30): the fee-ratio deployment throttle was
+    # removed — the fleet never pays fees, so there is nothing to throttle
+    # on. Deployment limit is driven by the AEGIS score alone.
+    # throttle_reason/fee_ratio keys are kept (as None) in the event payload
+    # below so PORTFOLIO_LIMIT_CHANGE consumers don't break on missing keys.
+    new_limit = base_limit
+    throttle_reason = None
 
     # Apply AEGIS adjustment to BOTH portfolios.
     # old_limit is captured OUTSIDE the loop: reading it inside leaves it bound
@@ -2337,7 +2285,6 @@ def _apply_aegis_adjustment():
             _pm.aegis_score = float(score)
 
     if old_limit != new_limit:
-        throttle_info = f" (fee_ratio={fee_ratio:.1%})" if fee_ratio else ""
         _event_bus.publish({
             "source": "command_center",
             "type": "PORTFOLIO_LIMIT_CHANGE",
@@ -2346,11 +2293,11 @@ def _apply_aegis_adjustment():
                 "regime": regime,
                 "old_limit": old_limit,
                 "new_limit": new_limit,
-                "throttle_reason": throttle_reason,
-                "fee_ratio": round(fee_ratio, 3) if fee_ratio else None,
+                "throttle_reason": throttle_reason,  # always None — fee throttle removed 2026-07-30
+                "fee_ratio": None,                   # kept for consumer shape only
             },
         })
-        log.info(f"AEGIS: {regime} -> {new_limit}% (base={base_limit}){throttle_info}")
+        log.info(f"AEGIS: {regime} -> {new_limit}% (base={base_limit})")
 
     _last_aegis_adjust = now
     _save_cc_state({"last_aegis_adjust": now})
@@ -3306,7 +3253,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         # Same trade can land on disk twice — once from _handle_release
         # (via=portfolio_release, has reservation_id) and once from
         # fleet_logger._detect_events (snapshot diff, no reservation_id).
-        # Prefer the release-path entry — it has accurate fees and uppercase
+        # Prefer the release-path entry — it has the realized pnl and uppercase
         # direction. Fall back to the snapshot-diff entry only when it's the
         # only one we have for that trade.
         by_rid: dict[str, dict] = {}
@@ -3330,7 +3277,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         # Instead: drop a no-rid entry if there's a by_rid entry for the
         # same (bot, pair) within 600s. Same pair, same bot, within 10
         # minutes, with a release record in hand → it's the same trade,
-        # and the release record is canonical (real fees, real direction
+        # and the release record is canonical (realized pnl, real direction
         # casing, real reservation_id). The 90s same-pair OPEN cooldown in
         # PortfolioManager makes faster legitimate turnover impossible.
         # Pair comparison MUST be normalized. The two emitters use different
@@ -3569,7 +3516,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 sigs = open_info["signals"]
                 contrib = [f"{source}:{s}" for s in sigs] if isinstance(sigs, list) else [source]
                 _signal_decomposition.log_trade(
-                    pair, direction, gross_pnl=pnl, fees=edata.get("fees", 0),
+                    pair, direction, gross_pnl=pnl,
                     duration=edata.get("duration_h", 0) * 3600 if edata.get("duration_h") else edata.get("duration_s", 0),
                     contributing_signals=contrib,
                 )
@@ -3673,7 +3620,6 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         exit_price=data.get("exit_price", 0),
                         size_usd=res_info["amount"],
                         duration=_duration,
-                        fee_rate=_fleet_config.KRAKEN_FEE_TAKER,
                         realized_pnl=pnl,
                         trade_id=rid,
                     )
@@ -3689,7 +3635,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             # bus itself (logs/event_bus/*.jsonl) so it survives reboots.
             try:
                 _size = float(res_info.get("amount") or 0)
-                _fees = round(_size * _fleet_config.KRAKEN_FEE_TAKER * 2, 4)  # round-trip
+                # Signal product (2026-07-30): fees always 0 — pnl is gross
+                # price movement. Key kept so TRADE_CLOSE consumers don't break.
+                _fees = 0.0
                 _event_bus.publish({
                     "source": res_info.get("bot_id", "portfolio"),
                     "type": "TRADE_CLOSE",
@@ -3769,7 +3717,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             exit_price=data.get("exit_price", 0),
             size_usd=data.get("size_usd", 0),
             duration=data.get("duration", 0),
-            fee_rate=data.get("fee_rate", 0.0040),
+            # fee_rate intentionally not forwarded — expectancy is gross
+            # (signal product, 2026-07-30); record_trade ignores fees.
         )
         self._send_json({"status": "recorded"})
 
@@ -4083,7 +4032,7 @@ def main():
                 sigs = open_info["signals"]
                 contrib = [f"{bot}:{s}" for s in sigs] if isinstance(sigs, list) else [bot]
                 _signal_decomposition.log_trade(
-                    pair, direction, gross_pnl=pnl, fees=data.get("fees", 0),
+                    pair, direction, gross_pnl=pnl,
                     duration=data.get("duration_s", 0),
                     contributing_signals=contrib,
                     metadata=open_info.get("factors", {}),

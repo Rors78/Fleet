@@ -27,7 +27,6 @@ Applications:
 """
 
 import math
-import time
 
 
 class InformationGeometryEngine:

@@ -427,9 +427,8 @@ def _build_snapshot(result, names, variants, objectives, args, backtest_data=Non
 def cmd_dashboard(args):
     """Run optimization and serve results via web dashboard. Re-optimizes every 30 min."""
     import threading
-    import math
     import sys as _sys
-    from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     # Fleet event bus
     _sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "CommandCenter"))

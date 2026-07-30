@@ -43,10 +43,8 @@ from datetime import datetime, timezone, timedelta
 from typing import Dict, List, Optional, Tuple
 try:
     import urllib.request as urlreq
-    import urllib.error as urlerr
 except ImportError:
     import urllib2 as urlreq
-    urlerr = urlreq
 
 # Fleet bus listener
 from pathlib import Path as _Path
@@ -169,7 +167,8 @@ CONFIG = {
     "drawdown_reduce_pct": 20.0,    # unchanged
 
     # ── Minimum Trade Size ──
-    # Must cover Kraken minimums and 2× fees with room for profit.
+    # Signal-quality floor: must clear Kraken order minimums and the pool's
+    # 5% size floor. (No fee modeling — signal product, fees are the subscriber's venue.)
     "min_trade_size_usd": 500.0,  # raised from 300.0 on 2026-04-07 — must clear 5% pool floor
 
     # ── System Allocation ──
@@ -360,32 +359,6 @@ class TurtleMath:
             n = (19 * n + tr) / 20  # Original formula from the document
 
         return n
-
-    @staticmethod
-    def compute_n_series(candles: List[dict], period: int = 20) -> List[Optional[float]]:
-        """Compute N for every candle (None for insufficient data)."""
-        n_series = [None] * len(candles)
-        if len(candles) < period + 1:
-            return n_series
-
-        # Seed
-        trs = []
-        for i in range(1, period + 1):
-            tr = TurtleMath.true_range(
-                candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
-            )
-            trs.append(tr)
-        n = sum(trs) / len(trs)
-        n_series[period] = n
-
-        for i in range(period + 1, len(candles)):
-            tr = TurtleMath.true_range(
-                candles[i]["high"], candles[i]["low"], candles[i-1]["close"]
-            )
-            n = (19 * n + tr) / 20
-            n_series[i] = n
-
-        return n_series
 
     @staticmethod
     def donchian_channel(candles: List[dict], period: int,
@@ -1107,7 +1080,7 @@ class TurtleEngine:
         unit_coins *= _bus_mult
         cost = unit_coins * price
 
-        # Minimum trade size check - reject trades too small to be viable after fees
+        # Minimum trade size check - reject trades too small to be a meaningful signal
         min_size = CONFIG["min_trade_size_usd"]
         if cost < min_size:
             self.errors.append(f"Trade too small: ${cost:.2f} < ${min_size:.0f} minimum")
@@ -1240,24 +1213,23 @@ class TurtleEngine:
             try:
                 import urllib.request as urlreq
                 url = f"{CONFIG['command_center_url']}/api/signals/outcome"
-                fees = pos.total_size * 0.0040 * 2  # Kraken taker 0.40% × 2 = 0.80% RT (tier 0)
                 data = json.dumps({
                     "bot_id": "turtlesue",
                     "pair": pair,
                     "direction": pos.direction,
                     "won": pnl > 0,
                     "pnl": float(pnl),
-                    "fees": float(fees)
+                    "fees": 0.0  # gross P/L — signal product, fees are the subscriber's venue
                 }).encode("utf-8")
                 req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
                 urlreq.urlopen(req, timeout=3)
             except Exception:
                 pass
             
-            # Split net PnL (after fees) across first reservation, release rest with 0
-            net_pnl = pnl - fees  # fees already calculated at line 1195
+            # Split gross PnL across first reservation, release rest with 0.
+            # Gross by design: signal product — fees are the subscriber's venue.
             for i, rid in enumerate(pos.reservation_ids):
-                rid_pnl = net_pnl if i == 0 else 0.0
+                rid_pnl = pnl if i == 0 else 0.0
                 self._portfolio_client.release(
                     rid, pnl=rid_pnl,
                     entry_price=float(pos.avg_entry),
@@ -1585,10 +1557,6 @@ class Display:
         print(CLEAR, end="")
 
     @staticmethod
-    def hline(char="=", color=DIM):
-        print(f"{color}{char * Display.W}{RESET}")
-
-    @staticmethod
     def dline(char="-", color=DIM):
         print(f"{color}{char * Display.W}{RESET}")
 
@@ -1884,7 +1852,7 @@ class DashboardServer:
 
     def start(self):
         """Start dashboard in a daemon thread."""
-        from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
         engine = self.engine
         html = self._html
 

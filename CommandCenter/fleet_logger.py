@@ -90,10 +90,6 @@ def _today_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _utc_now():
-    return datetime.now(timezone.utc)
-
-
 def _ensure_dirs():
     for d in (LOG_DIR, SNAPSHOT_DIR, EVENT_DIR, DAILY_DIR):
         os.makedirs(d, exist_ok=True)
@@ -343,8 +339,14 @@ class FleetLogger:
         _append_jsonl(EVENT_DIR, event)
 
     def log_portfolio_release(self, bot_id, pair, amount, pnl, reservation_id):
-        """Called by command_center when a release happens."""
-        fees = round(amount * 0.0040 * 2, 2)  # Kraken 0.80% RT
+        """Called by command_center when a release happens.
+
+        Gross semantics (2026-07-30): pnl IS gross price movement — the
+        fleet is a signal product and pays no fees. gross_pnl == pnl and
+        fees is 0.0; both keys kept so event-log readers don't break.
+        (Pre-2026-07-30 events on disk carry fabricated fees and inflated
+        gross_pnl — history is not rewritten.)
+        """
         event = {
             "ts": time.time(),
             "type": "PORTFOLIO",
@@ -353,8 +355,8 @@ class FleetLogger:
             "pair": pair,
             "amount": amount,
             "pnl": pnl,
-            "gross_pnl": round(pnl + fees, 2),
-            "fees": fees,
+            "gross_pnl": round(pnl, 2),
+            "fees": 0.0,
             "reservation_id": reservation_id,
         }
         _append_jsonl(EVENT_DIR, event)
@@ -422,23 +424,23 @@ class FleetLogger:
                             pnl = exit_info["pnl"]
 
                     duration = time.time() - open_time if open_time > 0 else 0
-                    # Fee calculation: Kraken 0.40% taker per side = 0.80% RT
+                    # Gross semantics (2026-07-30): pnl IS gross price
+                    # movement — no fee fabrication. fees kept at 0.0 for
+                    # event-shape compatibility.
                     _size = pos.get("total_size", 0) or pos.get("size_usd", 0) or pos.get("amount", 500)
                     _entry = pos.get("entry_price", 0) or pos.get("avg_entry", 0)
                     if _entry > 0 and _size > 0:
                         _size_usd = _size * _entry if _size < 100 else _size  # handle coin qty vs usd
                     else:
                         _size_usd = 500  # fallback
-                    _fees = round(_size_usd * 0.0040 * 2, 2)  # 0.80% RT
-                    _gross = round(pnl + _fees, 2)
                     ev = {
                         "ts": time.time(),
                         "bot": bid,
                         "type": "TRADE_CLOSE",
                         "pair": pair_name,
                         "pnl": pnl,
-                        "gross_pnl": _gross,
-                        "fees": _fees,
+                        "gross_pnl": round(pnl, 2),
+                        "fees": 0.0,
                         "size_usd": round(_size_usd, 2),
                         "duration_s": duration,
                         "exit_reason": exit_reason,

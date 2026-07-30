@@ -20,7 +20,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Tuple
 from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import requests
 
@@ -37,7 +37,7 @@ except ImportError:
     _is_blacklisted = lambda pair: False
 
 from indicators import (
-    Candle, ema, ema_series, sma, rsi, stochastic_rsi, macd, bollinger_bands,
+    Candle, ema, rsi, stochastic_rsi, macd, bollinger_bands,
     atr, adx, donchian, vwap, volume_momentum, pearson_correlation,
 )
 

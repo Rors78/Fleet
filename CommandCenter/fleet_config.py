@@ -26,10 +26,12 @@ FLEET_MODE = "paper"
 
 # ── KRAKEN ──
 KRAKEN_REST = "https://api.kraken.com/0/public"
-# Fee schedule as of 2026-04: tier 0 ($0-$10K/month volume)
-# Taker 0.40%, Maker 0.25%, Round-trip (taker both sides) 0.80%
-KRAKEN_FEE_TAKER = 0.0040
-KRAKEN_FEE_MAKER = 0.0025
+# DEPRECATED (2026-07-30): the fleet is a signal product — it never pays
+# exchange fees; subscribers pay whatever their own venue charges. These
+# constants are kept only so bots not yet migrated off them don't crash on
+# import; at 0.0 any leftover fee math computes to zero (gross P/L).
+KRAKEN_FEE_TAKER = 0.0
+KRAKEN_FEE_MAKER = 0.0
 
 # ── TIMING ──
 POLL_INTERVAL = 10            # CC poll cycle (seconds) — raised from 4s to cut 429s (240→96 req/min)
@@ -54,7 +56,9 @@ TRADING_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "rubberband", "arbitrage
 # ── TRADING LIMITS ──
 MAX_CONCENTRATION_PER_PAIR = 0.40
 MAX_DIRECTION_IMBALANCE = 0.70
-MIN_TRADE_PROFIT_VS_FEES = 2.0
+# DEPRECATED (2026-07-30): fee-relative profit gate retired — signal product,
+# no fleet-side fees. Kept at 0.0 so bots still reading it gate on nothing.
+MIN_TRADE_PROFIT_VS_FEES = 0.0
 MIN_TRADE_SIZE_USD = 0
 
 # ── BOT REGISTRY ──
@@ -210,21 +214,20 @@ def is_live() -> bool:
 
 
 # Live mode: LONG positions only. Shorts allowed in paper only.
-# Shorting on Kraken spot requires margin (different fees, borrowing costs, liquidation risk)
+# Shorting on Kraken spot requires margin (borrowing mechanics, liquidation risk)
 # and the fleet has near-zero data in bear/range regimes to validate short strategies.
 LIVE_LONG_ONLY = True
 
-# Shorting is retired FLEET-WIDE, in paper as well as live.
+# Shorts re-enabled fleet-wide in paper (2026-07-30). The fleet is a SIGNAL
+# PRODUCT now — it will never trade real money itself; subscribers in
+# jurisdictions that allow shorting need short signals. That inverts the old
+# ban rationale: short expectancy/WR stats are no longer pollution steering
+# the fleet's learning toward trades it would never take — they are quality
+# control on a deliverable. LIVE_LONG_ONLY above still blocks shorts if the
+# fleet is ever flipped live.
 #
-# LIVE_LONG_ONLY above only bites once FLEET_MODE == "live", so in paper mode
-# bots could still open shorts freely — TurtleSue was observed holding an
-# AAVE/USD SHORT while the fleet was nominally long-only. Paper positions feed
-# expectancy, signal decomposition and every WR/attribution statistic the fleet
-# tunes itself on, so shorts that will never be traded live were still steering
-# the fleet's learning.
-#
-# Set False to re-enable short entries in paper for research.
-FLEET_LONG_ONLY = True
+# Set True to retire short entries again (open shorts survive via is_reentry).
+FLEET_LONG_ONLY = False
 
 
 def direction_allowed(direction: str, is_reentry: bool = False) -> tuple:
@@ -259,8 +262,9 @@ def live_direction_allowed(direction: str) -> bool:
 # ── ORDER EXECUTION ──
 # LIMIT ORDERS ONLY, fleet-wide, no exceptions. Market orders are refused at
 # the Kraken client. A market order is a blank cheque on fill price: on a thin
-# book it can slip well past the level the strategy chose, and the fleet
-# already pays 0.40% taker per side.
+# book it can slip well past the level the strategy chose — execution realism,
+# and the signal a subscriber receives must be a price the strategy actually
+# picked, not whatever the book happened to fill at.
 #
 # A limit order placed exactly at the last trade may never fill. So orders are
 # priced MARKETABLE: cross the spread by this fraction, which fills like a

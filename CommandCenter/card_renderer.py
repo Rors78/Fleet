@@ -10,7 +10,6 @@ Design system:
 """
 
 import io
-import math
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
 
@@ -816,7 +815,8 @@ class CardRenderer:
         exit_p = data.get("exit_price", data.get("close_price"))
         size = data.get("size_usd", data.get("size"))
         duration_s = data.get("duration_s", data.get("duration"))
-        fees = data.get("fees")
+        # No fee line on cards (2026-07-30): P/L is gross price movement \u2014
+        # subscribers pay their own exchange's fees.
         regime = data.get("regime", data.get("fleet_regime", "\u2014"))
         bot = display_name(data.get("source", data.get("bot", "\u2014")))
         exit_reason = data.get("exit_reason", data.get("reason", ""))
@@ -830,7 +830,6 @@ class CardRenderer:
         entry_s = self._smart_price(entry)
         exit_s = self._smart_price(exit_p)
         size_s = f"${size:,.2f}" if isinstance(size, (int, float)) else "\u2014"
-        fees_s = f"${fees:,.2f}" if isinstance(fees, (int, float)) else None
 
         # Duration
         if isinstance(duration_s, (int, float)):
@@ -912,8 +911,6 @@ class CardRenderer:
         y = self._draw_kv(draw, y, "Exit", exit_s)
         y = self._draw_kv(draw, y, "Size", size_s)
         y = self._draw_kv(draw, y, "Duration", dur_s)
-        if fees_s:
-            y = self._draw_kv(draw, y, "Fees", fees_s)
         if exit_reason:
             reason_clean = str(exit_reason).replace("_", " ").title()
             y = self._draw_kv(draw, y, "Reason", reason_clean)
@@ -987,7 +984,6 @@ class CardRenderer:
         best_bot = display_name(data.get("best_bot", "\u2014"))
         worst_bot = display_name(data.get("worst_bot", "\u2014"))
         best_pair = data.get("best_pair", "\u2014")
-        total_fees = data.get("total_fees")
         bot_breakdown = data.get("bot_breakdown", [])
         timestamp = data.get("timestamp")
 
@@ -995,7 +991,6 @@ class CardRenderer:
         pnl_color = TEXT_POS if isinstance(total_pnl, (int, float)) and total_pnl > 0 else (
             TEXT_DANGER if isinstance(total_pnl, (int, float)) and total_pnl < 0 else TEXT_PRI)
         wr_s = f"{avg_win_rate:.0%}" if isinstance(avg_win_rate, float) and avg_win_rate <= 1 else "\u2014"
-        fees_s = f"${total_fees:,.2f}" if isinstance(total_fees, (int, float)) else "\u2014"
 
         h = 400 + len(bot_breakdown) * 26 + 40
         img, draw = self._new_canvas(h)
@@ -1012,7 +1007,6 @@ class CardRenderer:
         y = self._draw_kv(draw, y, "Total P/L", pnl_s, value_color=pnl_color)
         y = self._draw_kv(draw, y, "Trades", str(total_trades))
         y = self._draw_kv(draw, y, "Win Rate", wr_s)
-        y = self._draw_kv(draw, y, "Total Fees", fees_s)
         y = self._draw_kv(draw, y, "Best Bot", best_bot)
         y = self._draw_kv(draw, y, "Worst Bot", worst_bot)
         y = self._draw_kv(draw, y, "Best Pair", best_pair)
@@ -1048,9 +1042,11 @@ class CardRenderer:
 
         date_s = data.get("date", datetime.now(timezone.utc).strftime("%d %b %Y"))
         trades = data.get("trades", [])
+        # Gross semantics (2026-07-30): one P/L number — gross price
+        # movement. No fee row; subscribers pay their own exchange.
         gross = data.get("gross")
-        fees = data.get("fees")
-        net = data.get("net")
+        if not isinstance(gross, (int, float)):
+            gross = data.get("net")
         n_trades = len(trades)
         wins = [t for t in trades if isinstance(t.get("net"), (int, float)) and t["net"] > 0]
         losses = [t for t in trades if isinstance(t.get("net"), (int, float)) and t["net"] <= 0]
@@ -1163,18 +1159,9 @@ class CardRenderer:
         ]
         if isinstance(gross, (int, float)):
             color = TEXT_POS if gross >= 0 else TEXT_DANGER
-            stat_rows.append(("Gross", f"{'+'if gross>=0 else ''}${abs(gross):.2f}", color))
+            stat_rows.append(("P/L", f"{'+'if gross>=0 else ''}${abs(gross):.2f}", color))
         else:
-            stat_rows.append(("Gross", "\u2014", TEXT_PRI))
-        if isinstance(fees, (int, float)):
-            stat_rows.append(("Fees", f"-${abs(fees):.2f}", TEXT_DANGER))
-        else:
-            stat_rows.append(("Fees", "\u2014", TEXT_PRI))
-        if isinstance(net, (int, float)):
-            color = TEXT_POS if net >= 0 else TEXT_DANGER
-            stat_rows.append(("Net", f"{'+'if net>=0 else ''}${abs(net):.2f}", color))
-        else:
-            stat_rows.append(("Net", "\u2014", TEXT_PRI))
+            stat_rows.append(("P/L", "\u2014", TEXT_PRI))
 
         for label, val, color in stat_rows:
             draw.text((sx, sy), f"{label:8s}", fill=_hex(TEXT_SEC), font=stats_font)
@@ -1602,7 +1589,8 @@ class CardRenderer:
         """
         exit_p = data.get("exit_price", data.get("close_price"))
         pnl = data.get("pnl")
-        fees = data.get("fees")
+        # No fee/net copy blocks (2026-07-30): P/L is gross — subscribers
+        # pay their own exchange's fees.
 
         blocks = []
         if isinstance(exit_p, (int, float)):
@@ -1610,12 +1598,6 @@ class CardRenderer:
         if isinstance(pnl, (int, float)):
             pnl_s = f"{'+' if pnl >= 0 else '-'}${abs(pnl):.2f}"
             blocks.append(f"P/L\n`{pnl_s}`")
-        if isinstance(fees, (int, float)):
-            blocks.append(f"Fees\n`-${fees:.2f}`")
-        if isinstance(pnl, (int, float)) and isinstance(fees, (int, float)):
-            net = pnl - fees
-            net_s = f"{'+' if net >= 0 else '-'}${abs(net):.2f}"
-            blocks.append(f"Net\n`{net_s}`")
 
         if not blocks:
             return None
@@ -1717,7 +1699,6 @@ if __name__ == "__main__":
         "exit_price": 83450.00,
         "size_usd": 500.00,
         "duration_s": 7200,
-        "fees": 4.00,
         "regime": "NORMAL",
         "source": "TrekBot",
     })

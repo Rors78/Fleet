@@ -11,16 +11,13 @@ Usage:  cd D:\\CommandCenter && python fleet_audit.py
 import importlib
 import json
 import math
-import os
 import re
-import subprocess
 import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
 
 # ---------------------------------------------------------------------------
 # HTTP helper — requests with urllib fallback
@@ -96,21 +93,6 @@ def http_get(url, timeout=PROBE_TIMEOUT):
     except Exception as e:
         return {"ok": False, "status": None, "body": None,
                 "elapsed_ms": round((time.time() - t0) * 1000, 1), "error": str(e)[:300]}
-
-
-def http_get_json(url, timeout=PROBE_TIMEOUT):
-    """GET url expecting JSON. Returns {ok, data, status, elapsed_ms, error}."""
-    result = http_get(url, timeout)
-    if not result["ok"]:
-        return {"ok": False, "data": None, "status": result["status"],
-                "elapsed_ms": result["elapsed_ms"], "error": result["error"]}
-    try:
-        data = json.loads(result["body"]) if result["body"] else None
-        return {"ok": True, "data": data, "status": result["status"],
-                "elapsed_ms": result["elapsed_ms"], "error": None}
-    except json.JSONDecodeError as e:
-        return {"ok": True, "data": None, "status": result["status"],
-                "elapsed_ms": result["elapsed_ms"], "error": f"JSON parse error: {e}"}
 
 
 def http_get_json_full(url, timeout=PROBE_TIMEOUT):

@@ -360,34 +360,6 @@ class Brain:
         
         return candidates
     
-    def get_summary(self, pair: str) -> Dict[str, Any]:
-        """
-        Get summary of brain analysis for a coin.
-        
-        Args:
-            pair: Trading pair
-            
-        Returns:
-            Summary dictionary
-        """
-        if pair not in self.memory:
-            return {'status': 'No data available'}
-        
-        recent = list(self.memory[pair])[-5:] if len(self.memory[pair]) >= 5 else list(self.memory[pair])
-        
-        if not recent:
-            return {'status': 'No recent data'}
-        
-        return {
-            'pair': pair,
-            'data_points': len(self.memory[pair]),
-            'trend': self.get_trend_direction(pair),
-            'reliability': self.calculate_signal_reliability(pair),
-            'momentum': self.analyze_momentum(pair),
-            'latest_score': recent[-1]['whale_score'],
-            'avg_score': np.mean([r['whale_score'] for r in recent])
-        }
-
 # Research notes:
 # - Whale detection heuristics:
 #   1. Strong trend (ADX > 25) indicates institutional interest

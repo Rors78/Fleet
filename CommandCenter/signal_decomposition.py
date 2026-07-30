@@ -3,11 +3,18 @@ JIM'S DECOMPOSITION -- Which signals actually make money?
 
 For each signal source, compute its UNIQUE contribution to portfolio P/L.
 
+GROSS SEMANTICS (since 2026-07-30): the fleet is a signal product — all
+P/L here is GROSS price movement. No fees are calculated or deducted;
+subscribers pay whatever their own exchange charges. Trades logged before
+2026-07-30 carry a net-of-fees `net_pnl` field; that history is not
+rewritten — all analysis reads the stored `gross_pnl` field instead, so
+old and new trades are evaluated under the same gross semantics.
+
 Tracks every signal emitted and every trade executed, then attributes value:
 - trades_influenced: how many trades this signal contributed to
-- accuracy: % of influenced trades that were profitable (net of fees)
+- accuracy: % of influenced trades that were profitable (gross)
 - marginal_value: avg P/L when present minus avg P/L when absent
-- cost_adjusted_expectancy: expected profit minus fees per trade
+- expectancy: expected gross profit per trade
 - verdict: KEEP, EVALUATE, or CUT
 
 Usage:
@@ -18,7 +25,7 @@ Usage:
     decomp.log_signal('oracle', 'BTC/USD', 'LONG', 0.72)
 
     # Log every trade with which signals contributed:
-    decomp.log_trade('BTC/USD', 'LONG', gross_pnl=35.20, fees=4.80,
+    decomp.log_trade('BTC/USD', 'LONG', gross_pnl=35.20,
                      duration=7200, contributing_signals=['oracle', 'trekbot'])
 
     # Analyze:
@@ -57,21 +64,24 @@ class SignalDecomposition:
         })
         self.signal_log = self.signal_log[-self.max_signals:]
 
-    def log_trade(self, pair, direction, gross_pnl, fees, duration,
-                  contributing_signals, metadata=None):
+    def log_trade(self, pair, direction, gross_pnl, fees=0.0, duration=0,
+                  contributing_signals=None, metadata=None):
         """
         Record a completed trade with which signals contributed.
 
         contributing_signals: list of source names that influenced this trade
+        fees: LEGACY, accepted but ignored (signal product, 2026-07-30 —
+            P/L is gross; subscribers pay their own exchange's fees). Kept
+            in the signature so old callers don't break.
         """
         self.trade_log.append({
             'pair': pair,
             'direction': direction,
             'gross_pnl': gross_pnl,
-            'fees': fees,
-            'net_pnl': gross_pnl - fees,
+            'fees': 0.0,               # always 0 — record shape kept for readers
+            'net_pnl': gross_pnl,      # equals gross since 2026-07-30
             'duration': duration,
-            'signals': contributing_signals,
+            'signals': contributing_signals or [],
             'timestamp': time.time(),
             'metadata': metadata or {},
         })
@@ -102,7 +112,7 @@ class SignalDecomposition:
                 'profitable_sources': 0,
                 'destructive_sources': 0,
                 'total_trades': len(self.trade_log),
-                'total_fees': round(sum(t['fees'] for t in self.trade_log), 2),
+                'total_fees': 0.0,  # signal product — fees not tracked; key kept for shape
                 'recommendation': ['No signal data yet. Log trades with contributing_signals.'],
             }
 
@@ -116,24 +126,24 @@ class SignalDecomposition:
             present_count = len(present)
             absent_count = len(absent)
 
-            # P/L analysis
-            present_net = sum(t['net_pnl'] for t in present)
-            absent_net = sum(t['net_pnl'] for t in absent)
-            present_gross = sum(t['gross_pnl'] for t in present)
-            present_fees = sum(t['fees'] for t in present)
+            # P/L analysis — gross semantics (2026-07-30): read gross_pnl
+            # for every trade so pre-conversion (net-recorded) history is
+            # evaluated under the same gross convention as new trades.
+            present_net = sum(t['gross_pnl'] for t in present)
+            absent_net = sum(t['gross_pnl'] for t in absent)
 
             avg_present = present_net / present_count if present_count else 0
             avg_absent = absent_net / absent_count if absent_count else 0
             marginal = avg_present - avg_absent
 
-            # Win rates
-            present_wins = sum(1 for t in present if t['net_pnl'] > 0)
+            # Win rates (gross)
+            present_wins = sum(1 for t in present if t['gross_pnl'] > 0)
             present_wr = (present_wins / present_count * 100
                          if present_count else 0)
 
-            # Average win / loss sizes (net of fees)
-            wins = [t['net_pnl'] for t in present if t['net_pnl'] > 0]
-            losses = [t['net_pnl'] for t in present if t['net_pnl'] <= 0]
+            # Average win / loss sizes (gross price movement)
+            wins = [t['gross_pnl'] for t in present if t['gross_pnl'] > 0]
+            losses = [t['gross_pnl'] for t in present if t['gross_pnl'] <= 0]
             avg_win = sum(wins) / len(wins) if wins else 0
             avg_loss = sum(losses) / len(losses) if losses else 0
 
@@ -156,8 +166,8 @@ class SignalDecomposition:
             avg_conf = (sum(s['confidence'] for s in source_sigs)
                        / len(source_sigs) if source_sigs else 0)
 
-            # Fee burden
-            avg_fees = present_fees / present_count if present_count else 0
+            # Fees: always 0 — signal product; key kept for output shape.
+            avg_fees = 0.0
 
             # Expectancy (the number Jim cares about)
             if present_count > 0:
@@ -203,19 +213,19 @@ class SignalDecomposition:
                          if d['marginal_value'] < 0
                          and d['trades_influenced'] >= 10)
 
-        total_fees = sum(t['fees'] for t in self.trade_log)
-
         return {
             'rankings': ranked,
             'total_signals_evaluated': len(sources),
             'profitable_sources': profitable,
             'destructive_sources': destructive,
             'total_trades': len(self.trade_log),
-            'total_fees': round(total_fees, 2),
-            'recommendation': self._recommend(ranked, total_fees),
+            # Fees permanently 0 — signal product; key kept so consumers
+            # (dashboard fee panels) render zeros instead of erroring.
+            'total_fees': 0.0,
+            'recommendation': self._recommend(ranked),
         }
 
-    def _recommend(self, ranked, total_fees):
+    def _recommend(self, ranked):
         recs = []
 
         cut = [s for s, d in ranked.items()
@@ -233,17 +243,14 @@ class SignalDecomposition:
                 f"INCREASE weight of top performers: "
                 f"{', '.join(keep[:3])}"
             )
-        if total_fees > 50:
-            recs.append(
-                f"TOTAL FEES: ${total_fees:.2f} -- "
-                f"consider reducing trade frequency"
-            )
 
-        fleet_net = sum(t['net_pnl'] for t in self.trade_log)
+        # Gross P/L (2026-07-30): read gross_pnl so legacy net-recorded
+        # trades are judged under the same convention as new ones.
+        fleet_net = sum(t['gross_pnl'] for t in self.trade_log)
         if fleet_net < 0:
             recs.append(
-                f"FLEET NET P/L: ${fleet_net:.2f} -- "
-                f"system is losing money. Prioritize CUT recommendations."
+                f"FLEET GROSS P/L: ${fleet_net:.2f} -- "
+                f"signals are losing money. Prioritize CUT recommendations."
             )
 
         if not recs:

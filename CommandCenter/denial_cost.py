@@ -4,7 +4,9 @@ DENIAL COST — Portfolio Denial Opportunity Cost
 Reads PORTFOLIO_DENIAL events from logs/events/*.jsonl.
 For each denied trade, looks up the price N minutes later
 (using fleet's average hold time) and computes what the trade
-would have netted after fees.
+would have made in gross price movement. (Gross semantics since
+2026-07-30 — signal product; subscribers pay their own exchange's
+fees, so none are modeled here.)
 
 Answers: "Is the risk system protecting us or strangling us?"
 
@@ -23,7 +25,6 @@ from datetime import datetime, timedelta, timezone
 
 CC_URL = "http://localhost:9000"
 EVENTS_DIR = os.path.join(os.path.dirname(__file__), "logs", "events")
-FEE_RATE = 0.0040  # Kraken taker 0.40% each side = 0.80% round trip (tier 0, 2026-04)
 DEFAULT_HOLD_MINUTES = 240  # fleet avg ~3-4 hours
 DEFAULT_DAYS = 3
 
@@ -116,7 +117,7 @@ def _fetch_ohlc(pair, ts_start, hold_minutes):
 
 
 def _simulate_pnl(direction, entry, exit_price, amount_usd):
-    """Compute net PnL after round-trip fees."""
+    """Compute gross PnL from price movement (no fees — signal product)."""
     if not entry or entry == 0:
         return None
     size = amount_usd / entry
@@ -124,8 +125,7 @@ def _simulate_pnl(direction, entry, exit_price, amount_usd):
         gross = (exit_price - entry) * size
     else:
         gross = (entry - exit_price) * size
-    fees = amount_usd * FEE_RATE * 2  # entry + exit
-    return gross - fees
+    return gross
 
 
 def main():

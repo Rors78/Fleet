@@ -21,14 +21,12 @@ Usage:
 """
 
 import os
-import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
-from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime
 
 from fleet_config import BOTS, CC_PORT, CC_DIR, PIDS_DIR, LOGS_DIR
 

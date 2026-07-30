@@ -1,16 +1,17 @@
 """
-SIGNAL ATTRIBUTION — Fee-Adjusted Signal Value
+SIGNAL ATTRIBUTION — Gross Signal Value (LEGACY)
 
-Primary data source: goldeneye_factors.log (pre-fee R-multiples + signal lists).
-Secondary enrichment: logs/expectancy.json (precise post-fee net PnL).
+LEGACY MODULE: depends on goldeneye_factors.log from TrekBot, which left
+the fleet — the log no longer updates. Kept for historical analysis only.
 
-For factor records that have no expectancy match (because the expectancy
-tracker was not running for some TrekBot sessions), fees are estimated from
-the Kraken taker fee schedule (0.40% per side, 0.80% round-trip, tier 0).
+GROSS SEMANTICS (since 2026-07-30): the fleet is a signal product — all
+P/L here is GROSS price movement. No fees are calculated, estimated, or
+deducted; subscribers pay whatever their own exchange charges.
+logs/expectancy.json records written before 2026-07-30 carry net-of-fees
+`net_pnl` values; this module reads only their `gross_pnl` field.
 
-Problem this solves: Ultron ranks signals by pre-fee R-multiple.
-A signal with R=+0.10 looks marginal but may be negative after fees.
-A signal Ultron wants to cut may actually be the only fee-positive one.
+Primary data source: goldeneye_factors.log (R-multiples + signal lists).
+Secondary enrichment: logs/expectancy.json (precise recorded PnL).
 
 Usage:
     python signal_attribution.py
@@ -30,13 +31,9 @@ FACTOR_LOG = os.path.join(TREKBOT_DIR, "goldeneye_factors.log")
 EXPECTANCY_LOG = os.path.join(os.path.dirname(__file__), "logs", "expectancy.json")
 MATCH_WINDOW_SEC = 120
 
-# Kraken taker fee (per side, tier 0: $0-$10K/month, 2026-04).
-KRAKEN_TAKER = 0.0040
-KRAKEN_ROUNDTRIP = KRAKEN_TAKER * 2  # 0.80%
-
 
 def _parse_args():
-    p = argparse.ArgumentParser(description="Fee-adjusted signal attribution")
+    p = argparse.ArgumentParser(description="Gross signal attribution (legacy)")
     p.add_argument("--min-trades", type=int, default=5,
                    help="Minimum appearances to include signal in report (default: 5)")
     p.add_argument("--bot", default="trekbot", help="Bot to analyze (default: trekbot)")
@@ -62,40 +59,6 @@ def _normalize_pair(p):
     if p is None:
         return ""
     return p.replace("/", "").replace("-", "").upper()
-
-
-def _calibrate_default_size(expectancy_records):
-    """Compute mean trade size from available expectancy records for fee estimation."""
-    trek = [r for r in expectancy_records if r.get("_bot") == "trekbot" and r.get("size_usd")]
-    if trek:
-        sizes = [r["size_usd"] for r in trek if r["size_usd"] > 0]
-        if sizes:
-            return sum(sizes) / len(sizes)
-    return 28.60  # Calibrated from 46 observed TrekBot trades (mean size)
-
-
-_DEFAULT_SIZE = 28.60
-
-
-def _estimate_fees_from_factor(f, default_size=None):
-    """Estimate round-trip fees from factor log fields when expectancy record is missing.
-
-    Uses R-multiple and PnL to back out approximate trade size, then applies
-    Kraken taker round-trip rate. Falls back to calibrated mean size from
-    matched expectancy records (observed mean ~$28.60, median ~$12.51).
-    """
-    if default_size is None:
-        default_size = _DEFAULT_SIZE
-    pnl = float(f.get("pnl", 0) or 0)
-    r = float(f.get("r", 0) or 0)
-    estimated_size = default_size
-    if abs(r) > 0.01:
-        risk = abs(pnl / r)
-        size_from_r = risk / 0.02
-        if 5 <= size_from_r <= 500:
-            estimated_size = size_from_r
-    fees = estimated_size * KRAKEN_ROUNDTRIP
-    return round(fees, 4)
 
 
 def load_factors():
@@ -157,8 +120,9 @@ def load_expectancy(bot_filter="trekbot"):
 def join(factors, expectancy):
     """Join factor records with expectancy data. Factor log is primary source.
 
-    For matched records: use precise fee data from expectancy tracker.
-    For unmatched records: estimate fees from Kraken fee schedule.
+    For matched records: use the expectancy tracker's recorded gross_pnl.
+    For unmatched records: use the factor log's own pnl.
+    All values are GROSS price movement — no fees (signal product, 2026-07-30).
     Returns all factor records, not just those with expectancy matches.
 
     Returns: (joined, matched_count, estimated_count, overlap_stats)
@@ -181,9 +145,6 @@ def join(factors, expectancy):
 
     # Determine overlap period: earliest expectancy timestamp onward
     overlap_start = min(all_exp_ts) if all_exp_ts else float("inf")
-
-    # Calibrate default size from available expectancy data
-    cal_size = _calibrate_default_size(expectancy)
 
     used_exp = set()
     joined = []
@@ -208,21 +169,20 @@ def join(factors, expectancy):
             if d < best_delta:
                 best_delta, best = d, rec
 
+        # Gross semantics (2026-07-30): matched records contribute their
+        # recorded gross_pnl (NOT the legacy net_pnl, which had fees
+        # subtracted); unmatched records use the factor log's pnl as-is.
         if best and best_delta <= MATCH_WINDOW_SEC:
             used_exp.add(id(best))
             gross_pnl = float(best.get("gross_pnl", 0) or 0)
-            fees = float(best.get("fees", 0) or 0)
-            net_pnl = float(best.get("net_pnl", 0) or 0)
             matched_count += 1
             source = "matched"
             if in_overlap:
                 overlap_matched += 1
         else:
             gross_pnl = float(f.get("pnl", 0) or 0)
-            fees = _estimate_fees_from_factor(f, default_size=cal_size)
-            net_pnl = gross_pnl - fees
             estimated_count += 1
-            source = "estimated"
+            source = "factor_log"
 
         if in_overlap:
             overlap_total += 1
@@ -233,10 +193,7 @@ def join(factors, expectancy):
             "pair": pair_f,
             "r_gross": float(f.get("r", 0) or 0),
             "gross_pnl": gross_pnl,
-            "fees": fees,
-            "net_pnl": net_pnl,
-            "won_gross": float(f.get("pnl", 0) or 0) > 0,
-            "won_net": net_pnl > 0,
+            "won": gross_pnl > 0,
             "_source": source,
         })
 
@@ -250,63 +207,48 @@ def join(factors, expectancy):
 
 def compute_signal_stats(joined, min_trades):
     """
-    For each signal source, compute:
-    - Pre-fee: win rate, avg R, expectancy from factor log
-    - Post-fee: win rate, expectancy from expectancy log
-    - Fee drag: difference between gross and net expectancy
-    - Verdict: KEEP / MONITOR / CUT
+    For each signal source, compute gross win rate, avg R, and gross
+    expectancy, plus a KEEP / MONITOR / CUT verdict.
+    (Gross semantics since 2026-07-30 — no fee columns.)
     """
     buckets = defaultdict(lambda: {
-        "trades": 0, "wins_gross": 0, "wins_net": 0,
-        "sum_r": 0.0, "sum_gross": 0.0, "sum_net": 0.0, "sum_fees": 0.0,
+        "trades": 0, "wins": 0,
+        "sum_r": 0.0, "sum_gross": 0.0,
     })
 
     for r in joined:
         for sig in r.get("sigs", []):
             b = buckets[sig]
             b["trades"] += 1
-            b["wins_gross"] += int(r["won_gross"])
-            b["wins_net"] += int(r["won_net"])
+            b["wins"] += int(r["won"])
             b["sum_r"] += r["r_gross"]
             b["sum_gross"] += r["gross_pnl"]
-            b["sum_net"] += r["net_pnl"]
-            b["sum_fees"] += r["fees"]
 
     rows = []
     for sig, b in buckets.items():
         n = b["trades"]
         if n < min_trades:
             continue
-        wr_gross = b["wins_gross"] / n * 100
-        wr_net = b["wins_net"] / n * 100
+        wr = b["wins"] / n * 100
         exp_gross = b["sum_gross"] / n
-        exp_net = b["sum_net"] / n
         avg_r = b["sum_r"] / n
-        fee_drag = b["sum_fees"] / n
-        fee_ratio = (b["sum_fees"] / abs(b["sum_gross"]) * 100) if b["sum_gross"] != 0 else float("inf")
 
-        if exp_net > 0.05:
+        if exp_gross > 0.05:
             verdict = "KEEP"
-        elif exp_net > -0.10:
+        elif exp_gross > -0.10:
             verdict = "MONITOR"
         else:
             verdict = "CUT"
 
-        # Flag signals where pre-fee looked good but post-fee is bad
-        misleading = exp_gross > 0 and exp_net < 0
-
         rows.append({
             "sig": sig, "trades": n,
-            "wr_gross": wr_gross, "wr_net": wr_net,
-            "exp_gross": exp_gross, "exp_net": exp_net,
-            "avg_r": avg_r, "fee_drag": fee_drag,
-            "fee_ratio": fee_ratio, "verdict": verdict,
-            "misleading": misleading,
-            "total_net": b["sum_net"],
+            "wr": wr, "exp_gross": exp_gross,
+            "avg_r": avg_r, "verdict": verdict,
+            "total_gross": b["sum_gross"],
         })
 
-    # Sort: worst net expectancy first
-    rows.sort(key=lambda x: x["exp_net"])
+    # Sort: worst gross expectancy first
+    rows.sort(key=lambda x: x["exp_gross"])
     return rows
 
 
@@ -341,7 +283,7 @@ def main():
     ov_pct = ov_matched / ov_total * 100 if ov_total else 0
     pre_overlap = total - ov_total
 
-    print(f"Joined: {total} total ({matched} matched with fee data, {estimated} with estimated fees)")
+    print(f"Joined: {total} total ({matched} matched with expectancy records, {estimated} from factor log alone)")
     if pre_overlap > 0:
         ov_start_str = datetime.fromtimestamp(
             overlap["overlap_start"], tz=timezone.utc).strftime("%Y-%m-%d")
@@ -360,37 +302,28 @@ def main():
         print(f"No signals with {args.min_trades}+ appearances found.")
         sys.exit(0)
 
-    print(f"=== SIGNAL ATTRIBUTION — FEE-ADJUSTED (min {args.min_trades} trades) ===\n")
-    print(f"{'Sig':<6} {'N':>5} {'WR%(pre)':>9} {'WR%(net)':>9} "
-          f"{'Exp(pre)':>9} {'Exp(net)':>9} {'Fee/Trd':>8} {'FeeRatio%':>10} {'Verdict':<9} {'!'}")
-    print("-" * 90)
+    print(f"=== SIGNAL ATTRIBUTION — GROSS (min {args.min_trades} trades) ===\n")
+    print(f"{'Sig':<6} {'N':>5} {'WR%':>6} "
+          f"{'Exp/Trd':>9} {'AvgR':>7} {'Verdict':<9}")
+    print("-" * 48)
     for r in rows:
-        flag = "MISLEADING" if r["misleading"] else ""
-        fr = "inf" if r["fee_ratio"] == float("inf") else f"{r['fee_ratio']:.0f}%"
         print(
-            f"{r['sig']:<6} {r['trades']:>5} {r['wr_gross']:>8.1f}% {r['wr_net']:>8.1f}% "
-            f"{r['exp_gross']:>+9.3f} {r['exp_net']:>+9.3f} "
-            f"${r['fee_drag']:>7.3f} {fr:>10} {r['verdict']:<9} {flag}"
+            f"{r['sig']:<6} {r['trades']:>5} {r['wr']:>5.1f}% "
+            f"{r['exp_gross']:>+9.3f} {r['avg_r']:>+7.3f} {r['verdict']:<9}"
         )
 
     cuts = [r for r in rows if r["verdict"] == "CUT"]
     keeps = [r for r in rows if r["verdict"] == "KEEP"]
-    misleading = [r for r in rows if r["misleading"]]
 
     print(f"\n=== SUMMARY ===")
     print(f"KEEP:    {len(keeps)} signals   ({', '.join(r['sig'] for r in keeps) or 'none'})")
     print(f"MONITOR: {len([r for r in rows if r['verdict']=='MONITOR'])} signals")
     print(f"CUT:     {len(cuts)} signals   ({', '.join(r['sig'] for r in cuts) or 'none'})")
-    if misleading:
-        print(f"\nMISLEADING (positive pre-fee, negative post-fee): "
-              f"{', '.join(r['sig'] for r in misleading)}")
-        print("  These signals look profitable in the factor log but cost money after fees.")
-        print("  Ultron's pre-fee analysis would tell you to keep them. Don't.")
 
     # Total fleet cost of CUT signals
     if cuts:
-        cut_cost = sum(r["total_net"] for r in cuts)
-        print(f"\nCumulative P/L from CUT signals: ${cut_cost:+.2f}")
+        cut_cost = sum(r["total_gross"] for r in cuts)
+        print(f"\nCumulative gross P/L from CUT signals: ${cut_cost:+.2f}")
         print(f"Removing them would have saved/cost that amount over the measurement period.")
 
 

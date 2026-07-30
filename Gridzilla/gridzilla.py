@@ -10,7 +10,8 @@ Not a dumb grid. A grid that:
 - Uses asymmetric grids (more lines on the side with momentum)
 - Kills itself when the range breaks (trend detected)
 - Reactivates when a new range forms
-- Tracks every fill, every level, every P/L with fee accounting
+- Tracks every fill, every level, every P/L as GROSS price movement
+  (signal product — subscribers pay their own exchanges' fees)
 - Listens to fleet intelligence (whales, PHITEX, AEGIS) to adjust
 
 Grid Parameters (all dynamic, all adaptive):
@@ -32,15 +33,11 @@ import sys
 import time
 import json
 import math
-import hmac
-import hashlib
-import base64
 import logging
 import threading
 import traceback
-from datetime import datetime, timezone
-from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlencode, urlparse, parse_qs
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlencode, urlparse
 from pathlib import Path
 
 # Fleet integration
@@ -108,6 +105,8 @@ CONFIG = {
     ],
 
     # Grid defaults (all overridden dynamically)
+    # Lines capped at 5 as a signal-density limit: every level is an alert a
+    # subscriber receives, so each one must represent a meaningful move.
     "min_grid_lines": 5,
     "max_grid_lines": 5,
     "min_grid_spacing_atr": 0.3,   # minimum spacing = 0.3 ATR
@@ -117,7 +116,8 @@ CONFIG = {
     "max_total_exposure_pct": 0.30,  # max 30% of portfolio in grids
     "max_per_pair_pct": 0.05,        # 5% per pair — aligned with pool floor
     "max_drawdown_pct": 0.05,        # kill grid if DD > 5% of allocation
-    "fee_rate": 0.0040,              # Kraken taker fee (0.40%) tier 0 — applied per fill, both legs
+    # fee_rate removed — signal product: P/L is gross price movement,
+    # subscribers pay their own exchanges' fees.
 
     # Regime thresholds
     "adx_trend_threshold": 25,       # ADX > 25 = trending, no grid
@@ -167,47 +167,6 @@ class KrakenClient:
             logging.error(f"Kraken request failed: {e}")
             return {}
 
-    def private(self, method, params=None):
-        if not self.key or not self.secret:
-            logging.warning("Kraken API keys not configured")
-            return {}
-
-        params = params or {}
-        params["nonce"] = str(int(time.time() * 1000))
-
-        urlpath = f"/0/private/{method}"
-        postdata = urlencode(params)
-
-        encoded = (params["nonce"] + postdata).encode()
-        message = urlpath.encode() + hashlib.sha256(encoded).digest()
-        signature = hmac.new(
-            base64.b64decode(self.secret), message, hashlib.sha512
-        )
-        sigdigest = base64.b64encode(signature.digest()).decode()
-
-        headers = {
-            "API-Key": self.key,
-            "API-Sign": sigdigest,
-            "User-Agent": "Gridzilla/2.0",
-            "Content-Type": "application/x-www-form-urlencoded",
-        }
-
-        try:
-            req = urllib.request.Request(
-                self.BASE + urlpath,
-                data=postdata.encode(),
-                headers=headers,
-                method="POST",
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                data = json.loads(resp.read())
-            if data.get("error"):
-                logging.warning(f"Kraken private error: {data['error']}")
-            return data.get("result", {})
-        except Exception as e:
-            logging.error(f"Kraken private request failed: {e}")
-            return {}
-
     def fetch_ohlc(self, pair, interval=60, count=200):
         """Fetch OHLC candles. Returns list of [time, open, high, low, close, vwap, volume, count]."""
         kraken_pair = pair.replace("/", "")
@@ -217,20 +176,6 @@ class KrakenClient:
                 candles = result[key]
                 return candles[-count:] if len(candles) > count else candles
         return []
-
-    def fetch_ticker(self, pair):
-        kraken_pair = pair.replace("/", "")
-        result = self.public("Ticker", {"pair": kraken_pair})
-        for key in result:
-            return result[key]
-        return {}
-
-    def fetch_orderbook(self, pair, depth=10):
-        kraken_pair = pair.replace("/", "")
-        result = self.public("Depth", {"pair": kraken_pair, "count": depth})
-        for key in result:
-            return result[key]
-        return {}
 
 
 # ═══════════════════════════════════════════════════════════════
@@ -539,8 +484,11 @@ class GridArchitect:
         grid_spacing = atr * spacing_mult
 
         # Minimum absolute spacing floor: at least 1.2% of price.
-        # Kraken round-trip fee is 0.52%, so 1.2% spacing gives ~0.68% net margin.
-        # Previous 0.5% floor left POL/USD at 586% fee ratio — unusable.
+        # Signal-quality floor, not fee math: a grid level must represent a
+        # meaningful price move worth alerting a subscriber about. Tighter
+        # spacing degrades into micro-churn noise (the old 0.5% floor made
+        # POL/USD unusable). Same 1.2% value — the rationale changed, not
+        # the number.
         min_spacing = current_price * 0.012
         grid_spacing = max(grid_spacing, min_spacing)
 
@@ -570,9 +518,6 @@ class GridArchitect:
             level_size = base_size * size_mult
 
             level_profit = grid_spacing * (level_size / current_price)
-            # Estimate round-trip fee at design time so fee_ratio gate is meaningful.
-            # Kraken taker 0.26% × 2 sides = 0.52% of position size.
-            level_fee_est = level_size * self.config.get("fee_rate", 0.001) * 2
 
             levels.append({
                 "price": round(price, 6),
@@ -582,7 +527,7 @@ class GridArchitect:
                 "distance_pct": round((price - current_price) / current_price * 100, 3),
                 "edge_factor": round(edge_factor, 3),
                 "expected_profit": round(level_profit, 4),
-                "fees": round(level_fee_est, 6),
+                "fees": 0.0,  # legacy field kept for shape — no fee accounting (signal product)
                 "filled": False,
                 "fill_price": 0,
                 "fill_time": 0,
@@ -618,21 +563,20 @@ class GridArchitect:
                 sl["take_profit"] = nearest_buy["price"]
                 sl["expected_r"] = round(min_dist / (grid_spacing + 1e-10), 2)
 
-        # ═══ NET PROFIT FLOOR — $0.50 per cycle minimum ═══
-        # Reject grid designs where each level earns less than $0.50 net of fees.
-        # Avg net per level = (spacing% - fee_rate*2) * level_size
-        # If spacing% < fee breakeven this is always negative — hard reject.
-        MIN_NET_PROFIT_PER_CYCLE = 0.50
-        fee_rate = self.config.get("fee_rate", 0.0040)  # Kraken tier 0 taker
+        # ═══ GROSS PROFIT FLOOR — $0.50 per level minimum ═══
+        # $0.50 gross per level — floor for signal-worthiness, not fee survival.
+        # A grid cycle whose gross price movement is worth less than $0.50 is
+        # not worth alerting a subscriber about — hard reject. Same dollar
+        # value as the old net-of-fees floor.
+        MIN_GROSS_PROFIT_PER_CYCLE = 0.50
         avg_level_size = allocation_usd / max(len(levels), 1)
         spacing_pct = grid_spacing / (current_price + 1e-10)
-        net_pct_per_cycle = spacing_pct - fee_rate * 2
-        avg_net_per_level = net_pct_per_cycle * avg_level_size
-        if avg_net_per_level < MIN_NET_PROFIT_PER_CYCLE:
+        avg_gross_per_level = spacing_pct * avg_level_size
+        if avg_gross_per_level < MIN_GROSS_PROFIT_PER_CYCLE:
             logging.warning(
-                f"[{pair}] Grid rejected: avg net/level ${avg_net_per_level:.3f} < "
-                f"${MIN_NET_PROFIT_PER_CYCLE} floor (spacing {spacing_pct*100:.2f}%, "
-                f"fees {fee_rate*2*100:.2f}%)"
+                f"[{pair}] Grid rejected: avg gross/level ${avg_gross_per_level:.3f} < "
+                f"${MIN_GROSS_PROFIT_PER_CYCLE} signal-worthiness floor "
+                f"(spacing {spacing_pct*100:.2f}%)"
             )
             return None
 
@@ -651,15 +595,10 @@ class GridArchitect:
             "estimated_profit_per_cycle": round(
                 sum(l.get("expected_profit", 0) for l in levels), 4
             ),
-            "total_fees_per_cycle": round(
-                sum(l.get("fees", 0) for l in levels), 4
-            ),
-            "fee_ratio": round(
-                sum(l.get("fees", 0) for l in levels)
-                / (sum(l.get("expected_profit", 0) for l in levels) + 1e-10)
-                * 100,
-                1,
-            ),
+            # Legacy fee fields — zeroed, kept so dashboard/consumers keep their
+            # shape. Signal product: P/L is gross, subscribers pay their own fees.
+            "total_fees_per_cycle": 0.0,
+            "fee_ratio": 0.0,
             "designed_at": time.time(),
         }
 
@@ -678,7 +617,7 @@ class GridExecutor:
         self.active_grids = {}  # {pair: grid_state}
         self.trade_history = []
         self.total_pnl = 0
-        self.total_fees = 0
+        self.total_fees = 0  # legacy — stays 0; P/L is gross (signal product)
         self.total_cycles = 0
         self.lock = threading.Lock()
 
@@ -787,7 +726,7 @@ class GridExecutor:
                 "fills": g.get("fills", []),
                 "cycles_completed": g.get("cycles_completed", 0),
                 "grid_pnl": g.get("grid_pnl", 0),
-                "grid_fees": g.get("grid_fees", 0),
+                "grid_fees": 0.0,  # legacy field — fee accounting retired (signal product)
                 "peak_pnl": g.get("peak_pnl", 0),
                 "max_drawdown": g.get("max_drawdown", 0),
                 "range_breaks": g.get("range_breaks", 0),
@@ -796,9 +735,9 @@ class GridExecutor:
             }
             self.active_grids[pair] = grid_state
 
-            # Restore totals
+            # Restore totals (fee totals from old state are NOT restored —
+            # fee accounting is retired, P/L is gross)
             self.total_pnl += g.get("grid_pnl", 0)
-            self.total_fees += g.get("grid_fees", 0)
             self.total_cycles += g.get("cycles_completed", 0)
 
             loaded += 1
@@ -888,22 +827,18 @@ class GridExecutor:
                     level["fill_price"] = fill_price
                     level["fill_time"] = time.time()
 
-                    fee = level["size_usd"] * self.config["fee_rate"]
-
                     fill = {
                         "pair": pair,
                         "side": "BUY",
                         "price": fill_price,
                         "level_price": level["price"],
                         "size_usd": level["size_usd"],
-                        "fee": round(fee, 4),
+                        "fee": 0.0,  # legacy field — gross accounting (signal product)
                         "time": time.time(),
                         "take_profit": level.get("take_profit"),
                     }
 
                     grid["fills"].append(fill)
-                    grid["grid_fees"] += fee
-                    self.total_fees += fee
                     fills.append(fill)
 
                     logging.info(
@@ -931,8 +866,6 @@ class GridExecutor:
                     level["fill_price"] = fill_price_sell
                     level["fill_time"] = time.time()
 
-                    fee = level["size_usd"] * self.config["fee_rate"]
-
                     # Find the matching buy fill to calculate P/L
                     matching_buy = None
                     for f in grid["fills"]:
@@ -951,12 +884,13 @@ class GridExecutor:
 
                     pnl = 0
                     if matching_buy:
-                        # Calculate grid cycle P/L
+                        # Grid cycle P/L — GROSS price movement only.
+                        # Signal product: subscribers pay their own exchanges' fees.
                         buy_cost = matching_buy["size_usd"]
                         sell_revenue = level["size_usd"] * (
                             current_price / level["price"]
                         )
-                        pnl = sell_revenue - buy_cost - fee - matching_buy["fee"]
+                        pnl = sell_revenue - buy_cost
                         matching_buy["closed"] = True
                         grid["cycles_completed"] += 1
                         self.total_cycles += 1
@@ -967,16 +901,14 @@ class GridExecutor:
                         "price": current_price,
                         "level_price": level["price"],
                         "size_usd": level["size_usd"],
-                        "fee": round(fee, 4),
+                        "fee": 0.0,  # legacy field — gross accounting (signal product)
                         "pnl": round(pnl, 4),
                         "time": time.time(),
                     }
 
                     grid["fills"].append(fill)
                     grid["grid_pnl"] += pnl
-                    grid["grid_fees"] += fee
                     self.total_pnl += pnl
-                    self.total_fees += fee
                     fills.append(fill)
 
                     if pnl != 0:
@@ -1116,8 +1048,8 @@ class GridExecutor:
                     "started": grid["deployed_at"],
                     "ended": time.time(),
                     "status": grid["status"],
-                    "pnl": grid["grid_pnl"],
-                    "fees": grid["grid_fees"],
+                    "pnl": grid["grid_pnl"],  # gross price movement
+                    "fees": 0.0,  # legacy field — gross accounting (signal product)
                     "cycles": grid["cycles_completed"],
                     "fills": len(grid["fills"]),
                     "reservation_id": grid.get("reservation_id", ""),
@@ -1138,8 +1070,8 @@ class GridExecutor:
                     "filled": sum(1 for l in g["levels"] if l["filled"]),
                     "cycles": g["cycles_completed"],
                     "pnl": round(g["grid_pnl"], 4),
-                    "fees": round(g["grid_fees"], 4),
-                    "net_pnl": round(g["grid_pnl"] - g["grid_fees"], 4),
+                    "fees": 0.0,  # legacy field — gross accounting (signal product)
+                    "net_pnl": round(g["grid_pnl"], 4),  # net == gross now; key kept for consumers
                     "max_dd": round(g["max_drawdown"], 4),
                     "uptime_min": round((time.time() - g["deployed_at"]) / 60, 1),
                 }
@@ -1356,21 +1288,21 @@ class GridzillaEngine:
                                 # Report outcome to signal aggregator
                                 try:
                                     import urllib.request as urlreq
-                                    url = f"{config['cc_url']}/api/signals/outcome"
+                                    url = f"{self.config['cc_url']}/api/signals/outcome"
                                     data = json.dumps({
                                         "bot_id": "gridzilla",
                                         "pair": pair,
                                         "direction": "LONG",
-                                        "won": (summary["pnl"] - summary["fees"]) > 0,
-                                        "pnl": float(summary["pnl"] - summary["fees"]),
-                                        "fees": float(summary["fees"])
+                                        "won": summary["pnl"] > 0,
+                                        "pnl": float(summary["pnl"]),  # gross price movement
+                                        "fees": 0.0  # legacy key kept for endpoint shape (signal product)
                                     }).encode("utf-8")
                                     req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
                                     urlreq.urlopen(req, timeout=3)
                                 except Exception:
                                     pass
                                 
-                                self.portfolio.release(summary["reservation_id"], pnl=summary["pnl"] - summary["fees"])
+                                self.portfolio.release(summary["reservation_id"], pnl=summary["pnl"])  # gross
                             except Exception:
                                 pass
                         continue
@@ -1384,21 +1316,21 @@ class GridzillaEngine:
                                 # Report outcome to signal aggregator
                                 try:
                                     import urllib.request as urlreq
-                                    url = f"{config['cc_url']}/api/signals/outcome"
+                                    url = f"{self.config['cc_url']}/api/signals/outcome"
                                     data = json.dumps({
                                         "bot_id": "gridzilla",
                                         "pair": pair,
                                         "direction": "LONG",
-                                        "won": (summary["pnl"] - summary["fees"]) > 0,
-                                        "pnl": float(summary["pnl"] - summary["fees"]),
-                                        "fees": float(summary["fees"])
+                                        "won": summary["pnl"] > 0,
+                                        "pnl": float(summary["pnl"]),  # gross price movement
+                                        "fees": 0.0  # legacy key kept for endpoint shape (signal product)
                                     }).encode("utf-8")
                                     req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
                                     urlreq.urlopen(req, timeout=3)
                                 except Exception:
                                     pass
                                 
-                                self.portfolio.release(summary["reservation_id"], pnl=summary["pnl"] - summary["fees"])
+                                self.portfolio.release(summary["reservation_id"], pnl=summary["pnl"])  # gross
                             except Exception:
                                 pass
                         continue
@@ -1438,30 +1370,27 @@ class GridzillaEngine:
                 if design is None:
                     continue
 
-                # Deploy if design is profitable after fees
-                if design["fee_ratio"] < 80:  # fees must be < 80% of profit
-                    # Reserve capital from central portfolio
-                    _rid = ""
-                    if self.portfolio:
-                        try:
-                            ok, result = self.portfolio.reserve(pair, "LONG", per_pair_alloc)
-                            if not ok:
-                                logging.info(f"Portfolio denied grid {pair}: {result}")
-                                continue
-                            _rid = result
-                        except Exception:
-                            pass  # CC unreachable — deploy with local limits only
-                    self.executor.deploy_grid(design)
-                    # Store reservation ID on the grid state, then persist so the
-                    # reservation_id survives a restart (deploy_grid saved without it)
-                    if _rid and pair in self.executor.active_grids:
-                        self.executor.active_grids[pair]["reservation_id"] = _rid
-                        self.executor._save_state()
-                    current_exposure += per_pair_alloc
-                else:
-                    logging.debug(
-                        f"{pair} grid rejected: fee ratio {design['fee_ratio']:.1f}%"
-                    )
+                # Fee-ratio deploy gate removed — signal product, no fee-survival
+                # math. Signal quality is enforced upstream by the 1.2% spacing
+                # floor, the 5-line cap, and the $0.50 gross-per-level floor.
+                # Reserve capital from central portfolio
+                _rid = ""
+                if self.portfolio:
+                    try:
+                        ok, result = self.portfolio.reserve(pair, "LONG", per_pair_alloc)
+                        if not ok:
+                            logging.info(f"Portfolio denied grid {pair}: {result}")
+                            continue
+                        _rid = result
+                    except Exception:
+                        pass  # CC unreachable — deploy with local limits only
+                self.executor.deploy_grid(design)
+                # Store reservation ID on the grid state, then persist so the
+                # reservation_id survives a restart (deploy_grid saved without it)
+                if _rid and pair in self.executor.active_grids:
+                    self.executor.active_grids[pair]["reservation_id"] = _rid
+                    self.executor._save_state()
+                current_exposure += per_pair_alloc
 
             except Exception as e:
                 logging.debug(f"Error scanning {pair}: {e}")
@@ -1473,8 +1402,8 @@ class GridzillaEngine:
                     "bot": "gridzilla",
                     "pairs_scanned": len(self.config["universe"]),
                     "active_grids": len(self.executor.active_grids),
-                    "total_pnl": round(self.executor.total_pnl, 4),
-                    "total_fees": round(self.executor.total_fees, 4),
+                    "total_pnl": round(self.executor.total_pnl, 4),  # gross
+                    "total_fees": 0.0,  # legacy key kept for consumers (signal product)
                     "total_cycles": self.executor.total_cycles,
                 })
             except Exception:
@@ -1501,9 +1430,13 @@ class GridzillaEngine:
             "aegis_score": self.intel.aegis_score,
             "active_grids": active,
             "n_active_grids": len(active),
+            # P/L is GROSS price movement (signal product — subscribers pay
+            # their own exchanges' fees). total_fees and net_pnl keys are kept
+            # because the CC normalizer (_normalize_gridzilla) reads both;
+            # net_pnl == total_pnl now.
             "total_pnl": round(self.executor.total_pnl, 4),
-            "total_fees": round(self.executor.total_fees, 4),
-            "net_pnl": round(self.executor.total_pnl - self.executor.total_fees, 4),
+            "total_fees": 0.0,
+            "net_pnl": round(self.executor.total_pnl, 4),
             "total_cycles": self.executor.total_cycles,
             "trade_history": self.executor.trade_history[-20:],
             "pair_analysis": {
@@ -1626,7 +1559,7 @@ def main():
                 rid = grid_state.get("reservation_id", "")
                 if rid:
                     try:
-                        pnl = grid_state.get("grid_pnl", 0) - grid_state.get("grid_fees", 0)
+                        pnl = grid_state.get("grid_pnl", 0)  # gross — no fee netting (signal product)
                         engine.portfolio.release(rid, pnl=pnl)
                         logging.info(f"Released reservation {rid} for {pair} (pnl={pnl:.4f})")
                     except Exception as e:

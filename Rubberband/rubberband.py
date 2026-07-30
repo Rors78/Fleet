@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-Rubberband v2.0 -- Trend-Aligned Dip Buyer
-=========================================
+Rubberband v2.0 -- Trend-Aligned Mean Reversion (long + short)
+==============================================================
 Bollinger Band + RSI mean reversion bot.
 Paper trading on Kraken pairs via Command Center market data.
 
-Strategy:
-    LONG:  price < lower BB  AND  RSI < 30  AND  ADX < 25
-    SHORT: price > upper BB  AND  RSI > 70  AND  ADX < 25
-    TP1 = middle BB (mean), TP2 = opposite band, SL = 1.5x ATR
+Strategy (v2 — trend-aligned mean reversion, both directions):
+    LONG:  60m uptrend (price > EMA50)  AND  price <= lower BB  AND  RSI < 40
+    SHORT: 60m downtrend (price < EMA50) AND  price >= upper BB  AND  RSI > 60
+    TP1 = middle BB (mean), TP2 = opposite band, SL = 2.0x ATR(60m)
     On TP1 hit: move SL to breakeven
 
 Port 8083 | Accent #00e5ff
@@ -112,9 +112,11 @@ ACCENT = "#00e5ff"
 PORT = 8083
 COMMAND_CENTER_URL = "http://127.0.0.1:9000"
 
-# Strategy v2: Buy oversold pullbacks in confirmed uptrends.
+# Strategy v2: fade extremes in the direction of the 60m trend.
 # v1 fought the trend (ADX<18 = no trend). v2 requires the trend (ADX>20 + DI+>DI-).
-# The "rubberband snap" = price pulls back to lower BB in an uptrend, then reverts to mean.
+# The "rubberband snap" = price stretches to a band against the trend, then reverts to mean.
+# LONG: buy the dip to lower BB in an uptrend. SHORT: fade the rip to upper BB in a
+# downtrend (enabled 2026-07 after the fleet-wide short ban lifted — FLEET_LONG_ONLY=False).
 BB_PERIOD = 20
 BB_STD = 2.0
 RSI_PERIOD = 14
@@ -127,18 +129,21 @@ OHLC_LIMIT = 100             # ~25 hours of 15m data
 HTF_INTERVAL = 60            # Higher timeframe for trend
 HTF_LIMIT = 100              # ~4 days of 1h data
 
-# Entry: INVERTED from v1 — require uptrend, buy the dip
+# Entry: INVERTED from v1 — require trend, fade the counter-trend extreme
 ADX_TREND_MIN = 20           # ADX > 20 = trend exists (v1 required < 18)
 RSI_DIP_THRESHOLD = 40       # RSI < 40 = dip (v1 required < 30 — too extreme)
 RSI_DEEP_DIP = 30            # RSI < 30 = deep dip (size boost)
+RSI_RIP_THRESHOLD = 60       # RSI > 60 = rip (SHORT mirror of RSI_DIP_THRESHOLD: 100-40)
+RSI_DEEP_PUMP = 70           # RSI > 70 = deep pump (SHORT mirror of RSI_DEEP_DIP: 100-30)
 
 # Exit
 SL_ATR_MULT = 2.0            # 2.0 ATR below entry on 60m (v1: 1.5 on 5m — too tight)
 TRAILING_ATR_MULT = 1.5      # After TP1: trail by 1.5 ATR
-MIN_RR_RATIO = 2.0           # Minimum reward:risk AFTER fees
+MIN_RR_RATIO = 2.0           # Minimum GROSS reward:risk (no fee term — see below)
 
-# Fees
-KRAKEN_FEE_RATE = 0.0040     # Per-side taker (0.40% tier 0)
+# Fees: retired 2026-07-30. The fleet is a signal product — it never trades
+# real money, and subscribers pay their own exchange's fees. All P/L and
+# gating in this file is GROSS price movement. (KRAKEN_FEE_RATE removed.)
 
 # Risk
 MAX_POSITIONS = 1             # Start conservative — scale to 3 after 20 profitable trades
@@ -385,17 +390,26 @@ class RubberbandEngine:
                 data = json.load(f)
             loaded = 0
             for pdata in data.get("positions", []):
+                # Skip records missing the fields needed to manage the position
+                required = ("pair", "direction", "entry_price", "size_usd",
+                            "stop_loss", "tp1", "tp2")
+                if any(pdata.get(k) is None for k in required):
+                    self._log(f"Skipping malformed saved position: {pdata.get('pair')}", "WARNING")
+                    continue
                 pos = Position(
-                    pdata.get("pair"),
-                    pdata.get("direction"),
-                    pdata.get("size_usd"),
-                    pdata.get("entry_price"),
-                    pdata.get("stop_loss"),
-                    pdata.get("take_profit"),
+                    pair=pdata["pair"],
+                    direction=pdata["direction"],   # "LONG" or "SHORT"
+                    entry_price=pdata["entry_price"],
+                    size_usd=pdata["size_usd"],
+                    stop_loss=pdata["stop_loss"],
+                    tp1=pdata["tp1"],
+                    tp2=pdata["tp2"],
+                    reservation_id=pdata.get("reservation_id"),
                 )
-                pos.id = pdata.get("id")
-                pos.created_at = pdata.get("created_at", 0)
-                pos.reservation_id = pdata.get("reservation_id")
+                pos.id = pdata.get("id", pos.id)
+                pos.original_sl = pdata.get("original_sl", pos.stop_loss)
+                pos.tp1_hit = bool(pdata.get("tp1_hit", False))
+                pos.opened_at = pdata.get("opened_at", time.time())
                 self.positions.append(pos)
                 loaded += 1
             if loaded > 0:
@@ -415,8 +429,11 @@ class RubberbandEngine:
                         "size_usd": p.size_usd,
                         "entry_price": p.entry_price,
                         "stop_loss": p.stop_loss,
-                        "take_profit": p.take_profit,
-                        "created_at": p.created_at,
+                        "original_sl": p.original_sl,
+                        "tp1": p.tp1,
+                        "tp2": p.tp2,
+                        "tp1_hit": p.tp1_hit,
+                        "opened_at": p.opened_at,
                         "reservation_id": p.reservation_id,
                     }
                     for p in self.positions
@@ -597,11 +614,13 @@ class RubberbandEngine:
 
         return None
 
-    # -- Signal evaluation v2: Trend-Aligned Dip Buyer -------------------------
+    # -- Signal evaluation v2: Trend-Aligned Mean Reversion (long + short) -----
 
     def evaluate_signal(self, pair: str, ind: dict) -> Optional[dict]:
-        """v2: Buy oversold pullbacks in confirmed uptrends.
-        LONG only. Requires: uptrend on 60m + dip on 15m + fee-adjusted R:R.
+        """v2: Fade counter-trend extremes in the direction of the 60m trend.
+        LONG: buy oversold dips in confirmed uptrends.
+        SHORT: fade overbought rips in confirmed downtrends.
+        Requires: 60m trend + 15m band/RSI extreme + gross R:R gate.
         """
         # SL cooldown — skip if this pair stop-loss'd recently
         sl_elapsed = time.time() - self._sl_cooldowns.get(pair, 0)
@@ -636,44 +655,68 @@ class RubberbandEngine:
         if ema8 is None or ema21 is None or ema50 is None:
             return None
 
-        # Price must be ABOVE 60m EMA50 (in the uptrend — v1 required below, which fought the trend)
-        if price < ema50[-1]:
-            return None
-
-        # EMA stack: 8 > 21 > 50 = strong uptrend (optional boost, not required)
-        ema_stacked = ema8[-1] > ema21[-1] > ema50[-1]
-
         # 60m ATR for wider, more stable stops
         atr_60m = calc_atr(highs_60m, lows_60m, closes_60m, ATR_PERIOD)
         if atr_60m is None or atr_60m <= 0:
             return None
 
-        # 3. Dip detection: price at/below lower BB AND RSI < 40
-        if price > bb_lower:
-            return None  # not at the band — no dip
-        if rsi >= RSI_DIP_THRESHOLD:
-            return None  # not oversold enough
+        # 3. Trend side: price vs 60m EMA50 picks the direction we trade.
+        if price >= ema50[-1]:
+            # Uptrend — buy the dip (v1 required price below EMA50, which fought the trend)
+            # EMA stack: 8 > 21 > 50 = strong uptrend (optional boost, not required)
+            ema_stacked = ema8[-1] > ema21[-1] > ema50[-1]
 
-        # LONG only (v2 is trend-aligned — no shorts in uptrends)
-        direction = "LONG"
-        stop_loss = price - SL_ATR_MULT * atr_60m  # 2.0 ATR on 60m (wider, stable)
-        tp1 = bb_middle   # mean reversion target (the snap-back)
-        tp2 = bb_upper    # full extension
+            # Dip detection: price at/below lower BB AND RSI < 40
+            if price > bb_lower:
+                return None  # not at the band — no dip
+            if rsi >= RSI_DIP_THRESHOLD:
+                return None  # not oversold enough
 
-        # Sanity: TP must be above entry
-        if tp1 <= price or tp2 <= price:
-            return None
+            direction = "LONG"
+            stop_loss = price - SL_ATR_MULT * atr_60m  # 2.0 ATR on 60m (wider, stable)
+            tp1 = bb_middle   # mean reversion target (the snap-back)
+            tp2 = bb_upper    # full extension
 
-        # 4. Fee-adjusted R:R gate (the fix that would have prevented 21 consecutive losses)
+            # Sanity: TP must be above entry
+            if tp1 <= price or tp2 <= price:
+                return None
+
+            # Deep dip boost: RSI < 30 = extra confidence
+            deep_extreme = rsi < RSI_DEEP_DIP
+        else:
+            # Downtrend — fade the rip (mirror of the long path; shorts enabled
+            # after the fleet-wide ban lifted — FLEET_LONG_ONLY = False)
+            # EMA stack: 8 < 21 < 50 = strong downtrend (optional boost, not required)
+            ema_stacked = ema8[-1] < ema21[-1] < ema50[-1]
+
+            # Rip detection: price at/above upper BB AND RSI > 60
+            if price < bb_upper:
+                return None  # not at the band — no rip
+            if rsi <= RSI_RIP_THRESHOLD:
+                return None  # not overbought enough
+
+            direction = "SHORT"
+            stop_loss = price + SL_ATR_MULT * atr_60m  # 2.0 ATR on 60m (wider, stable)
+            tp1 = bb_middle   # mean reversion target (the snap-back)
+            tp2 = bb_lower    # full extension
+
+            # Sanity: TP must be below entry
+            if tp1 >= price or tp2 >= price:
+                return None
+
+            # Deep pump boost: RSI > 70 = extra confidence
+            deep_extreme = rsi > RSI_DEEP_PUMP
+
+        # 4. Gross R:R gate (shared by LONG and SHORT — both branches converge
+        # here). What ended the 21-consecutive-loss streak was demanding 2:1
+        # reward:risk before entry — that discipline stays. The Kraken fee term
+        # is gone: this is a signal product, subscribers pay their own
+        # exchange's fees, so the gate is measured on gross price movement.
+        # abs() keeps it direction-agnostic: for SHORT, gross_reward = entry - tp1.
         risk = abs(price - stop_loss)
         gross_reward = abs(tp1 - price)
-        round_trip_fee = price * KRAKEN_FEE_RATE * 2  # 0.80% of price
-        net_reward = gross_reward - round_trip_fee
-        if risk <= 0 or net_reward <= 0 or (net_reward / risk) < MIN_RR_RATIO:
+        if risk <= 0 or gross_reward <= 0 or (gross_reward / risk) < MIN_RR_RATIO:
             return None
-
-        # Deep dip boost: RSI < 30 = extra confidence
-        deep_dip = rsi < RSI_DEEP_DIP
 
         return {
             "pair": pair,
@@ -689,6 +732,8 @@ class RubberbandEngine:
             "bb_upper": bb_upper,
             "bb_middle": bb_middle,
             "bb_lower": bb_lower,
+            "ema_stacked": ema_stacked,
+            "deep_extreme": deep_extreme,
         }
 
     # -- Position management --------------------------------------------------
@@ -697,11 +742,6 @@ class RubberbandEngine:
         """Check if we already have a position in this pair."""
         with self._lock:
             return any(p.pair == pair for p in self.positions)
-
-    def _deployed_capital(self) -> float:
-        """Total USD deployed in open positions."""
-        with self._lock:
-            return sum(p.size_usd for p in self.positions)
 
     def open_position(self, signal: dict) -> bool:
         """Open a new paper position from a signal."""
@@ -744,7 +784,8 @@ class RubberbandEngine:
             except Exception as e:
                 self._log(f"Portfolio reserve error: {e}", "WARNING")
 
-        # Live execution: buy on Kraken spot (LONG only — SHORT blocked by portfolio gate)
+        # Live execution: buy on Kraken spot (LONG only — no spot short execution
+        # exists; SHORT positions stay paper even in live mode, close path mirrors this)
         entry_price = price
         if self._kraken and direction.upper() == "LONG":
             _kp = pair.replace("/", "")
@@ -816,9 +857,10 @@ class RubberbandEngine:
                 self._log(f"LIVE SELL FAILED {pos.pair}: {txid} — using paper price", "WARNING")
             current_price = exit_price
 
-        gross_pnl = pos.unrealized_pnl(current_price)
-        fees = pos.size_usd * KRAKEN_FEE_RATE * 2  # 0.80% round-trip
-        pnl = gross_pnl - fees
+        # GROSS P/L: direction-aware price movement × size (unrealized_pnl
+        # mirrors LONG and SHORT). No fee deduction — signal product;
+        # subscribers pay their own exchange's fees.
+        pnl = pos.unrealized_pnl(current_price)
         duration = time.time() - pos.opened_at
 
         trade = TradeRecord(
@@ -842,7 +884,7 @@ class RubberbandEngine:
                     exit_price=current_price,
                     size_usd=pos.size_usd,
                     duration=duration,
-                    fee_rate=KRAKEN_FEE_RATE,
+                    fee_rate=0.0,  # gross — signal product, no fee accounting
                 )
             except Exception:
                 pass
@@ -882,7 +924,7 @@ class RubberbandEngine:
                         "direction": pos.direction,
                         "won": pnl > 0,
                         "pnl": float(pnl),
-                        "fees": float(pos.fees) if hasattr(pos, 'fees') else 0.0
+                        "fees": 0.0  # retired — signal product; subscribers pay their own exchange fees
                     }).encode("utf-8")
                     req = urlreq.Request(url, data=data, headers={"Content-Type": "application/json"})
                     urlreq.urlopen(req, timeout=3)
@@ -1084,12 +1126,14 @@ class RubberbandEngine:
             "positions": positions_dict,
             "recent_trades": recent,
             "strategy": {
-                "name": "Trend-Aligned Dip Buyer (BB + RSI + Trend)",
+                "name": "Trend-Aligned Mean Reversion (BB + RSI + Trend, long + short)",
                 "bb_period": BB_PERIOD,
                 "bb_std": BB_STD,
                 "rsi_period": RSI_PERIOD,
                 "rsi_dip_threshold": RSI_DIP_THRESHOLD,
                 "rsi_deep_dip": RSI_DEEP_DIP,
+                "rsi_rip_threshold": RSI_RIP_THRESHOLD,
+                "rsi_deep_pump": RSI_DEEP_PUMP,
                 "adx_threshold": ADX_TREND_MIN,
                 "sl_atr_mult": SL_ATR_MULT,
                 "max_positions": MAX_POSITIONS,
@@ -1177,7 +1221,7 @@ class RubberbandHandler(BaseHTTPRequestHandler):
 # ============================================================================
 
 def main():
-    parser = argparse.ArgumentParser(description=f"{BOT_NAME} v{VERSION} -- Trend-Aligned Dip Buyer")
+    parser = argparse.ArgumentParser(description=f"{BOT_NAME} v{VERSION} -- Trend-Aligned Mean Reversion (long + short)")
     parser.add_argument("--auto", action="store_true", help="Headless mode (fleet launcher)")
     parser.add_argument("--port", type=int, default=PORT, help=f"HTTP port (default {PORT})")
     args = parser.parse_args()
@@ -1194,7 +1238,7 @@ def main():
         print(f"[PORT_GUARD] Warning: {_e}")
 
     print(f"\n{'='*60}")
-    print(f"  {BOT_NAME} v{VERSION} -- Trend-Aligned Dip Buyer")
+    print(f"  {BOT_NAME} v{VERSION} -- Trend-Aligned Mean Reversion (long + short)")
     print(f"  Strategy: Bollinger Band ({BB_PERIOD}, {BB_STD}) + RSI ({RSI_PERIOD}) + ADX ({ADX_PERIOD})")
     print(f"  Port: {port} | Paper Balance: ${PAPER_BALANCE:,.0f}")
     print(f"  Max Positions: {MAX_POSITIONS} | Risk/Trade: {TRADE_RISK_PCT*100:.0f}%")

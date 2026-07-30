@@ -6,10 +6,12 @@ Bot #14. Port 8085. Color: #7c4dff (deep purple).
 
 LONG-only. Uses Brainiac correlation data to detect when a leading pair moves
 and the correlated laggard hasn't caught up yet. Buys the laggard expecting
-a catch-up move. Single-leg, 0.80% RT fee (half of the old spread strategy).
+a catch-up move. Single-leg. P/L is GROSS price movement — the fleet is a
+signal product; subscribers pay their own exchanges' fees.
 
 v1 was spread trading (SHORT one leg, LONG the other) — incompatible with
-live LONG-only mode, 1.60% RT fees, and 0% win rate on 4 closed trades.
+LONG-only mode, twice the legs per round trip, and 0% win rate on 4 closed
+trades.
 
 Signal: leader gained > 2% in 4h while laggard gained < 0.5% → BUY laggard
 Exit:   TP at 50% gap closure, SL at 1.5x ATR, time stop 12h
@@ -28,7 +30,6 @@ import sys
 from pathlib import Path
 import threading
 import time
-import uuid
 from collections import deque
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -105,7 +106,8 @@ CATCH_UP_THRESHOLD = 0.020    # 2% return gap minimum to trigger entry
 CATCH_UP_LOOKBACK_H = 4       # hours to measure the gap
 MIN_LEADER_RETURN = 0.015     # leader must have gained at least 1.5%
 MAX_LAGGARD_RETURN = 0.005    # laggard must not have already caught up > 0.5%
-FEE_RATE = 0.0040             # per-side Kraken taker (0.40% tier 0)
+FEE_RATE = 0.0                # signal product — subscribers pay their own exchange's fees; P/L is gross
+MIN_GAP_PCT = 0.016           # gross gap floor for entries (same 1.6% threshold the old fee-derived gate enforced)
 LOOKBACK = 60                 # candle window for correlation and z-score computation
 TRADE_SIZE_PCT = 0.05         # 5% of equity per trade (single leg)
 MAX_POSITIONS = 3             # concurrent positions
@@ -415,31 +417,6 @@ class ArbitrageurEngine:
         return []
 
     # -----------------------------------------------------------------------
-    # Spread / Z-Score Computation
-    # -----------------------------------------------------------------------
-
-    def _compute_log_spread(self, closes_a, closes_b):
-        """Compute log price ratio spread = ln(A/B)."""
-        n = min(len(closes_a), len(closes_b))
-        if n < LOOKBACK:
-            return [], None, None
-        a = closes_a[-n:]
-        b = closes_b[-n:]
-        spread = [math.log(a[i] / b[i]) for i in range(n) if b[i] > 0 and a[i] > 0]
-        if len(spread) < LOOKBACK:
-            return spread, None, None
-
-        # Rolling z-score over last LOOKBACK bars
-        window = spread[-LOOKBACK:]
-        mean = sum(window) / len(window)
-        std = math.sqrt(sum((x - mean) ** 2 for x in window) / len(window))
-        if std < 1e-10:
-            return spread, 0.0, std
-
-        z = (spread[-1] - mean) / std
-        return spread, z, std
-
-    # -----------------------------------------------------------------------
     # Correlation Scanning & Pair Discovery
     # -----------------------------------------------------------------------
 
@@ -486,42 +463,6 @@ class ArbitrageurEngine:
                     rb = [math.log(cb[k] / cb[k - 1]) for k in range(1, n) if cb[k - 1] > 0]
                     corr = pearson(ra, rb)
                     self.all_correlations[key] = round(corr, 4)
-
-    def _find_tradeable_pairs(self):
-        """
-        From the correlation map, find pairs with |corr| > CORR_THRESHOLD.
-        Compute z-scores for each. Update tracked_pairs.
-        """
-        candidates = {}
-        for key, corr in self.all_correlations.items():
-            if abs(corr) >= CORR_THRESHOLD:
-                parts = key.split("|")
-                if len(parts) == 2:
-                    candidates[key] = corr
-
-        new_tracked = {}
-        for key, corr in candidates.items():
-            pa, pb = key.split("|")
-            if pa not in self.price_cache or pb not in self.price_cache:
-                continue
-            closes_a = self.price_cache[pa]
-            closes_b = self.price_cache[pb]
-            spread, z, std = self._compute_log_spread(closes_a, closes_b)
-
-            if z is not None:
-                new_tracked[key] = {
-                    "pair_a": pa,
-                    "pair_b": pb,
-                    "correlation": corr,
-                    "z_score": round(z, 3),
-                    "spread_std": round(std, 6) if std else 0,
-                    "spread_len": len(spread),
-                    "current_price_a": closes_a[-1] if closes_a else 0,
-                    "current_price_b": closes_b[-1] if closes_b else 0,
-                }
-
-        with self._lock:
-            self.tracked_pairs = new_tracked
 
     # -----------------------------------------------------------------------
     # PHITEX Check (avoid phase transitions)
@@ -582,9 +523,10 @@ class ArbitrageurEngine:
                 if lag_ret > MAX_LAGGARD_RETURN:
                     continue  # laggard already catching up
 
-                # Blacklist check
+                # Blacklist check (was a NameError no-op for months —
+                # `_is_blacklisted` was never imported; the bare except ate it)
                 try:
-                    if _is_blacklisted(laggard):
+                    if _fc and _fc.is_blacklisted(laggard):
                         continue
                 except Exception:
                     pass
@@ -627,10 +569,11 @@ class ArbitrageurEngine:
             self._log(f"SKIP {pair}: insufficient equity (${self.equity:.2f})")
             return
 
-        # Fee gate: gap must clear 2x round-trip fees
-        rt_fee_pct = FEE_RATE * 2
-        if gap < rt_fee_pct * 2:
-            self._log(f"SKIP {pair}: gap {gap:.2%} < 2x fees {rt_fee_pct*2:.2%}")
+        # Gross gap gate: gap must clear the minimum gross floor.
+        # Threshold unchanged from the old fee-derived gate (4x 0.40% = 1.6%),
+        # now a fixed gross constant — no fee term.
+        if gap < MIN_GAP_PCT:
+            self._log(f"SKIP {pair}: gap {gap:.2%} < gross floor {MIN_GAP_PCT:.2%}")
             return
 
         # ATR for stop loss
@@ -744,10 +687,9 @@ class ArbitrageurEngine:
             else:
                 self._log(f"LIVE SELL FAILED {pos.pair}: {txid}")
 
-        # P&L with fees
-        gross_pnl = pos.unrealized_pnl(exit_price)
-        fees = pos.size_usd * FEE_RATE * 2
-        pnl = gross_pnl - fees
+        # P&L is gross price movement x size — signal product, no fee deduction
+        # (subscribers pay their own exchange's fees)
+        pnl = pos.unrealized_pnl(exit_price)
 
         self.open_positions = [p for p in self.open_positions if p.id != pos.id]
         self._save_positions()
@@ -760,18 +702,19 @@ class ArbitrageurEngine:
                     bot_id='arbitrageur', pair=pos.pair, direction='LONG',
                     entry_price=pos.entry_price, exit_price=exit_price,
                     size_usd=pos.size_usd, duration=pos.age_hours() * 3600,
-                    fee_rate=FEE_RATE,
+                    fee_rate=0.0,  # gross expectancy — signal product, no fee accounting
                 )
             except Exception:
                 pass
 
+        # "fees" key kept at 0.0 for record-shape compatibility (P/L is gross)
         record = {**pos.to_dict(), "exit_reason": reason, "exit_price": round(exit_price, 6),
-                  "pnl": round(pnl, 2), "fees": round(fees, 2), "exit_time": time.time()}
+                  "pnl": round(pnl, 2), "fees": 0.0, "exit_time": time.time()}
         self.closed_trades.append(record)
         if len(self.closed_trades) > 50:
             self.closed_trades = self.closed_trades[-50:]
 
-        self._log(f"CLOSE {pos.id} | {pos.pair} | {reason} | PnL: ${pnl:+.2f} (fees ${fees:.2f}) | held {pos.age_hours():.1f}h")
+        self._log(f"CLOSE {pos.id} | {pos.pair} | {reason} | PnL: ${pnl:+.2f} (gross) | held {pos.age_hours():.1f}h")
 
         if self._portfolio and pos.reservation_id:
             self._portfolio.release(
@@ -841,10 +784,6 @@ class ArbitrageurEngine:
         wins = sum(1 for t in self.closed_trades if t.get("pnl", 0) > 0)
         return round(wins / len(self.closed_trades) * 100, 1)
 
-    def _top_trades(self, n=5):
-        """Top N catch-up opportunities by gap size."""
-        return self.opportunities[:n]
-
     # -----------------------------------------------------------------------
     # Snapshot (for HTTP API)
     # -----------------------------------------------------------------------
@@ -889,8 +828,11 @@ class ArbitrageurEngine:
                     "lookback_hours": CATCH_UP_LOOKBACK_H,
                     "time_stop_hours": TIME_STOP_HOURS,
                     "max_positions": MAX_POSITIONS,
+                    # Keys kept for snapshot-shape compatibility; zeroed —
+                    # signal product, P/L is gross of subscriber exchange fees.
                     "fee_rate": FEE_RATE,
                     "round_trip_fee_pct": FEE_RATE * 2 * 100,
+                    "min_gap_gross_pct": MIN_GAP_PCT * 100,
                 },
                 "regime": self._infer_regime(),
                 "uptime_s": round(time.time() - self._started, 1),
@@ -1024,10 +966,12 @@ def main():
         if _engine._portfolio:
             for pos in list(_engine.open_positions):
                 try:
-                    if pos.reservation_a:
-                        _engine._portfolio.release(pos.reservation_a, pnl=0.0)
-                    if pos.reservation_b:
-                        _engine._portfolio.release(pos.reservation_b, pnl=0.0)
+                    # v2 positions carry a single reservation_id (the old
+                    # reservation_a/b attrs were v1 spread legs — releasing
+                    # them here was a silent AttributeError, leaking capital
+                    # on every manual shutdown)
+                    if pos.reservation_id:
+                        _engine._portfolio.release(pos.reservation_id, pnl=0.0)
                 except Exception:
                     pass
         print(f"\n  {BOT_NAME} stopped.")

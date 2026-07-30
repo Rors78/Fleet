@@ -5,6 +5,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What This Is
 Unified mission control for a 16-bot crypto trading fleet. (TrekBot and TrekBot SHORT were removed from the fleet — TrekBot lives on as the standalone GoldenEye project. Confluence on port 8088 is the newest trader.) Polls each bot's API, normalizes metrics, manages a shared capital pool, runs an event bus for real-time inter-bot communication, and serves a combined dashboard on port 9000. Includes AI inference (Ollama), market data collection (Brainiac), self-evolution analysis (Ultron), and a Telegram signal broadcaster (port 9002).
 
+**Purpose (2026-07-30):** the fleet is a SIGNAL PRODUCT — it will never trade real money itself. It paper-trades to measure signal quality, then broadcasts signals to subscribers (some in jurisdictions that allow shorting). Judge every design decision against signal quality, not live-execution safety.
+
 See `README.md` for the high-level fleet overview and engine table. This file is the operational reference.
 
 ## Run
@@ -78,7 +80,7 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 Standalone modules that read event logs / live bot data and return structured insights. None are imported by `command_center.py` — they run independently or are called by `evolution.py` / `weekly_analysis.py`.
 
 **Signal quality** (all imported directly by `command_center.py`; also exposed via `/api/signals/*`):
-- `expectancy.py` — Tracks per-bot and fleet-wide E[V] = (WinRate × AvgWin) − (LossRate × AvgLoss) net of fees. The primary profitability signal.
+- `expectancy.py` — Tracks per-bot and fleet-wide E[V] = (WinRate × AvgWin) − (LossRate × AvgLoss), gross. The primary profitability signal.
 - `signal_aggregator.py` — Ensemble engine: collects proposals from all bots, weights by historical accuracy, outputs a single BUY/SELL/HOLD score per pair. State persisted to `aggregator_state.json`.
 - `signal_decomposition.py` — Attributes unique P/L contribution to each signal source (marginal value, accuracy, cost-adjusted expectancy).
 - `signal_decay.py` — Applies empirical half-life decay to signals before consumption; tracks per-type half-lives.
@@ -86,8 +88,8 @@ Standalone modules that read event logs / live bot data and return structured in
 - `causal_flow.py` — Granger causality graph between bots, pairs, and events; answers "does X actually precede Y?" Wired in NEXUS; emits `CAUSAL_FLOW`.
 - `shannon.py` — Information theory: mutual information between signals, channel capacity per bot-to-bot link, entropy of the event stream. Wired in NEXUS; emits `SHANNON_ENTROPY` (fires when fleet noise ratio > 70%).
 - `denial_cost.py` — Portfolio denial opportunity cost analyzer. Reads `PORTFOLIO_RESERVE_DENIED` events, computes what denied trades would have netted. Usage: `python denial_cost.py --days 3 --hold-minutes 240`.
-- `regime_expectancy.py` — Regime-conditional expectancy. Joins TrekBot factor logs with expectancy data to produce per-regime E[V] net of fees (legacy — depends on TrekBot logs that no longer update since TrekBot left the fleet).
-- `signal_attribution.py` — Fee-adjusted signal value. Attributes P/L to individual signals post-fees using `goldeneye_factors.log` + `logs/expectancy.json`.
+
+Retired analytics (`regime_expectancy.py`, `signal_attribution.py`, `factor_calibration.py` — all depended on TrekBot's `goldeneye_factors.log`, frozen since TrekBot left the fleet) live in `graveyard/` with the evidence in `graveyard/MANIFEST.md`.
 
 **Market geometry / physics:**
 - `info_geometry.py` — Fisher Information Metric: measures how fast the market's return distribution is changing shape (low = stable regime, high = transition). Wired in NEXUS; emits `MANIFOLD_WARNING`.
@@ -166,7 +168,7 @@ Authoritative roster: `fleet_config.py` (`BOTS` dict) — trust it over this tab
 - `/api/portfolio/exposure` — breakdown by bot/pair/direction
 - `/api/fleet/daily` — today's daily stats from FleetLogger
 - `/api/trades?bot=confluence&limit=50` — persistent trade history from event logs (survives bot restarts)
-- `/api/expectancy` — fleet-wide and per-bot expectancy stats (alias for `/api/signals/expectancy`)
+- `/api/expectancy` — fleet-wide and per-bot expectancy stats (the ONLY expectancy route — `/api/signals/expectancy` never existed despite being documented here for months; verified against git history 2026-07-30)
 - `/api/bot/<id>` — raw passthrough to individual bot
 - `/api/market/ohlc?pair=BTC/USD&interval=60&limit=100` — OHLC proxy
 - `/api/market/ohlc/bulk?pairs=BTC/USD,ETH/USD&interval=60` — bulk OHLC
@@ -179,7 +181,6 @@ Authoritative roster: `fleet_config.py` (`BOTS` dict) — trust it over this tab
 - `/api/signals/rankings` — per-source accuracy rankings
 - `/api/signals/decomposition` — per-signal P/L attribution from `SignalDecomposition`
 - `/api/signals/decay` — per-signal type half-life data from `SignalDecay`
-- `/api/signals/expectancy` — fleet and per-bot expectancy from `ExpectancyTracker`
 - `/api/signals/intel?pair=BTC/USD` — composite intelligence score from `FleetIntelScore`
 - `/api/fleet/mode` — current fleet trading mode (paper/live)
 
@@ -283,6 +284,8 @@ When a bot crashes or is restarted mid-trade, its in-flight reservations in `por
 - **Every bot HTTP server must be threaded** (`ThreadingHTTPServer` / `ThreadingMixIn`). A plain `HTTPServer` gets its health probe blocked by browser keep-alive connections (the dashboard polls some bot ports directly) and the watchdog kills the healthy process. Fleet-wide fix in commit a2359e9; broadcaster was missed and crash-looped 18× until 5bcdeed.
 - **Support services should bind their port first thing at startup** as a single-instance mutex, with `allow_reuse_address = False` — on Windows, SO_REUSEADDR lets two processes bind the same port, and simultaneous watchdog spawns can otherwise both survive and double-send (broadcaster fix in d6c5d0f).
 - **CC's `/api/signals/broadcaster/stats` always serves from `signals_sent.log`** (`source: "log_fallback"` — the live proxy is disabled due to a Python 3.14 HTTP/1.0 quirk). Its counts are log-derived, not live process stats; the broadcaster's own `/stats` on port 9002 is the live source.
+- **`port_guard.ensure_port` yields to healthy incumbents (hardened 2026-07-30).** It used to kill whatever held the port unconditionally — so if both watchdogs ever double-spawned a bot (the documented broadcaster failure mode), each fresh spawn would assassinate the healthy serving instance. Now: port holder answers HTTP → the duplicate exits via `sys.exit(0)` (bots' `except Exception` blocks don't catch SystemExit — this is load-bearing, don't change them to bare `except:`); port held but HTTP dead → still killed as a zombie. Oracle additionally binds its port exclusively first-thing (`allow_reuse_address = False`, the broadcaster pattern) — when adding a new bot, copy that pattern.
+- **Identify fleet processes by PORT OWNER, not command-line substring (lesson 2026-07-30).** A pattern like `server.py` also matches `inference_server.py`. During an Oracle restart this misidentified the Inference server as a "duplicate Oracle" three times; each kill looked like watchdog double-spawn ping-pong and nearly led to misdiagnosing a phantom infrastructure bug. `Get-NetTCPConnection -LocalPort <port>` → `OwningProcess` is the ground truth for which process is which.
 
 ## Fleet Mode (Paper/Live Toggle)
 `fleet_config.FLEET_MODE` is the single source of truth for paper vs live trading. Default: `"paper"`.
@@ -296,10 +299,19 @@ When a bot crashes or is restarted mid-trade, its in-flight reservations in `por
 - Going live requires `KRAKEN_API_KEY` set as environment variable; the API rejects live mode without it
 - Gridzilla, NexusBrain, Rubberband, Arbitrageur, Confluence are paper-only (no live execution code)
 
+## Directionality (Shorts)
+Shorts were re-enabled fleet-wide in paper on 2026-07-30 (`fleet_config.FLEET_LONG_ONLY = False`) — the fleet is a signal product and subscribers in shorting-allowed jurisdictions need short signals. `LIVE_LONG_ONLY = True` still blocks shorts if the fleet is ever flipped live. The portfolio direction gate (`fleet_config.direction_allowed(direction, is_reentry)`) fires before the size floor; `is_reentry=True` lets a restarting bot re-claim capital for an already-open short.
+
+- Short-capable: TurtleSue (symmetric turtle), Rubberband (rip-fade: downtrend + upper BB + RSI > 60), NexusBrain (mirrored confluence behind the same 0.70 gate), Confluence (per-source short aggregation, reports `strategy.type: BIDIRECTIONAL`)
+- Oracle publishes actionable SHORT rows for DISTRIBUTION only; FALLING KNIFE and TAKE PROFIT are deliberately non-actionable advisories (`D:\Oracle\src\strategy.py` documents why)
+- Gridzilla and Arbitrageur are long-only by design (grids and rotation don't map to directional shorts)
+- Broadcaster formats ▼ SHORT natively — no changes were needed there
+
 ## Key Metrics to Watch
-- **Expectancy** (the primary health signal): Target positive E[V] per trade net of fees. Fee ratio arc: 650% → 385% → 272% (2026-04-04) → **~32% (2026-07-28)** — the fee crisis is solved; the open problem is negative expectancy (avg loss ≫ avg win). Run `python expectancy.py` or hit `/api/signals/expectancy` for current state.
-- **Fee floor:** $30 minimum trade size enforced in portfolio manager. NexusBrain `min_confluence` is **0.70** (lowered from 0.80 on 2026-04-08 after 8h with zero trades; note the real cause of that drought was two broken signal components, fixed 2026-07-29 — see `score_volume_confirmation` and `score_macd_momentum`).
-- **Gridzilla spacing floor:** 1.2% minimum grid spacing. Max 5 grid lines. $0.50 net profit floor per level.
+**FEES ARE GONE (2026-07-30, Jeremy's directive).** The fleet is a signal product — subscribers pay their own exchanges' fees, so the fleet neither models nor deducts fees anywhere. All P/L and expectancy are GROSS price movement. The quality gates that fee-survival accidentally taught us (R:R ratios, minimum-move floors, cooldowns, confluence bars) SURVIVE at the same thresholds, re-rationalized as signal-worthiness standards — do not remove them, and do not reintroduce fee math. Historical logs before 2026-07-30 are net-of-fee; after, gross — mind the discontinuity when comparing eras. (The old fee-ratio war, 650% → 32%, is preserved in git history; the fee-slayer agent's domain is retired.)
+- **Expectancy** (the primary health signal): Target positive gross E[V] per trade. The open problem is negative expectancy (avg loss ≫ avg win). Run `python expectancy.py` or hit `/api/expectancy` for current state.
+- NexusBrain `min_confluence` is **0.70** (lowered from 0.80 on 2026-04-08 after 8h with zero trades; note the real cause of that drought was two broken signal components, fixed 2026-07-29 — see `score_volume_confirmation` and `score_macd_momentum`).
+- **Gridzilla spacing floor:** 1.2% minimum grid spacing. Max 5 grid lines. $0.50 gross profit floor per level (signal-worthiness density floor, not fee survival).
 - **Trade frequency governor:** 10-min per-pair cooldown in portfolio manager after any trade closes. Adaptive: 5 min when AEGIS score > 0.7. Gridzilla exempt (fee gate handles its frequency).
 - **AEGIS score:** Controls deployment limit. Low score → DEFENSIVE → reduced max deployment.
 - **Concentration limit:** Max 40% of deployed capital in any single pair.
@@ -309,5 +321,5 @@ When a bot crashes or is restarted mid-trade, its in-flight reservations in `por
 - ALWAYS read existing code before modifying
 - No fake stats — ever
 - A module is only "done" when: (1) import appears in the running bot file, (2) API endpoint responds, (3) event bus shows expected event type
-- **Prefer specialized agents over general-purpose.** Six domain agents are available (fee-slayer, fleet-wire-master, fleet-auditor, nexus-council-physicist, simons-fleet-philosopher, cosmos-dashboard-alchemist). Each owns a specific slice of the fleet and has internalized the conventions for that slice. Use `general-purpose` only when nothing else fits.
+- **Prefer specialized agents over general-purpose.** Six domain agents are available (fleet-wire-master, fleet-auditor, nexus-council-physicist, simons-fleet-philosopher, cosmos-dashboard-alchemist, cosmos-soundtrack-maestro; fee-slayer retired 2026-07-30 to `agents_retired/` when fees were removed). Each owns a specific slice of the fleet and has internalized the conventions for that slice. The alchemist owns COSMOS visuals; the maestro owns the `_sound` system and `audio/` library — never let both edit `command_center_v4.html` concurrently. Use `general-purpose` only when nothing else fits.
 - **Event bus is the ground truth for wiring verification, not file grep.** A file existing or even an import line is not proof that an engine is firing. The only definitive check is seeing the expected event type land on `/api/events/recent`.

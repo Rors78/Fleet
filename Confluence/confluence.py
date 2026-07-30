@@ -2,7 +2,10 @@
 """
 CONFLUENCE — Intel-Driven Fleet Trader
 ======================================
-Port 8088. Kraken spot, LONG-only, paper-gated.
+Port 8088. Kraken spot, bidirectional (LONG + SHORT), paper-gated.
+Shorts re-enabled fleet-wide 2026-07-30 (fleet_config.FLEET_LONG_ONLY = False)
+— the fleet is a signal product; short entries obey fleet_config.direction_allowed()
+per-entry and are held to the same conviction gates as longs.
 
 What makes this bot different from the other five traders:
   Rubberband, Arbitrageur, Gridzilla, TurtleSue and NexusBrain all read
@@ -113,8 +116,13 @@ MAX_OPEN_POSITIONS = 3
 POSITION_SIZE_USD = 550.0
 STOP_LOSS_PCT = 0.025          # 2.5% hard floor if Oracle gives no stop
 MAX_POSITION_AGE_H = 36
-FEE_RATE = 0.0040              # Kraken taker 0.40%
-MIN_PROFIT_VS_FEES = 2.0       # target must clear 2x round-trip fees
+# Signal-worthiness floor: the projected entry→target move must be at least
+# this fraction of entry for a candidate to be worth broadcasting to
+# subscribers. This is a quality gate, NOT a fee model — the fleet is a
+# signal product and never pays exchange fees itself (subscribers pay their
+# own exchanges' fees). Value preserved from the retired fee gate it
+# replaced: 0.40% taker × 2 legs × 2 safety multiple = 1.6%.
+MIN_TARGET_MOVE_PCT = 0.016
 COOLDOWN_AFTER_LOSS_S = 900
 SAME_PAIR_COOLDOWN_S = 3600
 
@@ -141,16 +149,18 @@ def _get_json(url, timeout=INTEL_TIMEOUT_S):
 # ── Position ───────────────────────────────────────────────────────
 
 class Position:
-    def __init__(self, pair, entry, size_usd, stop, target, reservation_id, thesis):
+    def __init__(self, pair, direction, entry, size_usd, stop, target, reservation_id, thesis):
         self.pair = pair
-        self.direction = "LONG"
+        self.direction = direction if direction in ("LONG", "SHORT") else "LONG"
         self.entry = entry
         self.size_usd = size_usd
-        self.stop = stop
-        self.target = target
+        self.stop = stop            # SHORT: above entry. LONG: below entry.
+        self.target = target        # SHORT: below entry. LONG: above entry.
         self.reservation_id = reservation_id
         self.thesis = thesis
         self.opened_at = _now()
+        # Favorable extreme reached so far: the highest price for a LONG, the
+        # lowest for a SHORT. Kept under the historical attribute name.
         self.high_water = entry
 
     @property
@@ -160,6 +170,9 @@ class Position:
     def unrealized(self, price):
         if not self.entry:
             return 0.0
+        if self.direction == "SHORT":
+            # Paper short PnL: profit when price falls below entry.
+            return (self.entry - price) / self.entry * self.size_usd
         return (price - self.entry) / self.entry * self.size_usd
 
     def to_dict(self, price=None):
@@ -198,7 +211,6 @@ class ConfluenceEngine:
         self.pair_cooldowns: dict[str, float] = {}
         self.loss_cooldown_until = 0.0
         self.realized_pnl = 0.0
-        self.fees_paid = 0.0
         self.wins = 0
         self.losses = 0
         self._lock = threading.RLock()
@@ -227,15 +239,39 @@ class ConfluenceEngine:
                 self._log(f"EventPublisher init failed: {e}", "WARNING")
 
     def is_live(self):
-        """Never execute real orders unless fleet_config says live AND allows LONG."""
+        """Never execute real orders unless fleet_config says live.
+
+        Direction legality is NOT checked here — a bidirectional bot's mode
+        cannot hinge on any single direction. Each entry checks its own
+        direction via _direction_allowed() at scoring and reservation time.
+        (Live execution remains unimplemented regardless — see try_enter.)
+        """
         if not _fc:
             return False
         try:
-            if not _fc.is_live():
-                return False
-            return _fc.live_direction_allowed("LONG")
+            return bool(_fc.is_live())
         except Exception:
             return False
+
+    def _direction_allowed(self, direction, is_reentry=False):
+        """(ok, reason) from fleet policy for holding capital in `direction`.
+
+        Wraps fleet_config.direction_allowed(direction, is_reentry) — which
+        enforces FLEET_LONG_ONLY / LIVE_LONG_ONLY and lets re-reservations for
+        already-open positions through even after a policy flip.
+
+        Falls back to the historical LONG-only stance when fleet_config (or
+        its direction_allowed API) is unavailable: a policy we cannot read
+        must not default to permitting shorts.
+        """
+        if _fc:
+            try:
+                return _fc.direction_allowed(direction, is_reentry=is_reentry)
+            except Exception:
+                pass
+        if (direction or "").upper() == "LONG":
+            return True, ""
+        return False, "fleet direction policy unreadable — LONG-only fallback"
 
     def _log(self, msg, level="INFO"):
         entry = {"ts": _utc(), "level": level, "message": msg}
@@ -261,7 +297,6 @@ class ConfluenceEngine:
                     "positions": {p: v.to_dict() for p, v in self.positions.items()},
                     "closed_trades": self.closed_trades[-200:],
                     "realized_pnl": self.realized_pnl,
-                    "fees_paid": self.fees_paid,
                     "wins": self.wins,
                     "losses": self.losses,
                     "pair_cooldowns": self.pair_cooldowns,
@@ -277,13 +312,19 @@ class ConfluenceEngine:
             with open(STATE_FILE, encoding="utf-8") as f:
                 d = json.load(f)
             self.realized_pnl = d.get("realized_pnl", 0.0)
-            self.fees_paid = d.get("fees_paid", 0.0)
             self.wins = d.get("wins", 0)
             self.losses = d.get("losses", 0)
             self.closed_trades = d.get("closed_trades", [])
             self.pair_cooldowns = d.get("pair_cooldowns", {})
             for pair, pd in (d.get("positions") or {}).items():
-                pos = Position(pair, pd["entry"], pd["size_usd"], pd["stop"],
+                # Direction restored from state; legacy state files predate
+                # shorts and carried only LONGs, so that is the safe default.
+                # An open SHORT surviving a restart is policy-legal even if
+                # FLEET_LONG_ONLY flips back on (direction_allowed's
+                # is_reentry semantics: "open no new shorts", not "liquidate
+                # open ones") — restoring it here is the re-reservation path.
+                pos = Position(pair, pd.get("direction", "LONG"),
+                               pd["entry"], pd["size_usd"], pd["stop"],
                                pd["target"], pd.get("reservation_id"), pd.get("thesis", {}))
                 pos.opened_at = pd.get("opened_at", _now())
                 self.positions[pair] = pos
@@ -353,6 +394,28 @@ class ConfluenceEngine:
         Oracle supplies the thesis (entry/stop/target). Everything else
         confirms or vetoes. A candidate with only Oracle backing is rejected
         by the MIN_SOURCES gate — that is deliberate.
+
+        Direction split (2026-07-30): each Oracle row carries its own
+        direction, and every component below contributes to conviction in
+        THAT direction only — LONG evidence never leaks into SHORT conviction
+        or vice versa. Per-source direction policy:
+
+          Oracle    — directional per row (`direction` field). Anchors both
+                      sides identically. NEUTRAL rows have no thesis → reject.
+          Deep Blue — whaleScore is direction-NEUTRAL by construction
+                      (ADX + low-chopiness + volume-surge composite = "big
+                      activity"); the record's `trend` field (+DI/−DI) is the
+                      direction. Bullish trend feeds LONG only, bearish feeds
+                      SHORT only, neutral feeds both.
+          NEXUS     — market_character is fleet-wide ORDERLINESS, not
+                      direction. Applied identically to both sides: an
+                      orderly tape supports any well-formed thesis, chaos
+                      blows stops both ways.
+          Sentinel  — signed 1h drift. Positive drift feeds LONG (damped by
+                      tail_risk_down); negative drift feeds SHORT (damped by
+                      tail_risk_up — squeeze risk). Sentinel publishes both
+                      tails, so the short-side damping is a real mirror, not
+                      a guess.
         """
         oracle = intel.get("oracle") or {}
         signals = oracle.get("top_signals") or []
@@ -406,10 +469,21 @@ class ConfluenceEngine:
             sources = []
             weighted = 0.0
 
-            # ── LONG-only mandate ──
-            if direction != "LONG":
+            # ── Direction gate ──
+            # A row with no directional thesis (Oracle's NEUTRAL strategies)
+            # has nothing to aggregate toward.
+            if direction not in ("LONG", "SHORT"):
                 rejections.append({"pair": pair, "gate": "direction",
-                                   "detail": f"{direction} — bot is LONG-only"})
+                                   "detail": f"{direction or 'NONE'} — no directional thesis"})
+                continue
+
+            # Fleet direction policy (fleet_config.direction_allowed). Logged
+            # as a rejection like every other gate, so a re-flip of
+            # FLEET_LONG_ONLY is visible in /api/snapshot, not silent.
+            allowed, policy_why = self._direction_allowed(direction)
+            if not allowed:
+                rejections.append({"pair": pair, "gate": "direction_policy",
+                                   "detail": policy_why})
                 continue
 
             if oracle_stale:
@@ -423,6 +497,16 @@ class ConfluenceEngine:
                 continue
 
             # ── Oracle component ──
+            # `score` is read as Oracle's conviction in the row's OWN
+            # direction and gated identically for LONG and SHORT — shorts are
+            # held to conviction at least as strict as longs. Caveat, checked
+            # 2026-07-30: Oracle's composite is historically a bullishness
+            # scale, and all three bearish strategies (FALLING KNIFE,
+            # DISTRIBUTION, TAKE PROFIT) are in its no-entry set (None
+            # levels), so no SHORT row currently reaches top_signals at all.
+            # If Oracle later publishes SHORT rows still scored on the bullish
+            # composite, they will UNDER-fire this gate (low score), never
+            # over-fire — the safe failure mode for a subscriber product.
             if score < MIN_ORACLE_SCORE:
                 rejections.append({"pair": pair, "gate": "oracle_score",
                                    "detail": f"score {score:.1f} < {MIN_ORACLE_SCORE}"})
@@ -439,6 +523,23 @@ class ConfluenceEngine:
             if rr:
                 reasons.append(f"R:R {rr:.2f}")
 
+            # ── Level orientation sanity ──
+            # A SHORT protects with a stop ABOVE entry and targets BELOW;
+            # mirrored for LONG. Malformed levels (e.g. a long-side level
+            # generator run against a bearish row) must be rejected, not
+            # traded. Only checked when Oracle supplied all three levels —
+            # missing ones are synthesized direction-correctly in try_enter.
+            if entry and stop and target:
+                ok_levels = (stop < entry < target) if direction == "LONG" \
+                    else (target < entry < stop)
+                if not ok_levels:
+                    rejections.append({
+                        "pair": pair, "gate": "level_orientation",
+                        "detail": (f"{direction} levels malformed "
+                                   f"(stop {stop:.6g}, entry {entry:.6g}, "
+                                   f"target {target:.6g})")})
+                    continue
+
             # Track the weight that actually CONTRIBUTED, so the denominator
             # below matches the numerator. Adding a source's weight to the
             # denominator when it contributed nothing silently depresses the
@@ -446,18 +547,38 @@ class ConfluenceEngine:
             contributed_w = W_ORACLE
 
             # ── Deep Blue component ──
+            # whaleScore measures ACTIVITY, not accumulation (0.4·ADX-strength
+            # + 0.3·low-chopiness + 0.3·volume-surge) — direction-neutral by
+            # construction. The record's `trend` field (+DI/−DI, ADX-gated)
+            # carries the direction, so a whale only confirms a candidate its
+            # trend agrees with: bullish→LONG, bearish→SHORT. A "neutral"
+            # trend (big activity, direction unresolved) feeds both sides —
+            # the same treatment the LONG-only code always gave it. A whale
+            # whose trend DISAGREES contributes nothing. (The pre-split code
+            # let a bearish-trend whale add to LONG conviction — a latent bug
+            # fixed by this direction match.)
             w = whales.get(pair)
             if w:
                 wscore = w.get("whaleScore") or 0.0
                 rel = w.get("reliability") or 0.0
-                if wscore >= MIN_WHALE_SCORE:
+                wtrend = (w.get("trend") or "neutral").lower()
+                trend_matches = (wtrend == "neutral"
+                                 or (direction == "LONG" and wtrend == "bullish")
+                                 or (direction == "SHORT" and wtrend == "bearish"))
+                if wscore >= MIN_WHALE_SCORE and trend_matches:
                     whale_norm = min(1.0, (wscore / 100.0) * (rel / 100.0))
                     weighted += W_WHALE * whale_norm
                     contributed_w += W_WHALE
                     sources.append("deepblue")
-                    reasons.append(f"Whale {wscore:.0f} (rel {rel:.0f})")
+                    reasons.append(f"Whale {wscore:.0f} (rel {rel:.0f}, {wtrend})")
 
             # ── NEXUS component: fleet-wide posture ──
+            # market_character measures ORDERLINESS of the tape, not
+            # direction, so the mapping is applied identically to LONG and
+            # SHORT candidates: an ordered/trending market supports any
+            # well-formed thesis, and a chaotic one blows stops both ways
+            # (CHAOTIC is not treated as pro-short — that would conflate
+            # "unpredictable" with "falling").
             if character:
                 # Risk-on characters add conviction; risk-off subtracts it.
                 # MIXED/NEUTRAL are explicitly half-weight rather than unmapped:
@@ -487,8 +608,18 @@ class ConfluenceEngine:
             fc = forecasts.get(pair)
             if isinstance(fc, dict):
                 # Sentinel forecasts carry a distribution, not a conviction
-                # scalar: derive one from the 1h expected move vs current,
-                # damped by downside tail risk.
+                # scalar: derive one from the SIGNED 1h expected move vs
+                # current. Positive drift confirms a LONG, damped by downside
+                # tail risk; negative drift confirms a SHORT, damped by UPSIDE
+                # tail risk (squeeze risk) — Sentinel publishes both
+                # tail_risk_up and tail_risk_down, so the short side is a real
+                # mirror. Drift against the candidate's direction contributes
+                # nothing to it (and can never leak into the other side,
+                # because conviction is scored per-row, per-direction).
+                # SENTINEL_FULL_CONVICTION_DRIFT was calibrated on the bullish
+                # tail of the forecast distribution (p90 of positive drifts);
+                # the same magnitude is assumed for bearish drifts until a
+                # bearish-side calibration exists.
                 conv_norm = None
                 try:
                     h1 = fc.get("1h") or {}
@@ -496,13 +627,14 @@ class ConfluenceEngine:
                     exp = h1.get("expected")
                     if cur and exp and cur > 0:
                         drift = (exp - cur) / cur          # signed expected move
-                        tail_dn = float(h1.get("tail_risk_down") or 0.0)
-                        if drift > 0:
-                            # Scale against the observed forecast distribution
-                            # (see SENTINEL_FULL_CONVICTION_DRIFT), damped by
-                            # downside tail risk.
-                            conv_norm = (max(0.0, min(1.0, drift / SENTINEL_FULL_CONVICTION_DRIFT))
-                                         * (1.0 - min(1.0, tail_dn)))
+                        if direction == "LONG" and drift > 0:
+                            tail = float(h1.get("tail_risk_down") or 0.0)
+                            conv_norm = (min(1.0, drift / SENTINEL_FULL_CONVICTION_DRIFT)
+                                         * (1.0 - min(1.0, tail)))
+                        elif direction == "SHORT" and drift < 0:
+                            tail = float(h1.get("tail_risk_up") or 0.0)
+                            conv_norm = (min(1.0, -drift / SENTINEL_FULL_CONVICTION_DRIFT)
+                                         * (1.0 - min(1.0, tail)))
                 except (TypeError, ValueError, ZeroDivisionError):
                     conv_norm = None
 
@@ -510,7 +642,8 @@ class ConfluenceEngine:
                     weighted += W_SENTINEL * conv_norm
                     contributed_w += W_SENTINEL
                     sources.append("sentinel")
-                    reasons.append(f"Sentinel +{conv_norm:.0%}")
+                    sign = "+" if direction == "LONG" else "-"
+                    reasons.append(f"Sentinel {sign}{conv_norm:.0%}")
 
             # ── Confluence gates ──
             if len(sources) < MIN_SOURCES:
@@ -536,18 +669,24 @@ class ConfluenceEngine:
                                    "detail": f"{confluence:.3f} < {MIN_CONFLUENCE}"})
                 continue
 
-            # ── Fee viability: target must clear 2x round-trip ──
+            # ── Minimum move: target must be worth a subscriber's while ──
             if entry and target:
-                gross_pct = (target - entry) / entry
-                fee_pct = FEE_RATE * 2
-                if gross_pct < fee_pct * MIN_PROFIT_VS_FEES:
+                # Move toward the target in the trade's own direction:
+                # for a SHORT the target sits below entry, so the profitable
+                # move is (entry − target).
+                if direction == "SHORT":
+                    move_pct = (entry - target) / entry
+                else:
+                    move_pct = (target - entry) / entry
+                if move_pct < MIN_TARGET_MOVE_PCT:
                     rejections.append({
-                        "pair": pair, "gate": "fee_floor",
-                        "detail": f"target {gross_pct:.2%} < {fee_pct * MIN_PROFIT_VS_FEES:.2%} fee floor"})
+                        "pair": pair, "gate": "min_move",
+                        "detail": f"target {move_pct:.2%} < {MIN_TARGET_MOVE_PCT:.2%} min move"})
                     continue
 
             candidates.append({
                 "pair": pair,
+                "direction": direction,
                 "confluence": round(confluence, 4),
                 "sources": sources,
                 "source_count": len(sources),
@@ -582,9 +721,19 @@ class ConfluenceEngine:
 
     def try_enter(self, cand):
         pair = cand["pair"]
+        direction = cand.get("direction", "LONG")
         ok, why = self._can_enter(pair)
         if not ok:
             self.rejections.append({"pair": pair, "gate": "position_mgmt", "detail": why})
+            return False
+
+        # Re-check fleet direction policy at reservation time — the policy
+        # can flip between scoring and entry, and a stale candidate must not
+        # slip a short past a re-enabled FLEET_LONG_ONLY.
+        allowed, policy_why = self._direction_allowed(direction)
+        if not allowed:
+            self.rejections.append({"pair": pair, "gate": "direction_policy",
+                                    "detail": policy_why})
             return False
 
         entry = cand.get("entry")
@@ -592,15 +741,21 @@ class ConfluenceEngine:
             self.rejections.append({"pair": pair, "gate": "no_price", "detail": "no entry price"})
             return False
 
-        stop = cand.get("stop") or entry * (1 - STOP_LOSS_PCT)
-        target = cand.get("target") or entry * (1 + STOP_LOSS_PCT * 2)
+        # Synthesized fallback levels mirror by direction: a SHORT stops
+        # ABOVE entry and targets BELOW.
+        if direction == "SHORT":
+            stop = cand.get("stop") or entry * (1 + STOP_LOSS_PCT)
+            target = cand.get("target") or entry * (1 - STOP_LOSS_PCT * 2)
+        else:
+            stop = cand.get("stop") or entry * (1 - STOP_LOSS_PCT)
+            target = cand.get("target") or entry * (1 + STOP_LOSS_PCT * 2)
         size = POSITION_SIZE_USD
 
         # Reserve capital from Command Center before committing.
         rid = None
         if self._portfolio:
             stop_pct = abs(entry - stop) / entry if entry else STOP_LOSS_PCT
-            got, res = self._portfolio.reserve(pair, "LONG", size, stop_loss_pct=stop_pct)
+            got, res = self._portfolio.reserve(pair, direction, size, stop_loss_pct=stop_pct)
             if not got:
                 self.rejections.append({"pair": pair, "gate": "portfolio",
                                         "detail": f"reservation denied: {res}"})
@@ -616,13 +771,13 @@ class ConfluenceEngine:
                 self._portfolio.release(rid, pnl=0.0)
             return False
 
-        pos = Position(pair, entry, size, stop, target, rid, cand["thesis"])
+        pos = Position(pair, direction, entry, size, stop, target, rid, cand["thesis"])
         self.positions[pair] = pos
         self.pair_cooldowns[pair] = _now()
-        self._log(f"OPEN {pair} @ {entry:.6g} conf={cand['confluence']:.3f} "
+        self._log(f"OPEN {direction} {pair} @ {entry:.6g} conf={cand['confluence']:.3f} "
                   f"[{', '.join(cand['sources'])}] {cand['thesis']}", "INFO")
         self._emit("TRADE_OPEN", {
-            "bot": BOT_ID, "pair": pair, "direction": "LONG", "entry": entry,
+            "bot": BOT_ID, "pair": pair, "direction": direction, "entry": entry,
             "size_usd": size, "confluence": cand["confluence"],
             "sources": cand["sources"], "thesis": cand["thesis"],
         })
@@ -654,28 +809,41 @@ class ConfluenceEngine:
             if not price:
                 continue
 
-            if price > pos.high_water:
+            # Favorable extreme: highest price for a LONG, lowest for a SHORT.
+            if pos.direction == "SHORT":
+                if price < pos.high_water:
+                    pos.high_water = price
+            elif price > pos.high_water:
                 pos.high_water = price
 
+            # Exit checks mirrored by direction: a SHORT's stop is ABOVE
+            # entry (price rising through it is the loss) and its target is
+            # BELOW (price falling to it is the win).
             reason = None
-            if price <= pos.stop:
-                reason = "STOP"
-            elif price >= pos.target:
-                reason = "TARGET"
-            elif pos.age_h >= MAX_POSITION_AGE_H:
+            if pos.direction == "SHORT":
+                if price >= pos.stop:
+                    reason = "STOP"
+                elif price <= pos.target:
+                    reason = "TARGET"
+            else:
+                if price <= pos.stop:
+                    reason = "STOP"
+                elif price >= pos.target:
+                    reason = "TARGET"
+            if not reason and pos.age_h >= MAX_POSITION_AGE_H:
                 reason = "TIME"
 
             if reason:
                 self._close(pos, price, reason)
 
     def _close(self, pos, price, reason):
-        gross = pos.unrealized(price)
-        fees = pos.size_usd * FEE_RATE * 2
-        net = gross - fees
+        # Gross price movement, direction-aware via unrealized(). The fleet
+        # is a signal product — subscribers pay their own exchanges' fees,
+        # so nothing is deducted here.
+        pnl = pos.unrealized(price)
 
-        self.realized_pnl += net
-        self.fees_paid += fees
-        if net > 0:
+        self.realized_pnl += pnl
+        if pnl > 0:
             self.wins += 1
         else:
             self.losses += 1
@@ -683,15 +851,19 @@ class ConfluenceEngine:
 
         if pos.reservation_id and self._portfolio:
             try:
-                self._portfolio.release(pos.reservation_id, pnl=net,
+                self._portfolio.release(pos.reservation_id, pnl=pnl,
                                         entry_price=pos.entry, exit_price=price)
             except Exception as e:
                 self._log(f"Release failed for {pos.pair}: {e}", "WARNING")
 
         trade = {
-            "pair": pos.pair, "direction": "LONG", "entry": pos.entry,
-            "exit": price, "size_usd": pos.size_usd, "gross_pnl": round(gross, 2),
-            "fees": round(fees, 2), "net_pnl": round(net, 2), "exit_reason": reason,
+            "pair": pos.pair, "direction": pos.direction, "entry": pos.entry,
+            "exit": price, "size_usd": pos.size_usd, "pnl": round(pnl, 2),
+            # Legacy keys kept for dashboard renderers that read
+            # gross_pnl/net_pnl/fees: P/L is gross now, so gross == net and
+            # fees are always 0 (subscriber-side).
+            "gross_pnl": round(pnl, 2), "net_pnl": round(pnl, 2), "fees": 0.0,
+            "exit_reason": reason,
             "age_h": round(pos.age_h, 2), "thesis": pos.thesis, "closed_at": _utc(),
         }
         self.closed_trades.append(trade)
@@ -699,11 +871,11 @@ class ConfluenceEngine:
             self.closed_trades = self.closed_trades[-500:]
 
         self.positions.pop(pos.pair, None)
-        self._log(f"CLOSE {pos.pair} @ {price:.6g} {reason} net={net:+.2f} "
-                  f"(gross {gross:+.2f}, fees {fees:.2f})", "INFO")
+        self._log(f"CLOSE {pos.direction} {pos.pair} @ {price:.6g} {reason} "
+                  f"pnl={pnl:+.2f} (gross)", "INFO")
         self._emit("TRADE_CLOSE", {
-            "bot": BOT_ID, "pair": pos.pair, "direction": "LONG",
-            "entry": pos.entry, "exit": price, "pnl": round(net, 2),
+            "bot": BOT_ID, "pair": pos.pair, "direction": pos.direction,
+            "entry": pos.entry, "exit": price, "pnl": round(pnl, 2),
             "exit_reason": reason,
         })
         self._save_state()
@@ -735,7 +907,7 @@ class ConfluenceEngine:
             self.last_scan_duration = round(_now() - t0, 3)
 
     def run_forever(self):
-        self._log(f"{BOT_NAME} online — intel-driven, LONG-only, "
+        self._log(f"{BOT_NAME} online — intel-driven, bidirectional (LONG+SHORT), "
                   f"mode={'LIVE' if self.is_live() else 'paper'}", "INFO")
         while True:
             try:
@@ -761,7 +933,7 @@ class ConfluenceEngine:
                 "mode": "live" if self.is_live() else "paper",
                 "strategy": {
                     "name": "Intel Confluence (fleet-signal aggregation)",
-                    "type": "LONG_only",
+                    "type": "BIDIRECTIONAL",
                     "sources": ["oracle", "deepblue", "nexus", "sentinel"],
                     "weights": {"oracle": W_ORACLE, "deepblue": W_WHALE,
                                 "nexus": W_NEXUS, "sentinel": W_SENTINEL},
@@ -774,7 +946,10 @@ class ConfluenceEngine:
                 "win_rate": round(wr, 1),
                 "open_positions": len(self.positions),
                 "total_trades": total,
-                "fees_paid": round(self.fees_paid, 2),
+                # Kept for CC's confluence normalizer, which passes this
+                # field through. Always 0: the fleet is a signal product and
+                # fees are subscriber-side.
+                "fees_paid": 0.0,
                 "uptime": round(_now() - self.started_at, 1),
                 "regime": (self.intel_status.get("nexus", {}).get("up")
                            and "INTEL_DRIVEN" or "DEGRADED"),

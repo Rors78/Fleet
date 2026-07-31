@@ -2373,6 +2373,8 @@ def _poll_all_bots() -> None:
 
 
 _AEGIS_COOLDOWN = 300  # 5 minutes between adjustments
+_AEGIS_RAISE_HOLD_SEC = 1200  # a cap RAISE must hold this long before applying (drops are instant)
+_aegis_raise_pending: dict = {}  # {"limit": target_pct, "since": ts} while a raise is on hold
 # Rehydrate from cc_state.json so a reboot within the cooldown window doesn't
 # trigger an immediate (unwanted) re-adjustment of deployment limits.
 try:
@@ -2423,6 +2425,34 @@ def _apply_aegis_adjustment():
     # throttle_reason/fee_ratio keys are kept (as None) in the event payload
     # below so PORTFOLIO_LIMIT_CHANGE consumers don't break on missing keys.
     new_limit = base_limit
+
+    # Raise hysteresis (2026-07-31): drops apply immediately (defensive must
+    # stay fast), but a RAISE only lands after the computed tier has held
+    # continuously for _AEGIS_RAISE_HOLD_SEC. AEGIS lives ~0.17 and spikes
+    # over the 0.2 tier boundary for 5-15 min a few times a day; without the
+    # hold, every spike opened a brief entry window and whatever entered
+    # became instantly over-cap when the tier dropped back (TurtleSue UNI
+    # pyramid through the 07:36-07:52 window, 2026-07-31).
+    global _aegis_raise_pending
+    _current_limit = None
+    for _pm in [_portfolio_paper, _portfolio_live]:
+        if _pm:
+            _current_limit = _pm.limits.get("max_deployed_pct", 80)
+            break
+    if _current_limit is not None and new_limit > _current_limit:
+        if _aegis_raise_pending.get("limit") != new_limit:
+            _aegis_raise_pending = {"limit": new_limit, "since": now}
+            log.info(f"AEGIS: raise to {new_limit}% pending {_AEGIS_RAISE_HOLD_SEC // 60}min hold (score={score:.4f})")
+            new_limit = _current_limit
+        elif now - _aegis_raise_pending.get("since", now) < _AEGIS_RAISE_HOLD_SEC:
+            new_limit = _current_limit
+        else:
+            log.info(f"AEGIS: raise to {new_limit}% held {_AEGIS_RAISE_HOLD_SEC // 60}min — applying")
+            _aegis_raise_pending = {}
+    else:
+        # Not a raise (drop or unchanged): clear any pending hold so a fresh
+        # spike must restart its clock.
+        _aegis_raise_pending = {}
 
     # Apply AEGIS adjustment to BOTH portfolios.
     # old_limit is captured OUTSIDE the loop: reading it inside leaves it bound

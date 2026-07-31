@@ -1120,6 +1120,26 @@ class BusIntelligence:
                 phitex is not None and phitex.get("fleet_score", 0) > 0.5
             )
 
+            # CHRONOS: temporal bias — LOG-ONLY here, not a size modifier.
+            # Grids deploy a whole allocation split across N pre-computed
+            # levels (GridArchitect.design()), not a single per-trade size —
+            # there is no clean entry-size hook to shave 25% off the way the
+            # single-leg traders do. Consumption is logged so the wiring is
+            # provable and visible to the operator; it never changes grid
+            # sizing or level count.
+            temporal = self.bus.chronos_temporal(max_age=3600)
+            anomaly = temporal.get("time_anomaly") if temporal else None
+            if anomaly:
+                logging.info(
+                    f"TEMPORAL {anomaly.get('direction', '?').upper()} bias: "
+                    f"TIME_ANOMALY {anomaly.get('direction')} (n={anomaly.get('n')}, "
+                    f"bias={anomaly.get('bias_pct')}%) — log-only, grid sizing unaffected"
+                )
+            for se in (temporal.get("session_events") or []) if temporal else []:
+                if se.get("type") == "SESSION_OVERLAP" and (time.time() - se.get("ts", 0)) < 900:
+                    logging.info(f"TEMPORAL CONTEXT: SESSION_OVERLAP {se.get('window')} — high volatility window")
+                    break
+
             self.last_update = time.time()
         except Exception as e:
             logging.debug(f"Bus refresh error: {e}")

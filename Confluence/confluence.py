@@ -52,6 +52,11 @@ except Exception:
     EventPublisher = None
 
 try:
+    from bus_listener import BusListener
+except Exception:
+    BusListener = None
+
+try:
     import fleet_config as _fc
 except Exception:
     _fc = None
@@ -217,6 +222,7 @@ class ConfluenceEngine:
 
         self._portfolio = None
         self._events = None
+        self._bus = None
         self._init_fleet()
         self._load_state()
 
@@ -237,6 +243,13 @@ class ConfluenceEngine:
                 self._log("EventPublisher connected", "INFO")
             except Exception as e:
                 self._log(f"EventPublisher init failed: {e}", "WARNING")
+
+        if BusListener:
+            try:
+                self._bus = BusListener(CC_URL)
+                self._log("BusListener connected", "INFO")
+            except Exception as e:
+                self._log(f"BusListener init failed: {e}", "WARNING")
 
     def is_live(self):
         """Never execute real orders unless fleet_config says live.
@@ -750,6 +763,35 @@ class ConfluenceEngine:
             stop = cand.get("stop") or entry * (1 - STOP_LOSS_PCT)
             target = cand.get("target") or entry * (1 + STOP_LOSS_PCT * 2)
         size = POSITION_SIZE_USD
+
+        # CHRONOS: temporal bias — soft influence only, never a hard block.
+        # A fresh (<1h) statistically-gated TIME_ANOMALY opposing this
+        # entry's direction shaves 25% off size; agreement is log-only (stay
+        # conservative). SESSION_OVERLAP fresh (<15m) is a context log line
+        # only, no size change.
+        if self._bus:
+            try:
+                temporal = self._bus.chronos_temporal(max_age=3600)
+                anomaly = temporal.get("time_anomaly") if temporal else None
+                if anomaly:
+                    anomaly_dir = "LONG" if anomaly.get("direction") == "bullish" else "SHORT"
+                    if anomaly_dir != direction:
+                        size *= 0.75
+                        self._log(
+                            f"TEMPORAL OPPOSE {pair}: TIME_ANOMALY {anomaly.get('direction')} "
+                            f"(n={anomaly.get('n')}, bias={anomaly.get('bias_pct')}%) opposes "
+                            f"{direction} — size x0.75", "INFO")
+                    else:
+                        self._log(
+                            f"TEMPORAL AGREE {pair}: TIME_ANOMALY {anomaly.get('direction')} "
+                            f"(n={anomaly.get('n')}, bias={anomaly.get('bias_pct')}%) agrees with "
+                            f"{direction} — no size change", "INFO")
+                for se in (temporal.get("session_events") or []) if temporal else []:
+                    if se.get("type") == "SESSION_OVERLAP" and (_now() - se.get("ts", 0)) < 900:
+                        self._log(f"TEMPORAL CONTEXT {pair}: SESSION_OVERLAP {se.get('window')} — high volatility window", "INFO")
+                        break
+            except Exception as e:
+                self._log(f"Temporal bias check failed: {e}", "WARNING")
 
         # Reserve capital from Command Center before committing.
         rid = None

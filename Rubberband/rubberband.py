@@ -770,6 +770,37 @@ class RubberbandEngine:
         with self._lock:
             size_usd = self.equity * TRADE_RISK_PCT
 
+        # CHRONOS: temporal bias — soft influence only, never a hard block.
+        # A fresh (<1h) statistically-gated TIME_ANOMALY opposing this trade's
+        # direction shaves 25% off size; agreement is log-only (stay
+        # conservative). SESSION_OVERLAP fresh (<15m) is a context log line
+        # only, no size change.
+        if self._bus:
+            try:
+                temporal = self._bus.chronos_temporal(max_age=3600)
+                anomaly = temporal.get("time_anomaly") if temporal else None
+                if anomaly:
+                    anomaly_dir = "LONG" if anomaly.get("direction") == "bullish" else "SHORT"
+                    if anomaly_dir != direction:
+                        size_usd *= 0.75
+                        self._log(
+                            f"TEMPORAL OPPOSE {pair}: TIME_ANOMALY {anomaly.get('direction')} "
+                            f"(n={anomaly.get('n')}, bias={anomaly.get('bias_pct')}%) opposes "
+                            f"{direction} — size x0.75"
+                        )
+                    else:
+                        self._log(
+                            f"TEMPORAL AGREE {pair}: TIME_ANOMALY {anomaly.get('direction')} "
+                            f"(n={anomaly.get('n')}, bias={anomaly.get('bias_pct')}%) agrees with "
+                            f"{direction} — no size change"
+                        )
+                for se in (temporal.get("session_events") or []) if temporal else []:
+                    if se.get("type") == "SESSION_OVERLAP" and (time.time() - se.get("ts", 0)) < 900:
+                        self._log(f"TEMPORAL CONTEXT {pair}: SESSION_OVERLAP {se.get('window')} — high volatility window")
+                        break
+            except Exception as e:
+                self._log(f"Temporal bias check failed: {e}", "DEBUG")
+
         # Portfolio reservation
         reservation_id = None
         if self._portfolio_client:

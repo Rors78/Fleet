@@ -1130,6 +1130,36 @@ class PaperTrader:
                         if _ld.get("type") == _lvl_block:
                             _bus_mult *= 0.7
                             break
+                    # CHRONOS: temporal bias — soft influence only, never a
+                    # hard block. A fresh (<1h) statistically-gated TIME_ANOMALY
+                    # opposing this trade's direction shaves 25% off size;
+                    # agreement is log-only (stay conservative). SESSION_OVERLAP
+                    # fresh (<15m) is a context log line only, no size change.
+                    _temporal = self._bus.chronos_temporal(max_age=3600)
+                    _anomaly = _temporal.get("time_anomaly") if _temporal else None
+                    if _anomaly:
+                        _anomaly_dir = "LONG" if _anomaly.get("direction") == "bullish" else "SHORT"
+                        if _anomaly_dir != signal.direction:
+                            _bus_mult *= 0.75
+                            logger.info(
+                                f"TEMPORAL OPPOSE {PAIR_DISPLAY.get(signal.pair, signal.pair)}: "
+                                f"TIME_ANOMALY {_anomaly.get('direction')} (n={_anomaly.get('n')}, "
+                                f"bias={_anomaly.get('bias_pct')}%) opposes {signal.direction} — size x0.75"
+                            )
+                        else:
+                            logger.info(
+                                f"TEMPORAL AGREE {PAIR_DISPLAY.get(signal.pair, signal.pair)}: "
+                                f"TIME_ANOMALY {_anomaly.get('direction')} (n={_anomaly.get('n')}, "
+                                f"bias={_anomaly.get('bias_pct')}%) agrees with {signal.direction} — no size change"
+                            )
+                    for _se in (_temporal.get("session_events") or []) if _temporal else []:
+                        if _se.get("type") == "SESSION_OVERLAP" and (time.time() - _se.get("ts", 0)) < 900:
+                            logger.info(
+                                f"TEMPORAL CONTEXT {PAIR_DISPLAY.get(signal.pair, signal.pair)}: "
+                                f"SESSION_OVERLAP {_se.get('window')} — high volatility window"
+                            )
+                            break
+
                     _bus_mult = max(0.3, min(2.0, _bus_mult))
                     if _bus_mult != 1.0:
                         logger.info(f"BUS CONTEXT {PAIR_DISPLAY.get(signal.pair, signal.pair)}: size x{_bus_mult:.2f}")

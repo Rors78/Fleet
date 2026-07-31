@@ -1071,6 +1071,34 @@ class TurtleEngine:
                     elif _ld.get("type") == "SUPPORT_APPROACHING" and direction.upper() == "SHORT":
                         _bus_mult *= 0.7
                         break
+
+                # CHRONOS: temporal bias — soft influence only, never a hard
+                # block. A fresh (<1h) statistically-gated TIME_ANOMALY
+                # opposing this entry's direction shaves 25% off size;
+                # agreement is log-only (stay conservative). SESSION_OVERLAP
+                # fresh (<15m) is a context log line only, no size change.
+                _temporal = self._bus.chronos_temporal(max_age=3600)
+                _anomaly = _temporal.get("time_anomaly") if _temporal else None
+                if _anomaly:
+                    _anomaly_dir = "LONG" if _anomaly.get("direction") == "bullish" else "SHORT"
+                    if _anomaly_dir != direction.upper():
+                        _bus_mult *= 0.75
+                        logging.info(
+                            f"TEMPORAL OPPOSE {pair}: TIME_ANOMALY {_anomaly.get('direction')} "
+                            f"(n={_anomaly.get('n')}, bias={_anomaly.get('bias_pct')}%) opposes "
+                            f"{direction.upper()} — size x0.75"
+                        )
+                    else:
+                        logging.info(
+                            f"TEMPORAL AGREE {pair}: TIME_ANOMALY {_anomaly.get('direction')} "
+                            f"(n={_anomaly.get('n')}, bias={_anomaly.get('bias_pct')}%) agrees with "
+                            f"{direction.upper()} — no size change"
+                        )
+                for _se in (_temporal.get("session_events") or []) if _temporal else []:
+                    if _se.get("type") == "SESSION_OVERLAP" and (time.time() - _se.get("ts", 0)) < 900:
+                        logging.info(f"TEMPORAL CONTEXT {pair}: SESSION_OVERLAP {_se.get('window')} — high volatility window")
+                        break
+
                 _bus_mult = max(0.3, min(2.0, _bus_mult))
             except Exception:
                 _bus_mult = 1.0

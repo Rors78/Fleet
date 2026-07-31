@@ -569,6 +569,37 @@ class ArbitrageurEngine:
             self._log(f"SKIP {pair}: insufficient equity (${self.equity:.2f})")
             return
 
+        # CHRONOS: temporal bias — soft influence only, never a hard block.
+        # Arbitrageur is LONG-only, so "opposing" means a fresh bearish
+        # TIME_ANOMALY. A fresh (<1h) statistically-gated anomaly opposing
+        # this entry shaves 25% off size; agreement is log-only (stay
+        # conservative). SESSION_OVERLAP fresh (<15m) is a context log line
+        # only, no size change.
+        if self._bus:
+            try:
+                temporal = self._bus.chronos_temporal(max_age=3600)
+                anomaly = temporal.get("time_anomaly") if temporal else None
+                if anomaly:
+                    if anomaly.get("direction") == "bearish":
+                        size_usd *= 0.75
+                        self._log(
+                            f"TEMPORAL OPPOSE {pair}: TIME_ANOMALY bearish "
+                            f"(n={anomaly.get('n')}, bias={anomaly.get('bias_pct')}%) opposes "
+                            f"LONG — size x0.75"
+                        )
+                    else:
+                        self._log(
+                            f"TEMPORAL AGREE {pair}: TIME_ANOMALY bullish "
+                            f"(n={anomaly.get('n')}, bias={anomaly.get('bias_pct')}%) agrees with "
+                            f"LONG — no size change"
+                        )
+                for se in (temporal.get("session_events") or []) if temporal else []:
+                    if se.get("type") == "SESSION_OVERLAP" and (time.time() - se.get("ts", 0)) < 900:
+                        self._log(f"TEMPORAL CONTEXT {pair}: SESSION_OVERLAP {se.get('window')} — high volatility window")
+                        break
+            except Exception as e:
+                self._log(f"Temporal bias check failed: {e}")
+
         # Gross gap gate: gap must clear the minimum gross floor.
         # Threshold unchanged from the old fee-derived gate (4x 0.40% = 1.6%),
         # now a fixed gross constant — no fee term.

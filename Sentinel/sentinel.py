@@ -108,7 +108,6 @@ DRIFT_SNR_CAP = 0.05
 # Cost is not a constraint: measured 0.52s per pair, so 50 pairs is ~26s of a
 # 300s cycle (9%). Raising this trades idle time for real signal overlap.
 TOP_PAIRS = 50              # forecast the full CC universe
-ACCENT = "#00bfa5"
 
 
 # ---------------------------------------------------------------------------
@@ -806,12 +805,12 @@ def main():
     except Exception as _e:
         print(f"[PORT_GUARD] Warning: {_e}")
 
-    print(f"\n  SENTINEL v1.0 — Probabilistic Forecast Engine")
+    print("\n  SENTINEL v1.0 — Probabilistic Forecast Engine")
     print(f"  Port: {PORT}")
     print(f"  Horizons: {[f'{h//60}h' for h in HORIZONS]}")
     print(f"  Simulations: {N_SIMULATIONS} paths/pair")
     print(f"  http://localhost:{PORT}/api/snapshot")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     threading.Thread(target=_scan_loop, daemon=True, name="SentinelScan").start()
     server = ThreadedServer(("0.0.0.0", PORT), SentinelHandler)

@@ -243,6 +243,43 @@ class BusListener:
         alerts = self.chronos_alerts(max_age)
         return any(a.get("data", {}).get("type") == "FUNDING_SETTLEMENT" for a in alerts)
 
+    def chronos_temporal(self, max_age=3600):
+        """Get the latest Chronos temporal-bias readout for trade-time consumption.
+
+        Reuses chronos_alerts() (CHRONOS_ALERT, half-life already in
+        _HALF_LIVES) and shapes it into the two things a trader cares about:
+        the most recent TIME_ANOMALY (statistically-gated hourly bias, see
+        chronos.py) and any SESSION_OPEN/SESSION_OVERLAP events that fired
+        recently — same type filter as session_active(), but each event
+        keeps its bus-level "ts" so callers can gate on freshness (e.g. "did
+        an overlap start in the last 15 minutes").
+
+        Returns dict:
+            {
+                "time_anomaly": dict or None,   # latest TIME_ANOMALY data payload
+                "session_events": list[dict],   # recent SESSION_OPEN/SESSION_OVERLAP payloads
+            }
+        time_anomaly payload (when present): {hour_utc, bias_pct, n, ci_low,
+        ci_high, direction, pair, ts}. direction is "bullish" or "bearish".
+        """
+        alerts = self.chronos_alerts(max_age)
+        anomalies = [a for a in alerts if a.get("data", {}).get("type") == "TIME_ANOMALY"]
+        latest_anomaly = None
+        if anomalies:
+            latest_anomaly = dict(anomalies[-1].get("data", {}))
+            latest_anomaly["ts"] = anomalies[-1].get("ts", anomalies[-1].get("timestamp", 0))
+        session_events = []
+        for a in alerts:
+            d = a.get("data", {})
+            if d.get("type") in ("SESSION_OPEN", "SESSION_OVERLAP"):
+                se = dict(d)
+                se["ts"] = a.get("ts", a.get("timestamp", 0))
+                session_events.append(se)
+        return {
+            "time_anomaly": latest_anomaly,
+            "session_events": session_events,
+        }
+
     def spread_positions(self, max_age=300):
         """Get recent spread open events from Arbitrageur."""
         return self._recent("SPREAD_OPEN", max_age=max_age)

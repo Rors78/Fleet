@@ -220,6 +220,130 @@ function _sphBlob(ctx, cx, cy, r, lat, lon, rad, spin, tilt, style) {
     return p;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   BAKED SURFACE TEXTURE CACHE (2026-07-31, adult-grade pass)
+   ───────────────────────────────────────────────────────────────────────
+   Several PLANET_VISUALS entries (sentinel, contrarian, hivemind, trinity,
+   inference, phitex) painted their surface detail as a handful of thin
+   0.06-0.18-alpha strokes straight into the live context — legible in a
+   code review, sub-perceptual on a 50" display (the exact "too faint" trap
+   documented in project_cosmos_redesign_round2_2026_07_30.md's PHITEX/
+   Gridzilla fixes). Rather than keep hand-rolling one-off per-frame
+   gradient stacks for each body, this is a small reusable bake: an
+   offscreen canvas of regolith speckle (rocky/icy bodies) or soft banding
+   (gas/energy bodies), generated ONCE per (kind, sizeBucket) via a seeded
+   mulberry32 PRNG — same deterministic-noise convention as _bakeEclipticDisc
+   and VoidField's _bakeGalaxy — then stamped with drawImage every frame.
+   Zero per-frame gradient/path allocation for the texture layer itself;
+   callers still layer their own live (cheap: strokes/dots) animated
+   identity features on top, same as before. */
+var _surfTexCache = {};
+function _surfMulberry32(seed){
+    var s = seed >>> 0;
+    return function(){
+        s |= 0; s = (s + 0x6D2B79F5) | 0;
+        var t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+function _surfHashStr(str){
+    var h = 2166136261;
+    for(var i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+}
+/* Rocky/icy regolith speckle — craters + fine grain, desaturated toward the
+   supplied base hue. Used for airless/icy identities (sentinel, contrarian). */
+function _bakeRegolithTex(key, sizePx, rgb){
+    var cached = _surfTexCache[key];
+    if(cached && cached.sizePx === sizePx) return cached.canvas;
+    var D = Math.max(24, Math.min(256, sizePx * 2));
+    var cvs = document.createElement('canvas');
+    cvs.width = D; cvs.height = D;
+    var c = cvs.getContext('2d');
+    var rng = _surfMulberry32(_surfHashStr(key) ^ (sizePx|0));
+    var cx = D/2, cy = D/2, R = D/2;
+    /* Fine grain speckle */
+    var grainN = Math.floor(D * D * 0.10);
+    for(var i=0;i<grainN;i++){
+        var a = rng()*Math.PI*2, d = Math.sqrt(rng())*R;
+        var px = cx + Math.cos(a)*d, py = cy + Math.sin(a)*d;
+        var tone = rng() < 0.5 ? -1 : 1;
+        var v = 14 + rng()*18;
+        c.fillStyle = 'rgba(' + Math.max(0,Math.min(255,rgb[0]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[1]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[2]+tone*v)) + ',' + (0.10+rng()*0.10).toFixed(3) + ')';
+        c.fillRect(px, py, 1, 1);
+    }
+    /* Craters — small dark rings with a bright rim on one side */
+    var craterN = 5 + Math.floor(rng()*5);
+    for(var k=0;k<craterN;k++){
+        var ka = rng()*Math.PI*2, kd = rng()*R*0.85;
+        var kx = cx + Math.cos(ka)*kd, ky = cy + Math.sin(ka)*kd;
+        var kr = Math.max(1, R*(0.05 + rng()*0.13));
+        var kg = c.createRadialGradient(kx-kr*0.15, ky-kr*0.15, 0, kx, ky, Math.max(0.1,kr));
+        kg.addColorStop(0, 'rgba(0,0,0,0.22)');
+        kg.addColorStop(0.7, 'rgba(0,0,0,0.10)');
+        kg.addColorStop(1, 'rgba(0,0,0,0)');
+        c.fillStyle = kg;
+        c.beginPath(); c.arc(kx, ky, kr, 0, Math.PI*2); c.fill();
+        c.strokeStyle = 'rgba(255,255,255,0.10)';
+        c.lineWidth = Math.max(0.5, kr*0.12);
+        c.beginPath(); c.arc(kx, ky, kr, Math.PI*0.7, Math.PI*1.5); c.stroke();
+    }
+    var entry = { canvas: cvs, sizePx: sizePx };
+    _surfTexCache[key] = entry;
+    return cvs;
+}
+/* Soft cellular/plasma mottling — used for energy/hive/circuit identities
+   (hivemind, trinity, inference, phitex) that need believable surface
+   variation without literal craters. Blotchy low-frequency blobs, tinted
+   toward the supplied hue, alternating slightly lighter/darker than base. */
+function _bakeMottleTex(key, sizePx, rgb){
+    var cached = _surfTexCache[key];
+    if(cached && cached.sizePx === sizePx) return cached.canvas;
+    var D = Math.max(24, Math.min(256, sizePx * 2));
+    var cvs = document.createElement('canvas');
+    cvs.width = D; cvs.height = D;
+    var c = cvs.getContext('2d');
+    var rng = _surfMulberry32(_surfHashStr(key) ^ 0x517e ^ (sizePx|0));
+    var cx = D/2, cy = D/2, R = D/2;
+    var blobN = 10 + Math.floor(rng()*8);
+    for(var i=0;i<blobN;i++){
+        var a = rng()*Math.PI*2, d = rng()*R*0.8;
+        var bx = cx + Math.cos(a)*d, by = cy + Math.sin(a)*d;
+        var br = R*(0.16+rng()*0.30);
+        var tone = rng()<0.5 ? -1 : 1;
+        var v = 10 + rng()*16;
+        var bg = c.createRadialGradient(bx, by, 0, bx, by, Math.max(0.1,br));
+        bg.addColorStop(0, 'rgba(' + Math.max(0,Math.min(255,rgb[0]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[1]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[2]+tone*v)) + ',' + (0.10+rng()*0.08).toFixed(3) + ')');
+        bg.addColorStop(1, 'rgba(0,0,0,0)');
+        c.fillStyle = bg;
+        c.beginPath(); c.arc(bx, by, br, 0, Math.PI*2); c.fill();
+    }
+    var entry = { canvas: cvs, sizePx: sizePx };
+    _surfTexCache[key] = entry;
+    return cvs;
+}
+/* Stamp a baked texture centered on (x,y) at radius r, clipped to the disk.
+   Caller is expected to already be inside drawPlanet's own disk clip
+   (surface() runs clipped), so this just needs to draw the square sprite
+   centered correctly — no extra clip call needed, matches every other
+   surface() function's assumption in this file. sizePx should be rounded
+   to a coarse bucket by the caller so the cache doesn't thrash every frame
+   as a body's currentSize breathes by fractional pixels. */
+function _stampSurfTex(ctx, canvas, x, y, r){
+    var d = Math.max(0.2, r*2);
+    ctx.drawImage(canvas, x-r, y-r, d, d);
+}
+/* Round to a coarse size bucket (nearest 4px) so the bake cache survives
+   the continuous per-frame breathing every OrbNode.currentSize does —
+   without this, a body pulsing 1-2px per frame would rebake every frame,
+   defeating the whole point of baking. */
+function _texBucket(r){ return Math.max(8, Math.round(r/4)*4); }
+
 /* --- Celestial hierarchy — solar system structure --- */
 /* Orbital speeds follow true Kepler's-third-law scaling (T = k * radius^1.5,
    k anchored to oracle's pre-existing period so the star tier — already
@@ -1142,15 +1266,45 @@ var PLANET_VISUALS = {
         baseColor: [170, 50, 210],
         atmosphere: [210, 90, 250],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Magnetic field lines radiating out */
-            ctx.strokeStyle = 'rgba(210, 100, 255, 0.12)';
-            ctx.lineWidth = 0.6;
+            /* Adult-grade pass (2026-07-31): TWO bugs found here, same
+               class as the Confluence disk-clip bug documented in
+               project_cosmos_redesign_round2_2026_07_30.md. (1) field-line
+               radius `r*(1+sin*0.6)` reaches up to 1.6r and the pulsar
+               beam ellipses reached 2.5r — both were drawn inside
+               surface(), which drawPlanet clips to the body's own disk
+               (arc(x,y,r)), so every pixel past r was silently discarded
+               every frame. (2) what little survived inside the disk was a
+               bare 0.12-alpha stroke. Fix: baked magnetar-surface texture
+               for in-disk weight, field lines/beams moved to overlay()
+               (unclipped) where they can actually reach their intended
+               radius, alphas boosted throughout. */
+            var tex = _bakeMottleTex('phitex', _texBucket(r), [150,55,190]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* In-disk portion of the field lines only (0..r) — kept here
+               since this part legitimately never left the clip */
+            ctx.strokeStyle = 'rgba(225, 140, 255, 0.22)';
+            ctx.lineWidth = Math.max(0.5, r*0.014);
             for (var i = 0; i < 8; i++) {
                 var a = (i/8) * Math.PI * 2 + now / 10000;
                 ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x + Math.cos(a)*r*0.9, y + Math.sin(a)*r*0.9);
+                ctx.stroke();
+            }
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Magnetic field lines — the part that arcs OUT past the disk
+               (up to 1.6r). Was silently clipped inside surface(); now
+               actually visible, which is most of why this body used to
+               read as a plain purple ball. */
+            ctx.strokeStyle = 'rgba(210, 100, 255, 0.20)';
+            ctx.lineWidth = Math.max(0.5, r*0.016);
+            for (var fi = 0; fi < 8; fi++) {
+                var fa0 = (fi/8) * Math.PI * 2 + now / 10000;
+                ctx.beginPath();
                 for (var t = 0; t <= 1; t += 0.08) {
                     var fr = r * (1 + Math.sin(t * Math.PI) * 0.6);
-                    var fa = a + (t - 0.5) * 0.5;
+                    var fa = fa0 + (t - 0.5) * 0.5;
                     var fx = x + Math.cos(fa) * fr;
                     var fy = y + Math.sin(fa) * fr;
                     if (t === 0) ctx.moveTo(fx, fy);
@@ -1158,22 +1312,20 @@ var PLANET_VISUALS = {
                 }
                 ctx.stroke();
             }
-            /* Pulsar beam */
+            /* Pulsar beam — reaches 2.5r, was also silently clipped */
             var beamA = now / 3000;
             for (var pole = -1; pole <= 1; pole += 2) {
                 var bx = x + Math.cos(beamA) * r * 2.5 * pole;
                 var by = y + Math.sin(beamA) * r * 2.5 * pole;
                 var bG = ctx.createRadialGradient(x, y, r*0.3,
-                    x + (bx-x)*0.5, y + (by-y)*0.5, r*0.2);
-                bG.addColorStop(0, 'rgba(210, 100, 255, 0.08)');
+                    x + (bx-x)*0.5, y + (by-y)*0.5, Math.max(0.1, r*0.2));
+                bG.addColorStop(0, 'rgba(220, 130, 255, 0.16)');
                 bG.addColorStop(1, 'rgba(0,0,0,0)');
                 ctx.fillStyle = bG;
                 ctx.beginPath();
                 ctx.ellipse(x+(bx-x)*0.5, y+(by-y)*0.5, r*0.12, r*1.2, beamA, 0, Math.PI*2);
                 ctx.fill();
             }
-        },
-        overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ PHI-TIMED FLASH — cross/star flare every 1.618 seconds ═══
                The golden ratio interval. Brief bright spike on each pulse.
                Also: faint outer glow ring that pulses at the phi rate. */
@@ -1298,9 +1450,17 @@ var PLANET_VISUALS = {
         baseColor: [110, 155, 210],
         atmosphere: [155, 195, 240],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Ice surface cracks */
-            ctx.strokeStyle = 'rgba(180, 215, 245, 0.15)';
-            ctx.lineWidth = 0.5;
+            /* Adult-grade pass (2026-07-31): base cracks were 0.15-alpha
+               hairlines with nothing behind them — a flat blue disk at any
+               real viewing distance. Baked icy-regolith speckle (craters +
+               grain, same bake used for contrarian) now sits under the
+               cracks so the body reads as a weathered ice moon even before
+               the radar sweep animates. */
+            var tex = _bakeRegolithTex('sentinel', _texBucket(r), [150,190,230]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* Ice surface cracks — boosted from 0.15 to a real value, wider */
+            ctx.strokeStyle = 'rgba(200, 228, 252, 0.32)';
+            ctx.lineWidth = Math.max(0.6, r*0.018);
             var cracks = [[0.1,0.1,0.7,0.6],[-0.2,-0.3,0.5,0.4],[-0.4,0.2,0.3,-0.5],[0.3,-0.2,-0.1,0.7]];
             for (var ci = 0; ci < cracks.length; ci++) {
                 var cr = cracks[ci];
@@ -1308,11 +1468,21 @@ var PLANET_VISUALS = {
                 ctx.moveTo(x+cr[0]*r, y+cr[1]*r);
                 ctx.lineTo(x+cr[2]*r, y+cr[3]*r);
                 ctx.stroke();
+                /* Bright hairline core down the middle of each crack — sells
+                   "fractured ice catching light" instead of a drawn line */
+                ctx.strokeStyle = 'rgba(235,248,255,0.20)';
+                ctx.lineWidth = Math.max(0.3, r*0.006);
+                ctx.beginPath();
+                ctx.moveTo(x+cr[0]*r, y+cr[1]*r);
+                ctx.lineTo(x+cr[2]*r, y+cr[3]*r);
+                ctx.stroke();
+                ctx.strokeStyle = 'rgba(200, 228, 252, 0.32)';
+                ctx.lineWidth = Math.max(0.6, r*0.018);
             }
-            /* Radar sweep */
+            /* Radar sweep — boosted alpha */
             var sweep = (now / 2500) % (Math.PI * 2);
             var sweepG = ctx.createRadialGradient(x, y, r*0.2, x, y, r*1.5);
-            sweepG.addColorStop(0, 'rgba(0, 200, 180, 0.08)');
+            sweepG.addColorStop(0, 'rgba(20, 220, 195, 0.16)');
             sweepG.addColorStop(1, 'rgba(0,0,0,0)');
             ctx.fillStyle = sweepG;
             ctx.beginPath();
@@ -1322,6 +1492,15 @@ var PLANET_VISUALS = {
             ctx.fill();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Thin cold-blue atmosphere halo — icy body catching starlight
+               on its limb, unclipped so it reads past the disk edge. */
+            var haloR = Math.max(0.1, r*1.14);
+            var haloG = ctx.createRadialGradient(x, y, r*0.92, x, y, haloR);
+            haloG.addColorStop(0, 'rgba(0,0,0,0)');
+            haloG.addColorStop(0.7, 'rgba(160,205,245,0.10)');
+            haloG.addColorStop(1, 'rgba(160,205,245,0)');
+            ctx.fillStyle = haloG;
+            ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI*2); ctx.fill();
             /* ═══ SATELLITE DISH — small arc + stem extending outward ═══
                Points away from the neutron star (transmission direction). */
             /* Dish points opposite to sun direction */
@@ -1332,22 +1511,22 @@ var PLANET_VISUALS = {
             var sy=y+Math.sin(dishAngle)*r;
             var ex=sx+Math.cos(dishAngle)*stemLen;
             var ey=sy+Math.sin(dishAngle)*stemLen;
-            ctx.strokeStyle='rgba(155,195,240,0.45)';ctx.lineWidth=0.8;
+            ctx.strokeStyle='rgba(180,215,250,0.60)';ctx.lineWidth=Math.max(0.6,r*0.03);
             ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(ex,ey);ctx.stroke();
             /* Dish arc — parabola approximated as arc, perpendicular to stem */
             var dishR=r*0.32;
             var perpA=dishAngle+Math.PI/2;
-            ctx.strokeStyle='rgba(155,195,240,0.55)';ctx.lineWidth=1;
+            ctx.strokeStyle='rgba(190,225,255,0.72)';ctx.lineWidth=Math.max(0.9,r*0.045);
             ctx.beginPath();
             ctx.arc(ex,ey,dishR,perpA-0.7,perpA+0.7);
             ctx.stroke();
             /* Small dot at focal point */
-            ctx.fillStyle='rgba(200,230,255,0.5)';
-            ctx.beginPath();ctx.arc(ex,ey,1.2,0,Math.PI*2);ctx.fill();
-            /* Faint signal cone from dish center */
+            ctx.fillStyle='rgba(220,240,255,0.65)';
+            ctx.beginPath();ctx.arc(ex,ey,Math.max(1.2,r*0.05),0,Math.PI*2);ctx.fill();
+            /* Signal cone from dish center — boosted */
             var coneLen=r*1.1;
             var coneG=ctx.createRadialGradient(ex,ey,0,ex,ey,coneLen);
-            coneG.addColorStop(0,'rgba(100,200,220,0.06)');
+            coneG.addColorStop(0,'rgba(120,215,235,0.14)');
             coneG.addColorStop(1,'rgba(0,0,0,0)');
             ctx.fillStyle=coneG;
             ctx.beginPath();ctx.moveTo(ex,ey);
@@ -1721,18 +1900,61 @@ var PLANET_VISUALS = {
         baseColor: [175, 45, 45],
         atmosphere: [215, 75, 75],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Ice cracks with red veins */
-            ctx.strokeStyle = 'rgba(255, 80, 80, 0.18)';
-            ctx.lineWidth = 0.6;
+            /* Adult-grade pass (2026-07-31): was six 0.18-alpha hairline
+               cracks and one 0.1-alpha frost smudge — the flattest,
+               least-animated body left in the file (no overlay at all
+               previously). Baked frozen-regolith texture first, then the
+               cracks/frost boosted on top; a slow retrograde-tinted rim
+               ring added in overlay() so the "trades against the crowd"
+               identity actually reads without inventing new geometry. */
+            var tex = _bakeRegolithTex('contrarian', _texBucket(r), [200,90,90]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* Ice cracks with red veins — boosted */
+            ctx.strokeStyle = 'rgba(255, 110, 100, 0.30)';
+            ctx.lineWidth = Math.max(0.6, r*0.016);
             var cracks = [[0.15,-0.1,0.6,0.5],[-0.3,-0.4,0.2,0.3],[-0.5,0.1,-0.1,-0.6],[0.4,-0.3,-0.2,0.5],[0.1,0.2,0.55,-0.15],[-0.35,0.35,0.15,0.55]];
             for (var ci = 0; ci < cracks.length; ci++) {
                 var cr = cracks[ci];
                 ctx.beginPath(); ctx.moveTo(x+cr[0]*r, y+cr[1]*r); ctx.lineTo(x+cr[2]*r, y+cr[3]*r); ctx.stroke();
             }
-            /* Frost patches */
-            var fG = ctx.createRadialGradient(x-r*0.2, y-r*0.3, 0, x-r*0.2, y-r*0.3, r*0.25);
-            fG.addColorStop(0, 'rgba(200, 180, 200, 0.1)'); fG.addColorStop(1, 'rgba(0,0,0,0)');
-            ctx.fillStyle = fG; ctx.beginPath(); ctx.arc(x-r*0.2, y-r*0.3, r*0.25, 0, Math.PI*2); ctx.fill();
+            /* Frost patches — two now, boosted alpha, slight drift so the
+               surface reads as alive rather than a static screenshot */
+            var fDrift = Math.sin(now/6000)*r*0.04;
+            var fG = ctx.createRadialGradient(x-r*0.2+fDrift, y-r*0.3, 0, x-r*0.2+fDrift, y-r*0.3, r*0.25);
+            fG.addColorStop(0, 'rgba(225, 200, 215, 0.20)'); fG.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = fG; ctx.beginPath(); ctx.arc(x-r*0.2+fDrift, y-r*0.3, r*0.25, 0, Math.PI*2); ctx.fill();
+            var fG2 = ctx.createRadialGradient(x+r*0.28, y+r*0.22-fDrift, 0, x+r*0.28, y+r*0.22-fDrift, r*0.18);
+            fG2.addColorStop(0, 'rgba(225, 200, 215, 0.14)'); fG2.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = fG2; ctx.beginPath(); ctx.arc(x+r*0.28, y+r*0.22-fDrift, r*0.18, 0, Math.PI*2); ctx.fill();
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* ═══ RETROGRADE RING — dashed ring spinning opposite the
+               planet's own orbital direction, the visual shorthand for
+               "contrarian: moves against the prevailing flow". Inverted
+               rim light on the far (anti-sun) limb reinforces the same
+               "backwards" read: normal bodies get bright limb toward the
+               sun, this one flares dim-cold on the dark side instead. ═══ */
+            var ringR = r * 1.28;
+            var spin = -now/6000; /* negative = counter-rotation */
+            var dashN = 18;
+            for (var di=0; di<dashN; di++){
+                if (di % 3 === 2) continue; /* skip every 3rd for a dashed look */
+                var da = spin + (di/dashN)*Math.PI*2;
+                var da2 = spin + ((di+0.62)/dashN)*Math.PI*2;
+                ctx.strokeStyle = 'rgba(255,90,80,0.34)';
+                ctx.lineWidth = Math.max(0.8, r*0.035);
+                ctx.beginPath();
+                ctx.arc(x, y, ringR, da, da2);
+                ctx.stroke();
+            }
+            /* Inverted rim — cold flare on the anti-sun limb, opposite of
+               every other body's sun-facing crescent */
+            var antiAngle = Math.atan2(-ly, -lx);
+            ctx.strokeStyle = 'rgba(160,60,190,0.22)';
+            ctx.lineWidth = Math.max(0.8, r*0.05);
+            ctx.beginPath();
+            ctx.arc(x, y, r*1.02, antiAngle-0.55, antiAngle+0.55);
+            ctx.stroke();
         }
     },
 
@@ -1793,11 +2015,19 @@ var PLANET_VISUALS = {
         baseColor: [195, 175, 55],
         atmosphere: [235, 215, 95],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* Adult-grade pass (2026-07-31): honeycomb strokes were
+               0.06-0.1 alpha, essentially invisible past a few feet — the
+               cell-flicker animation (real, worth keeping) had nothing to
+               animate against. Baked amber mottling underneath gives the
+               shell body weight; the honeycomb itself stays live-drawn
+               (its cells genuinely blink on a timer, which a static bake
+               can't reproduce) but at alphas that actually read. */
+            var tex = _bakeMottleTex('hivemind', _texBucket(r), [175,150,50]);
+            _stampSurfTex(ctx, tex, x, y, r);
             /* Honeycomb hex cells */
             var hs = r * 0.18;
             var hh = hs * Math.sqrt(3) / 2;
-            ctx.strokeStyle = 'rgba(235, 215, 95, 0.1)'; ctx.lineWidth = 0.5;
-            var pulse = Math.sin(now / 2000);
+            ctx.strokeStyle = 'rgba(245, 225, 120, 0.24)'; ctx.lineWidth = Math.max(0.5, r*0.012);
             for (var row = -3; row <= 3; row++) {
                 for (var col = -3; col <= 3; col++) {
                     var hx = x + col * hs * 1.5;
@@ -1811,14 +2041,24 @@ var PLANET_VISUALS = {
                         else ctx.lineTo(hx + Math.cos(ha)*hs*0.45, hy + Math.sin(ha)*hs*0.45);
                     }
                     ctx.stroke();
-                    /* Fill some cells based on position + time */
+                    /* Fill some cells based on position + time — lit cells
+                       now glow amber instead of a near-invisible wash */
                     if (Math.sin(row * 3.7 + col * 2.1 + now / 3000) > 0.3) {
-                        ctx.fillStyle = 'rgba(235, 215, 95, 0.06)'; ctx.fill();
+                        ctx.fillStyle = 'rgba(250, 230, 140, 0.16)'; ctx.fill();
                     }
                 }
             }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Amber hive-glow rim — reads as "warm energy shell" past the
+               disk edge, ties the honeycomb identity together at a glance */
+            var hgR = Math.max(0.1, r*1.12);
+            var hiveG = ctx.createRadialGradient(x, y, r*0.9, x, y, hgR);
+            hiveG.addColorStop(0, 'rgba(0,0,0,0)');
+            hiveG.addColorStop(0.7, 'rgba(240,215,110,0.12)');
+            hiveG.addColorStop(1, 'rgba(240,215,110,0)');
+            ctx.fillStyle = hiveG;
+            ctx.beginPath(); ctx.arc(x, y, hgR, 0, Math.PI*2); ctx.fill();
             /* ═══ SWARM CLUSTER — 7 small rocks orbiting a common center ═══
                Drawn in overlay (outside clip) so they extend beyond the planet circle.
                Slowly rotate as a group. Each rock is a faint golden dot. */
@@ -1853,27 +2093,35 @@ var PLANET_VISUALS = {
         baseColor: [75, 115, 175],
         atmosphere: [115, 155, 215],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* Adult-grade pass (2026-07-31): grid rings were 0.06 alpha
+               and the sweep/blips maxed at 0.2 — this body was reading as
+               a plain blue ball with an occasional dim smear. Baked
+               mottled-metal texture gives it real surface presence; grid
+               and sweep alphas boosted so the "scanning radar globe"
+               identity is legible at a glance, not just up close. */
+            var tex = _bakeMottleTex('trinity', _texBucket(r), [90,130,190]);
+            _stampSurfTex(ctx, tex, x, y, r);
             /* Radar sweep lines across surface */
             var sweep = (now / 2000) % (Math.PI * 2);
-            /* Grid lines — faint */
-            ctx.strokeStyle = 'rgba(96, 165, 250, 0.06)'; ctx.lineWidth = 0.4;
+            /* Grid lines — boosted from 0.06 */
+            ctx.strokeStyle = 'rgba(140, 195, 255, 0.20)'; ctx.lineWidth = Math.max(0.4, r*0.012);
             for (var ri = 1; ri <= 3; ri++) {
                 ctx.beginPath(); ctx.arc(x, y, r * ri * 0.3, 0, Math.PI * 2); ctx.stroke();
             }
             /* Sweep beam */
             var swG = ctx.createRadialGradient(x, y, r*0.1, x, y, r);
-            swG.addColorStop(0, 'rgba(96, 165, 250, 0.1)');
+            swG.addColorStop(0, 'rgba(140, 195, 255, 0.20)');
             swG.addColorStop(1, 'rgba(0,0,0,0)');
             ctx.fillStyle = swG;
             ctx.beginPath(); ctx.moveTo(x, y);
             ctx.arc(x, y, r, sweep - 0.2, sweep + 0.2);
             ctx.closePath(); ctx.fill();
-            /* Blip dots on sweep path */
+            /* Blip dots on sweep path — boosted, larger */
             for (var bi = 0; bi < 3; bi++) {
                 var ba = sweep - bi * 0.6;
                 var br2 = r * (0.3 + bi * 0.2);
-                ctx.fillStyle = 'rgba(96, 165, 250, ' + (0.2 - bi * 0.06) + ')';
-                ctx.beginPath(); ctx.arc(x + Math.cos(ba)*br2, y + Math.sin(ba)*br2, 1.2, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = 'rgba(160, 210, 255, ' + (0.45 - bi * 0.10) + ')';
+                ctx.beginPath(); ctx.arc(x + Math.cos(ba)*br2, y + Math.sin(ba)*br2, Math.max(1.2,r*0.05), 0, Math.PI*2); ctx.fill();
             }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
@@ -1922,22 +2170,67 @@ var PLANET_VISUALS = {
         baseColor: [60, 80, 120],
         atmosphere: [90, 120, 180],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Neural processing glow — pulsing core with data circuit lines */
+            /* Adult-grade pass (2026-07-31): this was the flattest body in
+               the whole file — a 0.15-0.25 alpha core wash and three
+               0.1-alpha circuit strokes, no overlay, nothing past the
+               disk edge. Rebuilt as a circuit-board/neural-lattice
+               identity (Inference is the Ollama compute node — the fleet's
+               literal "thinking" body) using a baked trace-mottle texture
+               plus a denser, brighter live circuit mesh so it reads at a
+               glance instead of disappearing next to its neighbours. */
+            var tex = _bakeMottleTex('inference', _texBucket(r), [70,95,150]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* Neural processing glow — pulsing core, boosted */
             var pulse = 0.5 + 0.5 * Math.sin(now / 800);
-            var coreG = ctx.createRadialGradient(x, y, 0, x, y, r * 0.6);
-            coreG.addColorStop(0, 'rgba(120, 180, 255, ' + (0.15 + 0.1 * pulse).toFixed(3) + ')');
+            var coreG = ctx.createRadialGradient(x, y, 0, x, y, r * 0.62);
+            coreG.addColorStop(0, 'rgba(150, 205, 255, ' + (0.30 + 0.16 * pulse).toFixed(3) + ')');
+            coreG.addColorStop(0.6, 'rgba(100, 155, 230, ' + (0.14 + 0.08*pulse).toFixed(3) + ')');
             coreG.addColorStop(1, 'rgba(60, 100, 180, 0)');
             ctx.fillStyle = coreG;
-            ctx.beginPath(); ctx.arc(x, y, r * 0.6, 0, Math.PI * 2); ctx.fill();
-            /* Circuit traces */
-            ctx.strokeStyle = 'rgba(100, 160, 255, 0.1)';
-            ctx.lineWidth = 0.4;
-            for (var li = 0; li < 3; li++) {
-                var la = li * 2.1 + now / 12000;
+            ctx.beginPath(); ctx.arc(x, y, r * 0.62, 0, Math.PI * 2); ctx.fill();
+            /* Circuit trace mesh — 6 branching traces instead of 3 bare
+               lines, each with a bright junction node at the bend, reading
+               as a real PCB/neural-net motif rather than random scribbles */
+            for (var li = 0; li < 6; li++) {
+                var la = li * 1.047 + now / 14000;
+                var jx = x + Math.cos(la) * r * 0.22, jy = y + Math.sin(la) * r * 0.22;
+                var ex2 = x + Math.cos(la + 0.45) * r * 0.82, ey2 = y + Math.sin(la + 0.28) * r * 0.72;
+                var flick = 0.55 + 0.45*Math.sin(now/900 + li*1.7);
+                ctx.strokeStyle = 'rgba(130, 190, 255, ' + (0.22*flick).toFixed(3) + ')';
+                ctx.lineWidth = Math.max(0.5, r*0.014);
                 ctx.beginPath();
-                ctx.moveTo(x + Math.cos(la) * r * 0.2, y + Math.sin(la) * r * 0.2);
-                ctx.lineTo(x + Math.cos(la + 0.5) * r * 0.7, y + Math.sin(la + 0.3) * r * 0.6);
+                ctx.moveTo(x, y);
+                ctx.lineTo(jx, jy);
+                ctx.lineTo(ex2, ey2);
                 ctx.stroke();
+                /* Junction node */
+                ctx.fillStyle = 'rgba(180, 220, 255, ' + (0.35*flick).toFixed(3) + ')';
+                ctx.beginPath(); ctx.arc(jx, jy, Math.max(0.6, r*0.025), 0, Math.PI*2); ctx.fill();
+            }
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Cool processing-halo — soft blue bloom past the disk, plus
+               3 slow orbiting data-packet motes that mark "compute
+               happening" the same register CC's lattice motes use, at
+               inference's own smaller scale. */
+            var haloR = Math.max(0.1, r*1.16);
+            var haloG = ctx.createRadialGradient(x, y, r*0.9, x, y, haloR);
+            haloG.addColorStop(0, 'rgba(0,0,0,0)');
+            haloG.addColorStop(0.7, 'rgba(130,180,255,0.10)');
+            haloG.addColorStop(1, 'rgba(130,180,255,0)');
+            ctx.fillStyle = haloG;
+            ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI*2); ctx.fill();
+            var moteN = 3;
+            for (var mi=0; mi<moteN; mi++){
+                var ma = (mi/moteN)*Math.PI*2 + now/5000;
+                var mr = r * 1.32;
+                var mx = x + Math.cos(ma)*mr, my = y + Math.sin(ma)*mr*0.7;
+                var mAlpha = 0.4 + 0.3*Math.sin(now/700 + mi*2.1);
+                var moteG = ctx.createRadialGradient(mx, my, 0, mx, my, Math.max(0.1, r*0.14));
+                moteG.addColorStop(0, 'rgba(190,220,255,'+mAlpha.toFixed(3)+')');
+                moteG.addColorStop(1, 'rgba(100,160,255,0)');
+                ctx.fillStyle = moteG;
+                ctx.beginPath(); ctx.arc(mx, my, r*0.14, 0, Math.PI*2); ctx.fill();
             }
         }
     },
@@ -2697,6 +2990,749 @@ CosmicCanvas.prototype.draw = function(ctx, now, regime) {
         ctx.beginPath(); ctx.moveTo(lcX - spkLen, lcY); ctx.lineTo(lcX + spkLen, lcY); ctx.stroke();
         ctx.beginPath(); ctx.moveTo(lcX, lcY - spkLen); ctx.lineTo(lcX, lcY + spkLen); ctx.stroke();
     }
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   DEEP FIELD — living deep-space wilderness around the fleet (2026-07-30)
+   ───────────────────────────────────────────────────────────────────────
+   Jeremy's ask, verbatim: "i just want to be able to zoom out and see more
+   of the vivarium! more space and shit going on in space, shit naturally
+   developes and dies in space. a true vivarium would show that." This is
+   the payoff for the _ORB_ZOOM_MIN=0.38 pure-camera zoom floor shipped
+   earlier the same day (command_center_v4.html ~line 818) — pulling back
+   used to reveal dead black void; this populates that void with a sparse,
+   eerie, procedurally alive backdrop that is NEVER mistakable for fleet
+   data (no click targets, no tooltips, no data binding of any kind).
+
+   ARCHITECTURE
+   World-space, not screen-space — unlike CosmicCanvas above (which is a
+   static backdrop sized to canvas w/h once and never moves relative to
+   the camera beyond the shared setTransform), every DeepField object has
+   a world (x,y) placed in an ANNULUS around the fleet's live bounding
+   circle (1.1x-3x its radius) and is drawn under the exact same
+   ctx.setTransform(zoom,pan) the fleet itself uses (see _orbRender,
+   command_center_v4.html ~line 2892) — so it is mostly hidden behind/
+   beyond the fleet at zoom=1 and progressively revealed as the camera
+   pulls back, with zero special-casing.
+
+   DETERMINISM — THE ACTUAL "VIVARIUM" PART
+   Every object's appearance is a pure function of (seed, slotIndex,
+   cycleIndex, elapsedMs) — never a per-frame Math.random() call, which
+   would desync from the persisted state on every reload. A tiny
+   mulberry32 PRNG (deterministic, seeded) draws each slot's per-cycle
+   traits (position, hue pick, size, exact durations) once per cycle from
+   a hash of (seed, slotIndex, cycleIndex), and the lifecycle phase within
+   a cycle is computed analytically from elapsed time — so "fast-forward
+   from stored epoch to now" is just evaluating the same pure functions at
+   a larger elapsedMs, not replaying frames. A returning viewer who was
+   away 6 hours sees nebulae mid-way through cycles they never watched
+   start, supernovae that fired and finished off-session, nurseries born
+   from those deaths already brightening. See DeepField.prototype.sync().
+
+   PALETTE — deliberately disjoint from every fleet/UI color
+   Fleet faction lines (_FACTION_LINK_RGB, command_center_v4.html ~1191):
+     gold 201,162,39 (Veinrunners) / cyan-teal 34,211,211 (Tidewrights) /
+     silver-violet 179,157,219 (The Accord) / white 225,225,225 (Warden).
+   Alert/status greens+reds used fleet-wide for regime/PnL are likewise
+   avoided. Deep field uses: dust rust/ember (12,60,80 hue band, low sat,
+   dark), ice blue (200-210 hue, cold/desaturated), faint violet-grey
+   (255-265 hue, NOT the 179,157,219 Accord silver-violet — pushed bluer
+   and darker), and bone-white remnants (0 sat, warm-grey not pure white).
+   Full hex/hsla accounting is in the command_center_v4.html DeepField
+   integration comment and the session report.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* --- Deterministic PRNG: mulberry32, seeded by a single uint32 --- */
+function _dfHash(seed, a, b, c) {
+    /* Fold (seed, a, b, c) into one uint32 via a cheap avalanche mix —
+       NOT cryptographic, just needs to decorrelate nearby integer inputs
+       so adjacent slot/cycle indices don't produce visually similar draws. */
+    var h = (seed | 0) ^ 0x9e3779b9;
+    h = Math.imul(h ^ (a | 0), 0x85ebca6b);
+    h = Math.imul(h ^ (b | 0), 0xc2b2ae35);
+    h = Math.imul(h ^ (c | 0), 0x27d4eb2f);
+    h ^= h >>> 15;
+    return h >>> 0;
+}
+/* mulberry32 PRNG advanced from a hashed seed — returns a function that
+   yields deterministic floats in [0,1) on each call, fully reproducible
+   given the same (seed,a,b,c) tuple. */
+function _dfRng(seed, a, b, c) {
+    var s = _dfHash(seed, a, b, c) || 1;
+    return function () {
+        s |= 0; s = (s + 0x6D2B79F5) | 0;
+        var t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+/* --- DeepField object counts / perf budget ---
+   Hard cap ~20-30 concurrent live objects total (nebulae + supernova/
+   remnant/nursery slots + comets), per the brief. Kept as named slot
+   counts (not one pooled array) because each class has a distinct
+   lifecycle function — simpler to reason about and just as cheap. */
+var _DF_NEBULA_SLOTS = 7;      /* independent nebula lifecycle slots */
+/* Supernova slot count — MUST stay 1. Each slot independently fires an
+   event every 8-15min (randomized per-instance, see _supernovaAt), so N
+   slots means an N-times-too-frequent combined rate — verified against
+   the brief's "about one per 8-15 min" via a standalone harness: 3 slots
+   measured 14 events/hour combined (one every ~4.3min), 3x over-spec.
+   1 slot alone measures 4-5 events/hour (one every ~12-15min avg),
+   matching the ask. A slot's own long nursery/remnant tail (see
+   _supernovaAt's totalLife ~13min) already keeps something visible at
+   the death site between flashes, so a single slot does not read as
+   "nothing ever happens" — it reads as the intended RARE, eerie event. */
+var _DF_SN_SLOTS = 1;
+var _DF_COMET_SLOTS = 4;       /* wandering outer-field comets/debris */
+/* Total worst case: 7 + 3*1 + 4 = 14 live draws/frame — comfortably under the 20-30 cap. */
+
+/* --- Palette pools (see block comment above for the "why disjoint" case) --- */
+var _DF_NEBULA_HUES = [8, 14, 200, 208, 258, 264];   /* dust-rust / ember, ice-blue, faint violet-grey */
+var _DF_SN_REMNANT_HUE = 206;  /* cold ice-blue shock ring */
+var _DF_SN_FLASH_HUE = 40;     /* brief warm-white flash, desaturated fast — not fleet gold (201,162,39 is far more saturated/yellow) */
+
+function DeepField(seed) {
+    this.seed = seed >>> 0;
+    this.center = { x: 0, y: 0 };   /* fleet bounding-circle center, world space */
+    this.innerR = 300;              /* annulus inner radius, recomputed from live fleet bbox */
+    this.outerR = 900;              /* annulus outer radius */
+    this.epoch = Date.now();        /* wall-clock ms this field's timeline is anchored to */
+    /* Debug/verification hook state — see _deepFieldForceSupernova() */
+    this._forcedSN = null;
+}
+
+/* Recompute the annulus from the live fleet's worst-case reach. Called
+   every frame from _orbRender's L0b block (cheap — one ~18-node pass), so
+   the annulus always matches the CURRENT fixed world layout with no extra
+   coupling to resize/fullscreen-toggle call sites.
+
+   `maxVisibleR` is the world-space radius from center that is EVER
+   reachable by pulling the camera back to _ORB_ZOOM_MIN (half the
+   canvas's smaller screen dimension, divided by the zoom floor) — passed
+   in by the caller since only command_center_v4.html knows _ORB_ZOOM_MIN
+   and the live canvas size. Without this clamp, the first version of this
+   function sized outerR at a flat 3x fleet-reach multiplier, which (at
+   this fleet's actual footprint) worked out to ~3050 world units — but
+   pulling all the way back to the 0.38 zoom floor only ever reveals
+   ~1800 world units of radius on this display, so ~40% of the annulus
+   was permanently unreachable dead weight. Clamping outerR to
+   maxVisibleR (with a small margin so the very edge isn't a hard cutoff)
+   means every object placed is eventually visible, i.e. actually part of
+   the "vivarium you discover by zooming out" instead of wasted allocation. */
+DeepField.prototype.fitToFleet = function (orbNodes, maxVisibleR) {
+    var cx = 0, cy = 0;
+    var xs = [], ys = [];
+    for (var id in orbNodes) {
+        var n = orbNodes[id];
+        if (!n || !n.alive) continue;
+        xs.push(n.x); ys.push(n.y);
+    }
+    if (xs.length) {
+        cx = xs.reduce(function (a, b) { return a + b; }, 0) / xs.length;
+        cy = ys.reduce(function (a, b) { return a + b; }, 0) / ys.length;
+    }
+    /* Distance from that centroid to the furthest body's OWN edge — the
+       fleet's true worst-case occupied radius. Uses live x/y (not
+       orbitRadius) because the centroid itself is also live-x/y-derived;
+       mixing a live centroid with phase-invariant orbitRadius reach would
+       overstate the footprint by double-counting the star triangle's own
+       spread. This is a snapshot of "how big does the fleet look THIS
+       frame", which is exactly what "1.1x its radius" should mean. */
+    var reach = 0;
+    for (var id2 in orbNodes) {
+        var n2 = orbNodes[id2];
+        if (!n2 || !n2.alive) continue;
+        var dx = n2.x - cx, dy = n2.y - cy;
+        var d = Math.sqrt(dx * dx + dy * dy) + (n2.currentSize || n2.size || 10);
+        reach = Math.max(reach, d);
+    }
+    if (reach < 50) reach = 400; /* fallback before first real layout pass */
+    this.center.x = cx; this.center.y = cy;
+    this.innerR = reach * 1.1;
+    var wantOuter = reach * 3.0;
+    var cap = (maxVisibleR && maxVisibleR > this.innerR * 1.3) ? maxVisibleR * 0.94 : wantOuter;
+    this.outerR = Math.min(wantOuter, Math.max(cap, this.innerR * 1.3));
+};
+
+/* --- Deterministic nebula lifecycle ---
+   One "slot" cycles forever: bloom -> hold -> disperse -> gap -> (repeat
+   with fresh per-cycle traits drawn from a new hash). Every quantity here
+   is a pure function of (seed, slot, cycleIndex, tInCycle) so evaluating
+   it at elapsedMs=6*3600*1000 costs the same as elapsedMs=1000 — no
+   frame replay needed for the fast-forward-on-load requirement. */
+DeepField.prototype._nebulaAt = function (slot, elapsedMs) {
+    var bloomMs = 120000, disperseMs = 150000; /* ~2min bloom, 2.5min disperse (within the 2-5min ask) */
+    var holdMs = 90000 + (slot % 3) * 40000;    /* stagger so slots don't sync */
+    var gapMs = 70000 + (slot % 4) * 55000;
+    var period = bloomMs + holdMs + disperseMs + gapMs;
+    var cycleIndex = Math.floor(elapsedMs / period);
+    var tInCycle = elapsedMs - cycleIndex * period;
+    var rng = _dfRng(this.seed, 101 + slot, cycleIndex, 0);
+    var ang = rng() * Math.PI * 2;
+    var distT = rng(); /* 0..1 across the annulus */
+    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var hue = _DF_NEBULA_HUES[Math.floor(rng() * _DF_NEBULA_HUES.length)];
+    var maxR = 140 + rng() * 220;
+    var maxAlpha = 0.09 + rng() * 0.07; /* sparse/eerie, but must actually read against pure black — first pass (0.05-0.10 with a steep falloff gradient) washed out to near-invisible in verification */
+    var scX = 0.55 + rng() * 0.7, scY = 0.55 + rng() * 0.7;
+    var rot = rng() * Math.PI;
+
+    var phase, t01, r, alpha;
+    if (tInCycle < bloomMs) { phase = 'bloom'; t01 = tInCycle / bloomMs; r = maxR * t01; alpha = maxAlpha * t01; }
+    else if (tInCycle < bloomMs + holdMs) { phase = 'hold'; t01 = (tInCycle - bloomMs) / holdMs; r = maxR; alpha = maxAlpha * (0.92 + 0.08 * Math.sin(t01 * Math.PI * 4)); }
+    else if (tInCycle < bloomMs + holdMs + disperseMs) { phase = 'disperse'; t01 = (tInCycle - bloomMs - holdMs) / disperseMs; r = maxR * (1 + t01 * 0.6); alpha = maxAlpha * (1 - t01); }
+    else { phase = 'gap'; t01 = 0; r = 0; alpha = 0; }
+
+    return {
+        alive: alpha > 0.002, phase: phase,
+        x: this.center.x + Math.cos(ang) * dist,
+        y: this.center.y + Math.sin(ang) * dist,
+        r: r, alpha: alpha, hue: hue, scX: scX, scY: scY, rot: rot,
+        cycleIndex: cycleIndex, slot: slot
+    };
+};
+
+/* --- Deterministic supernova/remnant/nursery lifecycle ---
+   A single slot's timeline, walked as a hash-chain of inter-arrival
+   gaps (a discrete-time Poisson-ish process) rather than one fixed
+   period, so events land "about one per 8-15min, randomized per-
+   instance" as asked, not on a metronome. Walking the chain from t=0 to
+   elapsedMs costs O(events-so-far) hash calls — at most a few hundred
+   even after days of real time, trivially cheap once per object per
+   frame is too much so callers should call this at most once/sec (see
+   _orbDeepFieldTick in command_center_v4.html) and cache the result. */
+DeepField.prototype._supernovaAt = function (slot, elapsedMs) {
+    var flashMs = 900;             /* brilliant brief flash */
+    var remnantMs = 75000;         /* expanding ring, 60-90s ask -> 75s mid-point */
+    var nurseryRiseMs = 240000;    /* nursery brightens over minutes following */
+    var nurseryHoldMs = 260000;    /* then sits dim-but-visible for a while */
+    var nurseryFadeMs = 140000;    /* then fades — slot frees for the next event */
+
+    var t = 0, idx = 0, rng, gapMs;
+    /* Walk forward through inter-arrival gaps until we pass elapsedMs.
+       Each gap is drawn 8-15min (randomized) from a slot+idx-keyed rng. */
+    while (true) {
+        rng = _dfRng(this.seed, 401 + slot, idx, 0);
+        gapMs = (8 + rng() * 7) * 60000;
+        if (t + gapMs > elapsedMs) break;
+        t += gapMs;
+        idx++;
+    }
+    /* `t` = start time of the CURRENT (most recent) event in this slot's
+       chain; elapsedMs - t = how far into that event's lifecycle we are.
+       Before the first event ever fires (idx===0 and elapsedMs<t+gapMs
+       but t===0), treat as dormant. */
+    var sinceStart = elapsedMs - t;
+    var eventRng = _dfRng(this.seed, 501 + slot, idx, 0);
+    var ang = eventRng() * Math.PI * 2;
+    var distT = eventRng();
+    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var x = this.center.x + Math.cos(ang) * dist;
+    var y = this.center.y + Math.sin(ang) * dist;
+
+    var totalLife = flashMs + remnantMs + nurseryRiseMs + nurseryHoldMs + nurseryFadeMs;
+    if (idx === 0 && sinceStart < 0) {
+        /* Never fired yet in this timeline (very early elapsedMs) */
+        return { phase: 'dormant', x: x, y: y, slot: slot, idx: idx };
+    }
+    if (sinceStart > totalLife) {
+        /* Fully faded — dormant until the NEXT event in the chain, which
+           by construction is still `gapMs` away (we stopped the walk
+           right before it). Return dormant at the upcoming event's site
+           so nothing is drawn. */
+        return { phase: 'dormant', x: x, y: y, slot: slot, idx: idx };
+    }
+    if (sinceStart < flashMs) {
+        var ft = sinceStart / flashMs;
+        return { phase: 'flash', x: x, y: y, t01: ft, alpha: 1 - ft * 0.3, r: 3 + ft * 14, slot: slot, idx: idx };
+    }
+    if (sinceStart < flashMs + remnantMs) {
+        var rt = (sinceStart - flashMs) / remnantMs;
+        return { phase: 'remnant', x: x, y: y, t01: rt, r: 10 + rt * 130, alpha: (1 - rt) * 0.5, slot: slot, idx: idx };
+    }
+    var nurT = sinceStart - flashMs - remnantMs;
+    if (nurT < nurseryRiseMs) {
+        var nt = nurT / nurseryRiseMs;
+        return { phase: 'nursery', x: x, y: y, t01: nt, alpha: 0.03 + nt * 0.08, r: 25 + nt * 40, slot: slot, idx: idx };
+    }
+    if (nurT < nurseryRiseMs + nurseryHoldMs) {
+        var ht = (nurT - nurseryRiseMs) / nurseryHoldMs;
+        return { phase: 'nursery', x: x, y: y, t01: ht, alpha: 0.11 + Math.sin(ht * Math.PI * 6) * 0.015, r: 65, slot: slot, idx: idx };
+    }
+    var fadeT = (nurT - nurseryRiseMs - nurseryHoldMs) / nurseryFadeMs;
+    return { phase: 'nursery', x: x, y: y, t01: fadeT, alpha: Math.max(0, 0.11 * (1 - fadeT)), r: 65, slot: slot, idx: idx };
+};
+
+/* --- Wandering outer-field comets/debris ---
+   Parallel to _orbComets (command_center_v4.html) but ambient, not
+   trade-triggered: deterministic phase from elapsed time, drifting on a
+   long slow arc through the annulus. Extends the existing comet visual
+   language (bright head + fading tail) outward rather than inventing a
+   new look. */
+DeepField.prototype._cometAt = function (slot, elapsedMs) {
+    var rng = _dfRng(this.seed, 701 + slot, 0, 0);
+    var period = (140 + rng() * 220) * 1000; /* 140-360s full crossing */
+    var phase0 = rng();
+    var ang = rng() * Math.PI * 2;           /* chord direction across the annulus */
+    var offsetDist = (this.innerR + rng() * (this.outerR - this.innerR));
+    var perpOff = (rng() - 0.5) * this.outerR * 1.4;
+    var t = ((elapsedMs / period) + phase0) % 1;
+    if (t < 0) t += 1;
+    /* Straight chord through the field, perpendicular offset varies by comet */
+    var dirX = Math.cos(ang), dirY = Math.sin(ang);
+    var perpX = -dirY, perpY = dirX;
+    var travel = (t - 0.5) * this.outerR * 2.4;
+    var x = this.center.x + dirX * travel + perpX * perpOff;
+    var y = this.center.y + dirY * travel + perpY * perpOff;
+    var d = Math.sqrt((x - this.center.x) * (x - this.center.x) + (y - this.center.y) * (y - this.center.y));
+    var visible = d > this.innerR * 0.85 && d < this.outerR * 1.05;
+    return { visible: visible, x: x, y: y, dirX: dirX, dirY: dirY, slot: slot };
+};
+
+/* --- Draw pass: reads current lifecycle state for every slot and paints
+   it. World-space coordinates — caller has already applied the zoom/pan
+   setTransform, so nothing here needs to know about the camera. --- */
+DeepField.prototype.draw = function (ctx, now, zoomBoost) {
+    var elapsedMs = now - this.epoch;
+    var i;
+    /* ROUND 2 (2026-07-30, target 3b): DeepField draws entirely in
+       world-space under the same camera transform as everything else, so
+       as the camera pulls back toward the zoom floor these objects shrink
+       in SCREEN size exactly like every other body — on top of already-low
+       base alphas (0.09-0.16 range, tuned to read against pure black at
+       zoom~1), the combined shrink+dim made the deep field "nearly vanish"
+       at far zoom instead of filling more of the revealed frame the way a
+       real pulled-back sky would. zoomBoost is a >=1 multiplier (1 at
+       zoom=1, growing toward the floor — see call site in
+       command_center_v4.html for the exact ramp tied to _ORB_ZOOM_MIN)
+       applied to every alpha value below, layered on top of (not
+       replacing) the existing global screen-blend exposure lift — that
+       pass brightens the WHOLE frame uniformly, this makes the deep-field
+       objects specifically punch back up as their screen footprint
+       shrinks. Radius gets a smaller, secondary boost (objects should
+       still feel like they're receding, just not disappearing). */
+    var zb = zoomBoost || 1;
+    var zbR = 1 + (zb - 1) * 0.35; /* radius grows slower than alpha — recede, don't balloon */
+
+    /* Nebulae — soft radial-gradient clouds, sparse and eerie */
+    for (i = 0; i < _DF_NEBULA_SLOTS; i++) {
+        var neb = this._nebulaAt(i, elapsedMs);
+        if (!neb.alive) continue;
+        var rr = Math.max(0.1, Math.abs(neb.r) * zbR);
+        var nA = Math.min(1, neb.alpha * zb);
+        ctx.save();
+        ctx.translate(neb.x, neb.y);
+        ctx.rotate(neb.rot);
+        ctx.scale(neb.scX, neb.scY);
+        var g = ctx.createRadialGradient(0, 0, 0, 0, 0, rr);
+        g.addColorStop(0, 'hsla(' + neb.hue + ',30%,14%,' + nA + ')');
+        g.addColorStop(0.4, 'hsla(' + neb.hue + ',26%,10%,' + (nA * 0.55) + ')');
+        g.addColorStop(0.75, 'hsla(' + neb.hue + ',22%,7%,' + (nA * 0.18) + ')');
+        g.addColorStop(1, 'hsla(0,0%,0%,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, rr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    /* Supernova / remnant / nursery slots */
+    for (i = 0; i < _DF_SN_SLOTS; i++) {
+        var sn = this._forcedSN && this._forcedSN.slot === i
+            ? this._forcedSN.stateAt(elapsedMs)
+            : this._supernovaAt(i, elapsedMs);
+        if (sn.phase === 'dormant') continue;
+        var snA = Math.min(1, sn.alpha * zb);
+        if (sn.phase === 'flash') {
+            var fr = Math.max(0.1, Math.abs(sn.r) * zbR);
+            var fg = ctx.createRadialGradient(sn.x, sn.y, 0, sn.x, sn.y, fr * 6);
+            fg.addColorStop(0, 'hsla(' + _DF_SN_FLASH_HUE + ',20%,92%,' + snA + ')');
+            fg.addColorStop(0.15, 'hsla(' + _DF_SN_FLASH_HUE + ',30%,70%,' + (snA * 0.6) + ')');
+            fg.addColorStop(0.5, 'hsla(' + _DF_SN_REMNANT_HUE + ',35%,45%,' + (snA * 0.18) + ')');
+            fg.addColorStop(1, 'hsla(0,0%,0%,0)');
+            ctx.fillStyle = fg;
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, fr * 6, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,250,240,' + snA + ')';
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, fr, 0, Math.PI * 2); ctx.fill();
+        } else if (sn.phase === 'remnant') {
+            var rr2 = Math.max(0.1, Math.abs(sn.r) * zbR);
+            ctx.strokeStyle = 'hsla(' + _DF_SN_REMNANT_HUE + ',40%,60%,' + snA + ')';
+            ctx.lineWidth = Math.max(0.5, 2.4 * (1 - sn.t01));
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, rr2, 0, Math.PI * 2); ctx.stroke();
+            var rg = ctx.createRadialGradient(sn.x, sn.y, Math.max(0.1, rr2 * 0.6), sn.x, sn.y, rr2 * 1.15);
+            rg.addColorStop(0, 'hsla(' + _DF_SN_REMNANT_HUE + ',35%,40%,0)');
+            rg.addColorStop(0.7, 'hsla(' + _DF_SN_REMNANT_HUE + ',35%,40%,' + (snA * 0.35) + ')');
+            rg.addColorStop(1, 'hsla(0,0%,0%,0)');
+            ctx.fillStyle = rg;
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, rr2 * 1.15, 0, Math.PI * 2); ctx.fill();
+        } else if (sn.phase === 'nursery') {
+            var nr = Math.max(0.1, Math.abs(sn.r) * zbR);
+            var ng = ctx.createRadialGradient(sn.x, sn.y, 0, sn.x, sn.y, nr);
+            /* Bone-white/faint-violet nursery glow — distinct from the remnant's ice-blue ring */
+            ng.addColorStop(0, 'hsla(262,22%,60%,' + snA + ')');
+            ng.addColorStop(0.5, 'hsla(206,25%,45%,' + (snA * 0.5) + ')');
+            ng.addColorStop(1, 'hsla(0,0%,0%,0)');
+            ctx.fillStyle = ng;
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, nr, 0, Math.PI * 2); ctx.fill();
+            /* A few dim proto-star points seeded from the same site */
+            var nrng = _dfRng(this.seed, 601 + i, sn.idx, 0);
+            for (var pj = 0; pj < 5; pj++) {
+                var pa = nrng() * Math.PI * 2, pd = nrng() * nr * 0.7;
+                var px = sn.x + Math.cos(pa) * pd, py = sn.y + Math.sin(pa) * pd;
+                ctx.fillStyle = 'hsla(240,15%,80%,' + Math.min(1, snA * 1.3) + ')';
+                ctx.beginPath(); ctx.arc(px, py, 0.8, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+    }
+
+    /* Wandering comets/debris */
+    for (i = 0; i < _DF_COMET_SLOTS; i++) {
+        var cm = this._cometAt(i, elapsedMs);
+        if (!cm.visible) continue;
+        var tailLen = 26 * zbR;
+        var tx = cm.x - cm.dirX * tailLen, ty = cm.y - cm.dirY * tailLen;
+        var cg = ctx.createLinearGradient(cm.x, cm.y, tx, ty);
+        cg.addColorStop(0, 'rgba(200,210,225,' + Math.min(1, 0.22 * zb) + ')');
+        cg.addColorStop(1, 'rgba(200,210,225,0)');
+        ctx.strokeStyle = cg;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(cm.x, cm.y); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.fillStyle = 'rgba(215,222,235,' + Math.min(1, 0.35 * zb) + ')';
+        ctx.beginPath(); ctx.arc(cm.x, cm.y, 1.1 * zbR, 0, Math.PI * 2); ctx.fill();
+    }
+};
+
+/* --- Persistence: localStorage['cosmos_deepfield_v1'] = {seed, epoch} ---
+   `epoch` is the wall-clock ms the timeline is anchored to; every
+   lifecycle function above takes elapsedMs = now-epoch, so simply NOT
+   resetting epoch on reload is what makes the sky "age forward" — the
+   viewer returns to find every slot's phase already advanced to wherever
+   (now-epoch) lands it, with zero replay cost. */
+var _DF_LS_KEY = 'cosmos_deepfield_v1';
+DeepField.load = function () {
+    var seed, epoch;
+    try {
+        var raw = localStorage.getItem(_DF_LS_KEY);
+        if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && typeof parsed.seed === 'number' && typeof parsed.epoch === 'number') {
+                seed = parsed.seed; epoch = parsed.epoch;
+            }
+        }
+    } catch (e) { /* localStorage unavailable/corrupt — fall through to fresh seed */ }
+    if (seed == null) {
+        seed = (Math.random() * 4294967296) >>> 0;
+        epoch = Date.now();
+        DeepField._save(seed, epoch);
+    }
+    var df = new DeepField(seed);
+    df.epoch = epoch;
+    return df;
+};
+DeepField._save = function (seed, epoch) {
+    try {
+        localStorage.setItem(_DF_LS_KEY, JSON.stringify({ seed: seed, epoch: epoch }));
+    } catch (e) { /* storage full/disabled — field still runs, just won't persist across reloads */ }
+};
+DeepField.prototype.persist = function () {
+    DeepField._save(this.seed, this.epoch);
+};
+
+/* --- Debug/verification hooks (see window._deepFieldDebug below in
+   command_center_v4.html for the externally-reachable wrapper — this
+   file's top-level functions are NOT window.X unless explicitly assigned,
+   same IIFE-scoping trap documented in project_composition_fix_2026_07_30.md
+   for the main script; solar_system.js is a plain non-module script tag
+   though, so its top-level `function`/`var` ARE already on window here —
+   confirmed no extra window.X= needed for DeepField itself.) --- */
+DeepField.prototype.forceSupernova = function (slot) {
+    var s = (slot == null ? 0 : slot) % _DF_SN_SLOTS;
+    var nowMs = Date.now();
+    var self = this;
+    var elapsedAtTrigger = nowMs - this.epoch;
+    var rng = _dfRng(this.seed, 501 + s, 999999, 0);
+    var ang = rng() * Math.PI * 2, distT = rng();
+    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var fx = this.center.x + Math.cos(ang) * dist, fy = this.center.y + Math.sin(ang) * dist;
+    var startElapsed = elapsedAtTrigger;
+    this._forcedSN = {
+        slot: s,
+        stateAt: function (elapsedMs) {
+            var sinceStart = elapsedMs - startElapsed;
+            var flashMs = 900, remnantMs = 75000, nurseryRiseMs = 240000, nurseryHoldMs = 260000, nurseryFadeMs = 140000;
+            if (sinceStart < 0) return { phase: 'dormant', x: fx, y: fy };
+            if (sinceStart < flashMs) { var ft = sinceStart / flashMs; return { phase: 'flash', x: fx, y: fy, t01: ft, alpha: 1 - ft * 0.3, r: 3 + ft * 14 }; }
+            if (sinceStart < flashMs + remnantMs) { var rt = (sinceStart - flashMs) / remnantMs; return { phase: 'remnant', x: fx, y: fy, t01: rt, r: 10 + rt * 130, alpha: (1 - rt) * 0.5 }; }
+            var nurT = sinceStart - flashMs - remnantMs;
+            if (nurT < nurseryRiseMs) { var nt = nurT / nurseryRiseMs; return { phase: 'nursery', x: fx, y: fy, t01: nt, alpha: 0.03 + nt * 0.08, r: 25 + nt * 40, idx: 999999 }; }
+            if (nurT < nurseryRiseMs + nurseryHoldMs) { var ht = (nurT - nurseryRiseMs) / nurseryHoldMs; return { phase: 'nursery', x: fx, y: fy, t01: ht, alpha: 0.11, r: 65, idx: 999999 }; }
+            var fadeT = (nurT - nurseryRiseMs - nurseryHoldMs) / nurseryFadeMs;
+            if (fadeT > 1) { self._forcedSN = null; return { phase: 'dormant', x: fx, y: fy }; }
+            return { phase: 'nursery', x: fx, y: fy, t01: fadeT, alpha: Math.max(0, 0.11 * (1 - fadeT)), r: 65, idx: 999999 };
+        }
+    };
+    return { x: fx, y: fy, slot: s };
+};
+
+/* ═══════════════════════════════════════════════════════════════════════
+   VOID FIELD — outer-void richness pass (2026-07-30)
+   ───────────────────────────────────────────────────────────────────────
+   Jeremy's directive, verbatim: "upscale the shit out of the vast empty
+   space." At most zooms the majority of a 50" frame is the region OUTSIDE
+   the ecliptic disc/fleet — that region reads as near-black dead margin.
+   This class bakes a single large offscreen sprite covering that outer
+   void with: a distant-galaxy field (extends CosmicCanvas's existing
+   galaxy vocabulary — spiral/elliptical/irregular, warm-core/cool-arm
+   palette — rather than inventing a parallel system), corner-anchored
+   nebula filament complexes, a textured star density field (clumps, gaps,
+   two faint stream arcs instead of uniform scatter), and a radial depth
+   gradient that's richer near the disc rim and fades to extreme-corner
+   black.
+
+   ARCHITECTURE — baked once (see bake() below), never per-frame. World-
+   space: drawn via ctx.drawImage while the caller's zoom/pan setTransform
+   is already active (same contract as DeepField/CosmicCanvas at their L0/
+   L0b call sites in command_center_v4.html), so it inherits full pan/zoom
+   parallax for free — no manual scale wrapper needed, unlike CosmicCanvas
+   which is screen-seeded and needs one. Rebakes only on a real canvas-size
+   change (mirrors _discNeedsRebake's threshold pattern), gated by the
+   caller from command_center_v4.html's L0a. Deterministic (mulberry32,
+   fixed seed) so the field doesn't reshuffle/pop on rebake. */
+function _voidMulberry32(seed){
+    return function(){
+        seed|=0;seed=seed+0x6D2B79F5|0;
+        var t=Math.imul(seed^seed>>>15,1|seed);
+        t=t+Math.imul(t^t>>>7,61|t)^t;
+        return((t^t>>>14)>>>0)/4294967296;
+    };
+}
+
+/* Distinct fixed seed from the ecliptic disc's 0xC05105 so the two baked
+   fields never accidentally correlate in placement. */
+var _VOID_SEED = 0xC0517E;
+
+function VoidField(){
+    this.canvas=null;
+    this.ctx=null;
+    this.bakeW=0;
+    this.bakeH=0;
+}
+
+/* Distant galaxy palette pool — extends CosmicCanvas's existing hue
+   language (warm cores fading to cool/desaturated arms) rather than a new
+   one. Includes two "showpiece" large galaxies per the brief (20-40px)
+   among many small background ones (4-14px). */
+VoidField.prototype._bakeGalaxy = function(ctx,rng,cx,cy,size,showpiece){
+    var kind=['spiral','elliptical','edge-on'][Math.floor(rng()*3)];
+    var coreHue=20+rng()*40;      /* warm amber/gold core, all types */
+    var armHue=190+rng()*90;      /* cool blue/teal/violet arms or halo */
+    var bright=showpiece?(0.14+rng()*0.07):(0.05+rng()*0.05);
+    var angle=rng()*Math.PI*2;
+    var ecc=kind==='edge-on'?(0.12+rng()*0.10):(0.35+rng()*0.45);
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(angle);
+    /* Core bulge */
+    var coreR=Math.max(0.1,size*0.32);
+    var coreG=ctx.createRadialGradient(0,0,0,0,0,coreR);
+    coreG.addColorStop(0,'hsla('+coreHue+',55%,72%,'+(bright*2.2).toFixed(4)+')');
+    coreG.addColorStop(0.5,'hsla('+coreHue+',45%,55%,'+(bright*1.1).toFixed(4)+')');
+    coreG.addColorStop(1,'hsla(0,0%,0%,0)');
+    ctx.fillStyle=coreG;
+    ctx.beginPath();ctx.ellipse(0,0,coreR,Math.max(0.1,coreR*ecc),0,0,Math.PI*2);ctx.fill();
+    /* Outer disk/halo — cool hue */
+    var haloR=Math.max(0.1,size);
+    var haloG=ctx.createRadialGradient(0,0,Math.max(0.1,size*0.18),0,0,haloR);
+    haloG.addColorStop(0,'hsla('+armHue+',40%,55%,'+(bright*0.7).toFixed(4)+')');
+    haloG.addColorStop(0.55,'hsla('+armHue+',35%,40%,'+(bright*0.28).toFixed(4)+')');
+    haloG.addColorStop(1,'hsla(0,0%,0%,0)');
+    ctx.fillStyle=haloG;
+    ctx.beginPath();ctx.ellipse(0,0,haloR,Math.max(0.1,haloR*ecc),0,0,Math.PI*2);ctx.fill();
+    /* Spiral arms — only showpieces and larger galaxies get visible structure,
+       small background ones stay soft smudges (matches CosmicCanvas's own
+       'small ones are just dots' restraint). */
+    if(kind==='spiral'&&size>9){
+        var armCount=showpiece?2:1;
+        for(var a=0;a<armCount;a++){
+            var armOff=a*Math.PI+rng()*0.4;
+            ctx.strokeStyle='hsla('+armHue+',40%,60%,'+(bright*0.5).toFixed(4)+')';
+            ctx.lineWidth=showpiece?0.7:0.4;
+            ctx.beginPath();
+            for(var t=0;t<Math.PI*3;t+=0.15){
+                var sr=Math.max(0.1,t*size*0.09);
+                var ta=t+armOff;
+                var tx=Math.cos(ta)*sr,ty=Math.sin(ta)*sr*ecc;
+                if(t===0) ctx.moveTo(tx,ty); else ctx.lineTo(tx,ty);
+            }
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+};
+
+/* Corner nebula filament — large, soft, cool-desaturated, offset well past
+   the frame edge so it always reads as bleeding in from outside rather
+   than a centered blob. rot/scale give it an elongated filament shape
+   instead of a perfect circle. */
+VoidField.prototype._bakeFilament = function(ctx,rng,cx,cy,r,hue){
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(rng()*Math.PI);
+    var scX=0.4+rng()*0.5, scY=1.1+rng()*0.9;
+    ctx.scale(scX,scY);
+    var sat=22+rng()*18; /* desaturated per brief — cool/faint, not vivid */
+    var alpha=0.05+rng()*0.05;
+    var rr=Math.max(0.1,r);
+    var g=ctx.createRadialGradient(0,0,0,0,0,rr);
+    g.addColorStop(0,'hsla('+hue+','+sat+'%,20%,'+alpha.toFixed(4)+')');
+    g.addColorStop(0.4,'hsla('+hue+','+sat+'%,16%,'+(alpha*0.55).toFixed(4)+')');
+    g.addColorStop(0.75,'hsla('+hue+','+sat+'%,11%,'+(alpha*0.18).toFixed(4)+')');
+    g.addColorStop(1,'hsla(0,0%,0%,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath();ctx.arc(0,0,rr,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+};
+
+/* Bakes the full void sprite at canvas size (w,h). Called only when a
+   rebake is needed (see command_center_v4.html's L0a gate) — never per-
+   frame. All randomness comes from the seeded rng so repeated bakes at the
+   same size are pixel-identical (no popping/reshuffling on resize-driven
+   rebakes). */
+VoidField.prototype.bake = function(w,h){
+    if(!this.canvas){this.canvas=document.createElement("canvas");}
+    this.canvas.width=Math.max(2,Math.round(w));
+    this.canvas.height=Math.max(2,Math.round(h));
+    this.ctx=this.canvas.getContext("2d");
+    var ctx=this.ctx;
+    this.bakeW=w;this.bakeH=h;
+    var rng=_voidMulberry32(_VOID_SEED);
+    var cx=w/2,cy=h/2;
+    var maxD=Math.sqrt(cx*cx+cy*cy);
+
+    /* 1: DEPTH GRADIENT — richer near the frame's mid-radius (roughly the
+       ecliptic disc's rim once the camera pulls back), fading to near-black
+       at the extreme corners. Drawn first so everything above sits on top
+       of it; kept very subtle (max ~0.05 alpha) so it reads as atmosphere,
+       not a visible vignette shape. */
+    var depthG=ctx.createRadialGradient(cx,cy,maxD*0.28,cx,cy,Math.max(0.1,maxD*1.05));
+    depthG.addColorStop(0,'rgba(18,22,34,0)');
+    depthG.addColorStop(0.35,'rgba(14,17,28,0.020)');
+    depthG.addColorStop(0.7,'rgba(8,10,18,0.038)');
+    depthG.addColorStop(1,'rgba(2,3,6,0.055)');
+    ctx.fillStyle=depthG;
+    ctx.fillRect(0,0,w,h);
+
+    /* 2: NEBULA FILAMENTS — 3-5 large soft complexes anchored at frame
+       edges/corners so corners always hold something, cool desaturated
+       palette (deep blue/teal/faint violet — disjoint from both the fleet
+       faction colors and DeepField's warm-ember hue pool). */
+    var filamentHues=[210,190,255,200,270]; /* deep blue, teal, violet-blue, cyan, violet */
+    var filamentCount=3+Math.floor(rng()*3); /* 3-5 */
+    var corners=[[0,0],[w,0],[0,h],[w,h],[w*0.5,0],[0,h*0.5],[w,h*0.5],[w*0.5,h]];
+    for(var fi=0;fi<filamentCount;fi++){
+        var corner=corners[Math.floor(rng()*corners.length)];
+        /* Offset toward the corner so it bleeds in from outside the frame,
+           not centered on it. */
+        var fx=corner[0]+(rng()-0.5)*w*0.22;
+        var fy=corner[1]+(rng()-0.5)*h*0.22;
+        var fr=maxD*(0.32+rng()*0.30); /* large, per brief */
+        var hue=filamentHues[Math.floor(rng()*filamentHues.length)];
+        this._bakeFilament(ctx,rng,fx,fy,fr,hue);
+    }
+
+    /* 3: STAR DENSITY TEXTURE — not uniform scatter: denser clumps, sparser
+       gaps, and two faint stream arcs. Base layer first (sparse baseline),
+       then clumps add local density, then streams add linear structure. */
+    var baseStarCount=Math.round((w*h)/9000); /* sparse baseline coverage */
+    for(var bs=0;bs<baseStarCount;bs++){
+        var sx=rng()*w,sy=rng()*h;
+        var sSz=0.3+rng()*0.5;
+        var sBr=0.06+rng()*0.10;
+        ctx.fillStyle='rgba(210,218,235,'+sBr.toFixed(3)+')';
+        ctx.beginPath();ctx.arc(sx,sy,sSz,0,Math.PI*2);ctx.fill();
+    }
+    /* Density clumps — 5-8 loose clusters, gaussian-ish falloff */
+    var clumpCount=5+Math.floor(rng()*4);
+    for(var ci=0;ci<clumpCount;ci++){
+        var ccx=rng()*w,ccy=rng()*h;
+        var spread=Math.min(w,h)*(0.05+rng()*0.08);
+        var n=18+Math.floor(rng()*30);
+        for(var cj=0;cj<n;cj++){
+            var ang=rng()*Math.PI*2;
+            /* two-uniform-sum approximates gaussian without a second helper */
+            var d=(rng()+rng())/2*spread;
+            var px=ccx+Math.cos(ang)*d,py=ccy+Math.sin(ang)*d;
+            if(px<0||px>w||py<0||py>h) continue;
+            var pSz=0.3+rng()*0.6;
+            var pBr=0.07+rng()*0.13;
+            ctx.fillStyle='rgba(215,222,240,'+pBr.toFixed(3)+')';
+            ctx.beginPath();ctx.arc(px,py,pSz,0,Math.PI*2);ctx.fill();
+        }
+    }
+    /* Star stream arcs — 1-2 faint curved lanes of stars, like a tidal
+       stream. Parametrized as a gentle arc across a random chord. */
+    var streamCount=1+Math.floor(rng()*2); /* 1-2 */
+    for(var st=0;st<streamCount;st++){
+        var sx0=rng()*w,sy0=rng()*h;
+        var sx1=rng()*w,sy1=rng()*h;
+        var bow=(rng()-0.5)*Math.min(w,h)*0.35;
+        var midx=(sx0+sx1)/2,midy=(sy0+sy1)/2;
+        var dx=sx1-sx0,dy=sy1-sy0;
+        var dlen=Math.sqrt(dx*dx+dy*dy)||1;
+        var perpX=-dy/dlen,perpY=dx/dlen;
+        var cpx=midx+perpX*bow,cpy=midy+perpY*bow;
+        var streamN=40+Math.floor(rng()*40);
+        for(var si=0;si<streamN;si++){
+            var tt=si/streamN;
+            var qx=(1-tt)*(1-tt)*sx0+2*(1-tt)*tt*cpx+tt*tt*sx1;
+            var qy=(1-tt)*(1-tt)*sy0+2*(1-tt)*tt*cpy+tt*tt*sy1;
+            /* jitter perpendicular so it reads as a loose band, not a wire */
+            var jit=(rng()-0.5)*14;
+            qx+=perpX*jit;qy+=perpY*jit;
+            /* fade at both ends of the stream */
+            var edgeFade=Math.min(1,tt*4)*Math.min(1,(1-tt)*4);
+            var stSz=0.25+rng()*0.45;
+            var stBr=(0.05+rng()*0.08)*edgeFade;
+            if(stBr<=0.005) continue;
+            ctx.fillStyle='rgba(200,210,232,'+stBr.toFixed(3)+')';
+            ctx.beginPath();ctx.arc(qx,qy,stSz,0,Math.PI*2);ctx.fill();
+        }
+    }
+
+    /* 4: DISTANT GALAXY FIELD — 15-30 total. Mostly small (4-14px),
+       two-three showpieces (20-40px). Extends CosmicCanvas's own galaxy
+       vocabulary/palette rather than a parallel system, but lives in this
+       baked sprite so a larger count costs nothing per-frame (CosmicCanvas
+       draws its ~16 galaxies live every frame with fresh gradients — fine
+       at its current count, but not a pattern to scale up further without
+       a real perf cost). */
+    var galaxyCount=15+Math.floor(rng()*16); /* 15-30 */
+    var showpieceCount=2+Math.floor(rng()*2); /* 2-3 */
+    for(var gi=0;gi<galaxyCount;gi++){
+        var isShowpiece=gi<showpieceCount;
+        var gx=rng()*w,gy=rng()*h;
+        var gsize=isShowpiece?(20+rng()*20):(4+rng()*10);
+        this._bakeGalaxy(ctx,rng,gx,gy,gsize,isShowpiece);
+    }
+};
+
+/* Redraws the baked sprite, rebaking first only if canvas size drifted
+   >10% (tighter than the ecliptic disc's 15% since this sprite covers the
+   FULL frame, not just the disc — a size mismatch would leave a visible
+   unbaked strip at an edge). World-space draw: caller must already have
+   the zoom/pan setTransform active so this inherits parallax for free,
+   same contract as DeepField.prototype.draw. anchorX/anchorY/w/h describe
+   the world-space rect the sprite should cover — passed by the caller
+   (typically centered on the fleet, sized to the max-visible-radius at the
+   zoom floor) so pulling back always reveals more of a real baked field
+   instead of a stretched screen-space poster. */
+VoidField.prototype.draw = function(ctx,worldX,worldY,worldW,worldH){
+    if(!this.canvas||Math.abs(worldW-this.bakeW)/Math.max(1,this.bakeW)>0.10||Math.abs(worldH-this.bakeH)/Math.max(1,this.bakeH)>0.10){
+        this.bake(worldW,worldH);
+    }
+    if(!this.canvas) return;
+    ctx.drawImage(this.canvas,worldX,worldY,worldW,worldH);
 };
 
 

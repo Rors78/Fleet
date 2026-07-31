@@ -412,7 +412,6 @@ def _is_live():
     if _fc is not None:
         return _fc.is_live()
     return False   # safe default: paper if fleet_config unreachable
-_LIVE = _is_live()
 
 
 def _limit_price(reference_price, direction):
@@ -693,9 +692,6 @@ class TurtleEngine:
         self.errors: List[str] = []
         self.strength_rank: List[Tuple[str, float]] = []
         self.equity_curve: List[dict] = []  # For dashboard charts
-
-        # Breakout tracking for System 1 filter
-        self.last_breakout_outcome: Dict[str, str] = {}
 
         # Central portfolio client (init before position persistence so reconcile works)
         self._portfolio_client = None
@@ -1071,6 +1067,34 @@ class TurtleEngine:
                     elif _ld.get("type") == "SUPPORT_APPROACHING" and direction.upper() == "SHORT":
                         _bus_mult *= 0.7
                         break
+
+                # CHRONOS: temporal bias — soft influence only, never a hard
+                # block. A fresh (<1h) statistically-gated TIME_ANOMALY
+                # opposing this entry's direction shaves 25% off size;
+                # agreement is log-only (stay conservative). SESSION_OVERLAP
+                # fresh (<15m) is a context log line only, no size change.
+                _temporal = self._bus.chronos_temporal(max_age=3600)
+                _anomaly = _temporal.get("time_anomaly") if _temporal else None
+                if _anomaly:
+                    _anomaly_dir = "LONG" if _anomaly.get("direction") == "bullish" else "SHORT"
+                    if _anomaly_dir != direction.upper():
+                        _bus_mult *= 0.75
+                        logging.info(
+                            f"TEMPORAL OPPOSE {pair}: TIME_ANOMALY {_anomaly.get('direction')} "
+                            f"(n={_anomaly.get('n')}, bias={_anomaly.get('bias_pct')}%) opposes "
+                            f"{direction.upper()} — size x0.75"
+                        )
+                    else:
+                        logging.info(
+                            f"TEMPORAL AGREE {pair}: TIME_ANOMALY {_anomaly.get('direction')} "
+                            f"(n={_anomaly.get('n')}, bias={_anomaly.get('bias_pct')}%) agrees with "
+                            f"{direction.upper()} — no size change"
+                        )
+                for _se in (_temporal.get("session_events") or []) if _temporal else []:
+                    if _se.get("type") == "SESSION_OVERLAP" and (time.time() - _se.get("ts", 0)) < 900:
+                        logging.info(f"TEMPORAL CONTEXT {pair}: SESSION_OVERLAP {_se.get('window')} — high volatility window")
+                        break
+
                 _bus_mult = max(0.3, min(2.0, _bus_mult))
             except Exception:
                 _bus_mult = 1.0
@@ -1129,7 +1153,12 @@ class TurtleEngine:
                 self._event_pub.emit("TRADE_OPEN", {
                     "pair": pair, "direction": direction.upper(),
                     "entry": round(price, 4), "size": round(cost, 2),
-                    "sl": round(price - n * CONFIG["stop_n_multiplier"], 4) if direction == "long" else round(price + n * CONFIG["stop_n_multiplier"], 4),
+                    # Case-insensitive: `direction` arrives as "LONG"/"SHORT"
+                    # here — the old lowercase == "long" test never matched,
+                    # so every LONG entry published a short-formula stop
+                    # ABOVE its entry price (wave-2 cleanup audit find,
+                    # fixed intentionally 2026-07-31).
+                    "sl": round(price - n * CONFIG["stop_n_multiplier"], 4) if direction.lower() == "long" else round(price + n * CONFIG["stop_n_multiplier"], 4),
                     "system": system,
                 })
             except Exception as e:
@@ -1781,13 +1810,13 @@ class Display:
     @staticmethod
     def rules_reminder():
         print(f"\n{DIM}{'-' * Display.W}")
-        print(f"  TURTLE RULES ACTIVE:")
-        print(f"  S1: 20d breakout entry | 10d contrary exit | skip after winner")
-        print(f"  S2: 55d breakout entry | 20d contrary exit | take all signals")
-        print(f"  Stops: 2N from entry | raised per unit add")
-        print(f"  Units: 1% equity/N | pyramid 1/2N intervals | max 4/market")
-        print(f"  Limits: 4/mkt, 6/close-corr, 10/loose-corr, 12/direction")
-        print(f"  DD adj: -20% notional per -10% equity drawdown")
+        print("  TURTLE RULES ACTIVE:")
+        print("  S1: 20d breakout entry | 10d contrary exit | skip after winner")
+        print("  S2: 55d breakout entry | 20d contrary exit | take all signals")
+        print("  Stops: 2N from entry | raised per unit add")
+        print("  Units: 1% equity/N | pyramid 1/2N intervals | max 4/market")
+        print("  Limits: 4/mkt, 6/close-corr, 10/loose-corr, 12/direction")
+        print("  DD adj: -20% notional per -10% equity drawdown")
         print(f"{'-' * Display.W}{RESET}")
 
     @staticmethod
@@ -1923,7 +1952,7 @@ def config_menu():
 
     if choice == "1":
         try:
-            val = float(input(f"  Starting equity ($): "))
+            val = float(input("  Starting equity ($): "))
             CONFIG["starting_equity"] = val
             print(f"  {GREEN}Set to ${val:,.2f}{RESET}")
         except ValueError:
@@ -1932,7 +1961,7 @@ def config_menu():
         return config_menu()
 
     elif choice == "2":
-        mode = input(f"  System mode (S1/S2/BOTH): ").strip().upper()
+        mode = input("  System mode (S1/S2/BOTH): ").strip().upper()
         if mode in ("S1", "S2", "BOTH"):
             CONFIG["system_mode"] = mode
             print(f"  {GREEN}Mode set to {mode}{RESET}")
@@ -1943,7 +1972,7 @@ def config_menu():
 
     elif choice == "3":
         try:
-            val = int(input(f"  Refresh seconds (60-3600): "))
+            val = int(input("  Refresh seconds (60-3600): "))
             CONFIG["refresh_seconds"] = max(60, min(3600, val))
             print(f"  {GREEN}Set to {CONFIG['refresh_seconds']}s{RESET}")
         except ValueError:
@@ -1953,7 +1982,7 @@ def config_menu():
 
     elif choice == "4":
         try:
-            val = float(input(f"  Risk per unit % (0.5-2.0): "))
+            val = float(input("  Risk per unit % (0.5-2.0): "))
             CONFIG["risk_per_unit_pct"] = max(0.5, min(2.0, val))
             print(f"  {GREEN}Set to {CONFIG['risk_per_unit_pct']}%{RESET}")
         except ValueError:
@@ -2077,7 +2106,7 @@ def main():
 
     except KeyboardInterrupt:
         print(f"\n\n{BYELLOW}{'=' * Display.W}")
-        print(f" TURTLEBOT ULTRA -- SESSION SUMMARY")
+        print(" TURTLEBOT ULTRA -- SESSION SUMMARY")
         print(f"{'=' * Display.W}{RESET}\n")
 
         tl = engine.trade_log

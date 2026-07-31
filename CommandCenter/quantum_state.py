@@ -61,31 +61,61 @@ class QuantumMarketState:
 
     def inject_signal(self, pair, signal_name, state_biases, strength=1.0):
         """
-        A signal doesn't DETERMINE the state -- it ROTATES the state vector.
+        A signal doesn't DETERMINE the state -- it TILTS the amplitude vector
+        toward the states it favors.
 
         state_biases: dict of {state_name: bias_amount}
           Positive bias = more likely, negative = less likely
-        strength: how much the signal rotates the vector (decays with age)
+        strength: how much the signal tilts the vector (decays with age)
+
+        CALIBRATION NOTE (fixed — was a no-op on probability):
+        The previous implementation applied an independent U(1) phase
+        rotation to each state's (real, imag) pair:
+            amp[i] = amp[i] * e^(i * angle_i)
+        A phase rotation preserves |amp|^2 EXACTLY for every i (rotation
+        matrices are norm-preserving) — so P(state) = |amp|^2 could never
+        move no matter how many signals were injected. Only the phase
+        (imag component) changed, and decohere() decays phase back toward
+        zero every cycle. Net effect: superposition_entropy (H) stayed
+        pinned at ~0.96-1.0 for every pair forever (H=1.0 is the uniform
+        5-state distribution -log2(1/5)-normalized == 1), and
+        QUANTUM_COLLAPSE (H < 0.3 threshold) was structurally unreachable.
+
+        Fix: bias now tilts amplitude MAGNITUDE directly via an
+        exponential (log-linear) reweighting of the real component —
+        amp_i.real *= exp(bias_i) — analogous to a Boltzmann/exponential-
+        family tilt of the Born-rule probabilities. This actually moves
+        probability mass toward favored states while leaving the sign of
+        the real component (and hence phase continuity) intact, then
+        renormalizes so sum(|amp_i|^2) = 1 as required. Repeated same-
+        direction injections now compound (probability genuinely
+        accumulates in the favored state), so a sustained directional
+        regime drives H down toward the collapse threshold, while
+        conflicting/noisy injections keep H high — H becomes a real
+        discriminator instead of a constant.
         """
         if pair not in self.amplitudes:
             self.initialize_pair(pair)
 
         amps = self.amplitudes[pair]
 
-        # Rotation: amplify states the signal favors, suppress others
+        # Exponential tilt: amplify states the signal favors, suppress others
         for i, state in enumerate(self.state_names):
             bias = state_biases.get(state, 0) * strength
 
-            # Rotation in complex plane
-            angle = bias * 0.3  # scale to reasonable rotation
-            cos_a = math.cos(angle)
-            sin_a = math.sin(angle)
+            # Tilt factor: exp(bias * TILT_SCALE). TILT_SCALE=0.5 chosen so
+            # a strong single-signal injection (bias*strength ~= 0.5, e.g.
+            # Newton force near its typical range) moves probability
+            # noticeably in one scan cycle without letting one signal
+            # instantly dominate — collapse should emerge from several
+            # cycles of agreement, not one reading.
+            tilt = math.exp(bias * 0.5)
 
             real = amps[i][0]
             imag = amps[i][1]
 
-            amps[i][0] = real * cos_a - imag * sin_a
-            amps[i][1] = real * sin_a + imag * cos_a
+            amps[i][0] = real * tilt
+            amps[i][1] = imag * tilt
 
         # Renormalize -- total probability must equal 1
         self._renormalize(pair)

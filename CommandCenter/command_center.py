@@ -1126,7 +1126,12 @@ def _normalize_sentinel(raw: dict) -> dict:
         "signals_count": len(high_conv),
         "uptime": None,
         "pairs_forecast": raw.get("pairs_forecast", 0),
-        "high_conviction": high_conv,
+        # SN-2: named high_conviction_pairs (a LIST) because Sentinel's own
+        # raw snapshot emits "high_conviction" as a COUNT int — same name
+        # carrying two types across API surfaces confused consumers. No
+        # consumer of normalized.high_conviction existed at rename time
+        # (dashboard reads raw.high_conviction from /api/bot/sentinel).
+        "high_conviction_pairs": high_conv,
     }
 
 
@@ -1350,6 +1355,65 @@ def _normalize_aegis(raw: dict) -> dict:
     }
 
 
+def _normalize_inference(raw: dict) -> dict:
+    """Inference server (port 9001) — polls /health only.
+
+    /health payload: {"status": "running", "model": "<ollama model>", "port": 9001}.
+    Model info already rides on /health, so no extra endpoint is needed.
+    """
+    return {
+        "equity": None, "pnl": None, "pnl_pct": None,
+        "win_rate": None, "drawdown_pct": None, "sharpe": None,
+        "open_positions": None, "total_trades": None,
+        "regime": None, "signals_count": None, "uptime": None,
+        # Inference specifics
+        "status": raw.get("status"),
+        "model": raw.get("model"),
+    }
+
+
+def _normalize_broadcaster(raw: dict) -> dict:
+    """Signal broadcaster (port 9002) — polls /health + /stats.
+
+    With two endpoints in fleet_config, _fetch_bot's multi-endpoint branch
+    merges them key-namespaced: {"health": {...}, "stats": {...}}. The flat
+    single-endpoint shape (health fields at top level) is tolerated too so a
+    stale fleet_config can't blank the tile.
+
+    /health: {status, uptime, sse_connected}
+    /stats:  {sse:{connected,reconnects,events_received,last_event_ts},
+              polling:{...}, channel:{free_sent_today,paid_sent_today,
+              failed_today,...}, config:{...}, delayed_queue_size,
+              signals_log_size}
+    NOTE: these are the LIVE process stats — CC's /api/signals/broadcaster/stats
+    route is log-derived and can disagree; this normalizer is the live truth.
+    """
+    health = raw.get("health") if isinstance(raw.get("health"), dict) else raw
+    stats = raw.get("stats") if isinstance(raw.get("stats"), dict) else {}
+    sse = stats.get("sse") or {}
+    channel = stats.get("channel") or {}
+    free_sent = channel.get("free_sent_today") or 0
+    paid_sent = channel.get("paid_sent_today") or 0
+    return {
+        "equity": None, "pnl": None, "pnl_pct": None,
+        "win_rate": None, "drawdown_pct": None, "sharpe": None,
+        "open_positions": None, "total_trades": None,
+        "regime": None,
+        "signals_count": (free_sent + paid_sent) if channel else None,
+        "uptime": health.get("uptime"),
+        # Broadcaster specifics (live 9002 truth)
+        "status": health.get("status"),
+        "sse_connected": health.get("sse_connected", sse.get("connected")),
+        "sse_reconnects": sse.get("reconnects"),
+        "events_received": sse.get("events_received"),
+        "free_sent_today": free_sent if channel else None,
+        "paid_sent_today": paid_sent if channel else None,
+        "failed_today": channel.get("failed_today"),
+        "delayed_queue_size": stats.get("delayed_queue_size"),
+        "signals_log_size": stats.get("signals_log_size"),
+    }
+
+
 _NORMALIZERS = {
     "turtlesue":  _normalize_turtlesue,
     "sentinel":   _normalize_sentinel,
@@ -1400,6 +1464,8 @@ _NORMALIZERS = {
         "active_sessions": raw.get("active_sessions", []),
         "uptime": None,
     },
+    "inference":          _normalize_inference,
+    "signal_broadcaster": _normalize_broadcaster,
     "nexus":      lambda raw: {
         "equity": None, "pnl": None, "pnl_pct": None, "win_rate": None,
         "drawdown_pct": None, "sharpe": None, "open_positions": None,
@@ -2180,6 +2246,14 @@ def _poll_all_bots() -> None:
             raw = _sanitize(raw)
             normalizer = _NORMALIZERS.get(bid)
             normalized = normalizer(raw) if normalizer else {}
+            # HM-4: regime casing is bot-specific at the source ("bull" vs
+            # "RANGE" vs "Ranging"). Uppercase once here — the single shared
+            # post-step — so consensus counting, the REGIME SOURCES panel and
+            # the dashboard compare like against like. Casing only; the label
+            # text and every other normalized value are untouched.
+            _rg = normalized.get("regime")
+            if isinstance(_rg, str):
+                normalized["regime"] = _rg.upper()
             stale_age, is_stale = _snapshot_staleness(bid, raw)
             new_bots[bid] = {
                 "id": bid, "name": bot["name"], "port": bot["port"],
@@ -2542,6 +2616,203 @@ def _get_logger_portfolio():
     if _active_portfolio():
         return _active_portfolio().state()
     return None
+
+
+# ---------------------------------------------------------------------------
+# /api/trades scan cache (TS-2)
+# ---------------------------------------------------------------------------
+# The durable trade history lives in logs/event_bus/*.jsonl + logs/events/*.jsonl.
+# Rescanning every file on every request cost 5-6s per dashboard call (the
+# fetchTradeHistory 8s-timeout race). Historical day-files never change, so
+# parsed TRADE_CLOSE rows are cached per file keyed by (mtime, size); only
+# files that actually changed since the last request (today's) are re-read.
+# The dedup pipeline then runs over in-memory rows (hundreds of trades, not
+# megabytes of JSONL) so the handler returns in milliseconds while the
+# response shape stays identical.
+
+_trades_scan_lock = threading.Lock()
+# fpath -> (mtime, size, rows) where rows = [(event_id_or_None, trade_dict), ...]
+_trades_file_cache: dict[str, tuple[float, int, list]] = {}
+
+
+def _parse_trade_log_file(fpath: str) -> list:
+    """Extract TRADE_CLOSE rows from one JSONL log file, in file order.
+
+    Row shape must stay in lock-step with what /api/trades serves — these
+    dicts are returned to the dashboard verbatim (and are shared across
+    requests via the cache: treat them as immutable downstream).
+    """
+    rows: list = []
+    with open(fpath, encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                ev = json.loads(line)
+            except Exception:
+                continue
+            if ev.get("type") != "TRADE_CLOSE":
+                continue
+            bot = ev.get("source") or ev.get("bot") or ""
+            d = ev.get("data") if isinstance(ev.get("data"), dict) else ev
+            pnl_val = d.get("pnl", ev.get("pnl", 0))
+            rid = d.get("reservation_id") or ev.get("reservation_id")
+            via = d.get("via") or ev.get("via", "")
+            rows.append((ev.get("id"), {
+                "ts":             ev.get("ts", 0),
+                "bot":            bot,
+                "pair":           d.get("pair", ev.get("pair", "")),
+                "pnl":            pnl_val,
+                "gross_pnl":      d.get("gross_pnl", ev.get("gross_pnl", pnl_val)),
+                "fees":           d.get("fees", ev.get("fees", 0)),
+                "duration_s":     d.get("duration_s", ev.get("duration_s", 0)),
+                "exit_reason":    d.get("exit_reason", ev.get("exit_reason", "")),
+                "direction":      d.get("direction", ev.get("direction", ev.get("side", ""))),
+                "won":            (pnl_val or 0) > 0,
+                "reservation_id": rid,
+                "via":            via,
+            }))
+    return rows
+
+
+def _collect_closed_trades() -> list[dict]:
+    """All durable TRADE_CLOSE trades, fully deduped, newest first.
+
+    Three-stage dedup (unchanged semantics from the original in-handler scan):
+      1. By event id (catches the same event written twice to disk)
+      2. By reservation_id (the canonical trade key — same trade emitted
+         via the release path AND the snapshot-diff bridge)
+      3. By heuristic (bot, normalized pair, 10min window) for legacy
+         snapshot-diff entries that have no reservation_id
+
+    Bot filtering happens in the handler AFTER dedup — every dedup key
+    includes the bot (event ids are globally unique; a reservation_id belongs
+    to one bot; stage 3 compares bot equality), so filter placement cannot
+    change which rows survive.
+    """
+    import glob as _glob
+    here = os.path.dirname(os.path.abspath(__file__))
+    log_dirs = [
+        os.path.join(here, "logs", "event_bus"),
+        os.path.join(here, "logs", "events"),
+    ]
+
+    all_rows: list = []
+    with _trades_scan_lock:
+        live_paths: set[str] = set()
+        for log_dir in log_dirs:
+            if not os.path.isdir(log_dir):
+                continue
+            for fpath in sorted(_glob.glob(os.path.join(log_dir, "*.jsonl"))):
+                live_paths.add(fpath)
+                try:
+                    st = os.stat(fpath)
+                except OSError:
+                    continue
+                cached = _trades_file_cache.get(fpath)
+                if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+                    rows = cached[2]
+                else:
+                    try:
+                        rows = _parse_trade_log_file(fpath)
+                    except Exception:
+                        rows = []
+                    _trades_file_cache[fpath] = (st.st_mtime, st.st_size, rows)
+                all_rows.extend(rows)
+        # Evict entries for rotated/deleted files so the cache stays bounded.
+        for stale in [p for p in _trades_file_cache if p not in live_paths]:
+            _trades_file_cache.pop(stale, None)
+
+    # ── Stage 1 dedup: by event id ──
+    seen_ids: set[str] = set()
+    raw_trades: list[dict] = []
+    for ev_id, t in all_rows:
+        if ev_id:
+            if ev_id in seen_ids:
+                continue
+            seen_ids.add(ev_id)
+        raw_trades.append(t)
+
+    # ── Stage 2 dedup: by reservation_id ──
+    # Same trade can land on disk twice — once from _handle_release
+    # (via=portfolio_release, has reservation_id) and once from
+    # fleet_logger._detect_events (snapshot diff, no reservation_id).
+    # Prefer the release-path entry — it has the realized pnl and uppercase
+    # direction. Fall back to the snapshot-diff entry only when it's the
+    # only one we have for that trade.
+    by_rid: dict[str, dict] = {}
+    no_rid: list[dict] = []
+    for t in raw_trades:
+        rid = t.get("reservation_id")
+        if rid:
+            # First one wins; release-path entries always carry rid so
+            # they will populate by_rid before any duplicate could.
+            if rid not in by_rid:
+                by_rid[rid] = t
+        else:
+            no_rid.append(t)
+
+    # ── Stage 3 dedup: heuristic for snapshot-diff entries ──
+    # The snapshot-diff path emits TRADE_CLOSE from fleet_logger by
+    # observing positions disappearing between polls. It can capture a
+    # stale unrealized_pnl number that doesn't match the realized pnl
+    # the release path records. So we cannot dedup by PnL match.
+    #
+    # Instead: drop a no-rid entry if there's a by_rid entry for the
+    # same (bot, pair) within 600s. Same pair, same bot, within 10
+    # minutes, with a release record in hand → it's the same trade,
+    # and the release record is canonical (realized pnl, real direction
+    # casing, real reservation_id). The 90s same-pair OPEN cooldown in
+    # PortfolioManager makes faster legitimate turnover impossible.
+    # Pair comparison MUST be normalized. The two emitters use different
+    # pair formats for the same instrument — the bot's event_publisher
+    # sends Kraken-native "AAVEUSD" while the release path sends "AAVE/USD"
+    # — so a raw string compare never matched and BOTH copies survived.
+    # That double-counted every snapshot-diffed close: TurtleSue's AAVE
+    # short showed up twice (-227.24 and -227.37, same second), inflating
+    # its realized loss by ~57% (2026-07-29 audit). normalize_pair collapses
+    # AAVEUSD/AAVE/USD/XXBTZUSD to one canonical form.
+    def _npair(p: str) -> str:
+        try:
+            return normalize_pair(p or "")
+        except Exception:
+            return p or ""
+
+    rid_lookup: list[tuple[str, str, float]] = [
+        (t.get("bot", ""), _npair(t.get("pair", "")), float(t.get("ts") or 0))
+        for t in by_rid.values()
+    ]
+    deduped_no_rid: list[dict] = []
+    for t in no_rid:
+        tb = t.get("bot", "")
+        tp = _npair(t.get("pair", ""))
+        try:
+            tts = float(t.get("ts") or 0)
+        except (ValueError, TypeError):
+            tts = 0.0
+        is_dup = False
+        for (rb, rp, rts) in rid_lookup:
+            if rb == tb and rp == tp and abs(rts - tts) < 600:
+                is_dup = True
+                break
+        if not is_dup:
+            # Dedup no-rid entries against each other too. Two snapshot
+            # diffs for the same trade (60s apart from successive polls)
+            # would otherwise both survive.
+            already = False
+            for kept in deduped_no_rid:
+                if (kept.get("bot") == tb
+                        and _npair(kept.get("pair", "")) == tp
+                        and abs(float(kept.get("ts") or 0) - tts) < 600):
+                    already = True
+                    break
+            if not already:
+                deduped_no_rid.append(t)
+
+    trades = list(by_rid.values()) + deduped_no_rid
+    trades.sort(key=lambda t: t["ts"], reverse=True)   # newest first
+    return trades
 
 
 # ---------------------------------------------------------------------------
@@ -3233,14 +3504,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         Survives restarts via logs/event_bus/*.jsonl (written by EventBus.publish).
         Query params: ?bot=confluence&limit=50
 
-        Two-stage dedup:
-          1. By event id (catches the same event written twice to disk)
-          2. By reservation_id (the canonical trade key — same trade emitted
-             via the release path AND the snapshot-diff bridge)
-          3. By heuristic (bot, pair, round(pnl), 5min window) for legacy
-             snapshot-diff entries that have no reservation_id
+        TS-2: the JSONL scan + three-stage dedup live in
+        _collect_closed_trades() behind a per-file (mtime, size) cache —
+        repeated dashboard calls return in milliseconds instead of rescanning
+        every log file. Response shape unchanged: {"trades": [...], "total": N}.
         """
-        import glob as _glob
         qs = parse_qs(parsed.query or "")
         bot_filter = qs.get("bot", [""])[0].strip().lower()
         try:
@@ -3248,138 +3516,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         except ValueError:
             limit = 100
 
-        raw_trades: list[dict] = []
-        here = os.path.dirname(os.path.abspath(__file__))
-        log_dirs = [
-            os.path.join(here, "logs", "event_bus"),
-            os.path.join(here, "logs", "events"),
-        ]
-        seen_ids: set[str] = set()
-        for log_dir in log_dirs:
-            if not os.path.isdir(log_dir):
-                continue
-            for fpath in sorted(_glob.glob(os.path.join(log_dir, "*.jsonl"))):
-                try:
-                    with open(fpath, encoding="utf-8") as fh:
-                        for line in fh:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            try:
-                                ev = json.loads(line)
-                            except Exception:
-                                continue
-                            if ev.get("type") != "TRADE_CLOSE":
-                                continue
-                            ev_id = ev.get("id")
-                            if ev_id and ev_id in seen_ids:
-                                continue
-                            if ev_id:
-                                seen_ids.add(ev_id)
-                            bot = ev.get("source") or ev.get("bot") or ""
-                            if bot_filter and bot.lower() != bot_filter:
-                                continue
-                            d = ev.get("data") if isinstance(ev.get("data"), dict) else ev
-                            pnl_val = d.get("pnl", ev.get("pnl", 0))
-                            rid = d.get("reservation_id") or ev.get("reservation_id")
-                            via = d.get("via") or ev.get("via", "")
-                            raw_trades.append({
-                                "ts":             ev.get("ts", 0),
-                                "bot":            bot,
-                                "pair":           d.get("pair", ev.get("pair", "")),
-                                "pnl":            pnl_val,
-                                "gross_pnl":      d.get("gross_pnl", ev.get("gross_pnl", pnl_val)),
-                                "fees":           d.get("fees", ev.get("fees", 0)),
-                                "duration_s":     d.get("duration_s", ev.get("duration_s", 0)),
-                                "exit_reason":    d.get("exit_reason", ev.get("exit_reason", "")),
-                                "direction":      d.get("direction", ev.get("direction", ev.get("side", ""))),
-                                "won":            (pnl_val or 0) > 0,
-                                "reservation_id": rid,
-                                "via":            via,
-                            })
-                except Exception:
-                    pass
+        trades = _collect_closed_trades()
+        if bot_filter:
+            trades = [t for t in trades
+                      if (t.get("bot") or "").lower() == bot_filter]
 
-        # ── Stage 2 dedup: by reservation_id ──
-        # Same trade can land on disk twice — once from _handle_release
-        # (via=portfolio_release, has reservation_id) and once from
-        # fleet_logger._detect_events (snapshot diff, no reservation_id).
-        # Prefer the release-path entry — it has the realized pnl and uppercase
-        # direction. Fall back to the snapshot-diff entry only when it's the
-        # only one we have for that trade.
-        by_rid: dict[str, dict] = {}
-        no_rid: list[dict] = []
-        for t in raw_trades:
-            rid = t.get("reservation_id")
-            if rid:
-                # First one wins; release-path entries always carry rid so
-                # they will populate by_rid before any duplicate could.
-                if rid not in by_rid:
-                    by_rid[rid] = t
-            else:
-                no_rid.append(t)
-
-        # ── Stage 3 dedup: heuristic for snapshot-diff entries ──
-        # The snapshot-diff path emits TRADE_CLOSE from fleet_logger by
-        # observing positions disappearing between polls. It can capture a
-        # stale unrealized_pnl number that doesn't match the realized pnl
-        # the release path records. So we cannot dedup by PnL match.
-        #
-        # Instead: drop a no-rid entry if there's a by_rid entry for the
-        # same (bot, pair) within 600s. Same pair, same bot, within 10
-        # minutes, with a release record in hand → it's the same trade,
-        # and the release record is canonical (realized pnl, real direction
-        # casing, real reservation_id). The 90s same-pair OPEN cooldown in
-        # PortfolioManager makes faster legitimate turnover impossible.
-        # Pair comparison MUST be normalized. The two emitters use different
-        # pair formats for the same instrument — the bot's event_publisher
-        # sends Kraken-native "AAVEUSD" while the release path sends "AAVE/USD"
-        # — so a raw string compare never matched and BOTH copies survived.
-        # That double-counted every snapshot-diffed close: TurtleSue's AAVE
-        # short showed up twice (-227.24 and -227.37, same second), inflating
-        # its realized loss by ~57% (2026-07-29 audit). normalize_pair collapses
-        # AAVEUSD/AAVE/USD/XXBTZUSD to one canonical form.
-        def _npair(p: str) -> str:
-            try:
-                return normalize_pair(p or "")
-            except Exception:
-                return p or ""
-
-        rid_lookup: list[tuple[str, str, float]] = [
-            (t.get("bot", ""), _npair(t.get("pair", "")), float(t.get("ts") or 0))
-            for t in by_rid.values()
-        ]
-        deduped_no_rid: list[dict] = []
-        for t in no_rid:
-            tb = t.get("bot", "")
-            tp = _npair(t.get("pair", ""))
-            try:
-                tts = float(t.get("ts") or 0)
-            except (ValueError, TypeError):
-                tts = 0.0
-            is_dup = False
-            for (rb, rp, rts) in rid_lookup:
-                if rb == tb and rp == tp and abs(rts - tts) < 600:
-                    is_dup = True
-                    break
-            if not is_dup:
-                # Dedup no-rid entries against each other too. Two snapshot
-                # diffs for the same trade (60s apart from successive polls)
-                # would otherwise both survive.
-                already = False
-                for kept in deduped_no_rid:
-                    if (kept.get("bot") == tb
-                            and _npair(kept.get("pair", "")) == tp
-                            and abs(float(kept.get("ts") or 0) - tts) < 600):
-                        already = True
-                        break
-                if not already:
-                    deduped_no_rid.append(t)
-
-        trades = list(by_rid.values()) + deduped_no_rid
-
-        # newest first, capped
-        trades.sort(key=lambda t: t["ts"], reverse=True)
         self._send_json({"trades": trades[:limit], "total": len(trades)})
 
     def _serve_expectancy_prefix(self, parsed, path: str) -> None:

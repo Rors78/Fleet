@@ -51,7 +51,6 @@ COMMAND_CENTER = "http://127.0.0.1:9000"
 SCAN_INTERVAL = 60          # seconds between full scans
 OHLC_INTERVAL = 60          # 1h candles
 OHLC_LIMIT = 300            # 300 bars of history
-ACCENT = "#e040fb"
 
 # State variable parameters
 PE_WINDOW = 60              # permutation entropy lookback
@@ -678,7 +677,7 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), PhiTexHandler)
     server.daemon_threads = True
     print(f"  Listening on http://localhost:{PORT}")
-    print(f"  Press Ctrl+C to stop")
+    print("  Press Ctrl+C to stop")
     print()
 
     try:

@@ -28,7 +28,7 @@ import math
 import sys
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -80,7 +80,6 @@ PORT = 8082
 COMMAND_CENTER = "http://127.0.0.1:9000"
 PHITEX_URL = "http://127.0.0.1:8078"  # PHITEX thermodynamic engine
 SCAN_INTERVAL = 15  # seconds — faster than other bots, it's lightweight
-ACCENT = "#00bfa5"
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +380,6 @@ class NewtonianForceEngine:
                       for i in range(len(closes) - 20, len(closes))]
 
         # Trend direction: +1 (up), -1 (down), 0 (flat)
-        trend_10 = sum(1 if r > 0 else -1 for r in returns_10) / 10
         trend_20 = sum(1 if r > 0 else -1 for r in returns_20) / 20
 
         # Mass = how "heavy" the current trend is
@@ -732,8 +730,34 @@ class GaussianBeliefFusion:
         fused_var = 1.0 / total_prec
         fused_conf = max(0.0, min(1.0, 1.0 - fused_var))
 
-        best_single = max(precisions)
-        info_gain = total_prec / best_single if best_single > 0 else 1.0
+        # Information gain: bits gained by precision-weighted (Gauss-optimal)
+        # fusion over a NAIVE equal-weighted average of the same N sources.
+        #
+        # var_naive = variance of a plain average of N estimates, each with
+        #             its own variance 1/precision_i:
+        #               var_naive = (1/N^2) * sum(1/precision_i)
+        # var_opt   = variance of the precision-weighted fusion (the BLUE
+        #             estimator): var_opt = 1 / sum(precision_i)
+        # info_gain_bits = 0.5 * log2(var_naive / var_opt)
+        #
+        # At UNIFORM weights (self.accuracy all equal — the untrained
+        # default state) precision-weighted fusion IS the naive average,
+        # so var_naive == var_opt and info_gain == 0 bits exactly: there is
+        # no informational advantage to claim yet because the model hasn't
+        # learned which sources are more trustworthy. Gain only grows once
+        # self.accuracy differentiates sources (post 50+ scored cycles),
+        # which is when precision-weighting actually starts outperforming
+        # a plain average. This replaces the old total_prec/best_single
+        # formula, which degenerated to exactly n_sources at uniform
+        # weights (a source count mislabeled as "information gain").
+        n_sources = len(precisions)
+        if n_sources > 0 and total_prec > 0:
+            var_naive = sum(1.0 / p for p in precisions) / (n_sources ** 2)
+            var_opt = 1.0 / total_prec
+            info_gain = 0.5 * math.log2(var_naive / var_opt) if var_opt > 0 else 0.0
+            info_gain = max(0.0, info_gain)  # guard float noise at exact uniformity
+        else:
+            info_gain = 0.0
 
         if fused_val > 0.6:
             regime = "BULL"
@@ -1085,6 +1109,11 @@ class NexusEngine:
         self._prev_vol_forecast = "NEUTRAL"
         self._prev_character = "QUIET"
         self._event_pub = EventPublisher(COMMAND_CENTER, "nexus") if EventPublisher else None
+        # Emit-on-change state for MANIFOLD_WARNING: {pair: (above_threshold, interpretation)}
+        # Prevents re-firing every 15s scan cycle while a pair stays elevated --
+        # only emits on entry into the warning band or a change in manifold
+        # classification, mirroring how a state machine should gate alerts.
+        self._prev_manifold_state = {}
 
     def _log(self, msg):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -1180,7 +1209,6 @@ class NexusEngine:
         if fingerprints:
             # Dominant move type
             types = [f["move_type"] for f in fingerprints]
-            from collections import Counter
             dominant = Counter(types).most_common(1)[0][0]
         else:
             dominant = "QUIET"
@@ -1808,18 +1836,30 @@ class NexusEngine:
                     pass
 
             # Council: MANIFOLD_WARNING when regime change probability > 0.6
+            # Emit-on-change: only fire when a pair newly crosses into the
+            # warning band, or its manifold classification changes while
+            # still elevated. Otherwise a pair sitting above threshold for
+            # minutes would re-emit identical warnings every 15s scan.
             if _council_loaded:
                 for pair_name, ig in info_geo_results.items():
                     try:
-                        if ig.get("regime_change_probability", 0) > 0.6:
+                        prob = ig.get("regime_change_probability", 0)
+                        interp = ig.get("interpretation", "")
+                        above = prob > 0.6
+                        prev_above, prev_interp = self._prev_manifold_state.get(
+                            pair_name, (False, None))
+
+                        if above and (not prev_above or interp != prev_interp):
                             self._event_pub.emit("MANIFOLD_WARNING", {
                                 "pair": pair_name,
-                                "regime_change_probability": ig["regime_change_probability"],
+                                "regime_change_probability": prob,
                                 "fisher_metric": ig["fisher_metric"],
                                 "geodesic_velocity": ig["geodesic_velocity"],
                                 "model_reliability": ig.get("model_reliability", 1.0),
-                                "interpretation": ig.get("interpretation", ""),
+                                "interpretation": interp,
                             })
+
+                        self._prev_manifold_state[pair_name] = (above, interp)
                     except Exception:
                         pass
 
@@ -1976,29 +2016,27 @@ class NexusHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _send_json(self, obj):
+        data = json.dumps(obj, default=str)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data.encode())
+
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
         if path == "/api/snapshot":
-            data = json.dumps(_engine.snapshot(), default=str)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode())
+            self._send_json(_engine.snapshot())
 
         elif path == "/health":
-            data = json.dumps({
+            self._send_json({
                 "status": "ok", "bot": "NEXUS", "port": PORT,
                 "cycle": _engine.cycle,
                 "market_character": _engine.state.get("market_character", "?"),
                 "timestamp": time.time(),
             })
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode())
 
         else:
             self.send_error(404)
@@ -2032,11 +2070,11 @@ def main():
     except Exception as _e:
         print(f"[PORT_GUARD] Warning: {_e}")
 
-    print(f"\n  NEXUS v1.0 — Market Interferometer")
+    print("\n  NEXUS v1.0 — Market Interferometer")
     print(f"  Port: {PORT}")
     print(f"  Scan: every {SCAN_INTERVAL}s")
     print(f"  http://localhost:{PORT}/api/snapshot")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     threading.Thread(target=_scan_loop, daemon=True, name="NexusScan").start()
 

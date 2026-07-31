@@ -96,7 +96,11 @@ BOTS = {
     "contrarian":  {"port": 8084, "dir": os.path.join(DATA_DRIVE, "Contrarian"),                             "role": "support", "display": "Contrarian", "color": "#ff1744", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "contrarian.py"],                             "phase": 2, "slow": False},
     "arbitrageur": {"port": 8085, "dir": os.path.join(DATA_DRIVE, "Arbitrageur"),                            "role": "trader",  "display": "Arbitrageur","color": "#7c4dff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "arbitrageur.py"],                            "phase": 2, "slow": False},
     "chronos":     {"port": 8086, "dir": os.path.join(DATA_DRIVE, "Chronos"),                                "role": "support", "display": "Chronos",    "color": "#ff9100", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "chronos.py"],                                "phase": 2, "slow": False},
-    "signal_broadcaster": {"port": 9002, "dir": CC_DIR,                                                        "role": "support", "display": "Broadcaster","color": "#c8a96e", "endpoints": ["/health"],                              "cmd": ["python", "signal_broadcaster.py"],                     "phase": 2, "slow": False},
+    # Broadcaster polls TWO endpoints: CC's _fetch_bot merges multi-endpoint
+    # bots key-namespaced ({"health": {...}, "stats": {...}}). /stats is the
+    # LIVE process truth (sse state, per-channel sent/failed, queue sizes) —
+    # CC's /api/signals/broadcaster/stats route is log-derived and can drift.
+    "signal_broadcaster": {"port": 9002, "dir": CC_DIR,                                                        "role": "support", "display": "Broadcaster","color": "#c8a96e", "endpoints": ["/health", "/stats"],                    "cmd": ["python", "signal_broadcaster.py"],                     "phase": 2, "slow": False},
     "bot_responder":      {"port": None, "dir": CC_DIR,                                                        "role": "support", "display": "Bot Responder","color": "#c8a96e", "endpoints": [],                                     "cmd": ["python", "bot_responder.py"],                          "phase": 2, "slow": False},
 }
 

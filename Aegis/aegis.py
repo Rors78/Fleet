@@ -44,7 +44,6 @@ except ImportError:
 PORT = 8079
 COMMAND_CENTER = "http://127.0.0.1:9000"
 SCAN_INTERVAL = 30          # seconds between AEGIS computations
-ACCENT = "#e0e0e0"
 EVENT_WINDOW = 300          # look at last 5 minutes of events
 MAX_THROTTLE_PCT = 0.25     # Phase 1: max deployment reduction from whale overlap
 
@@ -197,7 +196,7 @@ def whale_flow_divergence(whale_events: list, trade_events: list) -> float:
         whale_conf = whale_pairs[pair] / 100.0
         alignments.append(bot_sign * whale_conf)
 
-    return sum(alignments) / len(alignments) if alignments else 0.0
+    return sum(alignments) / len(alignments)
 
 
 # ---------------------------------------------------------------------------
@@ -295,21 +294,28 @@ def compute_aegis(H, C, W, S, phi, rho=0.5):
 
 
 def aegis_regime(score):
-    if score >= 0.65:
+    # Bands aligned 2026-07-31 (Jeremy: hysteresis/mismatch not intended).
+    # These MUST match the enforcing layer (command_center.py's AEGIS
+    # limit mapping, 0.2/0.5/0.8) and the dashboard's published threshold
+    # table. The old 0.10/0.35/0.65 bands made this engine report
+    # CAUTIOUS/60% at scores the portfolio manager was actually enforcing
+    # as DEFENSIVE/30% - three layers, two truths, on-screen contradiction.
+    if score >= 0.8:
         return "DEPLOY"
-    elif score >= 0.35:
+    elif score >= 0.5:
         return "NORMAL"
-    elif score >= 0.10:
+    elif score >= 0.2:
         return "CAUTIOUS"
     return "DEFENSIVE"
 
 
 def recommended_max_deployed(score):
-    if score >= 0.65:
+    # Same canonical bands as aegis_regime — keep in lockstep.
+    if score >= 0.8:
         return 90
-    elif score >= 0.35:
+    elif score >= 0.5:
         return 80
-    elif score >= 0.10:
+    elif score >= 0.2:
         return 60
     return 30
 
@@ -440,7 +446,7 @@ class AegisEngine:
 
         # Fetch fleet state
         master = self._fetch_json("/api/master")
-        events_raw = self._fetch_json(f"/api/events/recent?n=200")
+        events_raw = self._fetch_json("/api/events/recent?n=200")
         portfolio = self._fetch_json("/api/portfolio")
 
         if not master and not events_raw:
@@ -610,29 +616,27 @@ class AegisHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _send_json(self, obj):
+        data = json.dumps(obj, default=str)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data.encode("utf-8"))
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path.rstrip("/") or "/"
 
         if path == "/api/snapshot":
-            data = json.dumps(_engine.snapshot(), default=str)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode("utf-8"))
+            self._send_json(_engine.snapshot())
 
         elif path == "/health":
-            data = json.dumps({
+            self._send_json({
                 "status": "ok", "bot": "AEGIS", "port": PORT,
                 "cycle": _engine.cycle, "score": _engine.score,
                 "regime": _engine.regime, "timestamp": time.time(),
             })
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode("utf-8"))
 
         elif path == "/" or path == "/dashboard":
             self.send_response(200)
@@ -695,7 +699,7 @@ def main():
     server = ThreadingHTTPServer(("0.0.0.0", PORT), AegisHandler)
     server.daemon_threads = True
     print(f"  Listening on http://localhost:{PORT}")
-    print(f"  Press Ctrl+C to stop")
+    print("  Press Ctrl+C to stop")
     print()
 
     try:

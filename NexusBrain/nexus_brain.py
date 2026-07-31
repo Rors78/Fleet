@@ -34,6 +34,7 @@ import signal as signal_mod
 import sqlite3
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -1130,6 +1131,36 @@ class PaperTrader:
                         if _ld.get("type") == _lvl_block:
                             _bus_mult *= 0.7
                             break
+                    # CHRONOS: temporal bias — soft influence only, never a
+                    # hard block. A fresh (<1h) statistically-gated TIME_ANOMALY
+                    # opposing this trade's direction shaves 25% off size;
+                    # agreement is log-only (stay conservative). SESSION_OVERLAP
+                    # fresh (<15m) is a context log line only, no size change.
+                    _temporal = self._bus.chronos_temporal(max_age=3600)
+                    _anomaly = _temporal.get("time_anomaly") if _temporal else None
+                    if _anomaly:
+                        _anomaly_dir = "LONG" if _anomaly.get("direction") == "bullish" else "SHORT"
+                        if _anomaly_dir != signal.direction:
+                            _bus_mult *= 0.75
+                            logger.info(
+                                f"TEMPORAL OPPOSE {PAIR_DISPLAY.get(signal.pair, signal.pair)}: "
+                                f"TIME_ANOMALY {_anomaly.get('direction')} (n={_anomaly.get('n')}, "
+                                f"bias={_anomaly.get('bias_pct')}%) opposes {signal.direction} — size x0.75"
+                            )
+                        else:
+                            logger.info(
+                                f"TEMPORAL AGREE {PAIR_DISPLAY.get(signal.pair, signal.pair)}: "
+                                f"TIME_ANOMALY {_anomaly.get('direction')} (n={_anomaly.get('n')}, "
+                                f"bias={_anomaly.get('bias_pct')}%) agrees with {signal.direction} — no size change"
+                            )
+                    for _se in (_temporal.get("session_events") or []) if _temporal else []:
+                        if _se.get("type") == "SESSION_OVERLAP" and (time.time() - _se.get("ts", 0)) < 900:
+                            logger.info(
+                                f"TEMPORAL CONTEXT {PAIR_DISPLAY.get(signal.pair, signal.pair)}: "
+                                f"SESSION_OVERLAP {_se.get('window')} — high volatility window"
+                            )
+                            break
+
                     _bus_mult = max(0.3, min(2.0, _bus_mult))
                     if _bus_mult != 1.0:
                         logger.info(f"BUS CONTEXT {PAIR_DISPLAY.get(signal.pair, signal.pair)}: size x{_bus_mult:.2f}")
@@ -1712,7 +1743,7 @@ class Backtester:
             price = current_candle.close
 
             # Check exits every candle (important for stops)
-            trade = self.trader.check_exits(pair, price)
+            self.trader.check_exits(pair, price)
 
             # Generate signals every 4 candles (4h) to keep backtest fast
             if i % 4 != 0:
@@ -1885,7 +1916,7 @@ def cmd_backtest(args, cfg: Config):
             display = PAIR_DISPLAY.get(pair, pair)
             print(f"  [{current+1}/{total}] Backtesting {display}...", flush=True)
         else:
-            print(f"\n  Backtest complete.\n")
+            print("\n  Backtest complete.\n")
 
     bt = Backtester(cfg)
     results = bt.run(pairs, progress_callback=progress)
@@ -1961,6 +1992,13 @@ def cmd_run_sim(args, cfg: Config):
     _live_snapshot = {"status": "starting", "bot_name": BOT_NAME, "timestamp": time.time()}
     _snap_lock = threading.Lock()
 
+    # NB-1: the dashboard's NexusBrain tab renders raw.recent_signals, but only
+    # the backtest path (_build_results) ever emitted it — the live run-sim
+    # snapshot never did, leaving the panel permanently empty. Same shape as
+    # the backtest field (Signal.to_dict(), chronological), capped at the last
+    # 20 generated signals (REJECTs included — the tab renders reject reasons).
+    _recent_signals: deque = deque(maxlen=20)
+
     def _update_snapshot():
         stats = trader.get_stats()
         snap = {
@@ -1979,6 +2017,8 @@ def cmd_run_sim(args, cfg: Config):
             ],
             "config": {"min_confluence": cfg.min_confluence, "max_positions": cfg.max_positions,
                        "scan_interval": cfg.scan_interval_sec},
+            # NB-1: live counterpart of the backtest-only recent_signals field
+            "recent_signals": list(_recent_signals),
         }
         if _expectancy:
             snap["expectancy"] = _expectancy.bot_snapshot_fields('nexusbrain')
@@ -2074,6 +2114,11 @@ def cmd_run_sim(args, cfg: Config):
 
                 # Generate new signals
                 signal = generate_signal(pair, pd, cfg)
+                if signal:
+                    # NB-1: feed the live snapshot's recent_signals ring
+                    # (every generated signal, REJECT included, so the tab
+                    # reflects the latest scan like the backtest view did)
+                    _recent_signals.append(signal.to_dict())
                 if signal and signal.confidence_label != ConfidenceLabel.REJECT:
                     # Only save/log when signal meaningfully changes
                     if _signal_changed(pair, signal):
@@ -2203,7 +2248,7 @@ def cmd_health(args, cfg: Config):
     server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
     server.daemon_threads = True
     print(f"  Listening on http://localhost:{port}/health")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     try:
         server.serve_forever()
@@ -2242,7 +2287,7 @@ def cmd_dashboard(args, cfg: Config):
             return
 
     # Run backtest
-    print(f"  Running backtest...")
+    print("  Running backtest...")
 
     def progress(current, total, pair):
         if current < total:
@@ -2250,7 +2295,7 @@ def cmd_dashboard(args, cfg: Config):
             pct = (current + 1) / total * 100
             print(f"    [{current+1}/{total}] {display}... ({pct:.0f}%)", flush=True)
         else:
-            print(f"  Backtest complete.\n")
+            print("  Backtest complete.\n")
 
     bt = Backtester(cfg)
     results = bt.run(pairs, progress_callback=progress)
@@ -2331,7 +2376,7 @@ def cmd_dashboard(args, cfg: Config):
     print(f"  Dashboard: http://localhost:{port}")
     print(f"  API:       http://localhost:{port}/api/snapshot")
     print(f"  Health:    http://localhost:{port}/health")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     try:
         server.serve_forever()
@@ -2450,9 +2495,9 @@ def main():
         cmd_dashboard(args, cfg)
     else:
         parser.print_help()
-        print(f"\n  Run with a command: scan, backtest, run-sim, report, health, dashboard")
-        print(f"  Example: python nexus_brain.py scan --pairs BTC,ETH,SOL")
-        print(f"  Example: python nexus_brain.py dashboard --auto\n")
+        print("\n  Run with a command: scan, backtest, run-sim, report, health, dashboard")
+        print("  Example: python nexus_brain.py scan --pairs BTC,ETH,SOL")
+        print("  Example: python nexus_brain.py dashboard --auto\n")
 
 
 if __name__ == "__main__":

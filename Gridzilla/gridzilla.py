@@ -1257,7 +1257,7 @@ class GridzillaEngine:
         # anything a wiring bug stranded (never raises).
         if self.portfolio:
             self.portfolio.confirm_reservations(
-                [g.get("reservation_id") for g in self.active_grids.values() if g.get("reservation_id")])
+                [g.get("reservation_id") for g in self.executor.active_grids.values() if g.get("reservation_id")])
 
         # Refresh fleet intelligence
         self.intel.refresh()

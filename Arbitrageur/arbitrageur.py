@@ -775,7 +775,7 @@ class ArbitrageurEngine:
         # anything a wiring bug stranded (never raises).
         if self._portfolio:
             self._portfolio.confirm_reservations(
-                [p.reservation_id for p in self.positions if p.reservation_id])
+                [p.reservation_id for p in self.open_positions if p.reservation_id])
 
         # 1. Get universe
         pairs = self._fetch_universe()

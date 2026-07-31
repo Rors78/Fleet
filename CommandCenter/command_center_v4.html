@@ -2683,13 +2683,17 @@ function _bakeEclipticDisc(outerR,tiltY){
   for(var gi=0;gi<grooveCount;gi++){
     var gt=gi/grooveCount;
     var gr=Math.max(0.1,8+gt*(outerR-8));
-    var isLane=rng()<0.09; /* ~9% of grooves are brighter "lanes" */
-    var baseA=isLane?(0.05+rng()*0.05):(0.008+rng()*0.014);
+    var isLane=rng()<0.14; /* brighter "lanes" — share raised 9%->14% */
+    /* ETCH PASS (2026-07-31, Jeremy's screenshot verdict): first bake read
+       as fog, not vinyl grooves — reference wants crisp confident etching.
+       Alpha roughly tripled; mid-zoom restraint now comes from the draw-time
+       zoom curve in _drawEclipticDisc instead of a timid bake. */
+    var baseA=isLane?(0.14+rng()*0.10):(0.030+rng()*0.030);
     /* Warm near center, cooling toward rim — tint the groove stroke itself */
     var warmT=1-gt;
     var grR=Math.floor(150+60*warmT),grG=Math.floor(140+40*warmT),grB=Math.floor(150-30*warmT);
     dctx.strokeStyle="rgba("+grR+","+grG+","+grB+","+baseA.toFixed(4)+")";
-    dctx.lineWidth=isLane?1.1:0.6;
+    dctx.lineWidth=isLane?1.4:0.7;
     dctx.beginPath();
     dctx.ellipse(ccx,ccy,gr,Math.max(0.1,gr*tiltY),0,0,Math.PI*2);
     dctx.stroke();
@@ -2703,7 +2707,7 @@ function _bakeEclipticDisc(outerR,tiltY){
     var bt=0.15+rng()*0.75;
     var bandR=Math.max(0.1,bt*outerR);
     var bandW=Math.max(0.1,outerR*(0.04+rng()*0.05));
-    var bandA=0.02+rng()*0.025;
+    var bandA=0.04+rng()*0.04; /* etch pass: dust bands doubled */
     var bandG=dctx.createRadialGradient(ccx,ccy,Math.max(0.1,bandR-bandW),ccx,ccy,bandR+bandW);
     bandG.addColorStop(0,  "rgba(0,0,0,0)");
     bandG.addColorStop(0.5,"rgba(160,150,130,"+bandA.toFixed(4)+")");
@@ -2726,7 +2730,7 @@ function _bakeEclipticDisc(outerR,tiltY){
     var sx=ccx+Math.cos(sAng)*sR, sy=ccy+Math.sin(sAng)*sR*tiltY;
     var isChunk=rng()<0.04; /* ~4% are larger chunks */
     var speckSz=isChunk?(0.9+rng()*1.4):(0.3+rng()*0.5);
-    var speckA=isChunk?(0.10+rng()*0.10):(0.04+rng()*0.06);
+    var speckA=isChunk?(0.20+rng()*0.16):(0.07+rng()*0.09); /* etch pass: debris pops */
     var warmT2=1-sT;
     var spR=Math.floor(160+50*warmT2),spG=Math.floor(150+35*warmT2),spB=Math.floor(150-20*warmT2);
     dctx.fillStyle="rgba("+spR+","+spG+","+spB+","+speckA.toFixed(3)+")";
@@ -2759,7 +2763,11 @@ function _drawEclipticDisc(ctx,now){
   }
   if(!_discCanvas) return;
   ctx.save();
-  ctx.globalAlpha=0.85;
+  /* Zoom curve (etch pass): restrained at working zoom so the grooves don't
+     shout under the planets, full contrast at the far-zoom floor where the
+     reference's whole-disc framing lives. zoom 1.0 -> 0.55, floor -> 1.0. */
+  var _zt=Math.max(0,Math.min(1,(1-_orbZoom)/(1-_ORB_ZOOM_MIN)));
+  ctx.globalAlpha=0.55+0.45*_zt;
   ctx.drawImage(_discCanvas,cc.x-_discCanvas.width/2,cc.y-_discCanvas.height/2);
   ctx.restore();
 }
@@ -4131,7 +4139,12 @@ if($orbitalCanvas){
       if(d<hitR&&edgeD<bestD){bestD=edgeD;best=nd;}
     }
     _orbHover=best?best.id:null;
-    if(best&&best.alive){if(typeof _sound!=="undefined") _sound.playHover(best.id);}
+    if(best&&best.alive){
+      /* Hover beep removed 2026-07-31 (Jeremy's directive) — the glassy
+         tick fired on every body hover and got annoying fast. The if/else
+         structure stays (the else below is the CC hover gong path);
+         _sound.playHover itself is kept in case it's repurposed. */
+    }
     else{
       /* CC hover gong area */
       var ccD=Math.sqrt((mx-_orbLW/2)*(mx-_orbLW/2)+(my-_orbLH/2)*(my-_orbLH/2));

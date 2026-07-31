@@ -34,31 +34,23 @@ ULTRON_DIR = os.path.join(LOG_DIR, "ultron")
 EVOLUTION_DIR = os.path.join(LOG_DIR, "evolution")
 CC_URL = "http://localhost:9000"
 
-# Bot ports — mirrors BOT_REGISTRY in command_center.py.
+# Bot ports — mirrors BOTS in fleet_config.py.
 # Keep in sync manually when adding/removing bots.
 BOT_PORTS = {
     "turtlesue": 8070, "sentinel": 8071, "trinity": 8072, "hivemind": 8073,
     "nexusbrain": 8074, "oracle": 8075, "deepblue": 8076, "gridzilla": 8077,
-    "phitex": 8078, "aegis": 8079, "trekbot": 8080, "nexus": 8082,
-    "rubberband": 8083, "contrarian": 8084, "arbitrageur": 8085, "chronos": 8086,
+    "phitex": 8078, "aegis": 8079, "nexus": 8082, "rubberband": 8083,
+    "contrarian": 8084, "arbitrageur": 8085, "chronos": 8086, "confluence": 8088,
 }
-
-# TrekBot uses different endpoints than the standard /api/snapshot
-_TREKBOT_ENDPOINTS = ["/health", "/positions", "/analytics"]
 
 
 class EvolutionEngine:
     """Self-evolution engine for the trading fleet."""
 
-    def __init__(self, trekbot_dir=None):
+    def __init__(self):
         self.measurements = {}
         self.proposals = []
         self.applied_history = []
-        self.trekbot_dir = trekbot_dir or os.environ.get(
-            "TREKBOT_DIR",
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "TrekBot"),
-        )
-        self.factors_log = os.path.join(self.trekbot_dir, "goldeneye_factors.log")
         self._load_history()
 
     def _load_history(self):
@@ -94,10 +86,7 @@ class EvolutionEngine:
         # 1d. Event bus health
         self._measure_bus_activity(days)
 
-        # 1e. Signal quality (TrekBot-specific)
-        self._measure_signal_quality(days)
-
-        # 1f. Timing patterns
+        # 1e. Timing patterns
         self._measure_timing(days)
 
         return self.measurements
@@ -189,35 +178,16 @@ class EvolutionEngine:
         live = {}
         for bot_id, port in BOT_PORTS.items():
             try:
-                if bot_id == "trekbot":
-                    # TrekBot uses three separate endpoints
-                    merged = {}
-                    for ep in _TREKBOT_ENDPOINTS:
-                        resp = urlreq.urlopen(f"http://localhost:{port}{ep}", timeout=2)
-                        key = ep.strip("/").split("/")[-1]
-                        merged[key] = json.loads(resp.read())
-                    health = merged.get("health", {})
-                    analytics = merged.get("analytics", {})
-                    positions = merged.get("positions", [])
-                    live[bot_id] = {
-                        "status": "online",
-                        "equity": health.get("paper_balance"),
-                        "pnl": health.get("circuit_breaker_daily_pnl", 0),
-                        "total_trades": analytics.get("trades", 0),
-                        "win_rate": analytics.get("win_rate", 0),
-                        "open_positions": len(positions) if isinstance(positions, list) else 0,
-                    }
-                else:
-                    resp = urlreq.urlopen(f"http://localhost:{port}/api/snapshot", timeout=1)
-                    data = json.loads(resp.read())
-                    live[bot_id] = {
-                        "status": data.get("status", "online"),
-                        "equity": data.get("equity", data.get("paper_balance")),
-                        "pnl": data.get("pnl", 0),
-                        "total_trades": data.get("total_trades", 0),
-                        "win_rate": data.get("win_rate", 0),
-                        "open_positions": data.get("open_positions", data.get("open_spreads", 0)),
-                    }
+                resp = urlreq.urlopen(f"http://localhost:{port}/api/snapshot", timeout=1)
+                data = json.loads(resp.read())
+                live[bot_id] = {
+                    "status": data.get("status", "online"),
+                    "equity": data.get("equity", data.get("paper_balance")),
+                    "pnl": data.get("pnl", 0),
+                    "total_trades": data.get("total_trades", 0),
+                    "win_rate": data.get("win_rate", 0),
+                    "open_positions": data.get("open_positions", data.get("open_spreads", 0)),
+                }
             except Exception:
                 live[bot_id] = {"status": "offline"}
 
@@ -281,51 +251,6 @@ class EvolutionEngine:
             "events_per_day": total / max(days, 1),
         }
         print(f"    Bus: {total} events from {len(sources)} sources ({total/max(days,1):.0f}/day)")
-
-    def _measure_signal_quality(self, days):
-        """Analyze TrekBot signal quality from factor logs.
-
-        NOTE: Scans the entire TrekBot factors log — no date filtering.
-        TrekBot's log format isn't date-partitioned like event logs.
-        """
-        if not os.path.exists(self.factors_log):
-            return
-
-        signals = defaultdict(lambda: {"wins": 0, "losses": 0, "r_sum": 0, "r_count": 0})
-        try:
-            with open(self.factors_log, "r", encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    try:
-                        t = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    r = t.get("r", 0)
-                    for sig in t.get("sigs", []):
-                        if r > 0:
-                            signals[sig]["wins"] += 1
-                        else:
-                            signals[sig]["losses"] += 1
-                        signals[sig]["r_sum"] += r
-                        signals[sig]["r_count"] += 1
-        except OSError:
-            print(f"    Could not read {self.factors_log}")
-            return
-
-        signal_report = {}
-        for sig, s in signals.items():
-            total = s["wins"] + s["losses"]
-            if total < 3:
-                continue
-            signal_report[sig] = {
-                "total": total,
-                "win_rate": s["wins"] / total * 100,
-                "avg_r": s["r_sum"] / s["r_count"],
-                "wins": s["wins"],
-                "losses": s["losses"],
-            }
-
-        self.measurements["signal_quality"] = signal_report
-        print(f"    Signal quality: {len(signal_report)} signals tracked")
 
     def _measure_timing(self, days):
         """Analyze which hours/days are profitable."""
@@ -447,25 +372,6 @@ class EvolutionEngine:
                 "suggestion": f"Only {util:.1f}% capital deployed — bots may be too conservative",
             })
 
-        # Pattern: losing signals (TrekBot)
-        for sig, stats in self.measurements.get("signal_quality", {}).items():
-            if stats["total"] >= 10 and stats["win_rate"] < 25 and stats["avg_r"] < -0.5:
-                patterns.append({
-                    "type": "LOSING_SIGNAL",
-                    "bot": "trekbot",
-                    "confidence": min(0.85, stats["total"] / 30),
-                    "data": {"signal": sig, **stats},
-                    "suggestion": f"TrekBot signal '{sig}': {stats['win_rate']:.0f}% WR, R={stats['avg_r']:+.2f} — disable or invert",
-                })
-            elif stats["total"] >= 15 and stats["win_rate"] > 60 and stats["avg_r"] > 0.5:
-                patterns.append({
-                    "type": "WINNING_SIGNAL",
-                    "bot": "trekbot",
-                    "confidence": min(0.85, stats["total"] / 30),
-                    "data": {"signal": sig, **stats},
-                    "suggestion": f"TrekBot signal '{sig}': {stats['win_rate']:.0f}% WR, R={stats['avg_r']:+.2f} — increase weight",
-                })
-
         # Pattern: timing edges
         timing = self.measurements.get("timing", {})
         for h, stats in timing.get("hours", {}).items():
@@ -526,32 +432,6 @@ class EvolutionEngine:
                     "confidence": p["confidence"],
                     "risk": "LOW",
                     "category": "allocation",
-                })
-
-            elif ptype == "LOSING_SIGNAL":
-                proposals.append({
-                    "target": "trekbot",
-                    "parameter": f"signal_weight.{p['data']['signal']}",
-                    "direction": "DECREASE",
-                    "current": "1.0",
-                    "proposed": "0.5",
-                    "rationale": p["suggestion"],
-                    "confidence": p["confidence"],
-                    "risk": "MEDIUM",
-                    "category": "signal",
-                })
-
-            elif ptype == "WINNING_SIGNAL":
-                proposals.append({
-                    "target": "trekbot",
-                    "parameter": f"signal_weight.{p['data']['signal']}",
-                    "direction": "INCREASE",
-                    "current": "1.0",
-                    "proposed": "1.5",
-                    "rationale": p["suggestion"],
-                    "confidence": p["confidence"],
-                    "risk": "LOW",
-                    "category": "signal",
                 })
 
             elif ptype == "IDLE_CAPITAL":

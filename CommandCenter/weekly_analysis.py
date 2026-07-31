@@ -36,27 +36,10 @@ def date_range(days):
     return dates
 
 
-def read_events(dates):
-    events = []
-    for d in dates:
-        path = os.path.join(EVENT_DIR, f"{d}.jsonl")
-        if not os.path.exists(path):
-            continue
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if line:
-                    try:
-                        events.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        pass
-    return events
-
-
-def read_journals(dates):
+def _read_jsonl(directory, dates):
     entries = []
     for d in dates:
-        path = os.path.join(JOURNAL_DIR, f"{d}.jsonl")
+        path = os.path.join(directory, f"{d}.jsonl")
         if not os.path.exists(path):
             continue
         with open(path, "r", encoding="utf-8") as f:
@@ -68,6 +51,14 @@ def read_journals(dates):
                     except json.JSONDecodeError:
                         pass
     return entries
+
+
+def read_events(dates):
+    return _read_jsonl(EVENT_DIR, dates)
+
+
+def read_journals(dates):
+    return _read_jsonl(JOURNAL_DIR, dates)
 
 
 def fetch_fleet_state():

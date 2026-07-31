@@ -170,8 +170,7 @@ class FleetLogger:
         self._journal_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="Journal")
 
         # Previous state for diff-based event detection
-        self._prev_bots = {}        # bot_id -> normalized dict
-        self._prev_positions = {}   # bot_id -> set of position keys
+        self._prev_positions = {}   # bot_id -> {position_key: position_info}
         self._prev_regimes = {}     # bot_id -> confirmed regime string
         self._pending_regimes = {}  # bot_id -> {"regime": str, "count": int}
         self._prev_whale_tiers = {} # pair -> tier string
@@ -392,7 +391,18 @@ class FleetLogger:
 
             # --- Position changes (trade open/close) ---
             current_positions = self._extract_positions(bid, raw, norm)
-            prev_positions = self._prev_positions.get(bid, {})
+
+            # First observation of this bot since the logger started: seed the
+            # baseline WITHOUT diffing. A fresh logger has no memory, and a
+            # position that was already open is not a new trade — without this
+            # seed, every CC restart emitted one phantom TRADE_OPEN per open
+            # position (5x duplicates on one UNI/USD position, 2026-07-30),
+            # inflating trade counts in expectancy and the subscriber feed.
+            if bid not in self._prev_positions:
+                self._prev_positions[bid] = current_positions
+                continue
+
+            prev_positions = self._prev_positions[bid]
 
             # New positions = TRADE_OPEN
             for key, pos in current_positions.items():
@@ -511,8 +521,6 @@ class FleetLogger:
                         with self._daily_lock:
                             self._daily["whale_alerts"] += 1
                         self._prev_whale_tiers[pair] = tier
-
-            self._prev_bots[bid] = norm
 
         # Write all events and publish to event bus
         for ev in events:
@@ -839,7 +847,17 @@ class FleetLogger:
         try:
             state = self._get_state()
             portfolio_state = self._get_portfolio()
-        except Exception:
+        except Exception as e:
+            # Loud skip: a silently dropped tick leaves a hole in the snapshot
+            # stream that is indistinguishable from a process restart.
+            try:
+                _append_jsonl(EVENT_DIR, {
+                    "ts": time.time(),
+                    "type": "LOGGER_ERROR",
+                    "error": f"state fetch failed: {e}",
+                })
+            except Exception:
+                pass
             return
 
         bots = state.get("bots", {})

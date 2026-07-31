@@ -49,10 +49,10 @@ python evolution.py --days 7
 ## Architecture
 
 ### Core Files
-- `command_center.py` — Single-file backend (~3550 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration. Imports `signal_aggregator`, `signal_decomposition`, `expectancy`, `signal_decay`, and `fleet_intel_score` directly — these are NOT standalone-only.
-- `command_center_v4.html` — Current active dashboard (~16k lines of inline HTML/CSS/JS). Served at `/`. No longer fully single-file: the COSMOS visualization lives in two companion scripts it loads — `solar_system.js` (canvas solar system: planets, star systems, DeepField) and `armada.js` (WebGL mining-ship armada per `COSMOS_ARMADA_SPEC.md`, a deferred ES module with its own rAF render loop). three.js r178 is vendored as root-level `three.module.min.js` / `three.core.min.js` (NOT under `static/`) because CC's static route rejects subdirectory paths — an importmap maps the bare `"three"` specifier to the root copy. `audio/` holds the NASA sample library for the `_sound` system.
+- `command_center.py` — Single-file backend (~4100 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration. Imports `signal_aggregator`, `signal_decomposition`, `expectancy`, `signal_decay`, and `fleet_intel_score` directly — these are NOT standalone-only.
+- `command_center_v4.html` — Current active dashboard (~17.4k lines of inline HTML/CSS/JS). Served at `/`. No longer fully single-file: the COSMOS visualization lives in two companion scripts it loads — `solar_system.js` (canvas solar system: planets, star systems, DeepField) and `armada.js` (WebGL mining-ship armada per `COSMOS_ARMADA_SPEC.md`, a deferred ES module with its own rAF render loop). three.js r178 is vendored as root-level `three.module.min.js` / `three.core.min.js` (NOT under `static/`) because CC's static route rejects subdirectory paths — an importmap maps the bare `"three"` specifier to the root copy. `audio/` holds the NASA sample library for the `_sound` system.
 - `signal_broadcaster.py` — Standalone Telegram signal service on port 9002. Subscribes to CC event bus via SSE, formats alerts, pushes to Telegram. Runs as Phase 2 support bot. Dashboard at `signal_dashboard.html` (served via CC at `/signals`).
-- `bot_responder.py` — Telegram bot command responder (paired with signal_broadcaster).
+- `bot_responder.py` — Telegram bot command responder (paired with signal_broadcaster). **The fleet owns `@OracleQNTMCoreBot` outright as of 2026-07-30** — `bot_responder` is the sole poller and sender. GoldenEye was made Telegram-silent for this: its `Desktop\launch.bat` token lines were replaced with explicit empty sets (restore instructions are in comments there), and `D:\GoldenEye\subscribers.json` has `fleet_pulse` set `active:false`. GoldenEye's subscriber channel (`-1003615829313`) no longer receives cards. Only one process may hold the token — a second poller causes 409s and duplicate sends.
 - `card_renderer.py` — PNG signal-card generator (PIL/Pillow) for Telegram sendPhoto; paid tier gets images, free tier stays text. Maps internal bot names to subscriber-facing display names (e.g. confluence→Concord, turtlesue→Stalker) — internal names are never shown to subscribers. The card narrative prose is the product voice — don't strip it.
 - `channel_content.py` — CLI to publish/pin channel descriptions and guide posts to both Telegram channels (`--preview`, `--send-all`, `--set-descriptions`). Reads `signal_config.json`.
 - `backups/` — Archived older dashboard versions (v3, etc.).
@@ -68,9 +68,9 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 - `collector.py` — Brainiac: 5 background threads collecting order book depth, recent trades, global metrics (CoinGecko), correlation matrix, and funding rates. Stores to `brainiac/` as JSONL. Also registers `/api/brainiac/*` endpoints on the HTTP handler.
 - `fleet_logger.py` — Writes snapshots (60s), events (trade opens/closes, regime changes), daily summaries, and AI trade journals to `logs/`. Imported by command_center.py.
 - `analyze.py` — CLI tool: 8 subcommands for fleet diagnostics reading `logs/` JSONL.
-- `ultron.py` — Self-evolution engine: analyzes gate effectiveness, signal quality, regime stability, portfolio efficiency, bot utilization, timing patterns, bus effectiveness, and shadow trades. Configurable TrekBot log paths via constructor or `TREKBOT_DIR` env var (legacy — TrekBot is no longer in the fleet; those analyses no-op without its logs). Feeds findings to AI for synthesis.
+- `ultron.py` — Self-evolution engine: analyzes regime stability, portfolio efficiency, bot utilization, and timing patterns. (The four TrekBot-log analyses — gates, signal quality, bus effectiveness, shadow trades — were deleted 2026-07-30; their data sources died when TrekBot left the fleet, and the bus check emitted a false warning weekly.) Feeds findings to AI for synthesis.
 - `weekly_analysis.py` — Aggregates events + journals + Brainiac data + Ultron analysis into an AI-powered weekly report.
-- `evolution.py` — Evolution engine: 5-step cycle (measure→analyze→propose→simulate→recommend). Reads event logs, queries live bots, identifies profitable/losing patterns, generates ranked parameter change proposals. Saves reports to `logs/evolution/`.
+- `evolution.py` — Evolution engine: 5-step cycle (measure→analyze→propose→simulate→recommend). Reads event logs, queries live bots, identifies profitable/losing patterns, generates ranked parameter change proposals. Saves reports to `logs/evolution/`. TrekBot was purged and **Confluence (8088) was added to `BOT_PORTS` on 2026-07-30** — its trades had never been analyzed by this engine. Any evolution report predating that omits Confluence entirely.
 
 ### Shared Libraries
 - `standards.py` — Canonical regime labels (`BULL`, `BEAR`, `RANGING`, `VOLATILE`, `TRANSITIONING`), `REGIME_MAP` for normalizing any bot's regime label, `normalize_pair()` for Kraken pair formats.
@@ -94,7 +94,7 @@ Standalone modules that read event logs / live bot data and return structured in
 - `fleet_intel_score.py` — Synthesizes all engine outputs into per-pair intelligence scores by polling NEXUS snapshot + event bus.
 - `causal_flow.py` — Granger causality graph between bots, pairs, and events; answers "does X actually precede Y?" Wired in NEXUS; emits `CAUSAL_FLOW`.
 - `shannon.py` — Information theory: mutual information between signals, channel capacity per bot-to-bot link, entropy of the event stream. Wired in NEXUS; emits `SHANNON_ENTROPY` (fires when fleet noise ratio > 70%).
-- `denial_cost.py` — Portfolio denial opportunity cost analyzer. Reads `PORTFOLIO_RESERVE_DENIED` events, computes what denied trades would have netted. Usage: `python denial_cost.py --days 3 --hold-minutes 240`.
+- `denial_cost.py` — Portfolio denial opportunity cost analyzer. Reads `PORTFOLIO_RESERVE_DENIED` events, computes what denied trades would have netted. Usage: `python denial_cost.py --days 3 --hold-minutes 240`. **Was permanently blind until 2026-07-30** — its type filter never read the `event` field, and it scanned only `logs/events` while the `pair`/`amount` fields it needs exist only in `logs/event_bus`. It now scans both and finds ~103 denials/24h where it previously reported 0 forever. Treat any pre-2026-07-30 denial-cost output as meaningless.
 
 Retired analytics (`regime_expectancy.py`, `signal_attribution.py`, `factor_calibration.py` — all depended on TrekBot's `goldeneye_factors.log`, frozen since TrekBot left the fleet) live in `graveyard/` with the evidence in `graveyard/MANIFEST.md`.
 
@@ -214,7 +214,7 @@ Authoritative roster: `fleet_config.py` (`BOTS` dict) — trust it over this tab
 - Max total deployed: 80% (always keep 20% cash)
 - Max per bot: 30%
 - Max per pair: 20%
-- Max per trade: 5%
+- Max per trade: 20% (`max_per_trade_pct` in `fleet_config.py`)
 - Max directional: 60% (long or short)
 
 ### Bot Integration
@@ -275,6 +275,8 @@ Bots marked `"phase": 2` in `fleet_config.py` require Command Center to be runni
 ### Inference Model Chain
 `inference_server.py` searches for models in order: `gemma2:2b` → `phi4-mini` → `mistral-nemo` → `qwen3.5:4b` → `deepseek-r1:7b` → first available. All prompts instruct JSON-only responses (no markdown).
 
+**Ollama is pinned to CPU (`num_gpu:0`) as of 2026-07-30.** Ollama v0.32.5's CUDA runtime crashes with `0xc0000005` on the Tesla P4 (Pascal). CPU `gemma2:2b` is verified end-to-end. Re-enable GPU only after confirming an Ollama release has fixed Pascal — the crash is silent from CC's side, it just looks like inference is down.
+
 ### Event Bus Reactions
 Reaction rules from `reactions.json` spawn in separate daemon threads to avoid blocking publish. Condition expressions use a regex parser: `count(EVENT_TYPE, last_Xmin) >= N`.
 
@@ -282,7 +284,7 @@ Reaction rules from `reactions.json` spawn in separate daemon threads to avoid b
 Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
 
 ### Dashboard v4 Editing Convention
-`command_center_v4.html` is ~16k lines of inline HTML/CSS/JS, plus two companion scripts: `solar_system.js` (COSMOS canvas layer — planets, star systems, DeepField) and `armada.js` (WebGL armada). `armada.js` is a deferred ES module with **no access to the inline `<script>` closure** — interop happens through `window.*` globals (`_orbNodes`, `_orbIsFS`, plain-object snapshots stamped for zoom/pan). three.js is vendored at repo root (not `static/`) because the static route rejects subdirectory paths; the importmap maps `"three"` to `./three.module.min.js`. When adding or upgrading bot panels:
+`command_center_v4.html` is ~17.4k lines of inline HTML/CSS/JS, plus two companion scripts: `solar_system.js` (COSMOS canvas layer — planets, star systems, DeepField) and `armada.js` (WebGL armada). `armada.js` is a deferred ES module with **no access to the inline `<script>` closure** — interop happens through `window.*` globals (`_orbNodes`, `_orbIsFS`, plain-object snapshots stamped for zoom/pan). three.js is vendored at repo root (not `static/`) because the static route rejects subdirectory paths; the importmap maps `"three"` to `./three.module.min.js`. When adding or upgrading bot panels:
 1. Canvas elements must be injected **after** the panel HTML is in the DOM (post-inject pattern — referencing the canvas in the same template string where it's declared will fail because the element doesn't exist yet at script parse time).
 2. After any edit, do a brace-balance check on the `<script>` block — unbalanced braces silently break the whole dashboard with no console error.
 3. Match existing v4 conventions (color palette, panel structure, data-binding pattern) rather than inventing new ones. Copy a working panel and modify it.
@@ -290,6 +292,16 @@ Collector threads silently swallow network errors. If data stops flowing, check 
 
 ### Portfolio Reservation Leaks on Bot Restart
 When a bot crashes or is restarted mid-trade, its in-flight reservations in `portfolio.json` are orphaned (the bot has no memory of them after restart). Defense: bots must call `/api/portfolio/release` for any stale reservations on startup, or the portfolio manager will leak capital until manually cleared. (Historical offender was TrekBot, fixed in milestone v3 before it left the fleet.) When wiring a new bot to the pool, verify restart hygiene. Note: the dashboard's "Stale reservations" counter flags any reservation older than 2h — long-held positions trip it legitimately; cross-check against the bot's actual open positions before treating it as a leak.
+
+### Phantom TRADE_OPENs on CC Restart (fixed 2026-07-30)
+`FleetLogger` derives trade events by diffing each bot's reported positions against `_prev_positions`. Because that dict started empty on every CC start, the first poll after a restart looked like every already-open position had just been opened — CC emitted **one phantom `TRADE_OPEN` per open position on every restart**. Five landed on 2026-07-30, each correlated with a restart visible in the bus as a ~30s silence gap. The fix seeds `_prev_positions` silently on first observation of each bot, so the first poll establishes a baseline instead of a diff. The five phantom rows were purged from `logs/events` + `logs/event_bus` (backups in `logs/purged_phantoms_backup/`).
+
+Two consequences worth knowing: a silence gap in the event bus of roughly 30s is the signature of a CC restart, and `LOGGER_ERROR` is now emitted when a logger tick is skipped rather than failing silently.
+
+### Stale Reservation Sweeps Must Be Position-Aware (fixed 2026-07-30)
+The stale-reservation sweep was age-only at a 48h threshold, so it released Confluence's APE/USD and MANA/USD reservations out from under positions that had legitimately been held 66h. `force_release_stale()` now takes `active_positions=` and cross-checks `_active_position_keys` before releasing anything. **A long-held position is not a leak** — always cross-check against the bot's actual reported positions before treating an old reservation as orphaned.
+
+Carried-forward consequence: Confluence's stored reservation ids (`d5eu`, `3xve`) are dead after the manual re-reservation; the live ids are `xgdr` and `d9ve`. Confluence's close-time releases will fail silently against the dead ids, and the fixed sweeper will reap the new ids roughly 48h after those positions close.
 
 ### Watchdogs, Threaded Servers, and Silent Kills (learned 2026-07-28)
 - **Two watchdogs restart bots**: CC's `_health_monitor` thread AND `launch_fleet.py`'s monitor loop. A bot process that exits with **code 1 and no traceback was taskkilled by a watchdog**, not crashed — check both watchdogs' logs before hunting a Python bug.
@@ -321,7 +333,7 @@ Shorts were re-enabled fleet-wide in paper on 2026-07-30 (`fleet_config.FLEET_LO
 
 ## Key Metrics to Watch
 **FEES ARE GONE (2026-07-30, Jeremy's directive).** The fleet is a signal product — subscribers pay their own exchanges' fees, so the fleet neither models nor deducts fees anywhere. All P/L and expectancy are GROSS price movement. The quality gates that fee-survival accidentally taught us (R:R ratios, minimum-move floors, cooldowns, confluence bars) SURVIVE at the same thresholds, re-rationalized as signal-worthiness standards — do not remove them, and do not reintroduce fee math. Historical logs before 2026-07-30 are net-of-fee; after, gross — mind the discontinuity when comparing eras. (The old fee-ratio war, 650% → 32%, is preserved in git history; the fee-slayer agent's domain is retired.)
-- **Expectancy** (the primary health signal): Target positive gross E[V] per trade. The open problem is negative expectancy (avg loss ≫ avg win). Run `python expectancy.py` or hit `/api/expectancy` for current state.
+- **Expectancy** (the primary health signal): Target positive gross E[V] per trade. As of 2026-07-30: **-$31.09/trade gross, n=14, 28.6% win rate, avg win $14.63 vs avg loss -$49.38 (3.4×)**. This is a loss-size problem, not a frequency or friction problem. The sample dates only from the gross-P/L cutover — ~30+ closed gross-era trades are needed before a measurement pass means anything. Run `python expectancy.py` (a `__main__` block was added 2026-07-30) or hit `/api/expectancy` for current state; never quote the figure from memory. Note `/api/expectancy` still reports a historical `trekbot` bucket from archived logs — it is not a live bot.
 - NexusBrain `min_confluence` is **0.70** (lowered from 0.80 on 2026-04-08 after 8h with zero trades; note the real cause of that drought was two broken signal components, fixed 2026-07-29 — see `score_volume_confirmation` and `score_macd_momentum`).
 - **Gridzilla spacing floor:** 1.2% minimum grid spacing. Max 5 grid lines. $0.50 gross profit floor per level (signal-worthiness density floor, not fee survival).
 - **Trade frequency governor:** 10-min per-pair cooldown in portfolio manager after any trade closes. Adaptive: 5 min when AEGIS score > 0.7. Gridzilla exempt (fee gate handles its frequency).

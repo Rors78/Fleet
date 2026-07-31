@@ -1,6 +1,8 @@
 # Command Center
 
-Unified mission control for a 17-bot crypto trading fleet. Polls each bot's API, normalizes metrics, manages a shared $10,000 capital pool, runs an event bus for real-time inter-bot communication, and serves a single-page diagnostic dashboard on port 9000.
+Unified mission control for a 16-bot crypto trading fleet. Polls each bot's API, normalizes metrics, manages a shared $10,000 capital pool, runs an event bus for real-time inter-bot communication, and serves a single-page diagnostic dashboard on port 9000.
+
+**The fleet is a SIGNAL PRODUCT** (2026-07-30) — it paper-trades to measure signal quality, then broadcasts signals to Telegram subscribers. It will never trade real money itself. All P/L and expectancy figures are **gross price movement**: subscribers pay their own venue's fees, so the fleet neither models nor deducts fees anywhere.
 
 ## Quick Start
 
@@ -23,11 +25,9 @@ Dashboard: **http://localhost:9000**
 | Trinity | 8072 | Intel | Scanner, signal waterfall |
 | HiveMind | 8073 | Intel | Ensemble optimizer |
 | NexusBrain | 8074 | Trader | Confluence signals, pool-funded |
-| TrekBot | 8080 | Trader | GoldenEye 27-signal adaptive system |
-| TrekBot SHORT | 8087 | Trader | Inverse mode of TrekBot |
 | Oracle | 8075 | Intel | Quant bridge, F&G gauge |
 | Deep Blue | 8076 | Intel | Whale detection across 20 pairs |
-| Gridzilla | 8077 | Trader | Grid trading with fee gates |
+| Gridzilla | 8077 | Trader | Grid trading, 1.2% spacing floor |
 | PHITEX | 8078 | Intel | Thermodynamic market model |
 | AEGIS | 8079 | Meta | Fleet self-assessment, deployment gating |
 | NEXUS | 8082 | Intel | 14-engine mathematical council |
@@ -35,17 +35,24 @@ Dashboard: **http://localhost:9000**
 | Contrarian | 8084 | Intel | Fear & Greed sentiment |
 | Arbitrageur | 8085 | Trader | Statistical arbitrage, z-score spreads |
 | Chronos | 8086 | Intel | Temporal/session analysis |
-| Inference | 9001 | AI | Ollama proxy (Tesla P4) |
+| Confluence | 8088 | Trader | Per-source signal aggregation, bidirectional |
+| Inference | 9001 | AI | Ollama proxy (CPU-pinned, see Known Issues) |
+| Broadcaster | 9002 | Signals | Telegram signal service (`/health`, `/stats`, `/feed`) |
+| Bot Responder | — | Signals | Telegram command responder (no port) |
 | **Command Center** | **9000** | **Aggregator** | **This repo** |
 
-7 trading bots share the central portfolio. AEGIS score controls deployment limits (DEFENSIVE/CAUTIOUS/NORMAL/AGGRESSIVE).
+6 trading bots share the central portfolio (TurtleSue, NexusBrain, Gridzilla, Rubberband, Arbitrageur, Confluence). AEGIS score controls deployment limits (DEFENSIVE/CAUTIOUS/NORMAL/AGGRESSIVE).
+
+TrekBot and TrekBot SHORT (formerly ports 8080/8087) were removed from the fleet. TrekBot lives on as the standalone **GoldenEye** project at `D:\GoldenEye`. Note that `/api/expectancy` still reports a historical `trekbot` bucket sourced from archived event logs — it is not a live bot.
+
+**Telegram ownership (2026-07-30):** the fleet owns `@OracleQNTMCoreBot` outright — `bot_responder.py` is the sole poller and sender. GoldenEye was made Telegram-silent (tokens cleared from its launcher, its subscriber channel set inactive).
 
 ## Dashboard
 
-Single-page app (`command_center_v4.html`, ~18K lines) with:
+Single-page app (`command_center_v4.html`, ~17.4K lines) with:
 
-- **Overview tab** — 12-panel fleet diagnostic: AEGIS gauge, bot scoreboard with expectancy, active positions with closed-trade fallback, regime source disagreement, Gridzilla pair scan, whale intel heatmap, 14-engine council status, signal quality with market microstructure, event stream with type distribution, fee analysis with trend, sentiment with funding rates
-- **16 bot detail tabs** — each with 4x2 diagnostic grid tailored to the bot's function. Every panel wired to live API endpoints. Trade history survives bot restarts via persistent event logs.
+- **Overview tab** — 12-panel fleet diagnostic: AEGIS gauge, bot scoreboard with expectancy, active positions with closed-trade fallback, regime source disagreement, Gridzilla pair scan, whale intel heatmap, 14-engine council status, signal quality with market microstructure, event stream with type distribution, sentiment with funding rates
+- **Bot detail tabs** — each with 4x2 diagnostic grid tailored to the bot's function. Every panel wired to live API endpoints. Trade history survives bot restarts via persistent event logs.
 - **Solar system visualization** — orbital layout showing bot relationships and health
 
 ## Architecture
@@ -69,7 +76,7 @@ fleet_logger.py      Snapshots, events, daily summaries to logs/
 **GET endpoints (port 9000):**
 - `/api/master` — full fleet state
 - `/api/portfolio` — pool state, reservations, cooldowns
-- `/api/trades?bot=trekbot&limit=50` — persistent trade history from event logs
+- `/api/trades?bot=confluence&limit=50` — persistent trade history from event logs
 - `/api/expectancy` — fleet-wide and per-bot expectancy stats
 - `/api/events/recent?n=50&type=TRADE_OPEN` — event bus catch-up
 - `/api/events/stream` — SSE real-time stream
@@ -105,12 +112,24 @@ fleet_logger.py      Snapshots, events, daily summaries to logs/
 
 ## Key Metrics
 
-- **Expectancy**: -$1.45/trade (110 trades). Fee ratio: 212%. Target: sub-100%.
-- **Portfolio**: $10K pool, 30% max deployment in DEFENSIVE, 60% in CAUTIOUS
-- **Trade gates**: $30 min trade size, 10-min per-pair cooldown, AEGIS regime gate
-- **Auto-restart**: Health monitor detects dead bots, restarts from fleet_config.json
+- **Expectancy** (the primary health signal): **-$31.09/trade gross, n=14, 28.6% win rate, avg loss 3.4× avg win** as of 2026-07-30. This is THE open strategic problem — a loss-size problem, not a frequency or friction problem. The sample is small and dates only from the 2026-07-30 gross-P/L cutover; ~30+ closed gross-era trades are needed before a measurement pass is meaningful. Pull `/api/expectancy` fresh — never quote this figure from memory.
+- **Fees**: not modeled anywhere. The old fee-ratio war (650% → 32%) is closed and lives in git history only.
+- **Portfolio**: $10K pool. Limits in `fleet_config.PORTFOLIO_LIMITS` — 80% max total deployed, 30% per bot, 20% per pair, 20% per trade, 60% directional. AEGIS score gates the effective deployment ceiling.
+- **Trade gates**: 10-min per-pair cooldown (5 min when AEGIS > 0.7), AEGIS regime gate, Gridzilla 1.2% grid spacing floor. These survive as signal-worthiness standards, re-rationalized from their fee-survival origins — do not remove them.
+- **Auto-restart**: Health monitor detects dead bots, restarts from fleet_config.json. **No boot autostart exists** — a machine reboot leaves the fleet down until `launch_fleet.py` is run manually.
 
 ## Dependencies
 
 - `requests` (only external dependency for Command Center)
 - Bots use stdlib `urllib` only for fleet communication
+
+## Known Issues (as of 2026-07-30)
+
+- **Negative gross expectancy** — see Key Metrics. The strategic problem; needs sample size before action.
+- **No fleet boot autostart** — reboot leaves the fleet down until `launch_fleet.py` is run by hand.
+- **Ollama GPU broken on the Tesla P4** — Ollama v0.32.5's CUDA runtime crashes (`0xc0000005`) on Pascal. `inference_server.py` pins `num_gpu:0` (CPU `gemma2:2b`, verified end-to-end). Re-enable GPU when Ollama fixes Pascal.
+- **Dual `TRADE_OPEN` emission by design** — bots emit natively and `FleetLogger` emits from its state diff, with different size semantics (USD vs units). Bus consumers double-count opens.
+- **`fleet_intel_score.py:227` reads `net_flow`**, which `causal_flow` never emits — causal trade bias is permanently 0. Needs a design decision.
+- **`signal_aggregator` charges win/loss to sources that voted against** the trade direction. Possibly intentional; unreviewed.
+- **`port_guard` incumbent check cannot verify port-holder identity** — it only confirms that *something* answers HTTP on the port.
+- **Gridzilla reports no `equity` field** through its normalizer.

@@ -24,7 +24,12 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 CC_URL = "http://localhost:9000"
-EVENTS_DIR = os.path.join(os.path.dirname(__file__), "logs", "events")
+_LOG_ROOT = os.path.join(os.path.dirname(__file__), "logs")
+# FleetLogger's events/ denial rows carry only bot+reason; the bus log's
+# PORTFOLIO_DENIAL rows carry pair+amount (what the cost model needs).
+# Scan both — the pair/amount guard below drops the info-less rows.
+EVENT_DIRS = [os.path.join(_LOG_ROOT, "events"),
+              os.path.join(_LOG_ROOT, "event_bus")]
 DEFAULT_HOLD_MINUTES = 240  # fleet avg ~3-4 hours
 DEFAULT_DAYS = 3
 
@@ -40,13 +45,12 @@ def _parse_args():
 def _load_denial_events(days):
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     denials = []
-    if not os.path.exists(EVENTS_DIR):
-        return denials
-
-    for fname in sorted(os.listdir(EVENTS_DIR)):
-        if not fname.endswith(".jsonl"):
-            continue
-        fpath = os.path.join(EVENTS_DIR, fname)
+    files = []
+    for d in EVENT_DIRS:
+        if os.path.exists(d):
+            files.extend(os.path.join(d, f) for f in sorted(os.listdir(d))
+                         if f.endswith(".jsonl"))
+    for fpath in files:
         with open(fpath, encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
@@ -56,11 +60,15 @@ def _load_denial_events(days):
                     ev = json.loads(line)
                 except Exception:
                     continue
-                # Match denial events — type or event field
-                ev_type = ev.get("type", "") or ev.get("event", "")
-                if "DENIED" not in ev_type and "denial" not in str(ev_type).lower():
+                # Match denial events. Check BOTH fields — FleetLogger rows
+                # are {type: "PORTFOLIO", event: "RESERVE_DENIED"}, so an
+                # `or`-fallback on a truthy type never saw the event field.
+                ev_type = f"{ev.get('type', '')} {ev.get('event', '')}"
+                if "DENIED" not in ev_type and "denial" not in ev_type.lower():
                     continue
                 ts_raw = ev.get("ts") or ev.get("timestamp")
+                if not ts_raw:
+                    continue
                 try:
                     ts = datetime.fromtimestamp(
                         ts_raw / 1000 if ts_raw > 1e12 else ts_raw,
@@ -135,7 +143,7 @@ def main():
 
     if not denials:
         print("No denial events found. Either no denials occurred or event logs are empty.")
-        print(f"Expected events of type PORTFOLIO_DENIAL in {EVENTS_DIR}")
+        print(f"Expected PORTFOLIO_DENIAL / RESERVE_DENIED events in {' or '.join(EVENT_DIRS)}")
         sys.exit(0)
 
     print(f"Found {len(denials)} denials (excluding config errors). Simulating outcomes...\n")

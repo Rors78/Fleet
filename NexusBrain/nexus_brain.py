@@ -1053,6 +1053,102 @@ class PaperTrader:
         self._DENIAL_BASE_DELAY = 5.0
         self._DENIAL_MAX_DELAY = 300.0
 
+    # ── Position persistence (live mode only; Backtester never arms it) ──
+    _POSITIONS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nexus_positions.json")
+
+    def _save_positions(self):
+        """Persist open positions + reservation ids. No-op until restore_positions() arms it."""
+        if not getattr(self, "_persist", False):
+            return
+        try:
+            data = {
+                "positions": {
+                    pair: {
+                        "pair": pos.pair,
+                        "entry_price": pos.entry_price,
+                        "size_usd": pos.size_usd,
+                        "stop_loss": pos.stop_loss,
+                        "take_profit": pos.take_profit,
+                        "signal_score": pos.signal_score,
+                        "entry_time": pos.entry_time,
+                        "trailing_stop": pos.trailing_stop,
+                        "peak_price": pos.peak_price,
+                        "reservation_id": pos.reservation_id,
+                        "direction": pos.direction,
+                    }
+                    for pair, pos in self.positions.items()
+                },
+                "saved_at": time.time(),
+            }
+            tmp = self._POSITIONS_FILE + ".tmp"
+            with open(tmp, "w") as f:
+                json.dump(data, f)
+            os.replace(tmp, self._POSITIONS_FILE)
+        except Exception as e:
+            logger.warning(f"Failed to save positions: {e}")
+
+    def restore_positions(self):
+        """Live mode only: reload persisted positions after a restart,
+        re-reserve pool capital for them, and release reservations booked to
+        this bot that nothing references. Positions were memory-only before
+        2026-07-31 — a restart mid-trade orphaned the pool reservation forever
+        (same family as the TurtleSue pyramid leak).
+        """
+        self._persist = True
+        try:
+            with open(self._POSITIONS_FILE) as f:
+                saved = json.load(f).get("positions", {})
+        except FileNotFoundError:
+            saved = {}
+        except Exception as e:
+            logger.warning(f"Failed to load positions: {e}")
+            saved = {}
+        for pair, d in saved.items():
+            try:
+                pos = Position(
+                    pair=d["pair"], entry_price=d["entry_price"], size_usd=d["size_usd"],
+                    stop_loss=d["stop_loss"], take_profit=d["take_profit"],
+                    signal_score=d["signal_score"], entry_time=d["entry_time"],
+                    trailing_stop=d.get("trailing_stop", 0.0),
+                    peak_price=d.get("peak_price", 0.0),
+                    reservation_id=d.get("reservation_id", ""),
+                    direction=d.get("direction", "LONG"),
+                )
+                pos._kraken_pair = pair.replace("/", "")
+                self.positions[pair] = pos
+            except Exception as e:
+                logger.warning(f"Skipping malformed saved position {pair}: {e}")
+        if self._portfolio:
+            reservations = self._portfolio.get_reservations()
+            if reservations is not None:
+                # Re-reserve restored positions whose reservation is gone.
+                # is_reentry=True: direction policy must not refuse capital
+                # for a position that is already open.
+                for pair, pos in list(self.positions.items()):
+                    if pos.reservation_id and pos.reservation_id in reservations:
+                        continue
+                    _display = PAIR_DISPLAY.get(pair, pair)
+                    ok, result = self._portfolio.reserve(
+                        _display, pos.direction, pos.size_usd, is_reentry=True)
+                    if ok:
+                        pos.reservation_id = result
+                        logger.info(f"Re-reserved {_display}: {result}")
+                    else:
+                        logger.warning(f"Re-reserve failed for {_display} ({result}) — dropping restored position")
+                        del self.positions[pair]
+                # Orphan sweep: pool reservations booked to this bot that no
+                # local position references — capital the pool holds forever
+                # otherwise. (Sweeps the snapshot taken above, so rids created
+                # by the re-reserve loop are never candidates.)
+                local_rids = {p.reservation_id for p in self.positions.values() if p.reservation_id}
+                for rid, res in reservations.items():
+                    if res.get("bot_id") == self._portfolio.bot_id and rid not in local_rids:
+                        ok, reason = self._portfolio.release(rid, pnl=0.0)
+                        logger.warning(f"Orphaned reservation {rid}: release {'ok' if ok else f'FAILED ({reason})'}")
+        if self.positions:
+            logger.info(f"Restored {len(self.positions)} open position(s) from disk")
+        self._save_positions()
+
     def can_open(self) -> bool:
         """Check if we can open a new position."""
         return len(self.positions) < self.cfg.max_positions
@@ -1237,6 +1333,7 @@ class PaperTrader:
             )
             pos._kraken_pair = _kraken_pair  # store for exit
             self.positions[signal.pair] = pos
+            self._save_positions()
             _mode = "LIVE" if self._kraken else "PAPER"
             logger.info(f"OPEN [{_mode}] {signal.direction} {PAIR_DISPLAY.get(signal.pair, signal.pair)} @ {entry_price:.4f} size=${size_usd:.2f} score={signal.confluence_score:.3f}")
             if self._event_pub:
@@ -1428,6 +1525,7 @@ class PaperTrader:
 
             del self.positions[pair]
             self._last_close[pair] = time.time()
+            self._save_positions()
 
             self._update_equity()
             logger.info(f"CLOSE {pos.direction} {PAIR_DISPLAY.get(pair, pair)} @ {exit_price:.4f} P/L=${pnl_usd:+.2f} ({pnl_pct:+.2f}%) reason={exit_reason.value}")
@@ -1967,6 +2065,7 @@ def cmd_run_sim(args, cfg: Config):
 
     shutdown = threading.Event()
     trader = PaperTrader(cfg)
+    trader.restore_positions()
     db = Database(cfg.db_path)
 
     def handle_sig(signum, frame):

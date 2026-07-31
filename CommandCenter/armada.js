@@ -2658,6 +2658,18 @@ const Armada = {
         _station.slHold = 0;
       }
     }
+    // SUPERLASER_DEMO (2026-07-31): ops-side remote trigger. Published to
+    // the event bus (POST /api/events/publish) it fires the lance on EVERY
+    // connected dashboard — used for demos without faking a TRADE_CLOSE
+    // (which would pollute trade history/expectancy). data.hold extends
+    // the burn like fireSuperlaser(hold).
+    if (/SUPERLASER_DEMO/.test(type)) {
+      if (_station && _station.slState === 'idle') {
+        _station.slState = 'charging';
+        _station.slPhase = 0;
+        _station.slHold = Math.max(0, Number(data.hold) || 0);
+      }
+    }
 
     const rig = _ships[botId];
     if (!rig) return;

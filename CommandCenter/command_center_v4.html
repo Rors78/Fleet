@@ -12117,8 +12117,14 @@ var _sound=window._sound={
     comp.threshold.value=-14;comp.ratio.value=4;comp.attack.value=0.003;comp.release.value=0.25;
     comp.connect(c.destination);
     this.master=c.createGain();this.master.gain.value=0;this.master.connect(comp);
-    this._verb=this._makeVerb(5.0);
-    this._verbSend=c.createGain();this._verbSend.gain.value=0.18;
+    /* Verb widened 5.0s->7.5s and send lifted 0.18->0.22 (Jeremy: "the sounds
+       of the planets abd stuff is a serious downgrade... i like the dark,
+       low, vibe and mysterious sounds of space" — a bigger, more spacious
+       tail is a direct part of that fix). Compressor threshold (-14dB,
+       ratio 4) is unchanged and still catches any buildup, so this is safe
+       headroom-wise, not just a hopeful bump. */
+    this._verb=this._makeVerb(7.5);
+    this._verbSend=c.createGain();this._verbSend.gain.value=0.22;
     this._verbSend.connect(this._verb);this._verb.connect(this.master);
     this.ambient=c.createGain();this.ambient.gain.value=0.28;
     this.events=c.createGain();this.events.gain.value=0.55;this.events.connect(this.master);
@@ -12242,7 +12248,67 @@ var _sound=window._sound={
       src2.connect(hp);hp.connect(g2);g2.connect(this.ambient);src2.start();
       this._sources.solar=src2;this._gains.solar_main=g2;
     }
+    this._startDeepFoundation();
     this._scheduleChatter();
+  },
+
+  /* ===== DEEP FOUNDATION DRONE =====
+     Jeremy's verdict on the room ("serious downgrade... i like the dark,
+     low, vibe and mysterious sounds of space"): the ambient bed had no
+     permanent sub-100Hz foundation independent of the two streamed/decoded
+     source files — if jupiter.mp3 was still buffering, or a rotation
+     crossfade was mid-swap, the low end thinned out to nothing under the
+     ear. This is a synthesized floor that is ALWAYS there the moment sound
+     is enabled, never depends on any file load succeeding, and never loops
+     in an audibly identical way: three sub-oscillators (root + slightly
+     detuned fifth-ish partial + sub-octave) each carry an independent slow
+     LFO on frequency (drift, not vibrato — periods 40-70s, all mutually
+     prime-ish so the beat pattern doesn't repeat on a short cycle) and a
+     shared lowpass filter breathing even slower (140s period) between
+     ~90Hz and ~260Hz so the tone's darkness itself evolves. Gain sits well
+     under the streamed beds (0.05 peak) — it is the floor other layers
+     stand on, not a competing voice. Routed through _verbSend like
+     everything else so it shares the room's space. Runs for the lifetime
+     of the session; toggle() silencing is handled upstream (ambient->
+     ducker->master, same as every other ambient source) so no separate
+     enable/disable wiring is needed here. */
+  _startDeepFoundation:function(){
+    if(this._deepFoundationStarted) return;
+    this._deepFoundationStarted=true;
+    var c=this.ctx,now=c.currentTime;
+    var g=c.createGain();g.gain.setValueAtTime(0,now);
+    g.gain.linearRampToValueAtTime(0.05,now+8); /* slow fade-in with the rest of the bed */
+    var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=160;lp.Q.value=0.4;
+    lp.connect(g);g.connect(this.ambient);g.connect(this._verbSend);
+    /* Slow independent breathing on the shared filter — the "the room itself
+       is alive" motion. 140s period so a full cycle is longer than any
+       single ambient-rotation section (3-6min) — it never lines up the
+       same way twice against the bed on top of it. */
+    var lfoF=c.createOscillator();lfoF.type="sine";lfoF.frequency.value=1/140;
+    var lfoFG=c.createGain();lfoFG.gain.value=85; /* +/-85Hz sweep around 160 center -> ~75-245Hz */
+    lfoF.connect(lfoFG);lfoFG.connect(lp.frequency);lfoF.start(now);
+    var partials=[
+      {ratio:1.0,   vol:1.0, lfoPeriod:53},
+      {ratio:1.498, vol:0.55,lfoPeriod:67}, /* soft fifth-ish partial, not quite consonant -> ambiguous tonality */
+      {ratio:0.5,   vol:0.7, lfoPeriod:41}  /* sub-octave */
+    ];
+    var root=42; /* deep sub foundation, well under any _botBands lo */
+    this._deepFoundationNodes=[];
+    for(var i=0;i<partials.length;i++){
+      (function(p){
+        var o=c.createOscillator();o.type="sine";o.frequency.value=root*p.ratio;
+        var og=c.createGain();og.gain.value=p.vol;
+        var lfoD=c.createOscillator();lfoD.type="sine";lfoD.frequency.value=1/p.lfoPeriod;
+        var lfoDG=c.createGain();lfoDG.gain.value=root*p.ratio*0.012; /* gentle drift, ~1.2% */
+        lfoD.connect(lfoDG);lfoDG.connect(o.frequency);
+        o.connect(og);og.connect(lp);
+        o.start(now);lfoD.start(now);
+        this._deepFoundationNodes.push(o,lfoD);
+      }).call(this,partials[i]);
+    }
+    this._deepFoundationNodes.push(lfoF);
+    this._gains.deep_foundation=g;
+    console.log("[SOUND] Deep foundation drone online (sub-100Hz floor, synthesized, file-independent)");
   },
 
   /* Plays one rotation section (jupiter/saturn/earth) as the main bed, streamed
@@ -12263,8 +12329,16 @@ var _sound=window._sound={
     var prevKey=this._bedActiveKey,prevGain=this._bedGain,prevEl=this._bedActiveEl;
     var srcNode=this._bedFilterNodes[key];
     var g=c.createGain();g.gain.setValueAtTime(0,now);
-    var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=key==="jupiter"?1200:key==="saturn"?1400:1000;
+    /* Darkened from 1200/1400/1000 — the main bed track is the loudest thing
+       in the room and was the brightest-filtered one; pulling it down closes
+       the gap to "dark, low, mysterious" directly. */
+    var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=key==="jupiter"?850:key==="saturn"?950:750;
     srcNode.connect(lp);lp.connect(g);g.connect(this.ambient);
+    /* The main bed was the one ambient layer NOT reaching the convolution
+       reverb (chatter/solar/stingers/deep-foundation all do) — it's the
+       loudest layer, so its absence from the verb send was the single
+       biggest reason the room felt drier/smaller than it should. */
+    g.connect(this._verbSend);
     /* Start a few minutes in for variety, not always the same opening moment */
     try{
       if(el.duration&&isFinite(el.duration)) el.currentTime=Math.random()*Math.max(0,el.duration-60);
@@ -12592,7 +12666,55 @@ var _sound=window._sound={
     }
   },
 
-  modulate:function(botId,data){},
+  /* Data-reactive planet voice — fires once when a bot's detail tab opens
+     and its live snapshot arrives (see fetchBotData ~line 5094; this is a
+     single-shot accent, not a loop, since fetchBotData itself is single-
+     shot per tab-open, not a recurring poll). Was a total no-op before this
+     pass — real live data was being computed and handed to this function on
+     every bot-tab visit and thrown away. Colors the same _botBands identity
+     used by hover/trade/xenolanguage so "this planet's voice" is one
+     consistent instrument across the whole soundtrack, just longer and
+     more textured here since it's the moment someone is actually looking
+     at that bot. Dark/filtered only — no melodic or bright material.
+     Never fabricates: reads only fields the snapshot actually has; a bot
+     with no pnl/win_rate yet still gets a neutral low presence tone rather
+     than an invented number. */
+  modulate:function(botId,data){
+    if(!this.initialized||!this.enabled) return;
+    if(!this._canPlay(1)) return; /* respects the shared 4/sec throttle */
+    var d=data||{};
+    var band=this._botBands[botId]||{lo:200,hi:600,pan:0};
+    var alive=d.alive!==false; /* snapshot presence implies alive unless explicitly false */
+    var wr=d.win_rate;
+    if(wr!=null&&wr>1) wr=wr/100; /* normalize 0-100 -> 0-1, same convention used elsewhere */
+    var pnl=d.pnl!=null?Number(d.pnl):null;
+    if(!alive){
+      /* Dormant/offline: a hollow, detuning low presence — same register as
+         _botDown but shorter, since this is a passive glance not a live event. */
+      this._drone(band.lo*0.7,3.0,0.09,band.lo*0.3,band.pan,this.events);
+      return;
+    }
+    /* Base presence swell in the bot's own register — always plays, this is
+       "the planet has a voice at all." Duration/darkness track win rate when
+       known: a struggling bot's tone sweeps downward and stays narrower/
+       darker; a strong one opens upward — still never bright, just less
+       shadowed. Unknown win rate reads neutral (flat sweep, mid darkness). */
+    var lean=wr!=null?(wr-0.5)*2:0; /* -1..1, 0 when unknown */
+    var sweepTo=lean>=0?band.hi*(1.1+lean*0.4):band.lo*(0.6-Math.abs(lean)*0.2);
+    this._noiseSwell(2.8,0.10,band.lo,band.hi*0.9,band.pan,this.events);
+    this._drone((band.lo+band.hi)/2,2.6,0.08,sweepTo,band.pan,this.events);
+    /* A recent-P/L accent, same vocabulary as _tradeWin/_tradeLoss but at
+       reduced gain (0.5x) since this isn't a live event firing, it's a
+       glance at current state — shouldn't compete with an actual trade
+       stinger if one happens to land at the same moment. */
+    if(pnl!=null&&pnl!==0){
+      var self=this,mag=Math.min(1.0,Math.max(0.15,Math.abs(pnl)/15));
+      setTimeout(function(){
+        if(pnl>0) self._metallic(band.hi*0.7,1.6,0.065*mag,band.pan,self.events);
+        else self._drone(band.lo*1.2,1.3,0.07*mag,band.lo*0.5,band.pan,self.events);
+      },500);
+    }
+  },
   updateHarmony:function(regime){
     if(this.initialized&&this.enabled){
       var score=(typeof aegisState!=="undefined"&&aegisState.score!=null)?aegisState.score:0.5;

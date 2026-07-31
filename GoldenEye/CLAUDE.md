@@ -164,7 +164,7 @@ One `BayesianFactorModel` per regime (bull/bear/range/chop) instead of per-symbo
 - **Cold-start bootstrap**: on first load, copies posterior from the per-symbol brain with highest `total_n`. Prevents starting from zero when per-symbol brains have history.
 - **Override gate**: once `regime_n ≥ 30`, a candidate that fails confluence can still enter if `P(win) ≥ 0.58`. Logs `BAYES-OVERRIDE` when it fires.
 
-Current state: bull regime_n=19 (11 trades from arming); bear/range/chop still at 0.
+Current state (2026-07-31): bull 4 / bear 5 / range 0 / chop 4 (total_n=13). Check `/api/brain/global` for live numbers rather than trusting this line.
 
 ## Per-Symbol AdaptiveBrain
 

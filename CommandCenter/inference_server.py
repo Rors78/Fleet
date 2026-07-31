@@ -45,7 +45,13 @@ def detect_model():
 
 def query_ollama(prompt, system=None, format_json=True, timeout=120):
     """Send prompt to Ollama, return parsed response."""
-    payload = {"model": MODEL, "prompt": prompt, "stream": False}
+    # num_gpu=0 forces CPU inference. Ollama v0.32.5's CUDA runtime crashes
+    # (0xc0000005 in llama-server) loading ANY model on the Tesla P4
+    # (Pascal, compute 6.1) — every AI endpoint returned a wrapped 500.
+    # CPU gemma2:2b is fast enough for journals/assessments. Re-enable the
+    # GPU by removing this option once Ollama loads on the P4 again.
+    payload = {"model": MODEL, "prompt": prompt, "stream": False,
+               "options": {"num_gpu": 0}}
     if system:
         payload["system"] = system
     # Note: "format":"json" causes empty responses on some models (qwen3.5)

@@ -1490,6 +1490,12 @@ class TurtleEngine:
         self.errors = []
         self.scan_count += 1
 
+        # Lease heartbeat: declare the reservation ids we still reference so
+        # the pool can sweep anything a wiring bug stranded (never raises).
+        if self._portfolio_client:
+            self._portfolio_client.confirm_reservations(
+                [rid for pos in self.positions.values() for rid in pos.reservation_ids])
+
         try:
             self.market_data = self.data.get_all_ohlc(
                 MARKETS, CONFIG["ohlc_interval"], CONFIG["lookback_days"])

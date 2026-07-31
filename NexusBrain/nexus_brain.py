@@ -2192,6 +2192,12 @@ def cmd_run_sim(args, cfg: Config):
         now = datetime.now(timezone.utc).strftime("%H:%M:%S")
         print(f"\n  {ANSI_DIM}[{now}] Scan cycle {cycle}{ANSI_RESET}")
 
+        # Lease heartbeat: declare held reservation ids so the pool can sweep
+        # anything a wiring bug stranded (never raises).
+        if trader._portfolio:
+            trader._portfolio.confirm_reservations(
+                [p.reservation_id for p in trader.positions.values() if p.reservation_id])
+
         for pair in pairs:
             if shutdown.is_set():
                 break

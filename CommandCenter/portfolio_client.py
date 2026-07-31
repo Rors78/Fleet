@@ -114,3 +114,21 @@ class PortfolioClient:
         if result is None:
             return None
         return result.get("reservations", {})
+
+    def confirm_reservations(self, reservation_ids) -> dict | None:
+        """Lease heartbeat: declare the reservation ids this bot still holds.
+
+        Call once per scan cycle with the FULL set of rids the bot references
+        (an empty list is a valid declaration meaning "I hold nothing").
+        Pool-side, reservations booked to this bot that stay undeclared past
+        a grace window are released as orphans — a bot wiring bug can strand
+        capital for minutes, not forever. Returns the pool's response dict
+        ({ok, confirmed, swept}) or None on network error. Never raises.
+        """
+        try:
+            return self._post("/api/portfolio/confirm", {
+                "bot_id": self.bot_id,
+                "reservation_ids": list(reservation_ids or []),
+            })
+        except Exception:
+            return None

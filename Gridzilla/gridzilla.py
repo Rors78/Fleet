@@ -1253,6 +1253,12 @@ class GridzillaEngine:
         """One complete scan cycle."""
         self.scan_count += 1
 
+        # Lease heartbeat: declare held reservation ids so the pool can sweep
+        # anything a wiring bug stranded (never raises).
+        if self.portfolio:
+            self.portfolio.confirm_reservations(
+                [g.get("reservation_id") for g in self.active_grids.values() if g.get("reservation_id")])
+
         # Refresh fleet intelligence
         self.intel.refresh()
 

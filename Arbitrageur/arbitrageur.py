@@ -771,6 +771,12 @@ class ArbitrageurEngine:
         self.scan_count += 1
         self._log(f"--- Scan #{self.scan_count} ---")
 
+        # Lease heartbeat: declare held reservation ids so the pool can sweep
+        # anything a wiring bug stranded (never raises).
+        if self._portfolio:
+            self._portfolio.confirm_reservations(
+                [p.reservation_id for p in self.positions if p.reservation_id])
+
         # 1. Get universe
         pairs = self._fetch_universe()
         self._log(f"Universe: {len(pairs)} pairs")

@@ -1019,6 +1019,12 @@ class RubberbandEngine:
         self.last_scan = time.time()
         self._log(f"--- Scan #{self.scan_count} ---")
 
+        # Lease heartbeat: declare held reservation ids so the pool can sweep
+        # anything a wiring bug stranded (never raises).
+        if self._portfolio_client:
+            self._portfolio_client.confirm_reservations(
+                [p.reservation_id for p in self.positions if p.reservation_id])
+
         # Refresh universe periodically (every 10 scans)
         if self.scan_count % 10 == 1 or not self.pairs:
             self.pairs = self.fetch_universe()

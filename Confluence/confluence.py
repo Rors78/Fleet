@@ -925,6 +925,11 @@ class ConfluenceEngine:
     def scan(self):
         t0 = _now()
         self.cycle += 1
+        # Lease heartbeat (outside the lock — network call): declare held
+        # reservation ids so the pool can sweep anything a wiring bug stranded.
+        if self._portfolio:
+            self._portfolio.confirm_reservations(
+                [p.reservation_id for p in self.positions.values() if p.reservation_id])
         with self._lock:
             intel = self.gather_intel()
 

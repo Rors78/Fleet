@@ -235,6 +235,7 @@ class PortfolioManager:
         self.history: list[dict] = []
         self._pair_cooldowns: dict[str, dict] = {}  # pair -> {ts, bot_id} — stamped on CLOSE
         self._pair_opens: dict[str, dict] = {}     # pair -> {ts, bot_id} — stamped on OPEN
+        self._bot_confirms: dict[str, float] = {}  # bot_id -> last lease-confirm ts
         self.aegis_score: float = 0.0  # updated by _apply_aegis_adjustment each cycle
         self._load()
 
@@ -590,6 +591,59 @@ class PortfolioManager:
             if stale:
                 self._save()
             return released
+
+    # ── Reservation leases (2026-07-31) ──
+    # Bots that adopt the confirm contract declare, once per scan cycle, the
+    # exact reservation ids they still reference. Anything booked to a
+    # confirming bot that stays undeclared past both grace windows is an
+    # orphan (a bot wiring bug stranded it) and gets released. Bots that never
+    # confirm are untouched — legacy behavior, still covered by the hourly
+    # position-aware 48h sweep. Rid-level precision catches what the
+    # (bot, pair) sweep can't: two reservations on one pair where only one is
+    # real (the TurtleSue pyramid leak, PR #10).
+    LEASE_OPEN_GRACE_SEC = 300   # never judge a reservation younger than this (reserve→store in flight)
+    LEASE_MISS_GRACE_SEC = 600   # must stay undeclared this long before release (rides out transient races)
+
+    def confirm(self, bot_id: str, reservation_ids: list) -> dict:
+        """Refresh leases on declared rids; sweep persistently-undeclared ones.
+
+        Returns {ok, confirmed: <owned rids stamped>, swept: [reservation dicts]}.
+        """
+        declared = set(reservation_ids or [])
+        now = time.time()
+        confirmed = 0
+        swept = []
+        with self._lock:
+            self._bot_confirms[bot_id] = now
+            for rid, r in list(self.reservations.items()):
+                if r.get("bot_id") != bot_id:
+                    continue
+                if rid in declared:
+                    r["last_confirmed_at"] = now
+                    r.pop("unconfirmed_since", None)
+                    confirmed += 1
+                    continue
+                if now - r.get("reserved_at", now) < self.LEASE_OPEN_GRACE_SEC:
+                    continue
+                if "unconfirmed_since" not in r:
+                    r["unconfirmed_since"] = now
+                    continue
+                if now - r["unconfirmed_since"] < self.LEASE_MISS_GRACE_SEC:
+                    continue
+                res = self.reservations.pop(rid)
+                self.history.append({
+                    "action": "lease_sweep",
+                    "reservation_id": rid,
+                    "bot_id": res["bot_id"],
+                    "pair": res["pair"],
+                    "amount": res["amount"],
+                    "reason": "owner stopped declaring this reservation",
+                    "timestamp": now,
+                })
+                swept.append({"reservation_id": rid, **res})
+            if swept:
+                self._save()
+        return {"ok": True, "confirmed": confirmed, "swept": swept}
 
     def state(self) -> dict:
         """Return full portfolio state for API response."""
@@ -2874,6 +2928,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
     _POST_ROUTES: dict[str, str] = {
         "/api/portfolio/reserve":  "_handle_reserve",
         "/api/portfolio/release":  "_handle_release",
+        "/api/portfolio/confirm":  "_handle_portfolio_confirm",
         "/api/portfolio/sync":     "_handle_portfolio_sync",
         "/api/events/publish":     "_handle_event_publish",
         "/api/signals/propose":    "_handle_signals_propose",
@@ -3844,6 +3899,42 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         result.pop("reservation", None)
         self._send_json(result, 200 if result["ok"] else 404)
 
+    def _handle_portfolio_confirm(self, data: dict) -> None:
+        """POST /api/portfolio/confirm — bot declares the reservation ids it
+        still references (lease heartbeat). Owned rids missing from the
+        declaration long enough are swept as orphans."""
+        bot_id = data.get("bot_id")
+        if not bot_id:
+            self._send_json({"error": "Missing bot_id"}, 400)
+            return
+        rids = data.get("reservation_ids")
+        if not isinstance(rids, list):
+            self._send_json({"error": "reservation_ids must be a list"}, 400)
+            return
+        result = {"ok": True, "confirmed": 0, "swept": []}
+        for mgr in [_portfolio_paper, _portfolio_live]:
+            if not mgr:
+                continue
+            r = mgr.confirm(bot_id, rids)
+            result["confirmed"] += r["confirmed"]
+            result["swept"].extend(r["swept"])
+        for _sw in result["swept"]:
+            log.warning(
+                "Lease sweep: released orphaned reservation %s (bot=%s pair=%s $%.2f)",
+                _sw["reservation_id"], _sw["bot_id"], _sw["pair"], _sw["amount"])
+            _event_bus.publish({
+                "source": "portfolio", "type": "PORTFOLIO_LEASE_SWEEP",
+                "data": {"bot_id": _sw["bot_id"], "pair": _sw["pair"],
+                         "amount": _sw["amount"],
+                         "reservation_id": _sw["reservation_id"]},
+            })
+        # Don't leak full reservation internals to the caller
+        result["swept"] = [
+            {"reservation_id": s["reservation_id"], "pair": s["pair"], "amount": s["amount"]}
+            for s in result["swept"]
+        ]
+        self._send_json(result, 200)
+
     def _handle_portfolio_sync(self, data: dict) -> None:
         """POST /api/portfolio/sync — force a Kraken balance refresh.
 
@@ -4115,15 +4206,16 @@ def main():
 
     # Initialize dual portfolio managers
     _portfolio_paper = PortfolioManager(PORTFOLIO_TOTAL, PORTFOLIO_LIMITS, PORTFOLIO_FILE, mode_tag="paper")
-    stale = _portfolio_paper.force_release_stale(max_age_hours=48)
-    if stale:
-        print(f"  Paper Portfolio: released {len(stale)} stale reservation(s) (>48h old)")
+    # No boot-time stale sweep: at boot no bot has been polled yet, so an
+    # age-only sweep here is blind to live positions — the exact failure that
+    # released Confluence's 66h swing reservations (2026-07-30). The hourly
+    # position-aware sweep in the poll loop and the rid-level lease sweep
+    # (/api/portfolio/confirm) cover real orphans instead.
     print(f"  Paper Portfolio: ${_portfolio_paper.available():,.2f} available of ${_portfolio_paper.total:,.2f}")
 
     _live_file = _fleet_config.PORTFOLIO_LIVE_FILE
     if os.path.exists(_live_file):
         _portfolio_live = PortfolioManager(0, PORTFOLIO_LIMITS, _live_file, mode_tag="live")
-        _portfolio_live.force_release_stale(max_age_hours=48)
         print(f"  Live Portfolio:  ${_portfolio_live.available():,.2f} available of ${_portfolio_live.total:,.2f}")
     else:
         _portfolio_live = PortfolioManager(0, PORTFOLIO_LIMITS, _live_file, mode_tag="live")

@@ -1658,18 +1658,25 @@ function buildStation(seed) {
   // "blinding white", not "bright green") with the SL_COLOR green pushed
   // entirely onto the wider, dimmer glow strip where the brief wants the
   // "modest bloom".
+  // NEEDLE LANCE, take 2 (2026-07-31): the gradient-plane version rendered
+  // nothing on screen while the ships' cone beams rendered fine in the same
+  // frame — rather than fight plane/texture forensics, use the PROVEN
+  // geometry at needle radii. Thin tapered open cylinders: at ~0.16 core
+  // radius the two silhouette edges merge into one solid line, so the
+  // hollow-rail artifact that killed the original THICK cones simply
+  // doesn't exist at needle scale. White-hot core + tight green bloom.
   const slMainMat = new THREE.MeshBasicMaterial({
-    map: slBeamTex, color: 0xffffff, transparent: true, opacity: 0,
+    color: 0xffffff, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slMain = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 55), slMainMat);
+  const slMain = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.05, 55, 8, 1, true), slMainMat);
   slMain.position.set(0, focal.y + 27.5, 0);
   slGroup.add(slMain);
   const slGlowMat = new THREE.MeshBasicMaterial({
-    map: slBeamTex, color: SL_COLOR, transparent: true, opacity: 0,
+    color: SL_COLOR, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 55), slGlowMat);
+  const slGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.16, 55, 10, 1, true), slGlowMat);
   slGlow.position.set(0, focal.y + 27.5, 0);
   slGroup.add(slGlow);
 
@@ -1690,10 +1697,14 @@ function buildStation(seed) {
   // under-construction signature: one wedge where the outer hull plating
   // gives way to visible dark skeletal framework underneath, with a few
   // glowing points inside like work-lights on an unfinished section.
-  // Placed opposite the dish (roughly -dishDir) so the two identity
-  // features read from different hemispheres and never overlap/compete
-  // for the same camera-facing side as the station sways.
-  const constructDir = dishDir.clone().multiplyScalar(-1).normalize();
+  // PLACEMENT FIX (2026-07-31, Jeremy: "looks the exact same"): the first
+  // pass put this at -dishDir — but the station's yaw sway deliberately
+  // keeps the dish on the CAMERA side, so "opposite the dish" meant
+  // "permanently hidden on the far side". Now ~95 degrees off the dish
+  // with a positive +Z component: dish upper-left, torn-open construction
+  // section lower-right, BOTH on the visible hemisphere at all sway
+  // angles, never overlapping.
+  const constructDir = new THREE.Vector3(0.80, -0.15, 0.45).normalize();
   const constructGroup = new THREE.Group();
   // Cutaway — a shallow wedge-shaped gap in the plating. Built as a
   // partial-sweep SphereGeometry patch (thetaStart/thetaLength / phiStart/

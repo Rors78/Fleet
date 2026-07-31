@@ -590,7 +590,7 @@ var cardPulseTimers = {};
 /* ===== DOM REFS ===== */
 var $connLost     = document.getElementById("connLost");
 var $headerClock  = document.getElementById("headerClock");
-var COSMOS_BUILD="b0731.11"; /* bump on every deploy — shown in header */
+var COSMOS_BUILD="b0731.12"; /* bump on every deploy — shown in header */
 (function(){var bs=document.getElementById("buildStamp");if(bs)bs.textContent=COSMOS_BUILD;})();
 var $pillsBar     = document.getElementById("pillsBar");
 var $tradingGrid  = document.getElementById("tradingGrid");
@@ -12472,10 +12472,16 @@ var _sound=window._sound={
     var prevKey=this._bedActiveKey,prevGain=this._bedGain,prevEl=this._bedActiveEl;
     var srcNode=this._bedFilterNodes[key];
     var g=c.createGain();g.gain.setValueAtTime(0,now);
-    /* Darkened from 1200/1400/1000 — the main bed track is the loudest thing
-       in the room and was the brightest-filtered one; pulling it down closes
-       the gap to "dark, low, mysterious" directly. */
-    var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=key==="jupiter"?850:key==="saturn"?950:750;
+    /* Round 3 darkened these to 850/950/750Hz reasoning "dark=lowpassed."
+       Jeremy's round-4 verdict ("soundtrack still sucks") corrected that:
+       these are REAL NASA recordings — the sound he loved ("what I had") —
+       and they are already dark/textured on their own. Filtering that hard
+       strangles presence and turns them into mud, which is exactly what
+       made the cheaper synth layers seem to dominate. Opened back up so the
+       recordings breathe; a gentle high-shelf-style ceiling stays only to
+       take the edge off any genuine tape hiss/compression artifacts at the
+       very top, not to darken the body of the sound. */
+    var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=key==="jupiter"?7000:key==="saturn"?7500:6500;lp.Q.value=0.5;
     srcNode.connect(lp);lp.connect(g);g.connect(this.ambient);
     /* The main bed was the one ambient layer NOT reaching the convolution
        reverb (chatter/solar/stingers/deep-foundation all do) — it's the
@@ -12487,7 +12493,13 @@ var _sound=window._sound={
       if(el.duration&&isFinite(el.duration)) el.currentTime=Math.random()*Math.max(0,el.duration-60);
     }catch(e){}
     el.play().catch(function(e){console.warn("[SOUND] Bed play() rejected for "+key+": "+e.message);});
-    var targetVol=0.22;
+    /* Raised 0.22->0.34 — the recording is the hero of the mix, it should
+       carry the room. The synth deep-foundation drone (0.05, see
+       _startDeepFoundation) sits well under this as reinforcement, not a
+       competing voice. Compressor threshold/ratio (-14dB/4:1) unchanged and
+       still has headroom against ambient(0.28)+events(0.55) buses summing
+       into master — checked, not just hoped. */
+    var targetVol=0.34;
     g.gain.linearRampToValueAtTime(targetVol,now+12); /* long crossfade in, ~12s */
     if(prevGain){
       prevGain.gain.cancelScheduledValues(now);
@@ -12551,6 +12563,44 @@ var _sound=window._sound={
     src.start(now,offset,segLen);
     this._chatterActiveUntil=Date.now()+segLen*1000;
     setTimeout(function(){try{src.stop();}catch(e){}},segLen*1000+500);
+  },
+
+  /* Console-callable diagnostic — ground truth for what's actually live,
+     not what the code intends. Every field is read directly off live nodes
+     (gain.value / filter.frequency.value / element state), never a constant
+     copied from the source — so if a fix regresses, status() shows it.
+     Usage: _sound.status()  (also logs a compact one-line summary). */
+  status:function(){
+    var s={initialized:this.initialized,enabled:this.enabled,
+      ctxState:this.ctx?this.ctx.state:"no-ctx",
+      masterGain:this.master?+this.master.gain.value.toFixed(3):null};
+    /* Streamed bed (jupiter/saturn/earth_chorus) — the hero layer */
+    s.bed={activeKey:this._bedActiveKey,
+      gain:this._bedGain?+this._bedGain.gain.value.toFixed(3):null,
+      lowpassHz:this._bedGain&&this._bedActiveKey?
+        (this._bedActiveKey==="jupiter"?7000:this._bedActiveKey==="saturn"?7500:6500):null,
+      elementPaused:this._bedActiveEl?this._bedActiveEl.paused:null,
+      elementCurrentTime:this._bedActiveEl?+this._bedActiveEl.currentTime.toFixed(1):null,
+      elementReadyState:this._bedActiveEl?this._bedActiveEl.readyState:null,
+      rotationOrder:this._rotationOrder,rotationIdx:this._rotationIdx,
+      streaming:true /* decodeAudioData fails on these files by design — see _getBedElement */};
+    /* Decoded buffers (solar_wind + 4 chatter clips) vs the 3 streamed-only beds */
+    s.decodedBuffers={};
+    Object.keys(this._buffers).forEach(function(k){s.decodedBuffers[k]=+this._buffers[k].duration.toFixed(1)+"s";},this);
+    s.streamedOnly=Object.keys(this._bedFiles).filter(function(k){return !this._buffers[k];},this);
+    /* Support layers under the bed */
+    s.solarWind={live:!!this._sources.solar,gain:this._gains.solar_main?+this._gains.solar_main.gain.value.toFixed(3):null};
+    s.deepFoundation={live:!!this._deepFoundationStarted,gain:this._gains.deep_foundation?+this._gains.deep_foundation.gain.value.toFixed(3):null};
+    s.chatter={scheduled:!!this._chatterTimer,activeUntil:this._chatterActiveUntil||null};
+    /* Buses */
+    s.buses={ambient:this.ambient?+this.ambient.gain.value.toFixed(3):null,
+      ducker:this.ducker?+this.ducker.gain.value.toFixed(3):null,
+      events:this.events?+this.events.gain.value.toFixed(3):null,
+      verbSend:this._verbSend?+this._verbSend.gain.value.toFixed(3):null};
+    s.narration={enabled:this.narrationEnabled,speaking:this._narrateSpeaking};
+    console.log("[SOUND] status: bed="+s.bed.activeKey+" gain="+s.bed.gain+" lp="+s.bed.lowpassHz+"Hz paused="+s.bed.elementPaused+
+      " | solar="+s.solarWind.gain+" deepFound="+s.deepFoundation.gain+" | ctx="+s.ctxState+" master="+s.masterGain);
+    return s;
   },
 
   test:function(){
@@ -12780,7 +12830,9 @@ var _sound=window._sound={
     if(!this.initialized) return;
     var c=this.ctx,now=c.currentTime;
     if(this._gains.jupiter_main){
-      var jVol=regime==="VOLATILE"?0.32:regime==="CHAOTIC"?0.38:regime==="SYSTEMIC"?0.42:0.22;
+      /* Rebased off the new 0.34 baseline (was 0.22) so regime scaling stays
+         proportional to the louder recording-forward mix. */
+      var jVol=regime==="VOLATILE"?0.44:regime==="CHAOTIC"?0.50:regime==="SYSTEMIC"?0.56:0.34;
       jVol*=Math.max(0.6,0.5+aegisScore*0.5);
       this._gains.jupiter_main.gain.linearRampToValueAtTime(jVol,now+4);
     }

@@ -590,7 +590,7 @@ var cardPulseTimers = {};
 /* ===== DOM REFS ===== */
 var $connLost     = document.getElementById("connLost");
 var $headerClock  = document.getElementById("headerClock");
-var COSMOS_BUILD="b0731.10"; /* bump on every deploy — shown in header */
+var COSMOS_BUILD="b0731.11"; /* bump on every deploy — shown in header */
 (function(){var bs=document.getElementById("buildStamp");if(bs)bs.textContent=COSMOS_BUILD;})();
 var $pillsBar     = document.getElementById("pillsBar");
 var $tradingGrid  = document.getElementById("tradingGrid");
@@ -15116,45 +15116,66 @@ function _drawMoonChronos(ctx,x,y,r,now){
   var limbAng=Math.atan2(ly,lx);
   ctx.beginPath();ctx.arc(x,y,s,limbAng-0.9,limbAng+0.9);ctx.stroke();
 
-  /* ═══ VISIBLE CLOCK TICK (Round 2 redesign, 2026-07-30) ═══
-     Chronos had zero timekeeping motif actually rendering — the clock-hand
-     code lived in PLANET_VISUALS.chronos, which is dead for moons (moons
-     render via this function, never drawPlanet). Directive 2: a rotating
-     hand or metronome beat with pulsing rings ON the beat. Built as a
-     literal clock face stamped across the disk: 12 bold tick marks, a
-     sweeping second hand that completes one revolution every 4s (fast
-     enough to visibly move within 2s of watching), and a ring that pulses
-     outward exactly once per hand revolution — the "beat". */
-  var tickR = s*0.92;
-  for (var tk=0; tk<12; tk++){
-    var tkA = (tk/12)*Math.PI*2 - Math.PI/2;
-    var tkOuter = tickR, tkInner = tk%3===0 ? tickR*0.78 : tickR*0.86;
-    ctx.strokeStyle = tk%3===0 ? "rgba(255,225,160,0.55)" : "rgba(255,210,140,0.32)";
-    ctx.lineWidth = tk%3===0 ? Math.max(1,s*0.045) : Math.max(0.6,s*0.025);
-    ctx.beginPath();
-    ctx.moveTo(x+Math.cos(tkA)*tkInner, y+Math.sin(tkA)*tkInner);
-    ctx.lineTo(x+Math.cos(tkA)*tkOuter, y+Math.sin(tkA)*tkOuter);
-    ctx.stroke();
-  }
-  /* Sweeping hand — the primary motion tell, 4s revolution */
-  var handPeriod = 4000;
-  var handA = ((now % handPeriod)/handPeriod)*Math.PI*2 - Math.PI/2;
-  ctx.strokeStyle = "rgba(255,235,190,0.75)";
-  ctx.lineWidth = Math.max(1,s*0.05);
-  ctx.beginPath();
-  ctx.moveTo(x,y);
-  ctx.lineTo(x+Math.cos(handA)*s*0.80, y+Math.sin(handA)*s*0.80);
-  ctx.stroke();
-  /* Hand tip glow */
-  ctx.fillStyle="rgba(255,240,200,0.6)";
-  ctx.beginPath();ctx.arc(x+Math.cos(handA)*s*0.80,y+Math.sin(handA)*s*0.80,Math.max(0.1,s*0.045),0,Math.PI*2);ctx.fill();
-  /* Beat pulse ring — expands once per hand revolution */
-  var beatPhase = (now % handPeriod)/handPeriod;
-  var beatR = s*(1.0 + beatPhase*0.7);
-  var beatA = (1-beatPhase)*0.35;
-  ctx.strokeStyle = "rgba(255,200,110,"+beatA.toFixed(3)+")";
-  ctx.lineWidth = Math.max(0.6,s*0.03*(1-beatPhase));
-  ctx.beginPath();ctx.arc(x,y,beatR,0,Math.PI*2);ctx.stroke();
+  /* ═══ SUNDIAL RING — GNOMON SHADOW (2026-07-31 adult-grade pass) ═══
+     Round 2 (2026-07-30) put a literal clock face on Titan — 12 tick marks
+     plus a sweeping "hand" drawn as a UI overlay. Exactly the cartoonish
+     glyph-on-a-sphere pattern the adult-grade directive bans: no adult
+     accepts a wall-clock stamped on a planet. Time survives as a PHYSICAL
+     mechanism instead: a razor-thin bright ring (like a diffuse debris/ice
+     ring, canted well off the ecliptic so it reads as a ring and not a
+     halo) casts an elongated shadow that sweeps across the cloud deck as
+     Chronos rotates — the shadow IS the hand, there is no hand. Full sweep
+     completes once per 4s (same period as the old hand) so the motion
+     read is unchanged; nothing UI-shaped is drawn. */
+  var ringTiltC = 0.30;               /* flatten factor — thin ellipse, not a circle */
+  var ringRC = s*1.24;
+  var gnomonA = now/4000*Math.PI*2;   /* one full ring revolution per 4s */
+
+  /* Ring far half (behind planet) drawn first */
+  ctx.save();ctx.translate(x,y);ctx.rotate(gnomonA*0.15);/* ring itself drifts slowly, independent of the fast shadow sweep */
+  ctx.strokeStyle="rgba(255,214,150,0.30)";
+  ctx.lineWidth=Math.max(0.5,s*0.018);
+  ctx.beginPath();ctx.ellipse(0,0,ringRC,Math.max(0.1,ringRC*ringTiltC),0,Math.PI,Math.PI*2);ctx.stroke();
+  ctx.restore();
+
+  /* Gnomon shadow — a soft dark band swept across the clipped disk by the
+     ring's shadow-casting edge. Angle tracks gnomonA so it sweeps once per
+     4s; length/softness driven by how face-on the ring is (ringTiltC), a
+     physical justification rather than an arbitrary UI value. */
+  ctx.save();ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.clip();
+  ctx.translate(x,y);ctx.rotate(gnomonA);
+  var shadowLen=s*1.7, shadowW=s*0.16;
+  var shG=ctx.createLinearGradient(-shadowLen*0.5,0,shadowLen*0.5,0);
+  shG.addColorStop(0,"rgba(10,4,0,0)");
+  shG.addColorStop(0.42,"rgba(10,4,0,0.38)");
+  shG.addColorStop(0.5,"rgba(8,3,0,0.46)");
+  shG.addColorStop(0.58,"rgba(10,4,0,0.38)");
+  shG.addColorStop(1,"rgba(10,4,0,0)");
+  ctx.fillStyle=shG;
+  ctx.fillRect(-shadowLen*0.5,-shadowW*0.5,shadowLen,shadowW);
+  ctx.restore();
+
+  /* Ring near half (in front of planet) */
+  ctx.save();ctx.translate(x,y);ctx.rotate(gnomonA*0.15);
+  ctx.strokeStyle="rgba(255,224,168,0.48)";
+  ctx.lineWidth=Math.max(0.6,s*0.022);
+  ctx.beginPath();ctx.ellipse(0,0,ringRC,Math.max(0.1,ringRC*ringTiltC),0,0,Math.PI);ctx.stroke();
+  /* Faint bright glint where the ring catches direct sunlight */
+  var glintA=Math.atan2(ly,lx)*ringTiltC;
+  ctx.strokeStyle="rgba(255,240,210,0.30)";
+  ctx.lineWidth=Math.max(0.8,s*0.03);
+  ctx.beginPath();ctx.ellipse(0,0,ringRC,Math.max(0.1,ringRC*ringTiltC),0,-0.35,0.35);ctx.stroke();
+  ctx.restore();
+
+  /* Slow beat pulse — a single soft ring expanding outward once per full
+     4s sweep, the same "on the beat" cue the old hand had, but abstract
+     (no clock-face association) */
+  var beatPhase=(now%4000)/4000;
+  var beatR=s*(1.02+beatPhase*0.55);
+  var beatA=(1-beatPhase)*0.22;
+  ctx.strokeStyle="rgba(255,200,120,"+beatA.toFixed(3)+")";
+  ctx.lineWidth=Math.max(0.5,s*0.02*(1-beatPhase));
+  ctx.beginPath();ctx.arc(x,y,Math.max(0.1,beatR),0,Math.PI*2);ctx.stroke();
 }
 
 /* AEGIS — Shield shape with health cross, color shifts green↔red */
@@ -15732,18 +15753,114 @@ function _drawMoonContrarian(ctx,x,y,r,now,sentimentState){
     ctx.beginPath();ctx.arc(iap.cx,iap.cy,iap.cr*0.82,0.4,Math.PI+0.4);ctx.stroke();
   }
 
-  /* Sentiment state reactive — when EXTREME, dark half pulses/glows red at boundary */
+  ctx.restore();/* end surface rotate */
+
+  /* ═══ CYCLONIC STORM SYSTEM (2026-07-31 adult-grade pass) ═══
+     Directive 5 asks for Contrarian to read as a storm-wracked planet — a
+     churning red-orange cyclone, not a crayon scribble, with sentiment
+     driving intensity and lightning-flicker during EXTREME states. The old
+     code only lit a thin boundary arc, and ONLY when sentiment was EXTREME
+     (rare) — invisible ~99% of the time, the exact "gated overlay reads as
+     no identity" failure documented from Deep Blue's whale rings. Fix: bake
+     a permanent Great-Red-Spot-style cyclonic swirl (concentric sheared
+     bands, seeded so it doesn't reshuffle every frame) into the dark
+     (leading/Cassini Regio) hemisphere — the storm né "dark side" is now
+     always visibly turbulent, not flat black. Sentiment continues to drive
+     intensity (color saturation + rotation speed) and gates the lightning
+     flicker on top, but existence no longer depends on it. Baked once per
+     render-size bucket, keyed by body radius like PHITEX's lava cache;
+     per-frame cost is one drawImage plus a cheap sentiment-driven alpha/
+     rotation, not fresh gradient allocation. */
   var isExtreme=sentimentState&&sentimentState.indexOf("EXTREME")>=0;
-  if(isExtreme){
-    var pulse=0.7+0.3*Math.sin(now/400);
-    /* Boundary glow between dark and light */
-    ctx.strokeStyle="rgba(220,60,30,"+(0.18*pulse)+")";ctx.lineWidth=Math.max(0.5,s*0.03);
-    /* Arc on the boundary of the dark cap */
-    var ba0=leadingAng-1.1,ba1=leadingAng+1.1;
-    ctx.beginPath();ctx.arc(0,0,s*0.55,ba0,ba1);ctx.stroke();
+  var stormIntensity=isExtreme?1:0.55;  /* baseline churn vs amplified during EXTREME */
+
+  var SC=window._contrarianStorm;
+  if(!SC||Math.abs(SC.s-s)>s*0.15){
+    var SS=Math.max(24,Math.ceil(s*2.3));
+    var scx=SS/2,scy=SS/2,SR=s*1.02;
+    var sseed=42017;
+    var srnd=function(){sseed=(sseed*1103515245+12345)&0x7fffffff;return sseed/0x7fffffff;};
+    var stormC=document.createElement("canvas");stormC.width=SS;stormC.height=SS;
+    var sc=stormC.getContext("2d");
+    sc.save();sc.beginPath();sc.arc(scx,scy,SR,0,Math.PI*2);sc.clip();
+    /* Concentric sheared bands, alternating warm hues, radial jitter so
+       edges look torn/churned rather than drafted with a compass */
+    var bandN=9;
+    for(var sb=0;sb<bandN;sb++){
+      var bR=SR*(0.18+sb*(0.82/bandN));
+      var bShear=(srnd()-0.5)*1.1;
+      var bHue = sb%2===0 ? "rgba(205,55,20," : "rgba(150,30,12,";
+      sc.strokeStyle=bHue+(0.30+srnd()*0.20).toFixed(2)+")";
+      sc.lineWidth=Math.max(1,SR*(0.05+srnd()*0.04));
+      sc.beginPath();
+      for(var ba=0;ba<=48;ba++){
+        var bAng=(ba/48)*Math.PI*2;
+        var wob=Math.sin(bAng*3+sb*1.7)*SR*0.05+bShear*SR*0.03*Math.sin(bAng*2);
+        var bx2=scx+Math.cos(bAng)*(bR+wob), by2=scy+Math.sin(bAng)*(bR+wob)*0.86;
+        if(ba===0) sc.moveTo(bx2,by2); else sc.lineTo(bx2,by2);
+      }
+      sc.stroke();
+    }
+    /* Storm eye — small bright hot core, the classic cyclone tell */
+    var eyeG=sc.createRadialGradient(scx,scy,0,scx,scy,Math.max(0.1,SR*0.22));
+    eyeG.addColorStop(0,"rgba(255,140,60,0.55)");
+    eyeG.addColorStop(0.5,"rgba(215,80,30,0.30)");
+    eyeG.addColorStop(1,"rgba(0,0,0,0)");
+    sc.fillStyle=eyeG;sc.beginPath();sc.arc(scx,scy,Math.max(0.1,SR*0.22),0,Math.PI*2);sc.fill();
+    /* Torn wisps trailing off the main mass */
+    for(var sw=0;sw<14;sw++){
+      var wA=srnd()*Math.PI*2, wD=SR*(0.25+srnd()*0.65);
+      var wx=scx+Math.cos(wA)*wD, wy=scy+Math.sin(wA)*wD*0.86;
+      var wLen=SR*(0.08+srnd()*0.14);
+      sc.strokeStyle="rgba(190,70,25,"+(0.15+srnd()*0.15).toFixed(2)+")";
+      sc.lineWidth=Math.max(0.6,SR*0.02);
+      sc.beginPath();sc.moveTo(wx,wy);
+      sc.lineTo(wx+Math.cos(wA+1.1)*wLen,wy+Math.sin(wA+1.1)*wLen*0.86);
+      sc.stroke();
+    }
+    sc.restore();
+    SC=window._contrarianStorm={s:s,c:stormC,SS:SS};
   }
 
-  ctx.restore();/* end surface rotate */
+  /* Composite storm onto the dark (leading) hemisphere only — clip to the
+     same disk, mask to roughly the dark cap so the bright trailing side
+     stays clean ice */
+  ctx.save();ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.clip();
+  ctx.save();
+  ctx.translate(x,y);
+  /* Storm rotation speed itself scales with intensity — a calmer churn at
+     baseline, visibly faster spin during EXTREME sentiment */
+  ctx.rotate(now/(isExtreme?9000:22000));
+  ctx.globalAlpha=0.6*stormIntensity;
+  ctx.globalCompositeOperation="lighter";
+  ctx.drawImage(SC.c,-SC.SS/2,-SC.SS/2);
+  ctx.globalCompositeOperation="source-over";
+  ctx.globalAlpha=1;
+  ctx.restore();
+  ctx.restore();
+
+  /* Lightning-flicker points — only during EXTREME sentiment, sparse
+     bright flashes within the storm mass (kept as the live-data-gated
+     accent on top of the now-permanent storm, per directive 5) */
+  if(isExtreme){
+    var pulse=0.7+0.3*Math.sin(now/400);
+    for(var lf=0;lf<3;lf++){
+      var lfSeed=(lf*7919+Math.floor(now/220))%97;
+      if(lfSeed>28) continue; /* sparse — most frames show none */
+      var lfA=leadingAng+((lfSeed%17)-8)*0.12;
+      var lfD=s*(0.15+((lfSeed*13)%40)/100);
+      var lfx=x+Math.cos(lfA)*lfD, lfy=y+Math.sin(lfA)*lfD*0.9;
+      var lfG=ctx.createRadialGradient(lfx,lfy,0,lfx,lfy,Math.max(0.1,s*0.10));
+      lfG.addColorStop(0,"rgba(255,230,200,"+(0.85*pulse).toFixed(3)+")");
+      lfG.addColorStop(0.4,"rgba(255,160,80,"+(0.4*pulse).toFixed(3)+")");
+      lfG.addColorStop(1,"rgba(0,0,0,0)");
+      ctx.fillStyle=lfG;ctx.beginPath();ctx.arc(lfx,lfy,Math.max(0.1,s*0.10),0,Math.PI*2);ctx.fill();
+    }
+    /* Boundary glow between dark and light — kept from the prior pass */
+    ctx.strokeStyle="rgba(220,60,30,"+(0.18*pulse)+")";ctx.lineWidth=Math.max(0.5,s*0.03);
+    var ba0=leadingAng-1.1,ba1=leadingAng+1.1;
+    ctx.beginPath();ctx.arc(x,y,s*0.55,ba0,ba1);ctx.stroke();
+  }
   ctx.restore();/* end clip */
 
   /* Terminator on top */

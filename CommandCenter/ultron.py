@@ -25,29 +25,19 @@ AI_URL = "http://localhost:9001"
 
 
 class UltronAnalyzer:
-    def __init__(self, trekbot_dir=None):
+    def __init__(self):
         self.findings = []
         self.recommendations = []
-        self.trekbot_dir = trekbot_dir or os.environ.get(
-            "TREKBOT_DIR",
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "TrekBot"),
-        )
-        self.err_log = os.path.join(self.trekbot_dir, "goldeneye_err.log")
-        self.factors_log = os.path.join(self.trekbot_dir, "goldeneye_factors.log")
 
     def run(self, days=7):
         print("\n  ULTRON SELF-ANALYSIS v1.0")
         print(f"  Period: last {days} days\n")
 
         steps = [
-            ("Gate effectiveness",   self._gate_effectiveness),
-            ("Signal quality",       self._signal_quality),
             ("Regime stability",     self._regime_stability),
             ("Portfolio efficiency",  self._portfolio_efficiency),
             ("Bot utilization",      self._bot_utilization),
             ("Timing patterns",      self._timing_patterns),
-            ("Bus effectiveness",    self._bus_effectiveness),
-            ("Shadow tracking",      self._shadow_analysis),
         ]
         for i, (label, method) in enumerate(steps, 1):
             print(f"  [{i}/{len(steps)}] {label}...")
@@ -61,67 +51,6 @@ class UltronAnalyzer:
     # ------------------------------------------------------------------
     # Analysis methods — each accepts `days` for uniformity
     # ------------------------------------------------------------------
-
-    def _gate_effectiveness(self, days):
-        """Which entry gates prevent bad trades vs block good ones?
-
-        NOTE: Scans the entire TrekBot error log — no date filtering.
-        TrekBot's log format isn't date-partitioned like event logs.
-        """
-        gates = {}
-        try:
-            with open(self.err_log, encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if "blocked" in line.lower() or "SKIP" in line:
-                        for g in ["factor_floor", "confluence", "correlation", "regime", "drawdown", "BUS SKIP"]:
-                            if g.lower() in line.lower():
-                                gates[g] = gates.get(g, 0) + 1
-        except OSError:
-            print(f"    Could not read {self.err_log}")
-            return
-        total = sum(gates.values())
-        if total > 0:
-            for g, c in sorted(gates.items(), key=lambda x: x[1], reverse=True):
-                if c > 3:
-                    self.findings.append({"cat": "gates", "msg": f"'{g}' blocked {c} entries ({c*100//total}%)", "sev": "info"})
-
-    def _signal_quality(self, days):
-        """Which signals predict profits?
-
-        NOTE: Scans the entire TrekBot factors log — no date filtering.
-        TrekBot's log format isn't date-partitioned like event logs.
-        """
-        stats = {}
-        try:
-            with open(self.factors_log, encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    try:
-                        t = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    r = t.get("r", 0)
-                    for sig in t.get("sigs", []):
-                        s = stats.setdefault(sig, {"w": 0, "l": 0, "r_sum": 0, "r_count": 0})
-                        if r > 0:
-                            s["w"] += 1
-                        else:
-                            s["l"] += 1
-                        s["r_sum"] += r
-                        s["r_count"] += 1
-        except OSError:
-            print(f"    Could not read {self.factors_log}")
-            return
-        for sig, s in stats.items():
-            total = s["w"] + s["l"]
-            if total < 5:
-                continue
-            wr = s["w"] / total
-            avg_r = s["r_sum"] / s["r_count"]
-            if wr < 0.30 and avg_r < -0.5:
-                self.findings.append({"cat": "signals", "msg": f"Signal '{sig}': {wr:.0%} WR, R={avg_r:+.2f} over {total} trades — LOSING", "sev": "critical"})
-                self.recommendations.append({"target": "trekbot", "action": f"Disable signal '{sig}'", "data": {"wr": wr, "r": avg_r, "n": total}, "conf": 0.8 if total >= 20 else 0.5})
-            elif wr > 0.55 and avg_r > 0.3:
-                self.findings.append({"cat": "signals", "msg": f"Signal '{sig}': {wr:.0%} WR, R={avg_r:+.2f} — TOP PERFORMER", "sev": "positive"})
 
     def _regime_stability(self, days):
         """How stable are regime classifications? Flags noisy bots."""
@@ -214,54 +143,6 @@ class UltronAnalyzer:
                     self.findings.append({"cat": "timing", "msg": f"Hour {h}:00 UTC: {wr:.0%} WR ({total} trades) — profitable", "sev": "positive"})
                 elif wr < 0.2:
                     self.findings.append({"cat": "timing", "msg": f"Hour {h}:00 UTC: {wr:.0%} WR ({total} trades) — losing window", "sev": "warning"})
-
-    def _bus_effectiveness(self, days):
-        """Are bus reactions improving trades?
-
-        NOTE: Scans the entire TrekBot error log — no date filtering.
-        TrekBot's log format isn't date-partitioned like event logs.
-        """
-        try:
-            bus_count = 0
-            with open(self.err_log, encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if "BUS CONTEXT:" in line:
-                        bus_count += 1
-        except OSError:
-            print(f"    Could not read {self.err_log}")
-            return
-        if bus_count > 0:
-            self.findings.append({"cat": "bus", "msg": f"{bus_count} bus-influenced entries logged", "sev": "info"})
-        else:
-            self.findings.append({"cat": "bus", "msg": "No bus-influenced entries yet — bus wiring may not be active", "sev": "warning"})
-
-    def _shadow_analysis(self, days):
-        """How are shadow-tracked trades performing?
-
-        NOTE: Scans the entire TrekBot error log — no date filtering.
-        TrekBot's log format isn't date-partitioned like event logs.
-        """
-        wins = losses = expired = 0
-        try:
-            with open(self.err_log, encoding="utf-8", errors="ignore") as f:
-                for line in f:
-                    if "SHADOW WIN" in line:
-                        wins += 1
-                    elif "SHADOW LOSS" in line:
-                        losses += 1
-                    elif "SHADOW EXPIRED" in line:
-                        expired += 1
-        except OSError:
-            print(f"    Could not read {self.err_log}")
-            return
-        total = wins + losses
-        if total >= 3:
-            wr = wins / total
-            # Low shadow WR = gates correctly block losers (positive)
-            # High shadow WR = gates block trades that would have won (warning — too tight)
-            self.findings.append({"cat": "shadow", "msg": f"Shadow trades: {wins}W/{losses}L ({wr:.0%} WR), {expired} expired", "sev": "positive" if wr < 0.4 else "warning"})
-            if wr > 0.5:
-                self.recommendations.append({"target": "trekbot", "action": "Loosen factor floors — shadow shows blocked trades are winning", "conf": 0.6})
 
     # ------------------------------------------------------------------
     # Output

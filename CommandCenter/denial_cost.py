@@ -61,6 +61,8 @@ def _load_denial_events(days):
                 if "DENIED" not in ev_type and "denial" not in str(ev_type).lower():
                     continue
                 ts_raw = ev.get("ts") or ev.get("timestamp")
+                if not ts_raw:
+                    continue
                 try:
                     ts = datetime.fromtimestamp(
                         ts_raw / 1000 if ts_raw > 1e12 else ts_raw,

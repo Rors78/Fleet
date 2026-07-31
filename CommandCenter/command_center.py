@@ -365,10 +365,13 @@ class PortfolioManager:
                             "reason": f"COOLDOWN: {pair} has {remaining:.0f}s remaining (last close: {cd['bot_id']})",
                         }
 
-            # Prune cooldown entries older than 1 hour to prevent memory growth
+            # Prune cooldown/open stamps older than 1 hour to prevent memory growth
             cutoff = time.time() - 3600
             self._pair_cooldowns = {
                 p: v for p, v in self._pair_cooldowns.items() if v["ts"] > cutoff
+            }
+            self._pair_opens = {
+                p: v for p, v in self._pair_opens.items() if v["ts"] > cutoff
             }
 
             # Blacklist check — fleet-wide protection. Pairs are blacklisted for
@@ -600,6 +603,14 @@ class PortfolioManager:
             # Direction breakdown
             by_dir = self.exposure_by_direction()
 
+            # Same adaptive cooldown the reserve() gate applies — the dashboard
+            # must not show a pair as cooling after the gate has released it.
+            cooldown_secs = (
+                self.PAIR_COOLDOWN_AGGRESSIVE
+                if self.aegis_score > 0.7
+                else self.PAIR_COOLDOWN_SECS
+            )
+
             # Risk status — relative to current AEGIS-adjusted limit
             lim = self.limits
             max_pct = lim["max_deployed_pct"]
@@ -633,11 +644,11 @@ class PortfolioManager:
                 "history_recent": self.history[-20:],
                 "pair_cooldowns": {
                     pair: {
-                        "remaining_secs": round(self.PAIR_COOLDOWN_SECS - (time.time() - v["ts"])),
+                        "remaining_secs": round(cooldown_secs - (time.time() - v["ts"])),
                         "last_bot": v["bot_id"],
                     }
                     for pair, v in self._pair_cooldowns.items()
-                    if time.time() - v["ts"] < self.PAIR_COOLDOWN_SECS
+                    if time.time() - v["ts"] < cooldown_secs
                 },
             }
 
@@ -1407,7 +1418,6 @@ def _compute_aggregate(bots_data: dict) -> dict:
 
     equities = _collect("equity")
     pnls = _collect("pnl")
-    win_rates = _collect("win_rate")
     open_pos = _collect("open_positions")
     trades = _collect("total_trades")
     regimes = [n["regime"] for n in norms.values() if n.get("regime")]
@@ -1480,22 +1490,32 @@ def _bot_meta(bot_id: str) -> tuple[str, str]:
     return _BOT_META.get(bot_id, (bot_id, "#ffffff"))
 
 
+def _alert_feed_entries(raw: dict, bot_id: str, entries: list) -> None:
+    """Append type/suggestion-shaped recent_alerts (Contrarian, Chronos)."""
+    name, color = _bot_meta(bot_id)
+    for alert in (raw.get("recent_alerts") or [])[-10:]:
+        atype = alert.get("type", "")
+        suggestion = alert.get("suggestion", "")
+        msg = f"{atype}: {suggestion}" if suggestion else atype
+        entries.append({"time": alert.get("timestamp", time.time()), "bot_id": bot_id, "bot_name": name, "message": msg, "bot_color": color})
+
+
 def _extract_feed(bots_data: dict) -> list[dict]:
     """Collect and merge signals/alerts from all bots into a unified feed."""
     entries = []
 
     # TurtleSue signals (cap per-bot to avoid feed flooding)
     ts_raw = (bots_data.get("turtlesue") or {}).get("raw") or {}
+    name, color = _bot_meta("turtlesue")
     for sig in (ts_raw.get("signals") or [])[-10:]:
-        name, color = _bot_meta("turtlesue")
         t = sig.get("time") or sig.get("timestamp") or 0
         msg = f"{sig.get('action', '')} — {sig.get('name', '')}".strip(" —")
         entries.append({"time": t, "bot_id": "turtlesue", "bot_name": name, "message": msg, "bot_color": color})
 
     # Trinity alerts (timestamp may be a string like "23:34:49" or an epoch)
     tr_raw = (bots_data.get("trinity") or {}).get("raw") or {}
+    name, color = _bot_meta("trinity")
     for alert in (tr_raw.get("alerts") or [])[-10:]:
-        name, color = _bot_meta("trinity")
         t = alert.get("timestamp") or 0
         # Trinity sends timestamp as "HH:MM:SS" string -- use current time as approx
         if isinstance(t, str):
@@ -1508,7 +1528,6 @@ def _extract_feed(bots_data: dict) -> list[dict]:
 
     # Trinity top_symbols as signals (these are the actual scan results)
     for sig in (tr_raw.get("top_symbols") or [])[:5]:
-        name, color = _bot_meta("trinity")
         sym = sig.get("symbol", "")
         conf = sig.get("confluence", 0)
         bias = sig.get("bias", "")
@@ -1522,8 +1541,8 @@ def _extract_feed(bots_data: dict) -> list[dict]:
 
     # NexusBrain recent_signals -- format as compact one-liners
     nb_raw = (bots_data.get("nexusbrain") or {}).get("raw") or {}
+    name, color = _bot_meta("nexusbrain")
     for sig in (nb_raw.get("recent_signals") or [])[-10:]:
-        name, color = _bot_meta("nexusbrain")
         t = sig.get("time") or sig.get("timestamp") or 0
         if isinstance(sig, dict) and sig.get("pair"):
             pair = sig.get("pair", "")
@@ -1544,8 +1563,8 @@ def _extract_feed(bots_data: dict) -> list[dict]:
     # signal list. (Replaces the old TrekBot recent_signals block.)
     cf_raw = (bots_data.get("confluence") or {}).get("raw") or {}
     cf_ts = cf_raw.get("timestamp") or 0
+    name, color = _bot_meta("confluence")
     for cand in (cf_raw.get("candidates") or [])[:10]:
-        name, color = _bot_meta("confluence")
         srcs = ", ".join(cand.get("sources") or [])
         msg = (f"{cand.get('pair')} conf {cand.get('confluence', 0):.2f} "
                f"[{srcs}] — {cand.get('thesis', '')}")
@@ -1554,44 +1573,32 @@ def _extract_feed(bots_data: dict) -> list[dict]:
 
     # Rubberband recent trades
     rb_raw = (bots_data.get("rubberband") or {}).get("raw") or {}
+    name, color = _bot_meta("rubberband")
     for t in (rb_raw.get("recent_trades") or [])[-10:]:
-        name, color = _bot_meta("rubberband")
         pnl = t.get("pnl", 0)
         result = "WIN" if pnl > 0 else "LOSS"
         msg = f"{result} {t.get('direction', '')} {t.get('pair', '')} ${pnl:+.2f} [{t.get('exit_reason', '')}]"
         entries.append({"time": t.get("closed_at", time.time()), "bot_id": "rubberband", "bot_name": name, "message": msg, "bot_color": color})
 
     # Contrarian sentiment alerts
-    ct_raw = (bots_data.get("contrarian") or {}).get("raw") or {}
-    for alert in (ct_raw.get("recent_alerts") or [])[-10:]:
-        name, color = _bot_meta("contrarian")
-        atype = alert.get("type", "")
-        suggestion = alert.get("suggestion", "")
-        msg = f"{atype}: {suggestion}" if suggestion else atype
-        entries.append({"time": alert.get("timestamp", time.time()), "bot_id": "contrarian", "bot_name": name, "message": msg, "bot_color": color})
+    _alert_feed_entries((bots_data.get("contrarian") or {}).get("raw") or {}, "contrarian", entries)
 
     # Arbitrageur spread events
     ab_raw = (bots_data.get("arbitrageur") or {}).get("raw") or {}
+    name, color = _bot_meta("arbitrageur")
     for t in (ab_raw.get("recent_trades") or [])[-10:]:
-        name, color = _bot_meta("arbitrageur")
         pnl = t.get("pnl", 0)
         result = "WIN" if pnl > 0 else "LOSS"
         msg = f"SPREAD {result} {t.get('pair_key', '')} z={t.get('entry_z', 0):.1f}->{t.get('exit_z', 0):.1f} ${pnl:+.2f} [{t.get('reason', '')}]"
         entries.append({"time": t.get("closed_at", time.time()), "bot_id": "arbitrageur", "bot_name": name, "message": msg, "bot_color": color})
 
     # Chronos session alerts
-    ch_raw = (bots_data.get("chronos") or {}).get("raw") or {}
-    for alert in (ch_raw.get("recent_alerts") or [])[-10:]:
-        name, color = _bot_meta("chronos")
-        atype = alert.get("type", "")
-        suggestion = alert.get("suggestion", "")
-        msg = f"{atype}: {suggestion}" if suggestion else atype
-        entries.append({"time": alert.get("timestamp", time.time()), "bot_id": "chronos", "bot_name": name, "message": msg, "bot_color": color})
+    _alert_feed_entries((bots_data.get("chronos") or {}).get("raw") or {}, "chronos", entries)
 
     # Oracle top signals
     or_raw = (bots_data.get("oracle") or {}).get("raw") or {}
+    name, color = _bot_meta("oracle")
     for sig in (or_raw.get("top_signals") or [])[:5]:
-        name, color = _bot_meta("oracle")
         pair = sig.get("pair", "")
         direction = sig.get("direction", "NEUTRAL")
         strategy = sig.get("strategy", "")
@@ -1630,7 +1637,6 @@ def _compute_factor_exposure(bots_data: dict) -> dict:
         if not bot.get("alive"):
             continue
         raw = bot.get("raw") or {}
-        norm = bot.get("normalized") or {}
         bot_factors: dict[str, list[float]] = {}
 
         # Confluence: no 6-factor model of its own — its per-source weights are
@@ -1740,19 +1746,22 @@ def _compute_bot_correlations(bots_data: dict) -> dict:
                 if len(_bot_pnl_history[bid]) > MAX_HISTORY:
                     _bot_pnl_history[bid] = _bot_pnl_history[bid][-MAX_HISTORY:]
 
-        # Compute correlation matrix
+        # Compute correlation matrix. Snapshot the counts while still holding
+        # the lock — the poll thread mutates _bot_pnl_history between cycles.
         bots_with_data = {
             bid: vals for bid, vals in _bot_pnl_history.items()
             if len(vals) >= MIN_SAMPLES
         }
+        bots_tracked = len(_bot_pnl_history)
+        samples_collected = {bid: len(vals) for bid, vals in _bot_pnl_history.items()}
 
     if len(bots_with_data) < 2:
         result = {
             "timestamp": time.time(),
             "status": "insufficient_data",
-            "bots_tracked": len(_bot_pnl_history),
+            "bots_tracked": bots_tracked,
             "min_samples_required": MIN_SAMPLES,
-            "samples_collected": {bid: len(vals) for bid, vals in _bot_pnl_history.items()},
+            "samples_collected": samples_collected,
             "matrix": {},
             "alerts": [],
         }
@@ -1812,9 +1821,9 @@ def _compute_bot_correlations(bots_data: dict) -> dict:
     result = {
         "timestamp": time.time(),
         "status": "active",
-        "bots_tracked": len(_bot_pnl_history),
+        "bots_tracked": bots_tracked,
         "bots_correlated": len(bot_ids),
-        "samples_collected": {bid: len(vals) for bid, vals in _bot_pnl_history.items()},
+        "samples_collected": samples_collected,
         "matrix": matrix,
         "alerts": alerts,
         "concentration_risk": len(alerts) > 0,
@@ -2051,7 +2060,8 @@ def _generate_briefing() -> dict:
             with _perf_attribution_lock:
                 edge = _perf_attribution.get("edge_status", "UNKNOWN") if _perf_attribution else "UNKNOWN"
 
-            alert_count = len(_bot_correlation_alerts)
+            with _bot_correlation_lock:
+                alert_count = len(_bot_correlation_alerts)
             fallback_text = (
                 f"Fleet: {alive}/{total} bots online, regime consensus {consensus}, fleet PnL {pnl_str}. "
                 f"Edge status: {edge}. "
@@ -2266,7 +2276,6 @@ def _apply_aegis_adjustment():
     # throttle_reason/fee_ratio keys are kept (as None) in the event payload
     # below so PORTFOLIO_LIMIT_CHANGE consumers don't break on missing keys.
     new_limit = base_limit
-    throttle_reason = None
 
     # Apply AEGIS adjustment to BOTH portfolios.
     # old_limit is captured OUTSIDE the loop: reading it inside leaves it bound
@@ -2293,7 +2302,7 @@ def _apply_aegis_adjustment():
                 "regime": regime,
                 "old_limit": old_limit,
                 "new_limit": new_limit,
-                "throttle_reason": throttle_reason,  # always None — fee throttle removed 2026-07-30
+                "throttle_reason": None,             # fee throttle removed 2026-07-30
                 "fee_ratio": None,                   # kept for consumer shape only
             },
         })
@@ -2350,7 +2359,7 @@ _kraken_sync_state = {
 _kraken_sync_lock = threading.Lock()
 
 
-def _sync_kraken_balance(force: bool = False) -> dict:
+def _sync_kraken_balance() -> dict:
     """Pull current equity from Kraken and update _portfolio_live.total.
 
     Returns a dict describing the outcome (always — never raises). Loud on
@@ -2419,8 +2428,8 @@ def _sync_kraken_balance(force: bool = False) -> dict:
             log.warning("Kraken balance sync: refusing negative equity %.4f", equity)
             return {"ok": False, "reason": "negative_equity", "equity": equity}
 
-        old_total = _portfolio_live.total
         with _portfolio_live._lock:
+            old_total = _portfolio_live.total
             _portfolio_live.total = equity
             _portfolio_live._save()
 
@@ -2492,7 +2501,6 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
     # -- Exact-match GET route table ------------------------------------------
     _GET_ROUTES: dict[str, str] = {
         "/":                        "_serve_index",
-        "/v2":                      "_serve_v2",
         "/v3":                      "_serve_index",
         "/api/master":              "_serve_master",
         "/api/universe":            "_serve_universe",
@@ -2635,9 +2643,6 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     def _serve_index(self, parsed) -> None:
         self._serve_html("command_center_v4.html")
-
-    def _serve_v2(self, parsed) -> None:
-        self._serve_html("command_center.html")
 
     def _serve_html(self, filename: str = "command_center_v3.html") -> None:
         """Serve dashboard HTML from same directory as this script."""
@@ -2857,28 +2862,28 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             "kraken_pairs": [p["kraken_pair"] for p in pairs],
         })
 
-    def _serve_portfolio(self, parsed) -> None:
-        if not _active_portfolio():
+    def _require_portfolio(self):
+        """Return the active portfolio, or send a 503 and return None."""
+        pm = _active_portfolio()
+        if not pm:
             self._send_json({"error": "Portfolio manager not initialized"}, 503)
-            return
-        self._send_json(_active_portfolio().state())
+        return pm
+
+    def _serve_portfolio(self, parsed) -> None:
+        if pm := self._require_portfolio():
+            self._send_json(pm.state())
 
     def _serve_portfolio_available(self, parsed) -> None:
-        if not _active_portfolio():
-            self._send_json({"error": "Portfolio manager not initialized"}, 503)
-            return
-        self._send_json(_active_portfolio().available_snapshot())
+        if pm := self._require_portfolio():
+            self._send_json(pm.available_snapshot())
 
     def _serve_portfolio_exposure(self, parsed) -> None:
-        if not _active_portfolio():
-            self._send_json({"error": "Portfolio manager not initialized"}, 503)
-            return
-        self._send_json(_active_portfolio().exposure_snapshot())
+        if pm := self._require_portfolio():
+            self._send_json(pm.exposure_snapshot())
 
     def _serve_portfolio_reservations(self, parsed) -> None:
         """GET /api/portfolio/reservations — return all active reservations."""
-        if not _active_portfolio():
-            self._send_json({"error": "Portfolio manager not initialized"}, 503)
+        if not self._require_portfolio():
             return
         with _active_portfolio()._lock:
             reservations = {
@@ -2911,8 +2916,8 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 if dl and dl < today:
                     p["status"] = "expired"
                 elif dl:
-                    from datetime import datetime
-                    days_left = (datetime.strptime(dl, "%Y-%m-%d") - datetime.strptime(today, "%Y-%m-%d")).days
+                    days_left = (datetime.datetime.strptime(dl, "%Y-%m-%d")
+                                 - datetime.datetime.strptime(today, "%Y-%m-%d")).days
                     p["days_left"] = days_left
             self._send_json(data)
         except FileNotFoundError:
@@ -2946,13 +2951,13 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         # Kraken — no gate on total==0, so toggling live always pulls fresh.
         if new_mode == "live":
             live_total = data.get("live_total")
-            if live_total is not None:
+            if live_total is not None and _portfolio_live:
                 _portfolio_live.total = float(live_total)
                 _portfolio_live.reservations.clear()
                 _portfolio_live._save()
                 log.info("Live portfolio balance manually set to $%.2f", float(live_total))
             elif _portfolio_live:
-                sync_result = _sync_kraken_balance(force=True)
+                sync_result = _sync_kraken_balance()
                 if sync_result.get("ok"):
                     log.info("Live portfolio synced from Kraken: $%.4f", sync_result["equity"])
                 else:
@@ -3047,51 +3052,49 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             broadcaster_alive = True
         except Exception:
             pass
-        if False:  # http.client proxy disabled — Python 3.14 HTTP/1.0 bug
-            pass
-        else:
-            # Broadcaster not reachable via network — build stats from log file
-            log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals_sent.log")
-            free_today = 0
-            paid_today = 0
-            failed = 0
-            last_free = ""
-            last_paid = ""
-            today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
-            if os.path.exists(log_path):
-                try:
-                    with open(log_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            try:
-                                entry = json.loads(line.strip())
-                                ts = entry.get("ts", "")
-                                if not ts.startswith(today_str):
-                                    continue
-                                tier = entry.get("tier", "")
-                                if not entry.get("success"):
-                                    failed += 1
-                                elif tier.startswith("paid"):
-                                    paid_today += 1
-                                    last_paid = ts
-                                elif tier.startswith("free"):
-                                    free_today += 1
-                                    last_free = ts
-                            except Exception:
-                                pass
-                except Exception:
-                    pass
-            stats = {
-                "sse": {"connected": broadcaster_alive, "events_received": 0},
-                "channel": {
-                    "paid_sent_today": paid_today,
-                    "free_sent_today": free_today,
-                    "failed_today": failed,
-                    "last_paid_ts": last_paid,
-                    "last_free_ts": last_free,
-                },
-                "config": {"enabled": True, "rate_limit": 30},
-                "source": "log_fallback",
-            }
+        # Always build stats from the log file — the live http.client proxy to
+        # port 9002 stays disabled (Python 3.14 HTTP/1.0 bug; see CLAUDE.md).
+        log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "signals_sent.log")
+        free_today = 0
+        paid_today = 0
+        failed = 0
+        last_free = ""
+        last_paid = ""
+        today_str = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        try:
+                            entry = json.loads(line.strip())
+                            ts = entry.get("ts", "")
+                            if not ts.startswith(today_str):
+                                continue
+                            tier = entry.get("tier", "")
+                            if not entry.get("success"):
+                                failed += 1
+                            elif tier.startswith("paid"):
+                                paid_today += 1
+                                last_paid = ts
+                            elif tier.startswith("free"):
+                                free_today += 1
+                                last_free = ts
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+        stats = {
+            "sse": {"connected": broadcaster_alive, "events_received": 0},
+            "channel": {
+                "paid_sent_today": paid_today,
+                "free_sent_today": free_today,
+                "failed_today": failed,
+                "last_paid_ts": last_paid,
+                "last_free_ts": last_free,
+            },
+            "config": {"enabled": True, "rate_limit": 30},
+            "source": "log_fallback",
+        }
         self._send_json(stats)
 
     def _serve_market_ohlc(self, parsed) -> None:
@@ -3186,22 +3189,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
              snapshot-diff entries that have no reservation_id
         """
         import glob as _glob
-        qs = parsed.query or ""
-        params: dict[str, str] = {}
-        for part in qs.split("&"):
-            if "=" in part:
-                k, v = part.split("=", 1)
-                params[k] = v
-        bot_filter = params.get("bot", "").strip().lower()
+        qs = parse_qs(parsed.query or "")
+        bot_filter = qs.get("bot", [""])[0].strip().lower()
         try:
-            limit = int(params.get("limit", "100"))
+            limit = int(qs.get("limit", ["100"])[0])
         except ValueError:
             limit = 100
 
         raw_trades: list[dict] = []
+        here = os.path.dirname(os.path.abspath(__file__))
         log_dirs = [
-            os.path.join(os.path.dirname(__file__), "logs", "event_bus"),
-            os.path.join(os.path.dirname(__file__), "logs", "events"),
+            os.path.join(here, "logs", "event_bus"),
+            os.path.join(here, "logs", "events"),
         ]
         seen_ids: set[str] = set()
         for log_dir in log_dirs:
@@ -3397,41 +3396,32 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     # -- UPGRADE: Fleet Intelligence GET handlers ------------------------------
 
-    def _serve_fleet_exposure(self, parsed) -> None:
-        """GET /api/fleet/exposure — aggregated factor exposure across all positions."""
-        with _fleet_exposure_lock:
-            data = dict(_fleet_exposure) if _fleet_exposure else {}
+    def _serve_locked_snapshot(self, lock, value, no_data_message: str) -> None:
+        """Serve a lock-guarded module-level snapshot dict, or a no_data stub."""
+        with lock:
+            data = dict(value) if value else {}
         if not data:
-            self._send_json({
-                "status": "no_data",
-                "message": "Factor exposure data not yet computed. Wait for next poll cycle.",
-            })
+            self._send_json({"status": "no_data", "message": no_data_message})
             return
         self._send_json(data)
+
+    def _serve_fleet_exposure(self, parsed) -> None:
+        """GET /api/fleet/exposure — aggregated factor exposure across all positions."""
+        self._serve_locked_snapshot(
+            _fleet_exposure_lock, _fleet_exposure,
+            "Factor exposure data not yet computed. Wait for next poll cycle.")
 
     def _serve_fleet_correlations(self, parsed) -> None:
         """GET /api/fleet/correlations — cross-bot PnL correlation matrix and alerts."""
-        with _bot_correlation_lock:
-            data = dict(_bot_correlation_matrix) if _bot_correlation_matrix else {}
-        if not data:
-            self._send_json({
-                "status": "no_data",
-                "message": "Correlation data not yet computed. Need at least 30 poll cycles (~2 minutes).",
-            })
-            return
-        self._send_json(data)
+        self._serve_locked_snapshot(
+            _bot_correlation_lock, _bot_correlation_matrix,
+            "Correlation data not yet computed. Need at least 30 poll cycles (~2 minutes).")
 
     def _serve_fleet_attribution(self, parsed) -> None:
         """GET /api/fleet/attribution — performance attribution (alpha/beta/cost decomposition)."""
-        with _perf_attribution_lock:
-            data = dict(_perf_attribution) if _perf_attribution else {}
-        if not data:
-            self._send_json({
-                "status": "no_data",
-                "message": "Attribution data not yet computed. Wait for next poll cycle.",
-            })
-            return
-        self._send_json(data)
+        self._serve_locked_snapshot(
+            _perf_attribution_lock, _perf_attribution,
+            "Attribution data not yet computed. Wait for next poll cycle.")
 
     def _serve_fleet_briefing(self, parsed) -> None:
         """GET /api/fleet/briefing — latest LLM-generated fleet situation report."""
@@ -3668,7 +3658,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         and returns the result. Reservations are preserved. Available balance is
         recomputed from total minus active reservations.
         """
-        result = _sync_kraken_balance(force=True)
+        result = _sync_kraken_balance()
         if result.get("ok"):
             result["available"] = _portfolio_live.available() if _portfolio_live else 0
             self._send_json(result, 200)

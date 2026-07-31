@@ -76,8 +76,8 @@ class KrakenSpotClient:
         LIMIT ORDERS ONLY — fleet policy, no exceptions. `ordertype` defaults to
         "limit" and anything else is refused here rather than sent to Kraken.
         A market order is a blank cheque on fill price: on a thin book it can
-        slip far past the level the strategy decided on, and the fleet already
-        pays 0.40% taker per side.
+        slip far past the level the strategy decided on, and the published
+        signal price would no longer match what was actually filled.
 
         `price` is REQUIRED. It is not defaulted, because a limit order without
         an explicit price is exactly the mistake this gate exists to prevent —

@@ -17,7 +17,6 @@ Usage: imported by command_center.py or run standalone
 
 import json
 import logging
-import math
 import os
 import threading
 import time
@@ -25,6 +24,8 @@ from datetime import datetime, timezone
 from urllib.parse import urlparse, parse_qs
 
 import requests
+
+from indicators import pearson_correlation
 
 log = logging.getLogger("brainiac")
 
@@ -268,16 +269,9 @@ class BrainiacCollector:
                 for i in range(n):
                     for j in range(i + 1, n):
                         raw_a, raw_b = returns[pairs_list[i]], returns[pairs_list[j]]
-                        min_len = min(len(raw_a), len(raw_b))
-                        if min_len < 10:
+                        if min(len(raw_a), len(raw_b)) < 10:
                             continue
-                        a, b = raw_a[-min_len:], raw_b[-min_len:]
-                        m_a = sum(a) / len(a)
-                        m_b = sum(b) / len(b)
-                        num = sum((a[k] - m_a) * (b[k] - m_b) for k in range(len(a)))
-                        d_a = math.sqrt(sum((x - m_a) ** 2 for x in a)) + 1e-10
-                        d_b = math.sqrt(sum((x - m_b) ** 2 for x in b)) + 1e-10
-                        corr = num / (d_a * d_b)
+                        corr = pearson_correlation(raw_a, raw_b)
                         matrix[f"{pairs_list[i]}|{pairs_list[j]}"] = round(corr, 4)
 
                 avg_abs = sum(abs(v) for v in matrix.values()) / max(len(matrix), 1)

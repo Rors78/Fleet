@@ -63,7 +63,7 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 - `collector.py` — Brainiac: 5 background threads collecting order book depth, recent trades, global metrics (CoinGecko), correlation matrix, and funding rates. Stores to `brainiac/` as JSONL. Also registers `/api/brainiac/*` endpoints on the HTTP handler.
 - `fleet_logger.py` — Writes snapshots (60s), events (trade opens/closes, regime changes), daily summaries, and AI trade journals to `logs/`. Imported by command_center.py.
 - `analyze.py` — CLI tool: 8 subcommands for fleet diagnostics reading `logs/` JSONL.
-- `ultron.py` — Self-evolution engine: analyzes gate effectiveness, signal quality, regime stability, portfolio efficiency, bot utilization, timing patterns, bus effectiveness, and shadow trades. Configurable TrekBot log paths via constructor or `TREKBOT_DIR` env var (legacy — TrekBot is no longer in the fleet; those analyses no-op without its logs). Feeds findings to AI for synthesis.
+- `ultron.py` — Self-evolution engine: analyzes regime stability, portfolio efficiency, bot utilization, and timing patterns. (The four TrekBot-log analyses — gates, signal quality, bus effectiveness, shadow trades — were deleted 2026-07-30; their data sources died when TrekBot left the fleet, and the bus check emitted a false warning weekly.) Feeds findings to AI for synthesis.
 - `weekly_analysis.py` — Aggregates events + journals + Brainiac data + Ultron analysis into an AI-powered weekly report.
 - `evolution.py` — Evolution engine: 5-step cycle (measure→analyze→propose→simulate→recommend). Reads event logs, queries live bots, identifies profitable/losing patterns, generates ranked parameter change proposals. Saves reports to `logs/evolution/`.
 
@@ -205,7 +205,7 @@ Authoritative roster: `fleet_config.py` (`BOTS` dict) — trust it over this tab
 - Max total deployed: 80% (always keep 20% cash)
 - Max per bot: 30%
 - Max per pair: 20%
-- Max per trade: 5%
+- Max per trade: 20% (`max_per_trade_pct` in `fleet_config.py`)
 - Max directional: 60% (long or short)
 
 ### Bot Integration

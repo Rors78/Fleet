@@ -18,7 +18,9 @@ Data sources (all via Command Center on port 9000):
 Signal types published:
   EXTREME_GREED         F&G > 80 AND avg funding > 0.05% AND correlation > 0.8
   EXTREME_FEAR          F&G < 15 AND correlation > 0.8
-  FUNDING_EXTREME       Any pair funding > 0.1% or < -0.1%
+  FUNDING_EXTREME       Any crypto perp |8h-equivalent funding| > 0.5%
+                        (raw Kraken fundingRate is absolute USD/hour;
+                        converted via fundingRate/markPrice*8*100)
   LIQUIDATION_CASCADE   3+ pairs drop > 3% in last 15 minutes
   CORRELATION_BREAKDOWN Pair correlation drops from > 0.8 to < 0.5
 
@@ -69,13 +71,47 @@ BOT_NAME = "Contrarian"
 # Thresholds
 EXTREME_GREED_FG = 80        # Fear & Greed above this
 EXTREME_FEAR_FG = 15         # Fear & Greed below this
-FUNDING_EXTREME_PCT = 0.005  # 0.5% per-period — truly extreme leveraged positioning
-FUNDING_AVG_GREED = 0.0005   # 0.05% avg funding for greed signal
+
+# FUNDING UNITS (verified empirically 2026-07-31 against live
+# https://futures.kraken.com/derivatives/api/v3/tickers):
+# Kraken's raw `fundingRate` ticker field is an ABSOLUTE per-hour rate
+# denominated in USD price terms — it scales with markPrice
+# (PF_XBTUSD fr=0.302 @ mark 63,855 vs PF_DOGEUSD fr=2.9e-08 @ mark 0.0698).
+# The relative hourly rate is fundingRate / markPrice; with that division all
+# 8 majors land in the plausible band (BTC +0.0038%/8h, ETH +0.0057%/8h,
+# BCH -0.020%/8h, SOL +0.013%/8h, XRP -0.0096%/8h, ...).
+# We report the industry-standard 8h-equivalent percentage:
+#   rate_8h_pct = (fundingRate / markPrice) * 8 * 100
+# Live distribution across 275 perps: median |8h| = 0.057%, p95 = 0.32%,
+# max = 4.03% (illiquid LRC). Threshold 0.5% per 8h sits ~p97 — flags a
+# handful of genuinely extreme pairs, not 22 at once.
+FUNDING_EXTREME_8H_PCT = 0.5  # |8h-equivalent funding| percent
+
+# NOTE: FUNDING_AVG_GREED compares against the collector's avg_rate, which is
+# a mean of RAW absolute-unit fundingRate values (dominated by high-priced
+# pairs like BTC). Known-imprecise; kept as-is (out of scope for the
+# 2026-07-31 funding-units fix). Do not interpret it as a percentage.
+FUNDING_AVG_GREED = 0.0005   # raw-unit avg funding for greed signal
 CORRELATION_HIGH = 0.8       # high correlation threshold
 CORRELATION_LOW = 0.5        # breakdown target
 CASCADE_DROP_PCT = 3.0       # percent drop per pair
 CASCADE_MIN_PAIRS = 3        # minimum pairs for cascade signal
 MAX_ALERTS = 100             # ring buffer for alert history
+
+# Publish state-change gating
+PUBLISH_HEARTBEAT_S = 1800   # 30-min re-publish for persistent conditions
+PUBLISH_MATERIAL_DELTA = 0.20  # >20% relative change counts as new information
+
+# Non-crypto symbols on Kraken Futures (tokenized equities / commodity
+# trackers, "xStocks" — lowercase-x pairs like SPYx:USD in the raw ticker
+# feed). Matched against the NORMALIZED base (PF_ prefix and USD suffix
+# stripped, uppercased). Set verified against the live ticker list
+# 2026-07-31; do NOT use an endswith("X") heuristic here — genuine crypto
+# bases also end in X (AVAX, TRX, STX, DYDX, ZRX, SNX, IMX, GMX, ICX,
+# IOTX, CFX, CVX, FLUX, SPX).
+_NON_CRYPTO = {"SPYX", "AAPLX", "NVDAX", "GOOGLX", "GLDX", "QQQX", "TSLAX",
+               "AMZNX", "MSFTX", "METAX", "COINX", "MSTRX", "XAUX",
+               "ANTHROPICX", "OPENAIX", "HOODX", "CRCLX", "SPCXX"}
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -237,37 +273,68 @@ def detect_extreme_fear(fear_greed, corr_data):
     return None
 
 
-def detect_funding_extremes(funding_data):
-    """Check for FUNDING_EXTREME: any pair funding > 0.1% or < -0.1%.
+def _norm_futures_symbol(symbol):
+    """Normalize a Kraken Futures rates key to a bare base ticker.
 
-    Returns list of alerts (one per extreme pair).
+    The collector's rates dict keys arrive RAW as PF_<BASE>USD (its
+    lowercase .replace("pf_", "") never matches the uppercase symbols),
+    so strip the PF_ prefix and USD suffix and uppercase. Idempotent for
+    already-bare keys like "BTC".
+    """
+    s = str(symbol).upper().strip()
+    if s.startswith("PF_"):
+        s = s[3:]
+    if s.endswith("USD"):
+        s = s[:-3]
+    return s
+
+
+def detect_funding_extremes(funding_data):
+    """Check for FUNDING_EXTREME: |8h-equivalent funding| > FUNDING_EXTREME_8H_PCT.
+
+    Raw Kraken fundingRate is an absolute USD-per-hour rate; converted to
+    8h-equivalent percent via rate_8h_pct = rate / mark_price * 8 * 100
+    (see derivation at the FUNDING_EXTREME_8H_PCT constant).
+
+    Returns (alerts, filtered_non_crypto):
+      alerts              -- list of alert dicts, one per extreme crypto perp
+      filtered_non_crypto -- count of tokenized-equity symbols excluded
+                             (exposed in the snapshot; truth, not hiding)
     """
     alerts = []
+    filtered_non_crypto = 0
     if not funding_data:
-        return alerts
+        return alerts, filtered_non_crypto
 
-    # Non-crypto symbols from Kraken Futures (equity/commodity index futures)
-    _NON_CRYPTO = {"SPYX", "AAPLX", "NVDAX", "GOOGLX", "GLDX", "QQQX", "TSLAX",
-                   "AMZNX", "MSFTX", "METAX", "COINX", "MSTRX", "XAUX"}
     rates = funding_data.get("rates", {})
     for symbol, info in rates.items():
-        if symbol in _NON_CRYPTO or symbol.endswith("X"):
-            continue  # skip equity/commodity futures
-        rate = info.get("rate", 0)
-        if abs(rate) > FUNDING_EXTREME_PCT:
-            direction = "LONG" if rate > 0 else "SHORT"
+        base = _norm_futures_symbol(symbol)
+        if base in _NON_CRYPTO:
+            filtered_non_crypto += 1
+            continue  # tokenized equity / commodity tracker, not crypto
+        rate_raw = info.get("rate", 0) or 0
+        mark = info.get("mark_price") or 0
+        if not isinstance(mark, (int, float)) or mark <= 0:
+            continue  # cannot convert to a comparable unit without mark price
+        rate_8h_pct = (rate_raw / mark) * 8.0 * 100.0
+        if abs(rate_8h_pct) > FUNDING_EXTREME_8H_PCT:
+            direction = "LONG" if rate_8h_pct > 0 else "SHORT"
             alerts.append({
                 "type": "FUNDING_EXTREME",
-                "pair": f"{symbol}/USD",
-                "funding_rate": round(rate * 100, 4),  # as percentage
+                "pair": f"{base}/USD",
+                "rate_8h_pct": round(rate_8h_pct, 4),
+                "funding_unit": "8h_equivalent_pct",
+                "rate_raw": rate_raw,  # Kraken absolute USD/hour, for audit
+                # compat alias — same honest 8h% value, NOT the old raw*100
+                "funding_rate": round(rate_8h_pct, 4),
                 "direction": direction,
                 "mark_price": info.get("mark_price"),
                 "open_interest": info.get("open_interest"),
-                "message": (f"Extreme {direction.lower()} funding on {symbol}: "
-                            f"{rate * 100:.4f}% "
-                            f"({'longs pay shorts' if rate > 0 else 'shorts pay longs'})"),
+                "message": (f"Extreme {direction.lower()} funding on {base}: "
+                            f"{rate_8h_pct:.4f}%/8h "
+                            f"({'longs pay shorts' if rate_8h_pct > 0 else 'shorts pay longs'})"),
             })
-    return alerts
+    return alerts, filtered_non_crypto
 
 
 def detect_liquidation_cascade(pairs):
@@ -407,6 +474,8 @@ class ContrarianEngine:
         self.fear_greed = None
         self.regime = "UNKNOWN"
         self.alerts = deque(maxlen=MAX_ALERTS)
+        self.total_alerts_ever = 0  # true lifetime counter, not capped by deque
+        self.filtered_non_crypto = 0  # tokenized equities excluded last scan
         self.last_scan_time = 0
         self.scan_duration = 0.0
         self.last_error = None
@@ -424,25 +493,72 @@ class ContrarianEngine:
         # Bus listener — reads Chronos temporal bias for sentiment context
         self._bus = BusListener(CC_URL) if BusListener else None
 
-        # Track last published alerts to avoid spamming identical signals
-        self._last_published = {}  # (type, pair) -> timestamp of last publish
-        self._cooldown = 300  # 5-minute cooldown per (signal type, pair)
+        # State-change gating on publishes: _last_published stores, per
+        # (signal_type, pair) key, the VALUE last published — not just a
+        # timestamp — so a persistent extreme re-publishes only on a
+        # material change (>20% relative delta or direction flip) or on a
+        # slow 30-minute heartbeat (a persistent extreme is still
+        # information, just not every 5 minutes). Keys that stop firing
+        # are cleared at scan end, so a fresh under->over crossing always
+        # publishes immediately with no cooldown carryover.
+        self._last_published = {}  # (type, pair) -> {"ts", "value", "direction"}
+        self._heartbeat = PUBLISH_HEARTBEAT_S
+        self._material_delta = PUBLISH_MATERIAL_DELTA
+        self._active_episode_keys = set()  # keys detected during current scan
+
+    @staticmethod
+    def _comparable_value(signal_type, data):
+        """Pick the scalar used for material-change comparison per signal type."""
+        if signal_type == "FUNDING_EXTREME":
+            return data.get("rate_8h_pct")
+        if signal_type in ("EXTREME_GREED", "EXTREME_FEAR"):
+            return data.get("fear_greed")
+        if signal_type == "LIQUIDATION_CASCADE":
+            return data.get("pairs_affected")
+        if signal_type == "CORRELATION_BREAKDOWN":
+            return data.get("current_correlation")
+        return None
 
     def _publish(self, signal_type, data):
         """Publish a SENTIMENT_EXTREME event to the fleet bus.
 
-        Applies a cooldown per (signal_type, pair) to avoid spam while
-        allowing different pairs to publish independently.
+        State-change gated per (signal_type, pair): while a condition
+        persists over threshold, re-publish only when the value changes
+        materially (>20% relative delta or direction flip) or on the
+        30-minute heartbeat. A new under->over crossing (key absent from
+        _last_published — stale keys are cleared at scan end) always
+        publishes immediately.
         """
         now = time.time()
-        pair = data.get("pair", "")
-        cooldown_key = (signal_type, pair)
-        last = self._last_published.get(cooldown_key, 0)
-        if now - last < self._cooldown:
-            log.debug(f"Cooldown active for {signal_type}/{pair}, skipping publish")
-            return
+        pair = data.get("pair") or data.get("pair_key") or ""
+        key = (signal_type, pair)
+        self._active_episode_keys.add(key)
 
-        self._last_published[cooldown_key] = now
+        value = self._comparable_value(signal_type, data)
+        direction = data.get("direction")
+        prev = self._last_published.get(key)
+
+        if prev is not None:
+            changed = False
+            # Direction flip is always material
+            if (direction is not None and prev.get("direction") is not None
+                    and direction != prev.get("direction")):
+                changed = True
+            # >20% relative delta in the comparable value is material
+            if not changed:
+                pv = prev.get("value")
+                if value is not None and pv is not None:
+                    denom = max(abs(pv), 1e-9)
+                    if abs(value - pv) / denom > self._material_delta:
+                        changed = True
+            if not changed and (now - prev.get("ts", 0)) < self._heartbeat:
+                log.debug(f"State unchanged for {signal_type}/{pair}, "
+                          f"skipping publish (heartbeat in "
+                          f"{self._heartbeat - (now - prev.get('ts', 0)):.0f}s)")
+                return
+
+        self._last_published[key] = {"ts": now, "value": value,
+                                     "direction": direction}
 
         event_data = {
             "signal": signal_type,
@@ -481,6 +597,7 @@ class ContrarianEngine:
 
         with self._lock:
             self.alerts.appendleft(alert)
+            self.total_alerts_ever += 1  # true lifetime count, deque caps at 100
 
     def scan(self):
         """Run one full scan cycle. Called from the daemon thread."""
@@ -549,6 +666,10 @@ class ContrarianEngine:
             # 2. Run all detectors
             # ----------------------------------------------------------
             signals_found = 0
+            # Reset episode tracking: _publish records every key detected
+            # this scan; keys absent at scan end have dropped back under
+            # threshold and get cleared from _last_published below.
+            self._active_episode_keys = set()
 
             # Extreme greed
             greed = detect_extreme_greed(fear_greed, funding_data, corr_data)
@@ -567,7 +688,11 @@ class ContrarianEngine:
                 log.warning(f"SIGNAL: {fear['message']}")
 
             # Funding extremes (can produce multiple alerts)
-            funding_alerts = detect_funding_extremes(funding_data)
+            funding_alerts, filtered_nc = detect_funding_extremes(funding_data)
+            with self._lock:
+                self.filtered_non_crypto = filtered_nc
+            if filtered_nc:
+                log.info(f"Funding scan: {filtered_nc} non-crypto symbol(s) excluded")
             for fa in funding_alerts:
                 self._add_alert(fa)
                 self._publish("FUNDING_EXTREME", fa)
@@ -589,6 +714,17 @@ class ContrarianEngine:
                 self._publish("CORRELATION_BREAKDOWN", bd)
                 signals_found += 1
                 log.warning(f"SIGNAL: {bd['message']}")
+
+            # Episode reconciliation: keys published previously but not
+            # detected this scan have dropped back under threshold — clear
+            # them so the next under->over crossing publishes immediately
+            # (re-fire on new crossing regardless of any cooldown).
+            stale_keys = [k for k in self._last_published
+                          if k not in self._active_episode_keys]
+            for k in stale_keys:
+                del self._last_published[k]
+            if stale_keys:
+                log.debug(f"Cleared {len(stale_keys)} ended alert episode(s)")
 
             # Store current correlation data for next cycle's breakdown check
             self._prev_corr_data = corr_data
@@ -640,7 +776,10 @@ class ContrarianEngine:
                 "temporal_context": self.temporal_context,
                 "regime": self.regime,
                 "recent_alerts": recent,
-                "total_alerts": len(self.alerts),
+                "total_alerts": len(self.alerts),  # compat: ring-buffer len, caps at 100
+                "total_alerts_ever": self.total_alerts_ever,  # true lifetime count
+                "filtered_non_crypto": self.filtered_non_crypto,  # excluded last scan
+                "funding_unit": "8h_equivalent_pct",  # unit of rate_8h_pct in alerts
                 "last_scan_time": self.last_scan_time,
                 "scan_duration_s": round(self.scan_duration, 2),
                 "last_error": self.last_error,

@@ -1291,6 +1291,128 @@ const HULL_BUILDERS = {
 };
 
 // ============================================================
+// STATION HULL MOSAIC (ITEM 3, round 4, 2026-07-31) — Jeremy's reference
+// was the DS2 hull shot: a fine panel MOSAIC of thousands of subtly
+// value-varied plates plus a city-light speckle, at a scale that reads as
+// "moon-sized construction", not "another ship hull, just bigger". The
+// generic greebleTexture() (ships: cell 70-94px on a 512px canvas, ~5-7
+// cells across, repeat=5) was tuned for 24-60px ship silhouettes and was
+// too coarse once stretched over a body this large — reusing it verbatim
+// would read as the same blocky ship plating just scaled up. This is a
+// SEPARATE, denser generator: smaller cell, wider per-panel value spread,
+// and actual baked window-light speckle (small bright dots at panel
+// corners/edges) rather than relying only on the discrete addRunningLight
+// meshes for "the hull has lights on it" — at station scale a handful of
+// discrete point lights reads as sparse, the reference's power is in the
+// SHEER NUMBER of tiny lit windows.
+const _stationHullCache = new Map();
+function stationHullTexture(seed) {
+  const key = 'station_' + seed;
+  if (_stationHullCache.has(key)) return _stationHullCache.get(key);
+  const size = 1024; // 2x the ship greeble canvas — station is viewed as
+                      // the scene centerpiece, close enough that ship-scale
+                      // texel density would look soft/blurred.
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  const ctx = cv.getContext('2d');
+  const rand = mulberry32(seed + 4242);
+  ctx.fillStyle = '#c9c9cf';
+  ctx.fillRect(0, 0, size, size);
+
+  // --- 1. Fine panel mosaic — much smaller cells than the ship greeble
+  // (22-34px vs 70-94px on a canvas twice the size = roughly 6x the panel
+  // DENSITY per unit of hull), and a wider value spread per panel so
+  // adjacent plates read as distinct pieces even at a glance from across
+  // the room, not just on close inspection.
+  const cell = 22 + Math.floor(rand() * 12);
+  const cols = Math.ceil(size / cell), rows = Math.ceil(size / cell);
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      const r = rand();
+      let shade;
+      if (r < 0.10) shade = -0.26 - rand() * 0.10;       // deep worn plates
+      else if (r < 0.22) shade = 0.10 + rand() * 0.08;    // bright fresh plates
+      else shade = (rand() - 0.5) * 0.09;                 // wide mid-band scatter
+      const v = shade >= 0 ? `rgba(255,255,255,${shade.toFixed(3)})` : `rgba(0,0,0,${(-shade).toFixed(3)})`;
+      ctx.fillStyle = v;
+      ctx.fillRect(cx * cell, cy * cell, cell, cell);
+    }
+  }
+
+  // --- 2. Panel-line grid, thin and dark, at the fine cell pitch.
+  ctx.strokeStyle = 'rgba(0,0,0,0.38)';
+  ctx.lineWidth = 1.4;
+  for (let x = 0; x <= size; x += cell) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, size); ctx.stroke();
+  }
+  for (let y = 0; y <= size; y += cell) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size, y); ctx.stroke();
+  }
+
+  // --- 3. A SECOND, coarser meta-grid (4-6x the fine cell) drawn as
+  // slightly heavier lines with its own independent value wash per block
+  // — this is what actually sells "mosaic of thousands of plates" rather
+  // than "one uniform noisy texture": the eye reads structure at two
+  // scales simultaneously, exactly like the reference's hull sections
+  // being made of many smaller panels grouped into larger construction
+  // blocks.
+  const metaCell = cell * (4 + Math.floor(rand() * 3));
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)';
+  ctx.lineWidth = 2.6;
+  for (let x = 0; x <= size; x += metaCell) {
+    ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, size); ctx.stroke();
+  }
+  for (let y = 0; y <= size; y += metaCell) {
+    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size, y); ctx.stroke();
+  }
+
+  // --- 4. Ambient-occlusion smudges at fine-grid joints — denser than the
+  // ship version since there are ~6x more joints to seed from.
+  for (let cy = 0; cy <= rows; cy += 2) {
+    for (let cx = 0; cx <= cols; cx += 2) {
+      if (rand() > 0.45) continue;
+      const jx = cx * cell, jy = cy * cell;
+      const r = 5 + rand() * 9;
+      const grad = ctx.createRadialGradient(jx, jy, 0, jx, jy, r);
+      grad.addColorStop(0, `rgba(0,0,0,${(0.20 + rand() * 0.14).toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(jx - r, jy - r, r * 2, r * 2);
+    }
+  }
+
+  // --- 5. City-light speckle — hundreds of tiny bright points scattered
+  // across the mosaic (baked into the color map, NOT separate meshes),
+  // the direct answer to "city-light speckle" in the brief. Two flavors
+  // (cool white / warm amber) at low individual alpha so they read as a
+  // field of distant lit windows rather than a scatter of bright dots;
+  // slightly biased toward panel-line intersections (the natural place
+  // for an airlock/viewport on a plated hull) without being locked to
+  // them exactly.
+  for (let i = 0; i < 900; i++) {
+    const gx = Math.floor(rand() * cols), gy = Math.floor(rand() * rows);
+    const jitter = cell * 0.5;
+    const px = gx * cell + (rand() - 0.5) * jitter + cell * (rand() < 0.5 ? 0 : 1);
+    const py = gy * cell + (rand() - 0.5) * jitter + cell * (rand() < 0.5 ? 0 : 1);
+    const warm = rand() < 0.35;
+    const a = 0.10 + rand() * 0.20;
+    ctx.fillStyle = warm ? `rgba(255,214,150,${a.toFixed(3)})` : `rgba(210,228,255,${a.toFixed(3)})`;
+    ctx.fillRect(px, py, 1.4, 1.4);
+  }
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  _stationHullCache.set(key, tex);
+  return tex;
+}
+
+function stationHullMaterial(colorHex, seed, opts = {}) {
+  const mat = hullMaterial(colorHex, opts);
+  mat.map = stationHullTexture(seed);
+  return mat;
+}
+
+// ============================================================
 // CC STATION — the Command Center mothership (Task 3, 2026-07-30).
 // Honors the existing 2D wireframe CC identity (solar_system.js
 // drawSun(): a dark structural lattice with glowing edges, a pulsing
@@ -1315,8 +1437,13 @@ function buildStation(seed) {
   const g = new THREE.Group();
   const rand = mulberry32(seed);
 
-  // Main hull — solid gray sphere with the same greeble/roughness language
-  // as the ship hulls so it reads as machined plating, not a plain ball.
+  // Main hull — solid gray sphere with the fine STATION-specific mosaic
+  // texture (ITEM 3, round 4: stationHullMaterial/stationHullTexture
+  // above), not the generic ship greeble — the station is viewed close
+  // enough as the scene centerpiece that ship-density plating read as
+  // blocky once stretched over a body this large; the station texture is
+  // 2x the resolution with ~6x the panel density plus baked window-light
+  // speckle.
   // FINDING 6 (station lighting): lightness bumped above the ship-hull
   // default (opts.lightness +0.09, ~0.19 total vs ships' ~0.10) — the
   // station is meant to read as a distinct "moon-sized gray hull" against
@@ -1325,7 +1452,7 @@ function buildStation(seed) {
   // between lit and shadow side), which is what makes the trench/dish
   // read through real value contrast instead of relying on their edge
   // lines alone.
-  const hullMat = greebledHullMaterial(0x767c88, seed, 5, { lightness: 0.09 });
+  const hullMat = stationHullMaterial(0x767c88, seed, { lightness: 0.09 });
   // Cut this mesh's own env-map (ambient-like fill) contribution well
   // below the scene default (1.0) — envMapIntensity is per-material, so
   // this dims the station's ambient-equivalent fill specifically without
@@ -1373,26 +1500,58 @@ function buildStation(seed) {
   // partly toward the camera (+Z) so the concentric detail reads on screen.
   // Built along local +Y then quaternion-aligned to dishDir (same pattern
   // as TurtleSue's flush turret).
+  //
+  // ITEM 3b (round 4, 2026-07-31): "deathstar needs more detail... proper
+  // dish crater with 2-3 concentric terrace rings" — the old version had a
+  // single flat CircleGeometry floor with three decorative torus LINES
+  // drawn on top of it (2D decals, no actual depth). Rebuilt as REAL
+  // stepped terrain: three concentric cylindrical walls at decreasing
+  // radius and increasing depth, each capped with its own flat annulus/
+  // disc floor, so the terracing is genuine geometry that self-shades
+  // under the key light instead of relying on emissive line decals to
+  // fake depth. Outermost=shallowest (matches the old crater's overall
+  // depth/radius so the surrounding hull opening is unchanged), innermost
+  // is deepest and holds the emitter core.
   const dishDir = new THREE.Vector3(-0.42, 0.52, 0.74).normalize();
   const dishGroup = new THREE.Group();
-  const craterWall = new THREE.Mesh(
-    new THREE.CylinderGeometry(1.62, 1.12, 0.55, 28, 1, true), darkTrimMaterial());
-  craterWall.position.y = -0.12;
-  dishGroup.add(craterWall);
-  const dishFace = new THREE.Mesh(
-    new THREE.CircleGeometry(1.55, 28),
-    new THREE.MeshStandardMaterial({ color: 0x3c414b, metalness: 0.35, roughness: 0.8, side: THREE.DoubleSide }));
-  dishFace.rotation.x = -Math.PI / 2;
-  dishFace.position.y = -0.34;
-  dishGroup.add(dishFace);
+  const dishFloorMat = new THREE.MeshStandardMaterial({ color: 0x3c414b, metalness: 0.35, roughness: 0.8, side: THREE.DoubleSide });
+  const TERRACES = [
+    { rOuter: 1.62, rInner: 1.12, yTop: -0.02, yBot: -0.20 },
+    { rOuter: 1.12, rInner: 0.68, yTop: -0.20, yBot: -0.34 },
+    { rOuter: 0.68, rInner: 0.30, yTop: -0.34, yBot: -0.46 },
+  ];
+  for (const t of TERRACES) {
+    // Terrace wall — the vertical step down to the next ring.
+    const wall = new THREE.Mesh(
+      new THREE.CylinderGeometry(t.rOuter, t.rOuter, t.yTop - t.yBot, 28, 1, true), darkTrimMaterial());
+    wall.position.y = (t.yTop + t.yBot) / 2;
+    dishGroup.add(wall);
+    // Terrace floor — flat annulus at this step's depth, sized to the gap
+    // between this ring and the next one in (RingGeometry, not a solid
+    // disc, so each terrace only covers its own band).
+    const floor = new THREE.Mesh(new THREE.RingGeometry(t.rInner, t.rOuter, 28), dishFloorMat);
+    floor.rotation.x = -Math.PI / 2;
+    floor.position.y = t.yBot;
+    dishGroup.add(floor);
+  }
+  // Innermost floor — solid disc closing the deepest terrace, where the
+  // emitter core sits.
+  const innerFloor = new THREE.Mesh(new THREE.CircleGeometry(0.30, 24), dishFloorMat);
+  innerFloor.rotation.x = -Math.PI / 2;
+  innerFloor.position.y = -0.46;
+  dishGroup.add(innerFloor);
+  // Thin emissive accent line traced along each terrace edge — kept from
+  // the old version (reads as maintenance lighting along the step edges)
+  // but now sits AT the real geometric step instead of floating over a
+  // flat floor.
   const dishLineMat = new THREE.MeshBasicMaterial({
     color: 0x8fa8c8, transparent: true, opacity: 0.3,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  for (const rr of [0.55, 1.0, 1.4]) {
-    const dr = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.02, 4, 40), dishLineMat);
+  for (const t of TERRACES) {
+    const dr = new THREE.Mesh(new THREE.TorusGeometry(t.rOuter, 0.02, 4, 40), dishLineMat);
     dr.rotation.x = Math.PI / 2;
-    dr.position.y = -0.3;
+    dr.position.y = t.yTop;
     dishGroup.add(dr);
   }
   const rim = new THREE.Mesh(new THREE.TorusGeometry(1.6, 0.09, 6, 40), darkTrimMaterial());
@@ -1440,6 +1599,13 @@ function buildStation(seed) {
   slGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), fireDir);
   g.add(slGroup);
   const SL_COLOR = 0x54ff9e;
+  // ITEM 4a (round 4, 2026-07-31): "converging rim beams... make them
+  // slightly more prominent since they're now the visual story of the
+  // charge" — bumped radius (0.035/0.075 -> 0.05/0.10) and peak opacity
+  // (see the 'charging' state block below, 0.85 -> 1.0) so the charge-up
+  // reads clearly as 8 beams visibly converging on the dish focal point,
+  // the moment that now carries most of the sequence's visual weight
+  // since the fired lance itself is much thinner (see slMain/slGlow below).
   const slRimMat = new THREE.MeshBasicMaterial({
     color: SL_COLOR, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false,
@@ -1449,7 +1615,7 @@ function buildStation(seed) {
     const a = (i / 8) * Math.PI * 2;
     const from = new THREE.Vector3(Math.cos(a) * 1.45, 0.15, Math.sin(a) * 1.45);
     const segLen = from.distanceTo(focal);
-    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.075, segLen, 5, 1, true), slRimMat);
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.10, segLen, 5, 1, true), slRimMat);
     seg.position.copy(from.clone().add(focal).multiplyScalar(0.5));
     seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), focal.clone().sub(from).normalize());
     slGroup.add(seg);
@@ -1482,18 +1648,28 @@ function buildStation(seed) {
     bctx.fillRect(0, 0, 64, 2);
     return new THREE.CanvasTexture(cv);
   })();
+  // ITEM 4a (round 4, 2026-07-31): "energy beam is too thick... reference
+  // is a needle: blinding thin white-hot core with a modest green bloom,
+  // not a thick column." Old widths (1.6 core / 4.2 glow) read as a solid
+  // column even from across the room. Thinned to a true needle — core
+  // width down to 0.22 (~14% of the old width), glow down to 0.9 (~21%).
+  // Core color pushed further toward pure white (was 0xd8ffe9, a pale
+  // green-white — now 0xffffff so the hot center genuinely reads
+  // "blinding white", not "bright green") with the SL_COLOR green pushed
+  // entirely onto the wider, dimmer glow strip where the brief wants the
+  // "modest bloom".
   const slMainMat = new THREE.MeshBasicMaterial({
-    map: slBeamTex, color: 0xd8ffe9, transparent: true, opacity: 0,
+    map: slBeamTex, color: 0xffffff, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slMain = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 55), slMainMat);
+  const slMain = new THREE.Mesh(new THREE.PlaneGeometry(0.22, 55), slMainMat);
   slMain.position.set(0, focal.y + 27.5, 0);
   slGroup.add(slMain);
   const slGlowMat = new THREE.MeshBasicMaterial({
     map: slBeamTex, color: SL_COLOR, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slGlow = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 55), slGlowMat);
+  const slGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.9, 55), slGlowMat);
   slGlow.position.set(0, focal.y + 27.5, 0);
   slGroup.add(slGlow);
 
@@ -1508,6 +1684,95 @@ function buildStation(seed) {
     const p = v.multiplyScalar(5.24);
     const light = addRunningLight(g, p.x, p.y, p.z, i % 3 === 0 ? 0xffd27a : 0xcfe4ff, 0.12);
     dockingLights.push(light);
+  }
+
+  // EXPOSED SUPERSTRUCTURE (ITEM 3c, round 4, 2026-07-31) — the DS2
+  // under-construction signature: one wedge where the outer hull plating
+  // gives way to visible dark skeletal framework underneath, with a few
+  // glowing points inside like work-lights on an unfinished section.
+  // Placed opposite the dish (roughly -dishDir) so the two identity
+  // features read from different hemispheres and never overlap/compete
+  // for the same camera-facing side as the station sways.
+  const constructDir = dishDir.clone().multiplyScalar(-1).normalize();
+  const constructGroup = new THREE.Group();
+  // Cutaway — a shallow wedge-shaped gap in the plating. Built as a
+  // partial-sweep SphereGeometry patch (thetaStart/thetaLength / phiStart/
+  // phiLength on a slightly smaller radius than the hull) so its edge
+  // follows the hull's own curvature instead of a flat plate cut into a
+  // round surface, which would read as a sticker rather than a hole.
+  // SphereGeometry's patch args are (radius, wSeg, hSeg, phiStart,
+  // phiLength, thetaStart, thetaLength); theta is measured from the +Y
+  // pole and MUST stay within [0, pi] — centering thetaStart at pi/2 (the
+  // equator) with a +-0.5 rad span keeps it valid. At theta=pi/2, phi=0
+  // the surface point is local (1,0,0), i.e. +X — so the alignment
+  // quaternion below maps +X (not +Z) onto constructDir.
+  const cutawayMat = new THREE.MeshStandardMaterial({ color: 0x05050a, metalness: 0.1, roughness: 0.95, side: THREE.DoubleSide });
+  const cutaway = new THREE.Mesh(
+    new THREE.SphereGeometry(5.05, 20, 16, -0.55, 1.1, Math.PI / 2 - 0.5, 1.0), cutawayMat);
+  cutaway.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), constructDir);
+  g.add(cutaway);
+  // Raised broken-plate lip around part of the cutaway edge — a few
+  // jagged short plate fragments still attached at the rim, selling
+  // "torn open" rather than "clean cut hole".
+  // Local point on the cutaway's own patch surface, using the SAME
+  // theta-from-+Y/phi-around-Y convention as the SphereGeometry patch
+  // above (theta centered pi/2 +-0.5, phi centered 0 +-0.55) — NOT
+  // THREE.Spherical's differently-ordered (radius,phi,theta) convention,
+  // which would misalign this lip against the actual cutaway edge.
+  const lipMat = darkTrimMaterial();
+  const cutawayAlign = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), constructDir);
+  for (let i = 0; i < 5; i++) {
+    const phi = -0.55 + rand() * 1.1, theta = Math.PI / 2 + (-0.5 + rand() * 1.0);
+    const lv = new THREE.Vector3(
+      Math.cos(theta) * 5.16, Math.sin(theta) * Math.sin(phi) * 5.16, Math.sin(theta) * Math.cos(phi) * 5.16);
+    lv.applyQuaternion(cutawayAlign);
+    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.5 + rand() * 0.4, 0.06, 0.35 + rand() * 0.3), lipMat);
+    plate.position.copy(lv);
+    plate.lookAt(0, 0, 0);
+    plate.rotateX(Math.PI / 2 + (rand() - 0.5) * 0.6);
+    g.add(plate);
+  }
+  // Skeletal box/strut lattice inside the cutaway — a small grid of thin
+  // dark struts at a slightly recessed radius, reading as exposed framing
+  // underneath the missing plating.
+  const strutMat = darkTrimMaterial();
+  const latticeCenter = constructDir.clone().multiplyScalar(4.75);
+  const latticeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), constructDir);
+  for (let gx = -1; gx <= 1; gx++) {
+    for (let gy = -1; gy <= 1; gy++) {
+      if (rand() < 0.15) continue; // a couple of missing struts — irregular, not a clean grid
+      const local = new THREE.Vector3(gx * 0.62, gy * 0.55, 0);
+      local.applyQuaternion(latticeQuat);
+      const strut = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.65), strutMat);
+      strut.position.copy(latticeCenter.clone().add(local));
+      strut.lookAt(0, 0, 0);
+      constructGroup.add(strut);
+    }
+  }
+  // Cross-braces — diagonal struts tying the grid together, the detail
+  // that reads as "structural framing" rather than a rack of parallel bars.
+  for (let i = 0; i < 4; i++) {
+    const a1 = new THREE.Vector3((rand() - 0.5) * 1.3, (rand() - 0.5) * 1.15, 0).applyQuaternion(latticeQuat);
+    const a2 = new THREE.Vector3((rand() - 0.5) * 1.3, (rand() - 0.5) * 1.15, 0).applyQuaternion(latticeQuat);
+    const p1 = latticeCenter.clone().add(a1), p2 = latticeCenter.clone().add(a2);
+    const mid = p1.clone().add(p2).multiplyScalar(0.5);
+    const len = p1.distanceTo(p2);
+    const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, len, 4), strutMat);
+    brace.position.copy(mid);
+    brace.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), p2.clone().sub(p1).normalize());
+    constructGroup.add(brace);
+  }
+  g.add(constructGroup);
+  // A few glowing work-lights nested inside the lattice — small, warm,
+  // irregular flicker candidates handled the same way as running lights
+  // elsewhere (addRunningLight's own material is static; the flicker read
+  // comes from these being small and numerous against the dark cutaway,
+  // not from per-frame animation, keeping this a zero-cost build-time-only
+  // addition).
+  for (let i = 0; i < 4; i++) {
+    const local = new THREE.Vector3((rand() - 0.5) * 1.1, (rand() - 0.5) * 1.0, 0.15).applyQuaternion(latticeQuat);
+    const wp = latticeCenter.clone().add(local);
+    addRunningLight(g, wp.x, wp.y, wp.z, 0xffb35c, 0.09);
   }
 
   // No-op rotation targets — StationRig.update spins these (lattice-era
@@ -1998,13 +2263,18 @@ class StationRig {
     this.currentScale = 1;
     this.scaleTarget = 1;
     this.sceneRef = null;
-    // Superlaser state machine (battle-station rebuild, 2026-07-30):
-    // idle -> charging (rim beams converge, 1.6s) -> firing (main lance,
-    // ~1.45s) -> back to idle with a randomized 40-90s cooldown. First
-    // fire lands 25-60s after page load so the station shows off early.
+    // Superlaser state machine (battle-station rebuild 2026-07-30; ITEM 4b
+    // round 4 2026-07-31 removed the idle auto-fire timer entirely — see
+    // update()'s 'idle' branch below): idle (waits indefinitely for
+    // fireSuperlaser()/a qualifying event, no organic auto-fire) ->
+    // charging (rim beams converge, 1.6s) -> firing (main lance, ~1.45s)
+    // -> back to idle. this.slTimer is now ONLY a countdown used for the
+    // brief charging/firing phase durations' bookkeeping is via slPhase;
+    // slTimer is kept at 0 in idle and is meaningful only as "not yet
+    // consumed" for fireSuperlaser()'s own idle-state check.
     this.sl = built.sl;
     this.slState = 'idle';
-    this.slTimer = 25 + Math.random() * 35;
+    this.slTimer = 0;
     this.slPhase = 0;
   }
 
@@ -2090,19 +2360,27 @@ class StationRig {
       this.coreHaloMat.color.setHex(0x3a6fd0);
     }
 
-    // SUPERLASER — "the station can sometimes also fire energy". Pure
-    // opacity/scale mutation on meshes built once in buildStation; nothing
+    // SUPERLASER — ITEM 4b (round 4, 2026-07-31): "must only shoot out for
+    // a special event" — the old 40-90s idle countdown that auto-fired
+    // regardless of fleet activity is REMOVED. 'idle' is now a pure wait
+    // state: nothing here transitions it. The only two ways to leave idle
+    // are (a) window.Armada.fireSuperlaser() — the manual trigger, sets
+    // slState directly (see the Armada object below) — or (b) a
+    // qualifying TRADE_CLOSE event routed through Armada.onEvent (pnl >=
+    // +$25, see onEvent below), which does the same slState flip. Once
+    // out of idle the charge->fire->idle sequence is unchanged; opacity/
+    // scale mutation on meshes built once in buildStation, nothing
     // allocates here. Sequence reads in stills: converging rim beams while
-    // charging, then a thick tapered lance with a flickering focal flare.
+    // charging (ITEM 4a: bumped 0.85->1.0 peak — "make them slightly more
+    // prominent, they're now the visual story of the charge"), then a
+    // thin needle lance with a flickering focal flare (ITEM 4a: geometry
+    // thinned at buildStation's slMain/slGlow definitions).
     const sl = this.sl;
     if (sl) {
-      if (this.slState === 'idle') {
-        this.slTimer -= dt;
-        if (this.slTimer <= 0) { this.slState = 'charging'; this.slPhase = 0; }
-      } else if (this.slState === 'charging') {
+      if (this.slState === 'charging') {
         this.slPhase += dt;
         const k = Math.min(1, this.slPhase / 1.6);
-        sl.rimMat.opacity = 0.85 * k;
+        sl.rimMat.opacity = 1.0 * k;
         sl.flareMat.opacity = 0.9 * k * (0.7 + 0.3 * Math.sin(t * 20));
         sl.flare.scale.setScalar(0.6 + k * 0.8);
         if (this.slPhase >= 1.6) { this.slState = 'firing'; this.slPhase = 0; }
@@ -2118,13 +2396,13 @@ class StationRig {
         sl.flare.scale.setScalar(1.5 * flicker);
         if (this.slPhase >= 2.75 + (this.slHold || 0)) {
           this.slState = 'idle';
-          this.slTimer = 40 + Math.random() * 50;
-          this.slHold = 0; // manual hold never carries into organic auto-fires
+          this.slHold = 0; // manual hold never carries into the next fire
           sl.mainMat.opacity = 0; sl.glowMat.opacity = 0;
           sl.rimMat.opacity = 0; sl.flareMat.opacity = 0;
           sl.flare.scale.setScalar(0.6);
         }
       }
+      // 'idle': intentionally no-op — see comment above.
     }
   }
 
@@ -2338,8 +2616,13 @@ const Armada = {
   // Optional holdSeconds extends the burn beyond the default ~2.75s —
   // handy for demos on the big screen (and for catching it on camera).
   fireSuperlaser(holdSeconds) {
+    // ITEM 4b (round 4): update()'s 'idle' branch no longer decrements a
+    // timer (the auto-fire countdown is gone) — this now transitions the
+    // state machine directly, the same way the TRADE_CLOSE big-win path
+    // in onEvent() below does.
     if (_station && _station.slState === 'idle') {
-      _station.slTimer = 0;
+      _station.slState = 'charging';
+      _station.slPhase = 0;
       _station.slHold = Math.max(0, Number(holdSeconds) || 0);
     }
   },
@@ -2357,9 +2640,27 @@ const Armada = {
     if (!evt || !evt.type) return;
     const type = String(evt.type);
     const botId = String(evt.bot_id || evt.source || '').toLowerCase();
+    const data = evt.data || {};
+
+    // ITEM 4b (round 4, 2026-07-31): station superlaser fires ONLY on
+    // this qualifying event — a real trade closing at +$25 or better,
+    // fleet-wide (not scoped to any one bot, so this check runs BEFORE
+    // the `rig` lookup/early-return below, which only exists for the 6
+    // trader ships — the station is independent of any single ship rig).
+    // No idle auto-fire timer exists anymore; this call plus the manual
+    // window.Armada.fireSuperlaser() are the only two ways the sequence
+    // starts (see StationRig.update's now-inert 'idle' branch).
+    if (/TRADE_CLOSE/.test(type)) {
+      const closePnl = Number(data.pnl) || 0;
+      if (closePnl >= 25 && _station && _station.slState === 'idle') {
+        _station.slState = 'charging';
+        _station.slPhase = 0;
+        _station.slHold = 0;
+      }
+    }
+
     const rig = _ships[botId];
     if (!rig) return;
-    const data = evt.data || {};
 
     if (/TRADE_OPEN/.test(type)) {
       rig.state = 'mining';

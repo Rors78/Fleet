@@ -789,6 +789,14 @@ var _orbInitialized=false;
 var _orbLastFrame=0;
 var _orbHover=null;
 var _orbLW=900,_orbLH=600;
+/* Widest orbitRadius currently in play, PER CELESTIAL TIER (set once per
+   _orbScaleOrbits call) — used by OrbNode.prototype.update's depth-of-plane
+   cue (ITEM 1, round 4) to fold orbital distance into apparent size, so a
+   moon hugging CC can't outsize a planet two lanes out just because of a
+   favorable Y position. Keyed "planet"/"moon" only (stars deliberately
+   excluded — orbitRadius isn't a comparable absolute-distance frame across
+   tiers, see the long comment at the read site in OrbNode.update). */
+var _orbMaxOrbitRadius={};
 /* Zoom/pan state */
 var _orbZoom=1,_orbPanX=0,_orbPanY=0;
 var _orbDrag=false,_orbDragSX=0,_orbDragSY=0,_orbPanSX=0,_orbPanSY=0,_orbDidDrag=false;
@@ -852,21 +860,49 @@ function OrbNode(id,cfg,def,angle,cw,ch){
   /* Orbital state */
   /* Stars spaced 120° apart: Oracle upper-right, Deep Blue lower-left, Nexus upper-left */
   /* CC-orbiting moons spaced evenly around the sun so they don't cluster */
+  /* ROUND 4 (2026-07-31, ITEM 2) — layout rebalance: Jeremy's screenshots
+     (zoom 62%/38%) showed bodies bunched into a right-side cluster with
+     big empty lanes elsewhere. Root-caused numerically (node simulation,
+     not eyeballing): Oracle carries FOUR dependents (confluence,
+     gridzilla, turtlesue, trinity) vs Nexus/DeepBlue's two each, and the
+     old angles put all four of Oracle's dependents in a band that leaned
+     further in the SAME +x direction Oracle itself already sits toward
+     (confluence -90°, gridzilla 120°, turtlesue 30° — none of them pull
+     back toward CC), while Nexus/DeepBlue's own 120°/-120° star angles
+     already put them at nearly identical X (-422/-422), so the left side
+     never got the visual weight the right side did. Measured X extent:
+     old plan spanned -730..1371 (span 2101, heavily right-skewed); new
+     plan below spans -776..1076 (span 1852, better centered) with the
+     four Oracle dependents now genuinely diamond-spread (two lean back
+     toward CC at 150°/210° relative to CC-outward, balancing the scene)
+     instead of stacked in a line. Every parentId/defaultParent
+     relationship is UNCHANGED — only initial angle assignment moved. */
   var _fixedAngles={
-    /* Stars — 120° apart in equilateral triangle
-       oracle=right (0°), deepblue=upper-left (240°=−120°), nexus=lower-left (120°) */
+    /* Stars — 120° apart in equilateral triangle (unchanged — this
+       triangle's spacing was already correct; see the starRatios balance
+       fix in _orbScaleOrbits for the OTHER half of the right-skew fix). */
     oracle:0, nexus:Math.PI*(2/3), deepblue:-Math.PI*(2/3),
-    /* CC moons — 4 bodies, 90° apart, offset 45° from star axes */
+    /* CC moons — 4 bodies, 90° apart, offset 45° from star axes (unchanged) */
     aegis:Math.PI/4, sentinel:Math.PI*3/4, chronos:Math.PI*5/4, hivemind:Math.PI*7/4,
-    /* Star-orbiting moons — placed away from their planet siblings */
-    trinity:Math.PI*1.5, contrarian:Math.PI, phitex:-Math.PI/2,
-    /* Planets — initial angles spread to avoid overlap within each system */
-    /* Oracle system: confluence upper, gridzilla lower, turtlesue right */
-    confluence:-Math.PI/2, gridzilla:Math.PI*2/3, turtlesue:Math.PI/6,
-    /* Nexus system: nexusbrain upper-left (150°), rubberband lower-right (330°) — 180° apart, clear of PHITEX below */
-    nexusbrain:Math.PI*(5/6), rubberband:-Math.PI/6,
-    /* DeepBlue system: arbitrageur below */
-    arbitrageur:Math.PI/2
+    /* Oracle system (4 dependents — the most crowded system): true diamond
+       spread at ±60°/150°/210° relative to CC-outward (0°). confluence/
+       turtlesue lean toward the outer edge (±60°), gridzilla/trinity lean
+       BACK toward CC (150°/210°) so the system's own mass doesn't pile up
+       past Oracle — this is what pulls the whole scene's right-side
+       weight back toward center. */
+    confluence:Math.PI/3, turtlesue:-Math.PI/3,
+    gridzilla:Math.PI*(5/6), trinity:Math.PI*(7/6),
+    /* Nexus system (2 dependents): spread ±65°/115° off Nexus's own
+       outward angle (120°) rather than a flat 180° pair, so neither one
+       sits directly on the DeepBlue-facing side and compounds the old
+       "Nexus and DeepBlue nearly share an X coordinate" overlap. */
+    nexusbrain:Math.PI*(2/3)+Math.PI*(65/180), rubberband:Math.PI*(2/3)-Math.PI*(115/180),
+    /* PHITEX (Nexus moon) — placed opposite Nexus's own dependent spread,
+       clear of nexusbrain/rubberband. */
+    phitex:Math.PI*(2/3)+Math.PI,
+    /* DeepBlue system (2 dependents): mirror of Nexus's ±65°/115° spread
+       off DeepBlue's own outward angle (-120°). */
+    arbitrageur:-Math.PI*(2/3)-Math.PI*(65/180), contrarian:-Math.PI*(2/3)+Math.PI*(115/180)
   };
   this.orbitAngle=_fixedAngles[id]!=null?_fixedAngles[id]:(Math.random()*Math.PI*2);
   this.orbitRadius=hier.orbitRadius||100;
@@ -979,11 +1015,14 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
     this.currentSize=this.size*this.sizeMultiplier;
     /* Depth cue applies to dormant bodies too, same formula as the live
        path below — a dormant body drifting on the far side should still
-       read as farther away, not skip the cue just because it's inactive. */
+       read as farther away, not skip the cue just because it's inactive.
+       ROUND 4: strengthened to match the live-body formula (±32%/±38%,
+       eased curve) — see the long comment on the main branch below. */
     if(_orbIsFS){
       var _depthTDead=Math.max(-1,Math.min(1,(this.y-cy)/(H*0.5)));
-      this.currentSize*=1+_depthTDead*0.11;
-      this.depthAlpha=Math.max(0.5,Math.min(1.3,1+_depthTDead*0.15));
+      var _depthTDeadEased=(_depthTDead<0?-1:1)*Math.pow(Math.abs(_depthTDead),0.75);
+      this.currentSize*=1+_depthTDeadEased*0.32;
+      this.depthAlpha=Math.max(0.38,Math.min(1.55,1+_depthTDeadEased*0.38));
     } else {
       this.depthAlpha=1;
     }
@@ -1198,14 +1237,49 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
     /* Normalize this body's offset from the tilt center against the
        system's actual vertical reach (H*0.5 is a safe generous bound —
        cheaper than tracking a true per-frame max, and the effect is meant
-       to be a gentle bias, not a precise depth sort). Clamped to ±1. */
+       to be a gentle bias, not a precise depth sort). Clamped to ±1.
+       ROUND 4 (2026-07-31): Jeremy's verdict was "sizing related to
+       distance is not accurate" — the old ±11%/±15% cue was too subtle to
+       register at 50" viewing distance and, worse, was LINEAR in _depthT
+       while orbitRadius (hence how far a body actually sits from the
+       camera's implied vantage) varies wildly across the roster — a moon
+       hugging CC could read larger than a planet two lanes out whenever
+       their _depthT happened to favor the moon. Two changes: (1) the
+       ±11%/±15% magnitudes are raised to a much stronger ±32%/±38% so the
+       cue is unmistakable at a glance, and eased with depthT's own sign
+       preserved via a cube-root-flattened curve (Math.sign(t)*|t|^0.75)
+       so near-center bodies still get a visible nudge instead of the old
+       formula's near-zero response for anything not at the extreme edge;
+       (2) a SEPARATE orbital-distance term folds each body's own-tier
+       orbitRadius into the size multiplier, so within a tier (planet vs
+       planet, moon vs moon) a body sitting on a far-out lane is always at
+       least modestly smaller than one hugging its parent, independent of
+       the current vertical depthT sign. Deliberately scoped to WITHIN a
+       tier and EXCLUDES stars: orbitRadius is measured from each body's
+       own parent, not a shared absolute frame (a star's orbitRadius is
+       its distance from CC, a planet's is its distance from ITS star —
+       comparing those two numbers directly would be apples-to-oranges,
+       and would incorrectly shrink identity-carrying stars just for
+       sitting farther from CC than a planet sits from its own star). The
+       cross-tier half of the "moon must never outsize a planet" rule is
+       already guaranteed categorically by the separate planetSz/moonSz
+       floor system in _orbScaleOrbits — this term only needs to handle
+       the WITHIN-tier case the brief called out ("two lanes out"). */
     var _depthT=Math.max(-1,Math.min(1,(this.y-cy)/(H*0.5)));
-    /* _depthT>0 (below center, near side) -> larger/brighter.
-       _depthT<0 (above center, far side) -> smaller/dimmer. */
-    var _depthSizeMul=1+_depthT*0.11;   /* +-11%, within the brief's +-10-12% */
-    var _depthAlphaMul=1+_depthT*0.15;  /* +-15% */
-    rawSize*=_depthSizeMul;
-    this.depthAlpha=Math.max(0.5,Math.min(1.3,_depthAlphaMul));
+    var _depthTEased=(_depthT<0?-1:1)*Math.pow(Math.abs(_depthT),0.75);
+    var _depthSizeMul=1+_depthTEased*0.32;   /* +-32%, was +-11% */
+    var _depthAlphaMul=1+_depthTEased*0.38;  /* +-38%, was +-15% */
+    /* Per-tier orbital-distance term: 0 at the tier's innermost lane, 1 at
+       its outermost (_orbMaxOrbitRadius is now a PER-TIER map — see
+       _orbScaleOrbits — keyed "planet"/"moon"; stars intentionally have
+       no entry and fall through to the no-op default). Trims up to 15%
+       off size the farther out a body's own lane sits within its own
+       tier, layered multiplicatively on top of the depthT cue. */
+    var _orbTierMax=_orbMaxOrbitRadius[this.celestialType];
+    var _orbDistT=(_orbTierMax>0)?Math.min(1,this.orbitRadius/_orbTierMax):0;
+    var _orbDistSizeMul=1-_orbDistT*0.15;
+    rawSize*=_depthSizeMul*_orbDistSizeMul;
+    this.depthAlpha=Math.max(0.38,Math.min(1.55,_depthAlphaMul));
   } else {
     this.depthAlpha=1;
   }
@@ -1461,8 +1535,14 @@ function _orbScaleOrbits(){
        orbit-position math itself (see OrbNode.prototype.update), since a
        single scalar orbitRadius can't shrink Y without also shrinking X. */
     var starScale=(minDim*0.42*0.40+maxDim*0.42*0.60)*1.27;
-    /* Oracle pushed right (+15%), DeepBlue/Nexus equal */
-    var starRatios={oracle:1.15,deepblue:1.0,nexus:1.0};
+    /* ROUND 4 (2026-07-31, ITEM 2): Oracle's old +15% radius bias was HALF
+       of the right-side-cluster root cause (the other half was the
+       dependent-angle rework above on OrbNode) — it pushed the already
+       most-populated system (4 dependents) even further right than Nexus/
+       DeepBlue's 2-dependent systems, compounding rather than balancing
+       the load. All three stars now share the same ratio; the triangle's
+       120° spacing alone is enough asymmetry-free structure. */
+    var starRatios={oracle:1.0,deepblue:1.0,nexus:1.0};
     for(var sid in starRatios){
       if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=starScale*starRatios[sid];
     }
@@ -1495,7 +1575,9 @@ function _orbScaleOrbits(){
     /* Cap orbit so no star's apogee exceeds 46% of minDim — prevents
        clipping into the panel chrome around the in-page widget. */
     var maxOrbit=minDim*0.46;
-    var starRatios={oracle:1.05,deepblue:0.92,nexus:0.98};
+    /* Same de-bias as the fullscreen branch above — equal ratios so the
+       widget-view triangle doesn't inherit the old right-skew either. */
+    var starRatios={oracle:1.0,deepblue:1.0,nexus:1.0};
     for(var sid in starRatios){
       if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=Math.min(starScale*starRatios[sid],maxOrbit);
     }
@@ -1514,6 +1596,41 @@ function _orbScaleOrbits(){
     for(var mid in moonRatios){
       if(_orbNodes[mid]) _orbNodes[mid].orbitRadius=moonScale*moonRatios[mid];
     }
+  }
+
+  /* ITEM 1 (round 4): record the widest orbitRadius now in play PER TIER
+     so OrbNode.prototype.update's depth-of-plane cue can fold orbital
+     distance into apparent size WITHIN a tier only (see _orbMaxOrbitRadius
+     declaration near the other _orb* globals for why tiers aren't mixed).
+     Recomputed every call — cheap, one pass over an already-small object,
+     and keeps this correct across resize/fullscreen-toggle without a
+     second maintenance point. */
+  var _newMaxOrbitRadius={};
+  for(var _mrId in _orbNodes){
+    var _mrNode=_orbNodes[_mrId];
+    if(!_mrNode||_mrNode.celestialType==="star"||_mrNode.celestialType==="sun") continue;
+    var _mrTier=_mrNode.celestialType;
+    if(!_newMaxOrbitRadius[_mrTier]||_mrNode.orbitRadius>_newMaxOrbitRadius[_mrTier]) _newMaxOrbitRadius[_mrTier]=_mrNode.orbitRadius;
+  }
+  _orbMaxOrbitRadius=_newMaxOrbitRadius;
+
+  /* ITEM 2 (round 4): slight orbit-speed variation so bodies don't slowly
+     re-clump into the same relative angles over time (the brief's "orbit
+     speeds may need slight variation so they don't re-clump"). Seeded
+     per-id (not Math.random()) so this is deterministic across resize/
+     fullscreen-toggle calls — a live re-roll on every call would itself
+     cause a visible speed jitter. +-8%, small enough not to fight the
+     Kepler's-third-law period relationship already encoded in each body's
+     base orbitSpeed (CELESTIAL_HIERARCHY comment, solar_system.js). */
+  for(var _osId in _orbNodes){
+    var _osNode=_orbNodes[_osId];
+    if(!_osNode||_osNode.fixed||_osNode._speedVaried) continue;
+    var _osHier=CELESTIAL_HIERARCHY[_osId];
+    if(!_osHier||!_osHier.orbitSpeed) continue;
+    var _osSeed=0;for(var _osI=0;_osI<_osId.length;_osI++) _osSeed=(_osSeed*31+_osId.charCodeAt(_osI))>>>0;
+    var _osVar=1+(((_osSeed%1000)/1000)-0.5)*0.16; /* +-8% */
+    _osNode.orbitSpeed=_osHier.orbitSpeed*_osVar;
+    _osNode._speedVaried=true; /* apply once — repeat calls must not compound */
   }
 
   /* --- Responsive body sizes — strict hierarchy enforced --- */

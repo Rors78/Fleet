@@ -220,6 +220,130 @@ function _sphBlob(ctx, cx, cy, r, lat, lon, rad, spin, tilt, style) {
     return p;
 }
 
+/* ═══════════════════════════════════════════════════════════════════════
+   BAKED SURFACE TEXTURE CACHE (2026-07-31, adult-grade pass)
+   ───────────────────────────────────────────────────────────────────────
+   Several PLANET_VISUALS entries (sentinel, contrarian, hivemind, trinity,
+   inference, phitex) painted their surface detail as a handful of thin
+   0.06-0.18-alpha strokes straight into the live context — legible in a
+   code review, sub-perceptual on a 50" display (the exact "too faint" trap
+   documented in project_cosmos_redesign_round2_2026_07_30.md's PHITEX/
+   Gridzilla fixes). Rather than keep hand-rolling one-off per-frame
+   gradient stacks for each body, this is a small reusable bake: an
+   offscreen canvas of regolith speckle (rocky/icy bodies) or soft banding
+   (gas/energy bodies), generated ONCE per (kind, sizeBucket) via a seeded
+   mulberry32 PRNG — same deterministic-noise convention as _bakeEclipticDisc
+   and VoidField's _bakeGalaxy — then stamped with drawImage every frame.
+   Zero per-frame gradient/path allocation for the texture layer itself;
+   callers still layer their own live (cheap: strokes/dots) animated
+   identity features on top, same as before. */
+var _surfTexCache = {};
+function _surfMulberry32(seed){
+    var s = seed >>> 0;
+    return function(){
+        s |= 0; s = (s + 0x6D2B79F5) | 0;
+        var t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+function _surfHashStr(str){
+    var h = 2166136261;
+    for(var i=0;i<str.length;i++){ h ^= str.charCodeAt(i); h = Math.imul(h, 16777619); }
+    return h >>> 0;
+}
+/* Rocky/icy regolith speckle — craters + fine grain, desaturated toward the
+   supplied base hue. Used for airless/icy identities (sentinel, contrarian). */
+function _bakeRegolithTex(key, sizePx, rgb){
+    var cached = _surfTexCache[key];
+    if(cached && cached.sizePx === sizePx) return cached.canvas;
+    var D = Math.max(24, Math.min(256, sizePx * 2));
+    var cvs = document.createElement('canvas');
+    cvs.width = D; cvs.height = D;
+    var c = cvs.getContext('2d');
+    var rng = _surfMulberry32(_surfHashStr(key) ^ (sizePx|0));
+    var cx = D/2, cy = D/2, R = D/2;
+    /* Fine grain speckle */
+    var grainN = Math.floor(D * D * 0.10);
+    for(var i=0;i<grainN;i++){
+        var a = rng()*Math.PI*2, d = Math.sqrt(rng())*R;
+        var px = cx + Math.cos(a)*d, py = cy + Math.sin(a)*d;
+        var tone = rng() < 0.5 ? -1 : 1;
+        var v = 14 + rng()*18;
+        c.fillStyle = 'rgba(' + Math.max(0,Math.min(255,rgb[0]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[1]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[2]+tone*v)) + ',' + (0.10+rng()*0.10).toFixed(3) + ')';
+        c.fillRect(px, py, 1, 1);
+    }
+    /* Craters — small dark rings with a bright rim on one side */
+    var craterN = 5 + Math.floor(rng()*5);
+    for(var k=0;k<craterN;k++){
+        var ka = rng()*Math.PI*2, kd = rng()*R*0.85;
+        var kx = cx + Math.cos(ka)*kd, ky = cy + Math.sin(ka)*kd;
+        var kr = Math.max(1, R*(0.05 + rng()*0.13));
+        var kg = c.createRadialGradient(kx-kr*0.15, ky-kr*0.15, 0, kx, ky, Math.max(0.1,kr));
+        kg.addColorStop(0, 'rgba(0,0,0,0.22)');
+        kg.addColorStop(0.7, 'rgba(0,0,0,0.10)');
+        kg.addColorStop(1, 'rgba(0,0,0,0)');
+        c.fillStyle = kg;
+        c.beginPath(); c.arc(kx, ky, kr, 0, Math.PI*2); c.fill();
+        c.strokeStyle = 'rgba(255,255,255,0.10)';
+        c.lineWidth = Math.max(0.5, kr*0.12);
+        c.beginPath(); c.arc(kx, ky, kr, Math.PI*0.7, Math.PI*1.5); c.stroke();
+    }
+    var entry = { canvas: cvs, sizePx: sizePx };
+    _surfTexCache[key] = entry;
+    return cvs;
+}
+/* Soft cellular/plasma mottling — used for energy/hive/circuit identities
+   (hivemind, trinity, inference, phitex) that need believable surface
+   variation without literal craters. Blotchy low-frequency blobs, tinted
+   toward the supplied hue, alternating slightly lighter/darker than base. */
+function _bakeMottleTex(key, sizePx, rgb){
+    var cached = _surfTexCache[key];
+    if(cached && cached.sizePx === sizePx) return cached.canvas;
+    var D = Math.max(24, Math.min(256, sizePx * 2));
+    var cvs = document.createElement('canvas');
+    cvs.width = D; cvs.height = D;
+    var c = cvs.getContext('2d');
+    var rng = _surfMulberry32(_surfHashStr(key) ^ 0x517e ^ (sizePx|0));
+    var cx = D/2, cy = D/2, R = D/2;
+    var blobN = 10 + Math.floor(rng()*8);
+    for(var i=0;i<blobN;i++){
+        var a = rng()*Math.PI*2, d = rng()*R*0.8;
+        var bx = cx + Math.cos(a)*d, by = cy + Math.sin(a)*d;
+        var br = R*(0.16+rng()*0.30);
+        var tone = rng()<0.5 ? -1 : 1;
+        var v = 10 + rng()*16;
+        var bg = c.createRadialGradient(bx, by, 0, bx, by, Math.max(0.1,br));
+        bg.addColorStop(0, 'rgba(' + Math.max(0,Math.min(255,rgb[0]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[1]+tone*v)) + ',' +
+                       Math.max(0,Math.min(255,rgb[2]+tone*v)) + ',' + (0.10+rng()*0.08).toFixed(3) + ')');
+        bg.addColorStop(1, 'rgba(0,0,0,0)');
+        c.fillStyle = bg;
+        c.beginPath(); c.arc(bx, by, br, 0, Math.PI*2); c.fill();
+    }
+    var entry = { canvas: cvs, sizePx: sizePx };
+    _surfTexCache[key] = entry;
+    return cvs;
+}
+/* Stamp a baked texture centered on (x,y) at radius r, clipped to the disk.
+   Caller is expected to already be inside drawPlanet's own disk clip
+   (surface() runs clipped), so this just needs to draw the square sprite
+   centered correctly — no extra clip call needed, matches every other
+   surface() function's assumption in this file. sizePx should be rounded
+   to a coarse bucket by the caller so the cache doesn't thrash every frame
+   as a body's currentSize breathes by fractional pixels. */
+function _stampSurfTex(ctx, canvas, x, y, r){
+    var d = Math.max(0.2, r*2);
+    ctx.drawImage(canvas, x-r, y-r, d, d);
+}
+/* Round to a coarse size bucket (nearest 4px) so the bake cache survives
+   the continuous per-frame breathing every OrbNode.currentSize does —
+   without this, a body pulsing 1-2px per frame would rebake every frame,
+   defeating the whole point of baking. */
+function _texBucket(r){ return Math.max(8, Math.round(r/4)*4); }
+
 /* --- Celestial hierarchy — solar system structure --- */
 /* Orbital speeds follow true Kepler's-third-law scaling (T = k * radius^1.5,
    k anchored to oracle's pre-existing period so the star tier — already
@@ -1142,15 +1266,45 @@ var PLANET_VISUALS = {
         baseColor: [170, 50, 210],
         atmosphere: [210, 90, 250],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Magnetic field lines radiating out */
-            ctx.strokeStyle = 'rgba(210, 100, 255, 0.12)';
-            ctx.lineWidth = 0.6;
+            /* Adult-grade pass (2026-07-31): TWO bugs found here, same
+               class as the Confluence disk-clip bug documented in
+               project_cosmos_redesign_round2_2026_07_30.md. (1) field-line
+               radius `r*(1+sin*0.6)` reaches up to 1.6r and the pulsar
+               beam ellipses reached 2.5r — both were drawn inside
+               surface(), which drawPlanet clips to the body's own disk
+               (arc(x,y,r)), so every pixel past r was silently discarded
+               every frame. (2) what little survived inside the disk was a
+               bare 0.12-alpha stroke. Fix: baked magnetar-surface texture
+               for in-disk weight, field lines/beams moved to overlay()
+               (unclipped) where they can actually reach their intended
+               radius, alphas boosted throughout. */
+            var tex = _bakeMottleTex('phitex', _texBucket(r), [150,55,190]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* In-disk portion of the field lines only (0..r) — kept here
+               since this part legitimately never left the clip */
+            ctx.strokeStyle = 'rgba(225, 140, 255, 0.22)';
+            ctx.lineWidth = Math.max(0.5, r*0.014);
             for (var i = 0; i < 8; i++) {
                 var a = (i/8) * Math.PI * 2 + now / 10000;
                 ctx.beginPath();
+                ctx.moveTo(x, y);
+                ctx.lineTo(x + Math.cos(a)*r*0.9, y + Math.sin(a)*r*0.9);
+                ctx.stroke();
+            }
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Magnetic field lines — the part that arcs OUT past the disk
+               (up to 1.6r). Was silently clipped inside surface(); now
+               actually visible, which is most of why this body used to
+               read as a plain purple ball. */
+            ctx.strokeStyle = 'rgba(210, 100, 255, 0.20)';
+            ctx.lineWidth = Math.max(0.5, r*0.016);
+            for (var fi = 0; fi < 8; fi++) {
+                var fa0 = (fi/8) * Math.PI * 2 + now / 10000;
+                ctx.beginPath();
                 for (var t = 0; t <= 1; t += 0.08) {
                     var fr = r * (1 + Math.sin(t * Math.PI) * 0.6);
-                    var fa = a + (t - 0.5) * 0.5;
+                    var fa = fa0 + (t - 0.5) * 0.5;
                     var fx = x + Math.cos(fa) * fr;
                     var fy = y + Math.sin(fa) * fr;
                     if (t === 0) ctx.moveTo(fx, fy);
@@ -1158,22 +1312,20 @@ var PLANET_VISUALS = {
                 }
                 ctx.stroke();
             }
-            /* Pulsar beam */
+            /* Pulsar beam — reaches 2.5r, was also silently clipped */
             var beamA = now / 3000;
             for (var pole = -1; pole <= 1; pole += 2) {
                 var bx = x + Math.cos(beamA) * r * 2.5 * pole;
                 var by = y + Math.sin(beamA) * r * 2.5 * pole;
                 var bG = ctx.createRadialGradient(x, y, r*0.3,
-                    x + (bx-x)*0.5, y + (by-y)*0.5, r*0.2);
-                bG.addColorStop(0, 'rgba(210, 100, 255, 0.08)');
+                    x + (bx-x)*0.5, y + (by-y)*0.5, Math.max(0.1, r*0.2));
+                bG.addColorStop(0, 'rgba(220, 130, 255, 0.16)');
                 bG.addColorStop(1, 'rgba(0,0,0,0)');
                 ctx.fillStyle = bG;
                 ctx.beginPath();
                 ctx.ellipse(x+(bx-x)*0.5, y+(by-y)*0.5, r*0.12, r*1.2, beamA, 0, Math.PI*2);
                 ctx.fill();
             }
-        },
-        overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ PHI-TIMED FLASH — cross/star flare every 1.618 seconds ═══
                The golden ratio interval. Brief bright spike on each pulse.
                Also: faint outer glow ring that pulses at the phi rate. */
@@ -1298,9 +1450,17 @@ var PLANET_VISUALS = {
         baseColor: [110, 155, 210],
         atmosphere: [155, 195, 240],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Ice surface cracks */
-            ctx.strokeStyle = 'rgba(180, 215, 245, 0.15)';
-            ctx.lineWidth = 0.5;
+            /* Adult-grade pass (2026-07-31): base cracks were 0.15-alpha
+               hairlines with nothing behind them — a flat blue disk at any
+               real viewing distance. Baked icy-regolith speckle (craters +
+               grain, same bake used for contrarian) now sits under the
+               cracks so the body reads as a weathered ice moon even before
+               the radar sweep animates. */
+            var tex = _bakeRegolithTex('sentinel', _texBucket(r), [150,190,230]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* Ice surface cracks — boosted from 0.15 to a real value, wider */
+            ctx.strokeStyle = 'rgba(200, 228, 252, 0.32)';
+            ctx.lineWidth = Math.max(0.6, r*0.018);
             var cracks = [[0.1,0.1,0.7,0.6],[-0.2,-0.3,0.5,0.4],[-0.4,0.2,0.3,-0.5],[0.3,-0.2,-0.1,0.7]];
             for (var ci = 0; ci < cracks.length; ci++) {
                 var cr = cracks[ci];
@@ -1308,11 +1468,21 @@ var PLANET_VISUALS = {
                 ctx.moveTo(x+cr[0]*r, y+cr[1]*r);
                 ctx.lineTo(x+cr[2]*r, y+cr[3]*r);
                 ctx.stroke();
+                /* Bright hairline core down the middle of each crack — sells
+                   "fractured ice catching light" instead of a drawn line */
+                ctx.strokeStyle = 'rgba(235,248,255,0.20)';
+                ctx.lineWidth = Math.max(0.3, r*0.006);
+                ctx.beginPath();
+                ctx.moveTo(x+cr[0]*r, y+cr[1]*r);
+                ctx.lineTo(x+cr[2]*r, y+cr[3]*r);
+                ctx.stroke();
+                ctx.strokeStyle = 'rgba(200, 228, 252, 0.32)';
+                ctx.lineWidth = Math.max(0.6, r*0.018);
             }
-            /* Radar sweep */
+            /* Radar sweep — boosted alpha */
             var sweep = (now / 2500) % (Math.PI * 2);
             var sweepG = ctx.createRadialGradient(x, y, r*0.2, x, y, r*1.5);
-            sweepG.addColorStop(0, 'rgba(0, 200, 180, 0.08)');
+            sweepG.addColorStop(0, 'rgba(20, 220, 195, 0.16)');
             sweepG.addColorStop(1, 'rgba(0,0,0,0)');
             ctx.fillStyle = sweepG;
             ctx.beginPath();
@@ -1322,6 +1492,15 @@ var PLANET_VISUALS = {
             ctx.fill();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Thin cold-blue atmosphere halo — icy body catching starlight
+               on its limb, unclipped so it reads past the disk edge. */
+            var haloR = Math.max(0.1, r*1.14);
+            var haloG = ctx.createRadialGradient(x, y, r*0.92, x, y, haloR);
+            haloG.addColorStop(0, 'rgba(0,0,0,0)');
+            haloG.addColorStop(0.7, 'rgba(160,205,245,0.10)');
+            haloG.addColorStop(1, 'rgba(160,205,245,0)');
+            ctx.fillStyle = haloG;
+            ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI*2); ctx.fill();
             /* ═══ SATELLITE DISH — small arc + stem extending outward ═══
                Points away from the neutron star (transmission direction). */
             /* Dish points opposite to sun direction */
@@ -1332,22 +1511,22 @@ var PLANET_VISUALS = {
             var sy=y+Math.sin(dishAngle)*r;
             var ex=sx+Math.cos(dishAngle)*stemLen;
             var ey=sy+Math.sin(dishAngle)*stemLen;
-            ctx.strokeStyle='rgba(155,195,240,0.45)';ctx.lineWidth=0.8;
+            ctx.strokeStyle='rgba(180,215,250,0.60)';ctx.lineWidth=Math.max(0.6,r*0.03);
             ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(ex,ey);ctx.stroke();
             /* Dish arc — parabola approximated as arc, perpendicular to stem */
             var dishR=r*0.32;
             var perpA=dishAngle+Math.PI/2;
-            ctx.strokeStyle='rgba(155,195,240,0.55)';ctx.lineWidth=1;
+            ctx.strokeStyle='rgba(190,225,255,0.72)';ctx.lineWidth=Math.max(0.9,r*0.045);
             ctx.beginPath();
             ctx.arc(ex,ey,dishR,perpA-0.7,perpA+0.7);
             ctx.stroke();
             /* Small dot at focal point */
-            ctx.fillStyle='rgba(200,230,255,0.5)';
-            ctx.beginPath();ctx.arc(ex,ey,1.2,0,Math.PI*2);ctx.fill();
-            /* Faint signal cone from dish center */
+            ctx.fillStyle='rgba(220,240,255,0.65)';
+            ctx.beginPath();ctx.arc(ex,ey,Math.max(1.2,r*0.05),0,Math.PI*2);ctx.fill();
+            /* Signal cone from dish center — boosted */
             var coneLen=r*1.1;
             var coneG=ctx.createRadialGradient(ex,ey,0,ex,ey,coneLen);
-            coneG.addColorStop(0,'rgba(100,200,220,0.06)');
+            coneG.addColorStop(0,'rgba(120,215,235,0.14)');
             coneG.addColorStop(1,'rgba(0,0,0,0)');
             ctx.fillStyle=coneG;
             ctx.beginPath();ctx.moveTo(ex,ey);
@@ -1721,18 +1900,61 @@ var PLANET_VISUALS = {
         baseColor: [175, 45, 45],
         atmosphere: [215, 75, 75],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Ice cracks with red veins */
-            ctx.strokeStyle = 'rgba(255, 80, 80, 0.18)';
-            ctx.lineWidth = 0.6;
+            /* Adult-grade pass (2026-07-31): was six 0.18-alpha hairline
+               cracks and one 0.1-alpha frost smudge — the flattest,
+               least-animated body left in the file (no overlay at all
+               previously). Baked frozen-regolith texture first, then the
+               cracks/frost boosted on top; a slow retrograde-tinted rim
+               ring added in overlay() so the "trades against the crowd"
+               identity actually reads without inventing new geometry. */
+            var tex = _bakeRegolithTex('contrarian', _texBucket(r), [200,90,90]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* Ice cracks with red veins — boosted */
+            ctx.strokeStyle = 'rgba(255, 110, 100, 0.30)';
+            ctx.lineWidth = Math.max(0.6, r*0.016);
             var cracks = [[0.15,-0.1,0.6,0.5],[-0.3,-0.4,0.2,0.3],[-0.5,0.1,-0.1,-0.6],[0.4,-0.3,-0.2,0.5],[0.1,0.2,0.55,-0.15],[-0.35,0.35,0.15,0.55]];
             for (var ci = 0; ci < cracks.length; ci++) {
                 var cr = cracks[ci];
                 ctx.beginPath(); ctx.moveTo(x+cr[0]*r, y+cr[1]*r); ctx.lineTo(x+cr[2]*r, y+cr[3]*r); ctx.stroke();
             }
-            /* Frost patches */
-            var fG = ctx.createRadialGradient(x-r*0.2, y-r*0.3, 0, x-r*0.2, y-r*0.3, r*0.25);
-            fG.addColorStop(0, 'rgba(200, 180, 200, 0.1)'); fG.addColorStop(1, 'rgba(0,0,0,0)');
-            ctx.fillStyle = fG; ctx.beginPath(); ctx.arc(x-r*0.2, y-r*0.3, r*0.25, 0, Math.PI*2); ctx.fill();
+            /* Frost patches — two now, boosted alpha, slight drift so the
+               surface reads as alive rather than a static screenshot */
+            var fDrift = Math.sin(now/6000)*r*0.04;
+            var fG = ctx.createRadialGradient(x-r*0.2+fDrift, y-r*0.3, 0, x-r*0.2+fDrift, y-r*0.3, r*0.25);
+            fG.addColorStop(0, 'rgba(225, 200, 215, 0.20)'); fG.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = fG; ctx.beginPath(); ctx.arc(x-r*0.2+fDrift, y-r*0.3, r*0.25, 0, Math.PI*2); ctx.fill();
+            var fG2 = ctx.createRadialGradient(x+r*0.28, y+r*0.22-fDrift, 0, x+r*0.28, y+r*0.22-fDrift, r*0.18);
+            fG2.addColorStop(0, 'rgba(225, 200, 215, 0.14)'); fG2.addColorStop(1, 'rgba(0,0,0,0)');
+            ctx.fillStyle = fG2; ctx.beginPath(); ctx.arc(x+r*0.28, y+r*0.22-fDrift, r*0.18, 0, Math.PI*2); ctx.fill();
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* ═══ RETROGRADE RING — dashed ring spinning opposite the
+               planet's own orbital direction, the visual shorthand for
+               "contrarian: moves against the prevailing flow". Inverted
+               rim light on the far (anti-sun) limb reinforces the same
+               "backwards" read: normal bodies get bright limb toward the
+               sun, this one flares dim-cold on the dark side instead. ═══ */
+            var ringR = r * 1.28;
+            var spin = -now/6000; /* negative = counter-rotation */
+            var dashN = 18;
+            for (var di=0; di<dashN; di++){
+                if (di % 3 === 2) continue; /* skip every 3rd for a dashed look */
+                var da = spin + (di/dashN)*Math.PI*2;
+                var da2 = spin + ((di+0.62)/dashN)*Math.PI*2;
+                ctx.strokeStyle = 'rgba(255,90,80,0.34)';
+                ctx.lineWidth = Math.max(0.8, r*0.035);
+                ctx.beginPath();
+                ctx.arc(x, y, ringR, da, da2);
+                ctx.stroke();
+            }
+            /* Inverted rim — cold flare on the anti-sun limb, opposite of
+               every other body's sun-facing crescent */
+            var antiAngle = Math.atan2(-ly, -lx);
+            ctx.strokeStyle = 'rgba(160,60,190,0.22)';
+            ctx.lineWidth = Math.max(0.8, r*0.05);
+            ctx.beginPath();
+            ctx.arc(x, y, r*1.02, antiAngle-0.55, antiAngle+0.55);
+            ctx.stroke();
         }
     },
 
@@ -1793,11 +2015,19 @@ var PLANET_VISUALS = {
         baseColor: [195, 175, 55],
         atmosphere: [235, 215, 95],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* Adult-grade pass (2026-07-31): honeycomb strokes were
+               0.06-0.1 alpha, essentially invisible past a few feet — the
+               cell-flicker animation (real, worth keeping) had nothing to
+               animate against. Baked amber mottling underneath gives the
+               shell body weight; the honeycomb itself stays live-drawn
+               (its cells genuinely blink on a timer, which a static bake
+               can't reproduce) but at alphas that actually read. */
+            var tex = _bakeMottleTex('hivemind', _texBucket(r), [175,150,50]);
+            _stampSurfTex(ctx, tex, x, y, r);
             /* Honeycomb hex cells */
             var hs = r * 0.18;
             var hh = hs * Math.sqrt(3) / 2;
-            ctx.strokeStyle = 'rgba(235, 215, 95, 0.1)'; ctx.lineWidth = 0.5;
-            var pulse = Math.sin(now / 2000);
+            ctx.strokeStyle = 'rgba(245, 225, 120, 0.24)'; ctx.lineWidth = Math.max(0.5, r*0.012);
             for (var row = -3; row <= 3; row++) {
                 for (var col = -3; col <= 3; col++) {
                     var hx = x + col * hs * 1.5;
@@ -1811,14 +2041,24 @@ var PLANET_VISUALS = {
                         else ctx.lineTo(hx + Math.cos(ha)*hs*0.45, hy + Math.sin(ha)*hs*0.45);
                     }
                     ctx.stroke();
-                    /* Fill some cells based on position + time */
+                    /* Fill some cells based on position + time — lit cells
+                       now glow amber instead of a near-invisible wash */
                     if (Math.sin(row * 3.7 + col * 2.1 + now / 3000) > 0.3) {
-                        ctx.fillStyle = 'rgba(235, 215, 95, 0.06)'; ctx.fill();
+                        ctx.fillStyle = 'rgba(250, 230, 140, 0.16)'; ctx.fill();
                     }
                 }
             }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Amber hive-glow rim — reads as "warm energy shell" past the
+               disk edge, ties the honeycomb identity together at a glance */
+            var hgR = Math.max(0.1, r*1.12);
+            var hiveG = ctx.createRadialGradient(x, y, r*0.9, x, y, hgR);
+            hiveG.addColorStop(0, 'rgba(0,0,0,0)');
+            hiveG.addColorStop(0.7, 'rgba(240,215,110,0.12)');
+            hiveG.addColorStop(1, 'rgba(240,215,110,0)');
+            ctx.fillStyle = hiveG;
+            ctx.beginPath(); ctx.arc(x, y, hgR, 0, Math.PI*2); ctx.fill();
             /* ═══ SWARM CLUSTER — 7 small rocks orbiting a common center ═══
                Drawn in overlay (outside clip) so they extend beyond the planet circle.
                Slowly rotate as a group. Each rock is a faint golden dot. */
@@ -1853,27 +2093,35 @@ var PLANET_VISUALS = {
         baseColor: [75, 115, 175],
         atmosphere: [115, 155, 215],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* Adult-grade pass (2026-07-31): grid rings were 0.06 alpha
+               and the sweep/blips maxed at 0.2 — this body was reading as
+               a plain blue ball with an occasional dim smear. Baked
+               mottled-metal texture gives it real surface presence; grid
+               and sweep alphas boosted so the "scanning radar globe"
+               identity is legible at a glance, not just up close. */
+            var tex = _bakeMottleTex('trinity', _texBucket(r), [90,130,190]);
+            _stampSurfTex(ctx, tex, x, y, r);
             /* Radar sweep lines across surface */
             var sweep = (now / 2000) % (Math.PI * 2);
-            /* Grid lines — faint */
-            ctx.strokeStyle = 'rgba(96, 165, 250, 0.06)'; ctx.lineWidth = 0.4;
+            /* Grid lines — boosted from 0.06 */
+            ctx.strokeStyle = 'rgba(140, 195, 255, 0.20)'; ctx.lineWidth = Math.max(0.4, r*0.012);
             for (var ri = 1; ri <= 3; ri++) {
                 ctx.beginPath(); ctx.arc(x, y, r * ri * 0.3, 0, Math.PI * 2); ctx.stroke();
             }
             /* Sweep beam */
             var swG = ctx.createRadialGradient(x, y, r*0.1, x, y, r);
-            swG.addColorStop(0, 'rgba(96, 165, 250, 0.1)');
+            swG.addColorStop(0, 'rgba(140, 195, 255, 0.20)');
             swG.addColorStop(1, 'rgba(0,0,0,0)');
             ctx.fillStyle = swG;
             ctx.beginPath(); ctx.moveTo(x, y);
             ctx.arc(x, y, r, sweep - 0.2, sweep + 0.2);
             ctx.closePath(); ctx.fill();
-            /* Blip dots on sweep path */
+            /* Blip dots on sweep path — boosted, larger */
             for (var bi = 0; bi < 3; bi++) {
                 var ba = sweep - bi * 0.6;
                 var br2 = r * (0.3 + bi * 0.2);
-                ctx.fillStyle = 'rgba(96, 165, 250, ' + (0.2 - bi * 0.06) + ')';
-                ctx.beginPath(); ctx.arc(x + Math.cos(ba)*br2, y + Math.sin(ba)*br2, 1.2, 0, Math.PI*2); ctx.fill();
+                ctx.fillStyle = 'rgba(160, 210, 255, ' + (0.45 - bi * 0.10) + ')';
+                ctx.beginPath(); ctx.arc(x + Math.cos(ba)*br2, y + Math.sin(ba)*br2, Math.max(1.2,r*0.05), 0, Math.PI*2); ctx.fill();
             }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
@@ -1922,22 +2170,67 @@ var PLANET_VISUALS = {
         baseColor: [60, 80, 120],
         atmosphere: [90, 120, 180],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Neural processing glow — pulsing core with data circuit lines */
+            /* Adult-grade pass (2026-07-31): this was the flattest body in
+               the whole file — a 0.15-0.25 alpha core wash and three
+               0.1-alpha circuit strokes, no overlay, nothing past the
+               disk edge. Rebuilt as a circuit-board/neural-lattice
+               identity (Inference is the Ollama compute node — the fleet's
+               literal "thinking" body) using a baked trace-mottle texture
+               plus a denser, brighter live circuit mesh so it reads at a
+               glance instead of disappearing next to its neighbours. */
+            var tex = _bakeMottleTex('inference', _texBucket(r), [70,95,150]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* Neural processing glow — pulsing core, boosted */
             var pulse = 0.5 + 0.5 * Math.sin(now / 800);
-            var coreG = ctx.createRadialGradient(x, y, 0, x, y, r * 0.6);
-            coreG.addColorStop(0, 'rgba(120, 180, 255, ' + (0.15 + 0.1 * pulse).toFixed(3) + ')');
+            var coreG = ctx.createRadialGradient(x, y, 0, x, y, r * 0.62);
+            coreG.addColorStop(0, 'rgba(150, 205, 255, ' + (0.30 + 0.16 * pulse).toFixed(3) + ')');
+            coreG.addColorStop(0.6, 'rgba(100, 155, 230, ' + (0.14 + 0.08*pulse).toFixed(3) + ')');
             coreG.addColorStop(1, 'rgba(60, 100, 180, 0)');
             ctx.fillStyle = coreG;
-            ctx.beginPath(); ctx.arc(x, y, r * 0.6, 0, Math.PI * 2); ctx.fill();
-            /* Circuit traces */
-            ctx.strokeStyle = 'rgba(100, 160, 255, 0.1)';
-            ctx.lineWidth = 0.4;
-            for (var li = 0; li < 3; li++) {
-                var la = li * 2.1 + now / 12000;
+            ctx.beginPath(); ctx.arc(x, y, r * 0.62, 0, Math.PI * 2); ctx.fill();
+            /* Circuit trace mesh — 6 branching traces instead of 3 bare
+               lines, each with a bright junction node at the bend, reading
+               as a real PCB/neural-net motif rather than random scribbles */
+            for (var li = 0; li < 6; li++) {
+                var la = li * 1.047 + now / 14000;
+                var jx = x + Math.cos(la) * r * 0.22, jy = y + Math.sin(la) * r * 0.22;
+                var ex2 = x + Math.cos(la + 0.45) * r * 0.82, ey2 = y + Math.sin(la + 0.28) * r * 0.72;
+                var flick = 0.55 + 0.45*Math.sin(now/900 + li*1.7);
+                ctx.strokeStyle = 'rgba(130, 190, 255, ' + (0.22*flick).toFixed(3) + ')';
+                ctx.lineWidth = Math.max(0.5, r*0.014);
                 ctx.beginPath();
-                ctx.moveTo(x + Math.cos(la) * r * 0.2, y + Math.sin(la) * r * 0.2);
-                ctx.lineTo(x + Math.cos(la + 0.5) * r * 0.7, y + Math.sin(la + 0.3) * r * 0.6);
+                ctx.moveTo(x, y);
+                ctx.lineTo(jx, jy);
+                ctx.lineTo(ex2, ey2);
                 ctx.stroke();
+                /* Junction node */
+                ctx.fillStyle = 'rgba(180, 220, 255, ' + (0.35*flick).toFixed(3) + ')';
+                ctx.beginPath(); ctx.arc(jx, jy, Math.max(0.6, r*0.025), 0, Math.PI*2); ctx.fill();
+            }
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Cool processing-halo — soft blue bloom past the disk, plus
+               3 slow orbiting data-packet motes that mark "compute
+               happening" the same register CC's lattice motes use, at
+               inference's own smaller scale. */
+            var haloR = Math.max(0.1, r*1.16);
+            var haloG = ctx.createRadialGradient(x, y, r*0.9, x, y, haloR);
+            haloG.addColorStop(0, 'rgba(0,0,0,0)');
+            haloG.addColorStop(0.7, 'rgba(130,180,255,0.10)');
+            haloG.addColorStop(1, 'rgba(130,180,255,0)');
+            ctx.fillStyle = haloG;
+            ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI*2); ctx.fill();
+            var moteN = 3;
+            for (var mi=0; mi<moteN; mi++){
+                var ma = (mi/moteN)*Math.PI*2 + now/5000;
+                var mr = r * 1.32;
+                var mx = x + Math.cos(ma)*mr, my = y + Math.sin(ma)*mr*0.7;
+                var mAlpha = 0.4 + 0.3*Math.sin(now/700 + mi*2.1);
+                var moteG = ctx.createRadialGradient(mx, my, 0, mx, my, Math.max(0.1, r*0.14));
+                moteG.addColorStop(0, 'rgba(190,220,255,'+mAlpha.toFixed(3)+')');
+                moteG.addColorStop(1, 'rgba(100,160,255,0)');
+                ctx.fillStyle = moteG;
+                ctx.beginPath(); ctx.arc(mx, my, r*0.14, 0, Math.PI*2); ctx.fill();
             }
         }
     },

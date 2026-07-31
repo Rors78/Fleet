@@ -784,6 +784,7 @@ var _orbSignalLanes=[];
 var _orbShockwaves=[];
 var _orbRecentEvents=[];
 var _orbAmbient=[];
+var _deepFieldLastSave=0; /* throttle localStorage writes for DeepField persistence — see L0b in _orbRender */
 var _orbInitialized=false;
 var _orbLastFrame=0;
 var _orbHover=null;
@@ -794,6 +795,28 @@ var _orbDrag=false,_orbDragSX=0,_orbDragSY=0,_orbPanSX=0,_orbPanSY=0,_orbDidDrag
 var _intelHover=false;
 var _orbIntelRingRegions=[];
 var _orbZoomAnim=false,_orbZoomTX=0,_orbZoomTY=0,_orbZoomTZ=1;
+/* PURE-CAMERA ZOOM (2026-07-30, round 4): now that orbit radii are fixed
+   (zoom-invariant, see _orbScaleOrbits), zoom is a pure camera transform —
+   this part of the architecture is correct and must not change.
+   ROUND 5 (2026-07-30, same day): round 4's own floor derivation was the
+   bug. It measured ONE live frame's bbox (a moving target — orbitAngle
+   sweeps every frame, see project_composition_fix_2026_07_30.md) and set
+   the floor to 85% of THAT already-~85%-occupancy sample, which came out
+   to ~0.85 — i.e. it banned zooming out in practice. Jeremy's verdict:
+   "it doesnt zoom out at all. that agent is lazy... it just got rid of
+   the issue."
+   ROUND 6 (2026-07-30, course correction): Jeremy does NOT want the fleet
+   layout itself rescaled, and does not want a computed-fit formula either
+   — the point of zooming out is to reveal the deep-field vivarium
+   (nebulae/supernovae/star nurseries, see _orbDeepField below), not to
+   snugly frame the fleet at some occupancy percentage. Floor is now a
+   plain felt-right constant, tuned by look-edit-look rather than derived:
+   "i want to be able to zoom out and see more of the vivarium... more
+   space and shit going on in space." Fleet layout at zoom=1 is completely
+   untouched by this change (pure-camera zoom architecture guarantees
+   that — this constant only affects how far out the camera is ALLOWED to
+   pull back). */
+var _ORB_ZOOM_MIN=0.38;
 /* Event rate for sun flares */
 var _orbEventRate=0,_orbEventCount=0,_orbEventRateTimer=0;
 
@@ -1155,9 +1178,32 @@ OrbNode.prototype.onEvent=function(){
   this.lastEventTime=Date.now();
 };
 
+/* --- Faction link coloring (COSMOS_ARMADA_SPEC.md FACTIONS/support-roles
+   section, 2026-07-30): _SYN_PAIRS' first element is always the real
+   data-service SOURCE (deepblue/sentinel/chronos/nexus/phitex/contrarian/
+   oracle/aegis — verified against every pair in _SYN_PAIRS, solar_system.js
+   ~line 262), the second is the consuming trader. Color the line by the
+   SOURCE's assigned faction role, not the trader's — this is what the spec
+   means by "color by source body's faction". AEGIS is explicitly faction-
+   neutral (the Warden, governs all factions) so it gets a plain white, not
+   a faction hue. Trader-trader or unmapped-source pairs fall back to the
+   pre-existing blue so a future _SYN_PAIRS edit can't silently go uncolored
+   or throw. */
+var _FACTION_LINK_RGB={
+  deepblue:"201,162,39", sentinel:"201,162,39", chronos:"201,162,39",      /* Veinrunners — warm gold */
+  nexus:"34,211,211", phitex:"34,211,211", contrarian:"34,211,211",       /* Tidewrights — cyan-teal */
+  oracle:"179,157,219", hivemind:"179,157,219", trinity:"179,157,219",    /* The Accord — silver-violet */
+  aegis:"225,225,225"                                                     /* Warden — faction-neutral white */
+};
+function _orbFactionLinkRgb(sourceId){
+  return _FACTION_LINK_RGB[sourceId]||"68,170,255";
+}
+
 /* --- Synapse — curved energy streams --- */
 function OrbSynapse(a,b){
   this.a=a;this.b=b;this.activity=0;this.particles=[];
+  /* Source = a (see _SYN_PAIRS ordering comment above _FACTION_LINK_RGB) */
+  this.linkRgb=_orbFactionLinkRgb(a&&a.id);
 }
 OrbSynapse.prototype.fire=function(fromId){
   this.activity=Math.min(1.0,this.activity+0.35);
@@ -1183,7 +1229,7 @@ OrbSynapse.prototype.draw=function(ctx){
   /* No resting skeleton — only draw when active */
   if(this.activity>0.04){
     var lAlpha=Math.min(0.22,this.activity*0.22);
-    ctx.strokeStyle="rgba(68,170,255,"+lAlpha+")";
+    ctx.strokeStyle="rgba("+this.linkRgb+","+lAlpha+")";
     ctx.lineWidth=0.5+this.activity*0.8;
     ctx.beginPath();ctx.moveTo(ax,ay);
     ctx.quadraticCurveTo(mx+perpX,my+perpY,bx,by);ctx.stroke();
@@ -1325,54 +1371,29 @@ function _orbSizeCanvas(){
 }
 /* --- Dynamic orbit scaling — solar system fills the canvas --- */
 function _orbScaleOrbits(){
-/* ZOOM-AWARE SPREAD (2026-07-30): _orbScaleOrbits used to compute a single
-   fixed-pixel layout on resize only; the scroll-to-zoom transform (setTransform
-   in _orbRender) then just uniformly shrunk that fixed layout as you zoomed
-   out, so "zoomed all the way out" left the whole fleet huddled in a small
-   patch of a wide 16:9 canvas with the rest black. Fix: below zoom=1 (zooming
-   OUT, revealing more of the sky) the base scale GROWS to compensate for the
-   shrink the transform is about to apply, so the constellation spreads wider
-   and keeps filling the frame instead of shrinking into a dot. Zoom-in
-   (>1, focusing on one body) is left alone — that's a legitimate "get closer"
-   zoom, not the wasted-space problem. Gated strictly at <=1 so double-click
-   zoom-to-body (which animates to 3) never touches this path. Callers that
-   change _orbZoom outside the render loop (wheel handler, +/-/0 keys) must
-   call _orbScaleOrbits() again after mutating _orbZoom — see those sites. */
-  var _zoomSpread=1;
-  if(typeof _orbZoom==="number"&&_orbZoom<1){
-    /* Round 3 (2026-07-30): measured via _orbDebug() world-bbox + actual
-       zoom/pan (added _view to _orbDebug for this) that 1/zoom^0.85 was
-       STILL only netting ~33%x61% occupancy at the 0.5 floor, not the
-       ~51%x73% an earlier session estimated by eye — the previous
-       measurement was wrong (no ground truth was available then; _orbZoom/
-       _orbPanX weren't readable from outside the page, only _orbNodes was).
-       The math: screen_span = world_span(zoom=1) * zoomSpread * zoom. Pure
-       1/zoom (exponent 1.0) fully cancels the shrink and reproduces the
-       zoom=1 baseline exactly at every zoom level in theory — but measured
-       live (same _orbDebug ground truth, screenshot + query in the same
-       batch call to avoid the lerp-in-flight trap) it only reached 77.3%
-       width / 71.8% height at the 0.5 floor against an 83.4%/87.5% zoom=1
-       baseline, short of the 85% target on both axes. The gap is the fixed
-       star triangle's geometry (nexus/deepblue at ±120°, sin=0.866) —
-       tiltY compresses Y but the compression is a static function of canvas
-       aspect only, not zoom, so the *relative* shortfall versus the X axis
-       persists at every zoom level including 1. Exponent 1.3 pushed both
-       axes past 85% at the 0.5 floor (measured 92%/85.5% once fully
-       settled — the 0.08/frame position lerp takes ~8-10s to converge
-       after a big orbitRadius jump, confirmed by re-sampling over time; do
-       not trust a same-batch reading taken <3s after a zoom-out dispatch,
-       it will read far too low). But sampled again a few seconds later it
-       hit 109%/93% — genuine periodic overshoot as independently-orbiting
-       bodies drift through their angular extremes (turtlesue's worst-case
-       distance from CC, star+planet orbitRadius summed, is ~2408px at this
-       multiplier — more than the canvas width even after halving by zoom).
-       Backed off to 1.2 for more headroom against that overshoot while
-       still clearing 85% typical (1/0.5^1.2=2.30x vs 2.46x at 1.3). Transient
-       excursion past 100% is acceptable (matches "sky-spanning" framing,
-       and only a body's bounding-box edge grazes off-canvas momentarily,
-       not the whole body) — sustained, frequent overflow is what to avoid. */
-    _zoomSpread=Math.min(4,Math.pow(1/_orbZoom,1.2));
-  }
+/* PURE-CAMERA ZOOM (2026-07-30, round 4): _zoomSpread previously grew orbit
+   radii as _orbZoom dropped below 1, so bodies physically migrated outward
+   in world space AT THE SAME TIME the setTransform camera (_orbRender,
+   ctx.setTransform(_dpr*_orbZoom,...)) was pulling back — two opposing
+   motions fighting each other every frame. Jeremy's verbatim complaint:
+   "the planets are moving out with the zoom out. i dont like that."
+   Root-caused: zoom must be a PURE CAMERA operation. It must not alter any
+   body's orbit radius or position relative to any other body — only the
+   setTransform scale/pan should change. _zoomSpread is REMOVED. The base
+   (zoom=1) layout below already measured 83.2-87.2% occupancy (see
+   [[project_composition_fix_2026_07_30]] in agent memory) — good enough to
+   stand alone as the one fixed world layout at every zoom level. Orbit
+   radii are now computed ONCE from minDim/maxDim only and never touch
+   _orbZoom again. The min-zoom floor (search "ZOOM FLOOR" below, ~line
+   10566-10567) is what now controls "how much of the fixed world is
+   visible at max zoom-out" — raised from a flat 0.5 to a bbox-derived
+   value so max-zoom-out frames the fixed constellation at ~85% of the
+   viewport instead of shrinking it smaller. Callers that used to
+   re-invoke _orbScaleOrbits() after every _orbZoom mutation (wheel
+   handler, +/-/0 keys, zoom-anim tick) no longer need to — orbit radii
+   are zoom-invariant — but the calls are left in place as harmless no-ops
+   (this function is idempotent given fixed canvas dimensions) rather than
+   risk missing a subtle resize-coupling dependency elsewhere. */
   var maxDim=Math.max(_orbLW,_orbLH);
   var minDim=Math.min(_orbLW,_orbLH);
 
@@ -1381,9 +1402,9 @@ function _orbScaleOrbits(){
        fills canvas. Blend toward maxDim (70/30 max/min) so a 16:9 canvas
        spreads along its wide axis instead of being capped by the short one;
        previously pure minDim meant widescreen displays wasted the entire
-       horizontal margin. _zoomSpread grows this further as _orbZoom drops
-       below 1 so zooming out reveals a wider constellation, not a smaller
-       one — see the _zoomSpread comment above.
+       horizontal margin. This layout is now the ONE fixed world at every
+       zoom level (see PURE-CAMERA ZOOM comment above) — zoom no longer
+       grows or shrinks it.
        Round 3 (2026-07-30) COMPOSITION FIX: measured via _orbDebug() ground
        truth (world bbox * actual zoom/pan, not eyeballing) that even at
        zoom=1 the constellation was only 66.8% wide / 122.2% tall (vertically
@@ -1394,7 +1415,7 @@ function _orbScaleOrbits(){
        Y is handled separately via the new fsTiltY compression on the
        orbit-position math itself (see OrbNode.prototype.update), since a
        single scalar orbitRadius can't shrink Y without also shrinking X. */
-    var starScale=(minDim*0.42*0.40+maxDim*0.42*0.60)*_zoomSpread*1.27;
+    var starScale=(minDim*0.42*0.40+maxDim*0.42*0.60)*1.27;
     /* Oracle pushed right (+15%), DeepBlue/Nexus equal */
     var starRatios={oracle:1.15,deepblue:1.0,nexus:1.0};
     for(var sid in starRatios){
@@ -1425,14 +1446,10 @@ function _orbScaleOrbits(){
     }
   } else {
     /* ═══ NORMAL (in-page widget): Use maxDim ═══ */
-    var starScale=maxDim*0.38*_zoomSpread;
-    /* Cap orbit so no star's apogee exceeds 46% of minDim*_zoomSpread — still
-       prevents clipping into the panel chrome around the widget, but the cap
-       now grows with the same zoom-out compensation as everything else
-       instead of silently overriding it back to a fixed short-axis limit
-       (that was defeating widescreen spread no matter how wide the canvas
-       got — the actual bug for the in-page widget view). */
-    var maxOrbit=minDim*0.46*_zoomSpread;
+    var starScale=maxDim*0.38;
+    /* Cap orbit so no star's apogee exceeds 46% of minDim — prevents
+       clipping into the panel chrome around the in-page widget. */
+    var maxOrbit=minDim*0.46;
     var starRatios={oracle:1.05,deepblue:0.92,nexus:0.98};
     for(var sid in starRatios){
       if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=Math.min(starScale*starRatios[sid],maxOrbit);
@@ -2234,26 +2251,78 @@ function _drawShockwave(ctx,w){
   return true;
 }
 
-/* --- Star system gravity zones (kept) --- */
+/* --- Star system gravity zones ---
+   SOTA pass (2026-07-30, focal-hierarchy finding): was 0.01/0.005 alpha —
+   below the threshold of perception on a 50" panel from across a room.
+   Raised to a real "territory glow" a viewer can read at a glance as
+   "this whole region belongs to that star", without competing with the
+   star's own corona (still 3-4x dimmer than _drawStarGlow below it in
+   paint order). Radius/shape unchanged — this is a brightness-only fix. */
 function _drawGravityZone(ctx,star){
   if(!star||star.celestialType!=="star"||!star.alive) return;
   var r=star.gravitationalRadius;
   var zoneGrad=ctx.createRadialGradient(star.x,star.y,star.currentSize,star.x,star.y,r);
-  zoneGrad.addColorStop(0,"rgba("+star.rgb+",0.01)");
-  zoneGrad.addColorStop(0.5,"rgba("+star.rgb+",0.005)");
+  zoneGrad.addColorStop(0,"rgba("+star.rgb+",0.05)");
+  zoneGrad.addColorStop(0.5,"rgba("+star.rgb+",0.022)");
   zoneGrad.addColorStop(1,"rgba(0,0,0,0)");
   ctx.fillStyle=zoneGrad;ctx.beginPath();ctx.arc(star.x,star.y,r,0,Math.PI*2);ctx.fill();
 }
 
-/* --- Star emission glow (kept) --- */
+/* --- Star corona + bloom + prominences ---
+   SOTA pass (2026-07-30): the old version was a single 0.02-alpha radial
+   fade — a "dim pea", per the audit. Rebuilt as a real layered corona:
+   (1) a wide soft outer bloom that actually dominates local luminance,
+   (2) a tighter hot inner glow just outside the planet body for a
+   believable "light source" read, (3) 3 slow animated prominence arcs per
+   star — cheap (trig only, no allocation, no particle system) but enough
+   motion to read as "a living star" rather than a static sticker. Each
+   star's own rgb + a slight per-star phase offset (hashed from star.id)
+   keeps the three suns visually distinct instead of pulsing in lockstep. */
+var _STAR_PHASE={oracle:0,deepblue:2.35,nexus:4.7};
 function _drawStarGlow(ctx,star){
   if(!star||star.celestialType!=="star"||!star.alive) return;
-  var glowR=star.currentSize*3;
-  var glowGrad=ctx.createRadialGradient(star.x,star.y,star.currentSize,star.x,star.y,glowR);
-  glowGrad.addColorStop(0,"rgba("+star.rgb+",0.02)");
-  glowGrad.addColorStop(0.3,"rgba("+star.rgb+",0.008)");
-  glowGrad.addColorStop(1,"rgba(0,0,0,0)");
-  ctx.fillStyle=glowGrad;ctx.beginPath();ctx.arc(star.x,star.y,glowR,0,Math.PI*2);ctx.fill();
+  var x=star.x,y=star.y,sz=star.currentSize;
+  var now=typeof _drawNow!=="undefined"?_drawNow:Date.now();
+  var phase=_STAR_PHASE[star.id]||0;
+  var breathe=1+Math.sin(now/5200+phase)*0.05;
+
+  /* 1: Wide outer bloom — this is the "dominant luminance every frame"
+     requirement. Big radius, low-but-real alpha, additive-feeling falloff. */
+  var bloomR=Math.max(0.1,sz*6.5*breathe);
+  var bloomG=ctx.createRadialGradient(x,y,Math.max(0.1,sz*0.6),x,y,bloomR);
+  bloomG.addColorStop(0,   "rgba("+star.rgb+",0.16)");
+  bloomG.addColorStop(0.18,"rgba("+star.rgb+",0.075)");
+  bloomG.addColorStop(0.45,"rgba("+star.rgb+",0.028)");
+  bloomG.addColorStop(1,   "rgba(0,0,0,0)");
+  ctx.fillStyle=bloomG;ctx.beginPath();ctx.arc(x,y,bloomR,0,Math.PI*2);ctx.fill();
+
+  /* 2: Hot inner corona — tight, bright, sells "light source" up close */
+  var coronaR=Math.max(0.1,sz*2.1*breathe);
+  var coronaG=ctx.createRadialGradient(x,y,Math.max(0.1,sz*0.55),x,y,coronaR);
+  coronaG.addColorStop(0,  "rgba(255,250,240,0.22)");
+  coronaG.addColorStop(0.4,"rgba("+star.rgb+",0.16)");
+  coronaG.addColorStop(1,  "rgba(0,0,0,0)");
+  ctx.fillStyle=coronaG;ctx.beginPath();ctx.arc(x,y,coronaR,0,Math.PI*2);ctx.fill();
+
+  /* 3: Animated prominence arcs — 3 per star, slow independent drift,
+     each a thin bright loop just off the limb. Pure trig, zero allocation. */
+  ctx.save();
+  ctx.translate(x,y);
+  for(var pi=0;pi<3;pi++){
+    var pAng=(pi/3)*Math.PI*2+now/9000+phase;
+    var pReach=sz*(0.35+0.18*Math.sin(now/2600+pi*2+phase));
+    var pAlpha=0.10+0.06*Math.sin(now/1800+pi*1.7+phase);
+    var px=Math.cos(pAng)*sz*1.02, py=Math.sin(pAng)*sz*1.02;
+    var tx=Math.cos(pAng)*(sz+pReach), ty=Math.sin(pAng)*(sz+pReach);
+    var cxA=Math.cos(pAng+0.5)*(sz+pReach*0.7), cyA=Math.sin(pAng+0.5)*(sz+pReach*0.7);
+    ctx.strokeStyle="rgba("+star.rgb+","+Math.max(0,pAlpha).toFixed(3)+")";
+    ctx.lineWidth=Math.max(0.6,sz*0.05);
+    ctx.beginPath();
+    ctx.moveTo(px,py);
+    ctx.quadraticCurveTo(cxA,cyA,tx,ty);
+    ctx.stroke();
+  }
+  ctx.restore();
 }
 
 /* --- Cinema moon overlays — distinctive effects per moon in fullscreen --- */
@@ -2377,15 +2446,102 @@ function _drawMoonCinemaOverlay(ctx,moon,now){
   }
 }
 
-/* --- Orbit path — subtle dashed ellipse around each body's parent --- */
-function _drawOrbitPath(ctx,body){
+/* --- Orbit ring — REDESIGN (ROUND 2, 2026-07-30, target 4) ---
+   Previously a single flat dashed ellipse: one fixed alpha, one fixed
+   color (amber, ignoring the body's own identity color), and — the real
+   bug — a HARDCODED r*0.85 vertical compression that does not match the
+   actual tiltY the body travels along (OrbNode.prototype.update, ~line
+   1094: tiltY is Math.max(0.40,Math.min(1.0,(H/W)*1.04)) in fullscreen,
+   which lands ≈0.50 at 16:9 — NOT 0.85). The drawn ring and the body's
+   real path were two different ellipses, most visible on wide displays
+   (the 50" panel is exactly this case) where 0.85 vs ~0.50 is a large,
+   visible mismatch — the ring reads taller/rounder than the orbit the
+   body actually flies. Fixed by reading the SAME tiltY formula here
+   instead of a second hardcoded copy, so ring and path are always
+   geometrically identical (this is also what "consistent ecliptic
+   geometry across all rings" in the brief was asking to verify — every
+   ring uses one shared compression function now, there is no per-ring
+   variance to be inconsistent).
+   Redesign adds two things the brief asked for:
+   (1) Proximity brightness grading — rings closer to their star system
+       are brighter (a smaller orbitRadius, relative to that parent's own
+       largest child, reads as "more energized / closer to the source of
+       gravity/light"), via a radial alpha gradient built with
+       createRadialGradient centered on the parent, not a flat stroke
+       alpha. Uses the body's own identity color (rgb) instead of one
+       fixed amber for every ring, so a hovered/highlighted system's rings
+       carry that system's palette.
+   (2) Faint directional motion particles — a handful of dim dots riding
+       the same ellipse parametrization as the dashed line, offset ahead
+       of the body's actual orbitAngle by small fixed steps, so their
+       spacing visibly indicates which way the orbit runs (this reads as
+       "flow" at a glance, unlike a static dashed line which has no
+       inherent direction cue at a glance across a room). */
+function _orbEllipseTiltY(){
+  /* Single source of truth for orbit vertical compression — mirrors
+     OrbNode.prototype.update's tiltY exactly (kept as a small standalone
+     helper rather than refactoring update() to call it, since update()
+     runs on a hot per-frame per-body path and this must stay a trivial
+     inline-able expression there; this function exists so ring-drawing
+     code has one place to read the same formula from instead of a second
+     hardcoded copy going stale, which is exactly how the round-1 bug
+     happened). */
+  var H=_orbLH,W=_orbLW;
+  return _orbIsFS?Math.max(0.40,Math.min(1.0,(H/W)*1.04)):0.85;
+}
+function _drawOrbitPath(ctx,body,frameNow){
   if(!body||body.fixed||body.id==="cc") return;
   var parent=_orbNodes[body.currentParent];
   if(!parent) return;
+  /* frameNow is passed from _orbRender's _drawNow (a local there, NOT in
+     scope here — referencing it bare was a per-frame ReferenceError that
+     killed every layer drawn after the rings). Fallback keeps the function
+     safe if ever called without it; the cache just recomputes. */
+  if(frameNow==null) frameNow=Date.now();
   var r=body.orbitRadius;
-  ctx.strokeStyle="rgba(201,162,39,0.22)";ctx.lineWidth=0.9;ctx.setLineDash([3,12]);
-  ctx.beginPath();ctx.ellipse(parent.x,parent.y,r,r*0.85,0,0,Math.PI*2);ctx.stroke();
+  var tiltY=_orbEllipseTiltY();
+  var ry=r*tiltY;
+
+  /* Proximity brightness: compare this body's orbitRadius against its
+     parent's largest currently-known child radius, so "closer to the
+     star" reads brighter regardless of which system (star systems have
+     very different absolute scales from moon sub-systems). Cached per
+     parent per frame would be more efficient, but this is O(children) per
+     ring and the fleet is ~18 bodies total — well within budget even
+     computed naively per ring per frame. */
+  if(parent._maxChildR==null||parent._maxChildRFrame!==frameNow){
+    var maxR=1;
+    for(var pid in _orbNodes){
+      var pn=_orbNodes[pid];
+      if(pn.currentParent===parent.id&&pn.orbitRadius>maxR) maxR=pn.orbitRadius;
+    }
+    parent._maxChildR=maxR;parent._maxChildRFrame=frameNow;
+  }
+  var proximityT=1-Math.min(1,r/parent._maxChildR); /* 0 = farthest child, 1 = closest */
+  var baseA=0.10+proximityT*0.30; /* closer rings visibly brighter, farther ones stay subtle */
+  var col=body.rgb||"201,162,39";
+
+  ctx.save();
+  ctx.strokeStyle="rgba("+col+","+baseA.toFixed(3)+")";
+  ctx.lineWidth=0.8+proximityT*0.6;
+  ctx.setLineDash([3,12]);
+  ctx.beginPath();ctx.ellipse(parent.x,parent.y,r,ry,0,0,Math.PI*2);ctx.stroke();
   ctx.setLineDash([]);
+
+  /* Directional motion particles — a handful of dim dots offset ahead of
+     the body's real orbitAngle by fixed steps, riding the exact same
+     ellipse parametrization (including tiltY) as the ring itself, so they
+     never drift off the drawn line. Direction is implicit in orbitSpeed's
+     sign via the same angle math OrbNode.update uses. */
+  var dotCount=5;
+  for(var di=0;di<dotCount;di++){
+    var stepA=body.orbitAngle-(di+1)*0.22*(body.orbitSpeed>=0?1:-1);
+    var dx=parent.x+Math.cos(stepA)*r, dy=parent.y+Math.sin(stepA)*ry;
+    var dotA=baseA*(1-di/dotCount)*1.4;
+    ctx.fillStyle="rgba("+col+","+dotA.toFixed(3)+")";
+    ctx.beginPath();ctx.arc(dx,dy,Math.max(0.1,1.1-di*0.12),0,Math.PI*2);ctx.fill();
+  }
+  ctx.restore();
 }
 
 /* --- Orbit trail — hidden in cinema for clean look --- */
@@ -2419,6 +2575,115 @@ function _drawMigrationTrail(ctx,body){
   if(body.migrationReason&&!_orbIsFS){
     ctx.fillStyle="rgba(201,162,39,0.35)";ctx.font='7px "IBM Plex Mono",monospace';ctx.textAlign="center";
     ctx.fillText(body.migrationReason,body.x,body.y+body.currentSize+30);
+  }
+}
+
+/* ═══ FAR-ZOOM OVERLAY — galaxy-scale LOD (SOTA pass 2026-07-30, finding 5;
+   ROUND 2 rework same date, target 3) ═══
+   "Zoom is not a journey" — at zoom=1 (MID, the existing scene) the fleet
+   already reads well; pulling back toward the floor had nothing new to
+   offer, it just shrank the same scene. This adds a FAR-zoom register that
+   fades in gradually: soft territory glow fields around each star system
+   (reusing the star's own rgb, so it reads as "this patch of sky belongs
+   to that system" at a glance from a distance) and an aggregated
+   trade-flow web between the three systems + CC, pulsing with real
+   _orbEventRate rather than a decorative constant. Deliberately does NOT
+   touch CLOSE-zoom behavior (labels/moons/ship detail are governed
+   elsewhere and already work at zoom>=1) — this function only adds a layer
+   that exists exclusively in the pulled-back regime.
+
+   ROUND 2 fixes (this pass):
+   - zoomT/farAmt now reference the REAL zoom floor (_ORB_ZOOM_MIN=0.38),
+     not a hardcoded 0.5 that round 1 both introduced here and left as a
+     known, flagged inconsistency (see project_sota_upscale_extraction
+     memory). At the true floor the effect now actually reaches full
+     strength instead of saturating early and sitting flat from 0.5 down
+     to 0.38.
+   - Territory glow radius/alpha both now scale continuously with farAmt
+     (were: fixed 2.2x radius multiplier + flat low alpha regardless of
+     how far into the far-zoom regime you are) — pulling all the way back
+     now visibly grows and brightens each system's territory wash, instead
+     of applying one small fixed boost the moment the fade-in threshold is
+     crossed and then never intensifying further.
+   - Trade-flow web substantially more legible: brighter base line alpha
+     with its own farAmt scaling (was a much dimmer 0.05-0.15 range),
+     wider stroke, an added soft outer glow stroke pass so the lane reads
+     as a lit conduit rather than a thin flat line, and the traveling pulse
+     dot is bigger with a trailing glow instead of one small circle — this
+     is meant to be the far-zoom hero element per the brief, it needed to
+     compete visually with the territory glows, not sit underneath them. */
+function _drawFarZoomOverlay(ctx,now){
+  var zoomT=1-Math.min(1,Math.max(0,(_orbZoom-_ORB_ZOOM_MIN)/(1-_ORB_ZOOM_MIN))); /* 0 at zoom=1, 1 at true floor */
+  var farAmt=Math.max(0,Math.min(1,(zoomT-0.3)/0.7)); /* fades in only below zoomT~0.3 */
+  if(farAmt<=0.01) return;
+
+  var starIds2=["oracle","deepblue","nexus"];
+  var stars2=[];
+  for(var i=0;i<starIds2.length;i++){
+    var s=_orbNodes[starIds2[i]];
+    if(s&&s.alive) stars2.push(s);
+  }
+  if(!stars2.length) return;
+
+  /* Territory glow fields — one big soft wash per system, wider than the
+     existing gravity zone, only visible once pulled back (avoids fighting
+     the gravity zone's own visibility at normal zoom). Radius AND alpha
+     both grow with farAmt now, so the deepest zoom-out gets a visibly
+     bigger/brighter wash than the threshold-crossing moment did. */
+  for(var ti=0;ti<stars2.length;ti++){
+    var st=stars2[ti];
+    var terR=Math.max(0.1,(st.gravitationalRadius||160)*(1.8+farAmt*1.4));
+    var terG=ctx.createRadialGradient(st.x,st.y,0,st.x,st.y,terR);
+    terG.addColorStop(0,"rgba("+st.rgb+","+(0.075*farAmt).toFixed(4)+")");
+    terG.addColorStop(0.55,"rgba("+st.rgb+","+(0.032*farAmt).toFixed(4)+")");
+    terG.addColorStop(1,"rgba(0,0,0,0)");
+    ctx.fillStyle=terG;
+    ctx.beginPath();ctx.arc(st.x,st.y,terR,0,Math.PI*2);ctx.fill();
+  }
+
+  /* Aggregated trade-flow web — CC to each system, pulsing with the real
+     event rate so this reads as live fleet telemetry at a distance, not a
+     static decoration. Reuses the same convergence-lane visual language
+     drawSun() already establishes for CC's own close-up lanes, at a
+     galaxy-scale register. This is the designated far-zoom HERO element
+     (brief target 3d) — brightened substantially over round 1. */
+  var cc2=_orbNodes.cc;
+  if(cc2){
+    var pulseSpeed=1100-Math.min(850,(_orbEventRate||0)*190); /* busier fleet = faster pulse */
+    for(var fi=0;fi<stars2.length;fi++){
+      var fs=stars2[fi];
+      var flowA=(0.16+Math.min(0.22,(_orbEventRate||0)*0.035))*farAmt;
+      /* Soft outer glow pass — wide, dim stroke underneath the crisp line
+         so the lane reads as a lit conduit, not a thin flat stroke. */
+      ctx.strokeStyle="rgba("+fs.rgb+","+(flowA*0.35).toFixed(4)+")";
+      ctx.lineWidth=5*farAmt;
+      ctx.beginPath();ctx.moveTo(cc2.x,cc2.y);ctx.lineTo(fs.x,fs.y);ctx.stroke();
+      /* Crisp core line */
+      ctx.strokeStyle="rgba("+fs.rgb+","+flowA.toFixed(4)+")";
+      ctx.lineWidth=1.8*farAmt;
+      ctx.beginPath();ctx.moveTo(cc2.x,cc2.y);ctx.lineTo(fs.x,fs.y);ctx.stroke();
+      /* Traveling pulse — bigger core + trailing glow instead of one small
+         dot, so it reads as live telemetry moving down the conduit even
+         at the far zoom floor's smaller on-screen scale. */
+      var fp=((now%pulseSpeed)/pulseSpeed);
+      var fpx=cc2.x+(fs.x-cc2.x)*fp, fpy=cc2.y+(fs.y-cc2.y)*fp;
+      var pulseR=Math.max(0.1,7*farAmt);
+      var fpG=ctx.createRadialGradient(fpx,fpy,0,fpx,fpy,pulseR);
+      fpG.addColorStop(0,"rgba(255,255,255,"+(0.55*farAmt).toFixed(3)+")");
+      fpG.addColorStop(0.4,"rgba("+fs.rgb+","+(0.65*farAmt).toFixed(3)+")");
+      fpG.addColorStop(1,"rgba("+fs.rgb+",0)");
+      ctx.fillStyle=fpG;
+      ctx.beginPath();ctx.arc(fpx,fpy,pulseR,0,Math.PI*2);ctx.fill();
+      /* Short trailing tail — a few fading echoes behind the pulse so
+         motion direction is legible at a glance, not just a static dot. */
+      for(var tk=1;tk<=3;tk++){
+        var tp=fp-tk*0.045; if(tp<0) tp+=1;
+        var tpx=cc2.x+(fs.x-cc2.x)*tp, tpy=cc2.y+(fs.y-cc2.y)*tp;
+        var tailA=(0.28/tk)*farAmt;
+        ctx.fillStyle="rgba("+fs.rgb+","+tailA.toFixed(4)+")";
+        ctx.beginPath();ctx.arc(tpx,tpy,Math.max(0.1,pulseR*0.5),0,Math.PI*2);ctx.fill();
+      }
+    }
   }
 }
 
@@ -2782,7 +3047,33 @@ function _orbArmadaSync(){
   }
   if(!window.Armada._initialized) return;
   var view=window._orbLiveView||{zoom:1,panX:0,panY:0,isFS:false};
-  window.Armada.syncFromNodes(_orbNodes,view);
+  /* CC STATION (2026-07-30, Task 3): same read-only inputs the 2D
+     drawSun()/​_drawSunCinematic() centerpiece already consumes for its
+     pulse — NOT a new data feed. _health/eventRate drive the lattice
+     breathing (solar_system.js drawSun ~line 370-377, 511-518);
+     aegisState.score drives the guardian-halo width/brightness
+     (_drawSunCinematic ~line 12646); total_pnl sign is read the same
+     way the header/scoreboard already read it (command_center_v4.html
+     ~line 2478, state.aggregate.total_pnl). */
+  var _agg=(typeof state!=="undefined"&&state.aggregate)||null;
+  var ccMeta={
+    health:_agg&&_agg.bots_total?Math.max(0,Math.min(1,(_agg.bots_alive||0)/_agg.bots_total)):1,
+    eventRate:_orbEventRate||0,
+    aegisScore:(typeof aegisState!=="undefined"&&aegisState.score!=null)?aegisState.score:0.02,
+    pnlSign:_agg&&_agg.total_pnl?(_agg.total_pnl>0?1:(_agg.total_pnl<0?-1:0)):0
+  };
+  window.Armada.syncFromNodes(_orbNodes,view,ccMeta);
+  /* Cold-start / reconnect reconciliation (2026-07-30): onEvent() only
+     flips a ship to *mining* on a live TRADE_OPEN SSE event, so a position
+     that was already open before this page/tab loaded (or before the SSE
+     listener attached) never lit its beam. ovData.portfolio is already
+     polled independently (see fetch("/api/portfolio") in fetchOverviewData
+     / initial load below) — reuse it here rather than adding a new fetch.
+     Cheap (Set build over at most a handful of reservations) and safe to
+     call every sync tick; syncOpenPositions() itself is idempotent. */
+  if(typeof ovData!=="undefined"&&ovData.portfolio&&Array.isArray(ovData.portfolio.reservations)&&window.Armada.syncOpenPositions){
+    window.Armada.syncOpenPositions(ovData.portfolio.reservations);
+  }
 }
 
 /* --- Main render loop --- */
@@ -2857,6 +3148,55 @@ function _orbRender(timestamp){
       _orbZoom=_orbZoomTZ;_orbPanX=tpx;_orbPanY=tpy;_orbZoomAnim=false;}
   }
 
+  /* FAR-ZOOM RECENTER (ROUND 2, 2026-07-30, target 3e) — root cause of the
+     "confined to lower-middle-right, ~70% black" bug at the zoom floor.
+     _orbPanX/_orbPanY are camera-drag state: the wheel handler does
+     cursor-anchored zoom (_orbPanX=w.sx-(w.sx-_orbPanX)*zd, keeping
+     whatever world point is under the mouse fixed on screen) and the
+     +/-key handlers change _orbZoom directly WITHOUT ever touching pan at
+     all. Neither path re-centers. So if a user interacts with the scene
+     off-center (mouse not at screen middle during a wheel-zoom, or any
+     manual drag-pan) and then keeps zooming out — including via the
+     keyboard, which never adjusts pan — whatever arbitrary anchor point
+     was last set stays screen-fixed while the world shrinks around it,
+     dragging the whole populated constellation toward that corner and
+     leaving the opposite side of the viewport permanently empty. This is
+     NOT a brightness/density problem (round 1's exposure/territory-glow
+     boosts couldn't fix it) — it is pan drifting away from center.
+     Fix: softly blend pan back toward the true centered value (CC/the sun
+     sits at world (W/2,H/2), so centered pan is W/2*(1-zoom),
+     H/2*(1-zoom)) as zoom drops toward the floor. Blend strength is 0 at
+     zoom>=0.7 (leaves normal interactive zoom/pan completely alone — no
+     fight with the user at any zoom level they'd actually navigate at)
+     and ramps to a firm pull at the true floor, so pulling all the way
+     back always re-reveals the FULL scene instead of preserving whatever
+     off-center anchor a prior interaction left behind. Skipped while
+     actively dragging (_orbDrag) or mid zoom-animation (_orbZoomAnim,
+     handled above) so it never fights an in-progress user gesture. */
+  if(!_orbDrag&&!_orbZoomAnim&&_orbZoom<0.7){
+    var _rcT=Math.min(1,(0.7-_orbZoom)/(0.7-_ORB_ZOOM_MIN)); /* 0 at 0.7, 1 at true floor */
+    /* ROUND 3 (2026-07-30): round 2's rcPull (rcT*rcT*0.10) only asymptotically
+       approaches center and NEVER actually finishes — an exponential blend
+       has no fixed point other than "still catching up" after any finite
+       number of frames. Simulated the realistic case (user holds "-" to
+       reach the floor in ~49 rendered frames, the keyboard-zoom path that
+       never touches pan at all): old blend left a ~192px residual on the Y
+       axis at the floor — exactly the "settles right-of-center, left ~40%
+       still black" symptom. Two changes: (1) stronger base pull
+       (0.10->0.28) so the blend is actually felt during normal interaction
+       speed, not just a barely-perceptible nudge, and (2) a hard snap to
+       the exact centered target once _rcT>=0.98 (i.e. zoom is
+       indistinguishable from the true floor) — this guarantees FULL
+       convergence by the time zoom reaches _ORB_ZOOM_MIN regardless of how
+       many frames were spent getting there, rather than "pulled closer than
+       before but still off." Verified via node simulation: old blend left
+       diff (22,-192)px; new blend leaves exactly (0,0)px at the floor. */
+    var _rcPull=(_rcT<0.98)?(_rcT*_rcT*0.28):1;
+    var _rcTX=(W/2)*(1-_orbZoom), _rcTY=(H/2)*(1-_orbZoom);
+    _orbPanX+=(_rcTX-_orbPanX)*_rcPull;
+    _orbPanY+=(_rcTY-_orbPanY)*_rcPull;
+  }
+
   /* Apply zoom/pan via setTransform — no save/restore needed */
   ctx.setTransform(_dpr*_orbZoom,0,0,_dpr*_orbZoom,_orbPanX*_dpr,_orbPanY*_dpr);
 
@@ -2887,10 +3227,78 @@ function _orbRender(timestamp){
   /* === DRAW — COSMOS v5 render pipeline === */
   var _drawNow=Date.now();
 
-  /* L0: Cosmic background (CosmicCanvas — nebulae, stars, galaxies, shooting stars) */
+  /* L0: Cosmic background (CosmicCanvas — nebulae, stars, galaxies, shooting stars)
+     SOTA pass (2026-07-30, finding 4): CosmicCanvas.draw() paints everything
+     at fixed screen-space coordinates (this.w/this.h seeded once at
+     construction) with no _orbZoom applied anywhere internally — pulling
+     the fleet back with the zoom control left this entire dense backdrop
+     completely static, so "zooming out" only ever shrank the fleet toward
+     the center of an unchanging wallpaper instead of revealing more of a
+     living deep field. Rather than rewire this ~900-line class internally
+     (high blast-radius for a background layer), wrap the call in a mild
+     zoom-responsive scale about the viewport center — same technique as
+     the parallax star fix just below. zx=0.18 is deliberately gentle (this
+     layer reads as the most distant backdrop, so it should barely
+     parallax) but non-zero is what matters: it's the difference between a
+     static poster and a scene that genuinely recedes. */
   if(!_cosmicCanvas) _cosmicCanvas=new CosmicCanvas(W,H);
   var _cosmicRegime=(typeof aegisState!=="undefined"&&aegisState.regime)||"NORMAL";
-  _cosmicCanvas.draw(ctx,_drawNow,_cosmicRegime);
+  var _cosmicZEff=_orbIsFS?(1+(_orbZoom-1)*0.18):1;
+  if(_cosmicZEff!==1){
+    ctx.save();
+    ctx.translate(W/2,H*0.48);
+    ctx.scale(_cosmicZEff,_cosmicZEff);
+    ctx.translate(-W/2,-H*0.48);
+    _cosmicCanvas.draw(ctx,_drawNow,_cosmicRegime);
+    ctx.restore();
+  } else {
+    _cosmicCanvas.draw(ctx,_drawNow,_cosmicRegime);
+  }
+
+  /* L0b: Deep field — living deep-space wilderness in the annulus around the
+     fleet (2026-07-30, see DeepField class in solar_system.js for the full
+     lifecycle/persistence design doc). Drawn AFTER CosmicCanvas (which is a
+     static screen-fixed backdrop) but BEFORE every fleet-data layer below,
+     so it reads as background atmosphere, never competes with or occludes
+     any bot. World-space, under the same zoom/pan transform already applied
+     above (line ~2892) — mostly hidden behind the fleet at zoom=1, revealed
+     on pull-back. fitToFleet() is cheap (one ~18-node pass) and kept
+     lazy/live here rather than hooked into every _orbScaleOrbits() call
+     site, so the annulus always tracks the CURRENT layout with no extra
+     coupling. */
+  if(!window._deepField&&typeof DeepField!=="function"){/* solar_system.js not loaded — skip silently, never throw */}
+  else{
+    if(!window._deepField) window._deepField=DeepField.load();
+    /* maxVisibleR: the furthest world-space radius the camera can EVER
+       reveal at the zoom floor — half the smaller screen dimension,
+       divided by _ORB_ZOOM_MIN. Passed so fitToFleet() can cap outerR to
+       what's actually reachable instead of over-allocating the annulus
+       into permanently-offscreen territory (see the comment on
+       fitToFleet in solar_system.js for the measured 40%-wasted bug this
+       fixed). */
+    var _dfMaxVisibleR=(Math.min(W,H)/2)/_ORB_ZOOM_MIN;
+    window._deepField.fitToFleet(_orbNodes,_dfMaxVisibleR);
+    /* zoomBoost (target 3b): 1 at zoom>=1, ramping to 2.6 at the true zoom
+       floor. DeepField objects live in world-space under the same camera
+       transform as everything else, so their SCREEN size already shrinks
+       with zoom like any other body — this multiplier fights that by
+       pushing alpha (and, more mildly, radius) up as the camera pulls
+       back, so the deep field visibly fills in rather than fading toward
+       nothing at exactly the zoom level where it's supposed to become the
+       dominant visual (see DeepField.prototype.draw in solar_system.js for
+       where zb/zbR are applied). Only relevant in fullscreen — the small
+       widget view never zooms below 1. */
+    var _dfZoomBoost=_orbIsFS?(1+Math.max(0,Math.min(1,(1-_orbZoom)/(1-_ORB_ZOOM_MIN)))*1.6):1;
+    window._deepField.draw(ctx,_drawNow,_dfZoomBoost);
+    /* Persist epoch periodically (every ~20s of real time) so a crash/
+       power-loss doesn't lose more than a few seconds of "aging" —
+       the epoch itself never changes after first save, so this is a
+       cheap no-op write, not a growing log. */
+    if(!_deepFieldLastSave||_drawNow-_deepFieldLastSave>20000){
+      _deepFieldLastSave=_drawNow;
+      window._deepField.persist();
+    }
+  }
 
   /* L0.5: TIER 1 — Parallax star field (always on) */
   if(!_parallaxInited&&typeof _initParallaxStars==="function") _initParallaxStars();
@@ -2913,10 +3321,18 @@ function _orbRender(timestamp){
     }
   }
 
-  /* L2: Sun — cinematic corona (always) */
+  /* L2: Sun — cinematic corona, EXCEPT in fullscreen once Armada's WebGL
+     CC station is live (2026-07-30, Task 3). Mirrors _armadaOwnsTraders
+     below exactly: only the 2D draw call is skipped, click/hover hit-
+     testing (~line 3356, "Sun click -> open System Manifest") reads
+     _orbNodes.cc.x/y/currentSize directly and is untouched, so the
+     System Manifest panel keeps working identically in both modes. */
+  var _armadaOwnsCC=_orbIsFS&&window.Armada&&window.Armada._initialized&&window.Armada.hasStation;
   if(_orbNodes.cc){
     var ccN=_orbNodes.cc;
-    _drawSunCinematic(ctx,ccN.x,ccN.y,ccN.currentSize,_drawNow,_orbEventRate);
+    if(!_armadaOwnsCC){
+      _drawSunCinematic(ctx,ccN.x,ccN.y,ccN.currentSize,_drawNow,_orbEventRate);
+    }
     /* Intel Ring removed — access Fleet Intelligence via sun click instead */
     _orbIntelRingRegions=[];
   } /* end if(_orbNodes.cc) */
@@ -2929,7 +3345,7 @@ function _orbRender(timestamp){
 
   /* L4: Orbit paths (faint dotted ellipses — zoom only) */
   if(!_orbFrameBudgetOver){
-    for(var i=0;i<allArr.length;i++) _drawOrbitPath(ctx,allArr[i]);
+    for(var i=0;i<allArr.length;i++) _drawOrbitPath(ctx,allArr[i],_drawNow);
   }
 
   /* L4b: Gravitational field lines — CC to star systems (always draw) */
@@ -2983,7 +3399,7 @@ function _orbRender(timestamp){
   /* L10b: CC-moon orbit paths (re-render above synapses so they don't get eaten) */
   if(!_orbFrameBudgetOver){
     for(var i=0;i<allArr.length;i++){
-      if(allArr[i].currentParent==="cc"&&allArr[i].celestialType==="moon") _drawOrbitPath(ctx,allArr[i]);
+      if(allArr[i].currentParent==="cc"&&allArr[i].celestialType==="moon") _drawOrbitPath(ctx,allArr[i],_drawNow);
     }
   }
 
@@ -3002,6 +3418,11 @@ function _orbRender(timestamp){
 
   /* L12: Shockwaves */
   for(var i=_orbShockwaves.length-1;i>=0;i--){if(!_drawShockwave(ctx,_orbShockwaves[i])) _orbShockwaves.splice(i,1);}
+
+  /* L12b: Far-zoom overlay — galaxy-scale LOD, only visible pulled back
+     (finding 5). Drawn under the stars so their own glow/corona stays on
+     top even when this layer is fully faded in. */
+  if(_orbIsFS&&!_orbFrameBudgetOver) _drawFarZoomOverlay(ctx,_drawNow);
 
   /* L13: Stars — ALWAYS render (COSMOS v5 drawPlanet for stars too) */
   for(var si=0;si<starIds.length;si++){
@@ -3140,13 +3561,59 @@ function _orbRender(timestamp){
   /* Reset transform for HUD — drawn in screen space, not world space */
   ctx.setTransform(_dpr,0,0,_dpr,0,0);
 
+  /* Global exposure lift (SOTA pass, 2026-07-30, finding 7) — the scene was
+     confirmed crushed: most alpha values throughout the render (star glows,
+     orbit rings, nebulae, atmospheres) sit in the 0.02-0.15 range, which
+     stacks into a dark, low-contrast image on a 50" panel viewed from
+     across a room. Rather than hand-tune every one of those call sites
+     individually (high-risk churn across thousands of lines), apply one
+     cheap full-viewport post pass here, in screen space, after every world
+     body is drawn but before the HUD (so the HUD's own fixed alphas aren't
+     double-lifted). "screen" blending is the right operator for this: it
+     asymptotically approaches white and can never push a pixel past 255,
+     so shadows/midtones lift visibly while true highlights (already near
+     white, e.g. star cores, specular hotspots) barely move — the "raise
+     the floor without blowing the ceiling" behavior the finding asks for.
+     Only fires in fullscreen cinema mode (_orbIsFS) — the small in-page
+     widget already reads fine at its native size and doesn't need it.
+
+     Exposure ADAPTATION (finding 5; ROUND 2 rework, target 3b/3c): strength
+     now also ramps up as _orbZoom drops — pulling back packs more of the
+     (still-dim) deep-field backdrop into the same viewport, so a flat lift
+     tuned for zoom=1 reads as insufficient once zoomed out. 0.55 at
+     zoom>=1, ramping to 0.85 at the TRUE zoom floor (_ORB_ZOOM_MIN=0.38) —
+     a real "eyes adjusting to the dark" auto-exposure feel rather than a
+     static curve.
+
+     ROUND 2 fix: round 1 hardcoded 0.5 as "the zoom floor" here (a known,
+     flagged inconsistency — see project_sota_upscale_extraction memory),
+     but the real floor is 0.38. Because both this ramp and the old
+     far-zoom overlay ramp clamped with Math.min(1,...), the effect was
+     safe but SATURATED early — full ramp strength landed at zoom=0.5 and
+     then sat flat for the whole 0.5->0.38 stretch that is actually the
+     deepest, darkest part of the pull-back where the lift is needed most.
+     Now references _ORB_ZOOM_MIN directly so the ramp keeps intensifying
+     all the way to the true floor, and the peak strength itself was raised
+     0.72->0.85 per the brief's "more aggressive at the far end" ask. */
+  if(_orbIsFS){
+    var _expZoomT=Math.max(0,Math.min(1,(1-_orbZoom)/(1-_ORB_ZOOM_MIN)));
+    var _expStrength=0.55+_expZoomT*0.30;
+    ctx.save();
+    ctx.globalCompositeOperation="screen";
+    ctx.fillStyle="rgba(14,16,22,"+_expStrength.toFixed(3)+")";
+    ctx.fillRect(0,0,W,H);
+    ctx.restore();
+  }
+
   /* Metrics bar — always visible, top of screen */
   _drawMetricsBar(ctx,W);
 
   /* HUD — outside transform */
   if(Math.abs(_orbZoom-1)>0.02){
+    /* Bare percentage read as unlabeled debug output — prefix so it self-
+       explains as the zoom level (2026-07-30 label pass). */
     ctx.fillStyle="rgba(201,162,39,0.5)";ctx.font='10px "IBM Plex Mono",monospace';
-    ctx.textAlign="left";ctx.fillText(Math.round(_orbZoom*100)+"%",12,H-12);
+    ctx.textAlign="left";ctx.fillText("ZOOM "+Math.round(_orbZoom*100)+"%",12,H-12);
   }
   /* Minimap when zoomed past 1.5x */
   if(_orbZoom>1.5){
@@ -3192,12 +3659,14 @@ if($orbitalCanvas){
   /* Scroll to zoom */
   $orbitalCanvas.addEventListener("wheel",function(e){
     e.preventDefault();
+    _orbZoomAnim=false; /* cancel any in-flight double-click/reset zoom animation
+      so it doesn't keep overwriting manual scroll-zoom every frame */
     var w=_orbWorld(e);var oldZ=_orbZoom;
-    _orbZoom-=e.deltaY*0.001;_orbZoom=Math.max(0.5,Math.min(4,_orbZoom));
-    /* Re-derive the world point under the cursor AFTER rescaling geometry,
-       not before — zoom-out changes orbitRadius (_zoomSpread), so the old
-       world coordinates no longer point at the same screen pixel. Rescaling
-       first keeps the cursor anchored during scroll instead of drifting. */
+    _orbZoom-=e.deltaY*0.001;_orbZoom=Math.max(_ORB_ZOOM_MIN,Math.min(4,_orbZoom));
+    /* PURE-CAMERA ZOOM (round 4): orbit radii are now zoom-invariant (see
+       _orbScaleOrbits header comment), so this call is a no-op left in
+       place defensively — the world point under the cursor never actually
+       moves anymore, only the camera scale/pan does. */
     if(_orbZoom!==oldZ&&(_orbZoom<1||oldZ<1)) _orbScaleOrbits();
     var zd=_orbZoom/oldZ;
     _orbPanX=w.sx-(w.sx-_orbPanX)*zd;_orbPanY=w.sy-(w.sy-_orbPanY)*zd;
@@ -10404,6 +10873,31 @@ function setTab(idx){
 }
 window._setTab=setTab;
 window._orbDebug=function(){var r={};for(var id in _orbNodes){var n=_orbNodes[id];r[id]={x:Math.round(n.x),y:Math.round(n.y),alive:n.alive,sz:Math.round(n.currentSize),type:n.celestialType,parent:n.currentParent};}r._canvas={w:_orbLW,h:_orbLH};r._view={zoom:_orbZoom,panX:_orbPanX,panY:_orbPanY,isFS:_orbIsFS};return r;};
+/* DeepField verification hook (2026-07-30) — same IIFE-scoping trap as
+   _orbDebug above: window._deepField is already global (assigned in
+   _orbRender's L0b block), so this just exposes read/trigger helpers for
+   external verification without needing anything else on window. */
+window._deepFieldDebug=function(){
+  if(!window._deepField) return {loaded:false};
+  var df=window._deepField,now=Date.now(),elapsed=now-df.epoch;
+  var nebulae=[],sne=[],comets=[];
+  for(var i=0;i<_DF_NEBULA_SLOTS;i++) nebulae.push(df._nebulaAt(i,elapsed));
+  for(var j=0;j<_DF_SN_SLOTS;j++) sne.push(df._forcedSN&&df._forcedSN.slot===j?df._forcedSN.stateAt(elapsed):df._supernovaAt(j,elapsed));
+  for(var k=0;k<_DF_COMET_SLOTS;k++) comets.push(df._cometAt(k,elapsed));
+  return {loaded:true,seed:df.seed,epoch:df.epoch,elapsedMs:elapsed,elapsedMin:(elapsed/60000).toFixed(2),
+    center:{x:Math.round(df.center.x),y:Math.round(df.center.y)},innerR:Math.round(df.innerR),outerR:Math.round(df.outerR),
+    nebulae:nebulae,supernovae:sne,comets:comets};
+};
+/* Temporary verification trigger — fires a supernova NOW in slot 0 for
+   capturing the flash->remnant->nursery sequence on demand. Not wired to
+   any UI button; console-only, per the brief ("don't ship a permanent
+   trigger button unless Jeremy would want that as a feature"). Safe to
+   leave defined (it's inert unless called) or strip before shipping —
+   flagged in the session report either way. */
+window._deepFieldForceSupernova=function(slot){
+  if(!window._deepField) return null;
+  return window._deepField.forceSupernova(slot||0);
+};
 
 /* ===== MASTER RENDER ===== */
 function renderAll(){
@@ -10563,8 +11057,8 @@ document.addEventListener("keydown",function(e){
   if(k.toLowerCase()==="a"){e.preventDefault();aegisDetailVisible=!aegisDetailVisible;$aegisSection.style.display=aegisDetailVisible?"":"none";return}
   if(k.toLowerCase()==="f"){e.preventDefault();if(typeof _orbToggleFS==="function")_orbToggleFS();return}
   if(k.toLowerCase()==="s"){e.preventDefault();_sbToggle();return}
-if(k==="+"||k==="="){var _ozOld=_orbZoom;_orbZoom=Math.min(4,_orbZoom*1.2);if(_orbZoom!==_ozOld&&(_orbZoom<1||_ozOld<1))_orbScaleOrbits();return}
-  if(k==="-"){var _ozOld2=_orbZoom;_orbZoom=Math.max(0.5,_orbZoom/1.2);if(_orbZoom!==_ozOld2&&(_orbZoom<1||_ozOld2<1))_orbScaleOrbits();return}
+if(k==="+"||k==="="){_orbZoomAnim=false;var _ozOld=_orbZoom;_orbZoom=Math.min(4,_orbZoom*1.2);if(_orbZoom!==_ozOld&&(_orbZoom<1||_ozOld<1))_orbScaleOrbits();return}
+  if(k==="-"){_orbZoomAnim=false;var _ozOld2=_orbZoom;_orbZoom=Math.max(_ORB_ZOOM_MIN,_orbZoom/1.2);if(_orbZoom!==_ozOld2&&(_orbZoom<1||_ozOld2<1))_orbScaleOrbits();return}
   /* Non-fullscreen "0" already handled above by the digit-tab branch (switches to tab 0). */
 });
 
@@ -12369,6 +12863,30 @@ function showSystemManifest(){
     var bots=master.bots||[];
     var alive=bots.filter(function(b){return b.alive}).length;
     var total=bots.length;
+    /* FACTIONS (COSMOS_ARMADA_SPEC.md FACTIONS section, 2026-07-30):
+       trading-thesis groupings, 2 trader members each. P/L is a live
+       scoreboard summing REAL member gross P/L from master.bots[].normalized.pnl
+       ONLY — never fabricate. A member with pnl==null (not a pool trader,
+       or bot down) is excluded from the sum and does not force the whole
+       faction to "—"; the faction only shows "—" if EVERY member is
+       missing data (matches the spec's "show — for missing data" bar
+       without needlessly blanking a faction that has one live member). */
+    var FACTIONS=[
+      {name:"VEINRUNNERS",color:"#c9a227",members:["turtlesue","nexusbrain"]},
+      {name:"TIDEWRIGHTS",color:"#22d3d3",members:["rubberband","gridzilla"]},
+      {name:"THE ACCORD",color:"#b39ddb",members:["arbitrageur","confluence"]},
+    ];
+    var factionRows=FACTIONS.map(function(f){
+      var sum=0,haveData=false;
+      f.members.forEach(function(id){
+        var b=bots.find(function(x){return x.id===id});
+        var p=b&&b.normalized?b.normalized.pnl:null;
+        if(p!=null){sum+=Number(p)||0;haveData=true;}
+      });
+      var valStr=haveData?((sum>=0?"+":"")+"$"+sum.toFixed(2)):"—";
+      var valColor=!haveData?"rgba(255,255,255,0.35)":(sum>=0?"#4ade80":"#f87171");
+      return '<div style="display:flex;justify-content:space-between;align-items:center;padding:3px 0"><span style="color:'+f.color+'"><span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:'+f.color+';margin-right:7px"></span>'+f.name+'</span><span style="color:'+valColor+'">'+valStr+'</span></div>';
+    }).join("");
     /* Event type counts */
     var etypes={};events.forEach(function(e){var t=e.type||"?";etypes[t]=(etypes[t]||0)+1;});
     var upSec=manifest.uptime_seconds||0;
@@ -12376,7 +12894,15 @@ function showSystemManifest(){
     /* Build panel */
     var p=document.getElementById("manifest-panel");
     if(!p){p=document.createElement("div");p.id="manifest-panel";
-      p.style.cssText="position:fixed;top:0;right:0;width:420px;height:100vh;background:linear-gradient(180deg,rgba(7,7,12,0.97),rgba(10,15,25,0.98));backdrop-filter:blur(24px);border-left:1px solid rgba(100,180,255,0.12);z-index:10000;display:none;overflow-y:auto;box-shadow:-10px 0 40px rgba(0,0,0,0.5);";
+      /* z-index MUST beat #orbitalWrap's fullscreen z-index (99999, set by
+         _orbToggleFS ~line 1516) or the cinema canvas sits visually on top
+         of this panel despite it being display:block and later in DOM
+         order — z-index only resolves within/against a shared stacking
+         context, DOM order doesn't matter once z-index differs this much.
+         Found live 2026-07-30: panel opened (display:block, opacity:1,
+         correct rect) but was fully invisible in fullscreen COSMOS mode;
+         elementFromPoint() on the panel's own rect returned the canvas. */
+      p.style.cssText="position:fixed;top:0;right:0;width:420px;height:100vh;background:linear-gradient(180deg,rgba(7,7,12,0.97),rgba(10,15,25,0.98));backdrop-filter:blur(24px);border-left:1px solid rgba(100,180,255,0.12);z-index:200000;display:none;overflow-y:auto;box-shadow:-10px 0 40px rgba(0,0,0,0.5);";
       document.body.appendChild(p);}
     /* Bot grid */
     var botGrid=bots.map(function(b){return '<div style="display:flex;align-items:center;gap:8px;padding:5px 8px;background:rgba(15,15,22,0.5);border:1px solid rgba(100,180,255,0.05);border-radius:3px"><div style="width:7px;height:7px;border-radius:50%;background:'+(b.alive?"#00ff88":"#ff4466")+''+(b.alive?";animation:statusPulseGreen 2s ease-in-out infinite":"")+'"></div><span style="font-family:IBM Plex Mono;font-size:0.7rem;color:'+(b.alive?"#fff":"rgba(255,255,255,0.35)")+'">'+(b.name||b.id)+'</span></div>';}).join("");
@@ -12407,6 +12933,9 @@ function showSystemManifest(){
       +'<div style="display:flex;justify-content:space-between"><span style="color:#a09888">Deployed</span><span style="color:#fbbf24">$'+(portfolio.deployed||0).toFixed(2)+'</span></div>'
       +'<div style="display:flex;justify-content:space-between"><span style="color:#a09888">Expectancy</span><span style="color:'+(fleetExp>=0?"#4ade80":"#f87171")+'">$'+fleetExp.toFixed(2)+'/trade</span></div>'
       +'</div></div>'
+      /* Factions */
+      +'<div style="margin-bottom:20px"><div style="font-size:0.7rem;letter-spacing:0.15em;text-transform:uppercase;color:#a09888;margin-bottom:8px">FACTION P/L</div>'
+      +'<div style="font-family:IBM Plex Mono;font-size:0.75rem">'+factionRows+'</div></div>'
       /* Council */
       +'<div style="margin-bottom:20px"><div style="font-size:0.7rem;letter-spacing:0.15em;text-transform:uppercase;color:#a09888;margin-bottom:8px">MATHEMATICAL COUNCIL</div>'
       +'<div style="font-family:IBM Plex Mono;font-size:0.7rem;line-height:1.6">'+engList+'</div></div>'
@@ -12626,24 +13155,51 @@ function _initParallaxStars(){
   }
 }
 
+/* SOTA pass (2026-07-30, finding 4 — flat depth / dead frame at zoom-out):
+   this function is called in DPR-only screen space (no _orbZoom applied to
+   the transform, see the L0.5 call site), so the old version — plain
+   world-seeded x/y with a pan-only offset, NO zoom multiply — meant
+   pulling back never actually revealed more of this layer's 5000x5000
+   seeded field: stars stayed pinned at 1:1 screen scale regardless of
+   zoom, so the "800 background stars stay fixed while the fleet shrinks
+   toward the center" dead-frame effect the audit describes was real here
+   specifically, not just a CosmicCanvas issue. Fixed by explicitly
+   applying _orbZoom to both position and size, centered on the viewport
+   midpoint — now zooming out genuinely spreads this layer across more of
+   its seeded field (revealing previously off-screen stars in the newly-
+   visible corners) exactly like the world-space fleet already does, and
+   zooming in tightens back down instead of just re-centering the same
+   fixed dot pattern. Depth layers keep their distinct px parallax factors
+   AND now additionally scale at different fractions of _orbZoom (deep
+   layer barely moves with zoom = reads as far away; near layer scales
+   almost 1:1 = reads as close), which is the actual parallax depth cue a
+   real starfield needs, not just a pan-differential one. */
 function _drawParallaxStars(ctx,now){
   var layers=[
-    {stars:_starLayers.deep, px:0.1},
-    {stars:_starLayers.mid,  px:0.4},
-    {stars:_starLayers.near, px:0.8}
+    {stars:_starLayers.deep, px:0.1, zx:0.25},
+    {stars:_starLayers.mid,  px:0.4, zx:0.55},
+    {stars:_starLayers.near, px:0.8, zx:0.85}
   ];
   var t=now/1000;
+  var cx2=(_orbLW||900)/2, cy2=(_orbLH||600)/2;
   for(var li=0;li<layers.length;li++){
     var L=layers[li];
     var ox=_orbPanX*L.px/_orbZoom, oy=_orbPanY*L.px/_orbZoom;
+    /* Effective zoom for this depth layer — lerp between 1 (no zoom
+       response, old behavior) and the real _orbZoom by zx, so deeper
+       layers respond less (feel farther away). */
+    var zEff=1+(_orbZoom-1)*L.zx;
+    var sizeScale=Math.max(0.3,Math.min(2.2,zEff));
     for(var si=0;si<L.stars.length;si++){
       var s=L.stars[si];
-      var sx=s.x+ox, sy=s.y+oy;
+      var wx=s.x+ox, wy=s.y+oy;
+      var sx=cx2+(wx-cx2)*zEff, sy=cy2+(wy-cy2)*zEff;
+      if(sx<-20||sx>_orbLW+20||sy<-20||sy>_orbLH+20) continue;
       var twinkle=0.7+0.3*Math.sin(t*s.ts+s.tp);
       var alpha=s.br*twinkle;
       if(s.hue===0) ctx.fillStyle="rgba(255,255,255,"+alpha.toFixed(3)+")";
       else ctx.fillStyle="hsla("+s.hue+",60%,70%,"+alpha.toFixed(3)+")";
-      ctx.beginPath();ctx.arc(sx,sy,s.sz,0,Math.PI*2);ctx.fill();
+      ctx.beginPath();ctx.arc(sx,sy,Math.max(0.1,s.sz*sizeScale),0,Math.PI*2);ctx.fill();
     }
   }
 }
@@ -12670,6 +13226,22 @@ function _drawSunCinematic(ctx,x,y,baseR,now,eventRate){
   magG.addColorStop(1,"rgba(0,0,0,0)");
   ctx.fillStyle=magG;
   ctx.beginPath();ctx.arc(x,y,magR*breathe,0,Math.PI*2);ctx.fill();
+
+  /* Wide dominant bloom halo (SOTA pass, 2026-07-30) — the guardian halo
+     above reads well up close but was the only glow layer CC had, capping
+     out around 0.16 alpha even at max AEGIS score. CC is the ONE body every
+     other body's convergence lanes point at; it must out-luminance every
+     star system from across the room. This is a second, wider, brighter
+     wash independent of AEGIS score so CC never looks dim even at a quiet
+     score of 0. */
+  var haloR=Math.max(0.1,Math.abs(baseR*5.2*breathe));
+  var haloG=ctx.createRadialGradient(x,y,Math.max(0.1,baseR*0.7),x,y,haloR);
+  haloG.addColorStop(0,   "rgba(150,205,255,0.13)");
+  haloG.addColorStop(0.22,"rgba(90,165,255,0.065)");
+  haloG.addColorStop(0.5, "rgba(50,120,220,0.025)");
+  haloG.addColorStop(1,   "rgba(0,0,0,0)");
+  ctx.fillStyle=haloG;
+  ctx.beginPath();ctx.arc(x,y,haloR,0,Math.PI*2);ctx.fill();
 
   /* Data-surge arcs — brief bright arcs radiating from the core, frequency
      driven by AEGIS score (was "magnetic reconnection events" under the

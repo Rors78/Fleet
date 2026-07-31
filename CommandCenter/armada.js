@@ -91,6 +91,9 @@ let _clock = null;
 let _lastView = { zoom: 1, panX: 0, panY: 0, isFS: false };
 let _worldW = 900, _worldH = 600;
 let _rafId = null;
+let _station = null; // CC mothership station rig (Task 3, 2026-07-30)
+let _lastCCMeta = { health: 1, eventRate: 0, aegisScore: 0.02, pnlSign: 0 };
+let _pendingCCNode = null;
 let _disposed = true;
 
 // ============================================================
@@ -135,7 +138,25 @@ function hullMaterial(colorHex, opts = {}) {
   return new THREE.MeshStandardMaterial({
     color: hullColor,
     metalness: opts.metalness != null ? opts.metalness : 0.62,
-    roughness: opts.roughness != null ? opts.roughness : 0.45,
+    // SPECULAR-BLOWOUT FIX (2026-07-30, live-composite pass): 0.45 base
+    // roughness combined with metalness 0.62 + the hard single-direction
+    // key light (intensity 4.4) produces a near-mirror specular streak
+    // on any low-poly curved surface (Confluence's 14-segment drum cylinder
+    // is the confirmed repro) whenever that surface's normal happens to
+    // roll through the light's reflection vector — which the static
+    // "circle formation" dev-harness pose never exposed, but the live
+    // dashboard's real orbital headings do, at almost any zoom. Root
+    // cause is the SAME failure family as feedback_webgl_pbr_lighting_traps
+    // trap #5 (large-surface-area blowout) — here the "large surface" is
+    // a whole cylinder panel rather than an emissive material. Raised the
+    // roughness floor 0.45->0.58 so the specular lobe widens and softens
+    // (oxidized/brushed gunmetal, not polished chrome) instead of
+    // clipping to a hard white band under ACES tone mapping. Verified this
+    // does NOT reintroduce the flat "toy plastic" look (trap #6) — hull
+    // lightness/saturation/ambient are untouched, only the specular TIGHTNESS
+    // changes, and the darker base color + hard key light direction still
+    // produce real shadow falloff.
+    roughness: opts.roughness != null ? opts.roughness : 0.58,
     flatShading: !!opts.flat,
     emissive: new THREE.Color(0x0a0a10),
     emissiveIntensity: 1,
@@ -284,6 +305,62 @@ function roughnessTexture(seed) {
   return tex;
 }
 
+// Soft radial-falloff sprite for engine glow discs (TARGET 2, 2026-07-30
+// grimdark restyle pass). The engine glow was a hard-edged CircleGeometry
+// at up to 0.95 opacity — a flat solid-color disc glued directly onto the
+// dark nozzle cylinder behind it. At 30-60px that pair (bright hard disc +
+// dark rod-shaped nozzle mesh) reads as "solid colored rod exhaust", not a
+// glow — confirmed against the live screenshot description ("orange
+// box-shaped ship with solid yellow rod exhausts"). This sprite gives the
+// glow a real radial falloff (bright core -> soft additive edge, alpha
+// reaching zero well before the sprite's own bounding circle) so it reads
+// as light bleeding off the nozzle instead of a painted-on colored cap.
+// White-based canvas (tinted by the mesh's own `color`, additive-blended)
+// so one cached texture serves every fleet color.
+const _softGlowCache = new Map();
+function softGlowTexture() {
+  if (_softGlowCache.has('g')) return _softGlowCache.get('g');
+  const size = 128;
+  const cv = document.createElement('canvas');
+  cv.width = size; cv.height = size;
+  const ctx = cv.getContext('2d');
+  const grad = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.75)');
+  grad.addColorStop(0.7, 'rgba(255,255,255,0.18)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  _softGlowCache.set('g', tex);
+  return tex;
+}
+
+// 1D longitudinal fade for the mining beam (SOTA ROUND 4). Used as
+// alphaMap on the beam core/glow cones: CylinderGeometry side UVs put
+// v=1 at the +Y (impact) end and v=0 at the -Y (emitter) end, and
+// CanvasTexture flipY maps v=1 to the canvas top row — so a white->dim
+// top-to-bottom gradient makes the beam fully bright at the impact
+// point and dissipating toward the ship, which is the "energy, not
+// matter" longitudinal cue. Grayscale because alphaMap samples green.
+const _beamFadeCache = new Map();
+function _beamFadeTexture() {
+  if (_beamFadeCache.has('f')) return _beamFadeCache.get('f');
+  const cv = document.createElement('canvas');
+  cv.width = 2; cv.height = 64;
+  const ctx = cv.getContext('2d');
+  const grad = ctx.createLinearGradient(0, 0, 0, 64);
+  grad.addColorStop(0, 'rgb(255,255,255)');   // impact end — full alpha
+  grad.addColorStop(0.55, 'rgb(190,190,190)');
+  grad.addColorStop(1, 'rgb(70,70,70)');      // emitter end — dim, not gone
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 2, 64);
+  const tex = new THREE.CanvasTexture(cv);
+  _beamFadeCache.set('f', tex);
+  return tex;
+}
+
 function greebledHullMaterial(colorHex, seed, repeat = 3) {
   const mat = hullMaterial(colorHex);
   const tex = greebleTexture(colorHex, seed);
@@ -300,26 +377,74 @@ function greebledHullMaterial(colorHex, seed, repeat = 3) {
 
 // ============================================================
 // Engine nozzle / running-light helper — shared across all hulls
+//
+// PHASE 3a REDESIGN (2026-07-30): at live scale (30-60px) these ships read
+// as satellites, not vessels — Jeremy's verbatim callout. Spec principle:
+// "engine light is what says ship at distance", lean on emissives over
+// geometry. A round glow disc alone reads as a status LED; what sells
+// "propulsion" is a short additive PLUME stretching away from the nozzle
+// along the facing axis, whose LENGTH/OPACITY react to real orbital speed
+// (see _tick's exhaust-scaling block) — a stationary ship shows a short
+// idle flicker, a fast-moving one trails visible fire. Bumped the glow
+// disc itself bigger too (0.65->1.0x radius) since it's now the dominant
+// per-engine visual signature, not a small accent dot.
 // ============================================================
 function addEngineNozzle(group, x, y, z, radius, colorHex, facing = new THREE.Vector3(0, 0, 1)) {
+  // Nozzle housing widened slightly at the hull-facing end (was a uniform
+  // taper radius*0.7 -> radius) so the mesh flares into the hull instead
+  // of meeting it as a thin bare cylinder — part of the "rod exhaust" fix,
+  // this end is the one facing away from the glow/plume, toward the ship
+  // body, and is the one most exposed when idle plumes are near-invisible.
   const nozzle = new THREE.Mesh(
-    new THREE.CylinderGeometry(radius * 0.7, radius, radius * 1.6, 10),
+    new THREE.CylinderGeometry(radius * 0.7, radius * 1.15, radius * 1.6, 10),
     darkTrimMaterial()
   );
   nozzle.rotation.x = Math.PI / 2;
   nozzle.position.set(x, y, z);
   group.add(nozzle);
 
-  const glowGeo = new THREE.CircleGeometry(radius * 0.65, 12);
+  const mountPos = new THREE.Vector3(x, y, z).add(facing.clone().multiplyScalar(radius * 0.9));
+
+  // Soft radial sprite (see softGlowTexture) replaces the old hard-edged
+  // CircleGeometry disc — TARGET 2 restyle: this is what stops the glow
+  // from reading as a solid-color cap welded onto the nozzle cylinder.
+  const glowGeo = new THREE.PlaneGeometry(radius * 2.6, radius * 2.6);
   const glowMat = new THREE.MeshBasicMaterial({
-    color: colorHex, transparent: true, opacity: 0.95,
+    map: softGlowTexture(), color: colorHex, transparent: true, opacity: 0.95,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
   const glow = new THREE.Mesh(glowGeo, glowMat);
-  glow.position.set(x, y, z + radius * 0.85 * facing.z + radius * 0.85 * facing.y * 0 );
-  glow.position.copy(new THREE.Vector3(x, y, z).add(facing.clone().multiplyScalar(radius * 0.9)));
+  glow.position.copy(mountPos);
   group.add(glow);
-  return { nozzle, glow, glowMat };
+
+  // Exhaust plume — a cone stretched along the facing axis, additive,
+  // narrow at the nozzle end. Base length/opacity are set here; _tick()
+  // rescales .scale.z and the material opacity every frame from the
+  // ship's real speed + engine state (idle/mining/dormant), so a parked
+  // ship shows almost nothing and a traveling one trails visible fire —
+  // this motion language is what reads as "vessel" at 30-60px where the
+  // hull geometry itself is too small to carry the read.
+  const plumeGeo = new THREE.ConeGeometry(radius * 0.55, radius * 3.2, 8, 1, true);
+  plumeGeo.translate(0, radius * 1.6, 0); // base at cone apex origin, tip trails outward
+  plumeGeo.rotateX(Math.PI / 2); // cone's local +Y -> local +Z (matches facing convention below)
+  const plumeMat = new THREE.MeshBasicMaterial({
+    color: colorHex, transparent: true, opacity: 0.35,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const plume = new THREE.Mesh(plumeGeo, plumeMat);
+  plume.position.copy(mountPos);
+  // Orient the plume's local +Z (post-rotate) to point along `facing`.
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  const facingN = facing.clone().normalize();
+  if (Math.abs(facingN.dot(zAxis)) < 0.9999) {
+    plume.quaternion.setFromUnitVectors(zAxis, facingN);
+  } else if (facingN.z < 0) {
+    plume.rotation.x = Math.PI;
+  }
+  plume.scale.z = 0.15; // near-invisible at idle; _tick grows this with speed
+  group.add(plume);
+
+  return { nozzle, glow, glowMat, plume, plumeMat, facing: facingN };
 }
 
 function addRunningLight(group, x, y, z, colorHex, size = 0.35) {
@@ -336,15 +461,74 @@ function addRunningLight(group, x, y, z, colorHex, size = 0.35) {
 // units along local +Z (forward). Each returns {group, engines[], lights[]}
 // ============================================================
 
-// --- TurtleSue: dreadnought-miner (Death Star heritage) ---------------
+// --- TurtleSue: armored jade shell-world (dreadnought-miner) -----------
+// REDESIGN (2026-07-30, SOTA round 2, target 1): the previous "focusing
+// dish" was a small dark hemisphere+ring mounted via a bare position offset
+// 2.1 units off the hull with nothing visibly connecting it to the sphere —
+// at 30-60px on the dashboard this reads exactly as "a stick poking out of
+// a ball" (confirmed against a live screenshot: "green sphere with a
+// protruding metal rod"), not as a mining turret. Two changes fix this:
+// (1) the sphere itself gets faceted plate-tectonic geology (raised
+// icosahedral panel seams via a displaced low-poly overlay, "armored jade
+// shell" per spec) so the body has surface identity even before you notice
+// any attachment, matching the terminator/greeble quality bar the eye
+// planet and other identity bodies already clear; (2) the mining dish is
+// rebuilt as a flush-mounted turret: a short visible foot merges it
+// directly into the hull instead of floating in empty space.
+// CORRECTION (2026-07-30, SOTA round 3): this comment previously claimed
+// the turret "keeps a standoff scanner arm... foot -> visible strut ->
+// housing" — that overpromised what actually got built. There is no
+// separate strut/pylon mesh; the housing (dish+ring) is stacked directly
+// on top of the foot with zero gap (see turretFoot/dish/dishRing below).
+// That is correct and matches the "flush-mounted, not floating" goal, but
+// it is a stacked turret, not an articulated arm — fixing the description
+// to match the code, not the code to match the description, since the
+// round-3 investigation confirmed this geometry was never the source of
+// any reported rod (the real rod was TurtleSue's mining BEAM, see
+// buildBeam/updateBeam, fixed separately this round).
 function buildTurtleSue(seed) {
   const g = new THREE.Group();
   const col = FLEET.turtlesue.color;
   const rand = mulberry32(seed);
 
-  const hullMat = greebledHullMaterial(col, seed, 4);
+  // Hull tint runs DARKER than the identity color (deep jade vs bright
+  // mint) — screenshot-verified that the full-brightness identity green
+  // reads as flat plastic at dashboard scale; the bright color stays on
+  // beams/accents/lights where emissive-bright is correct.
+  const hullMat = greebledHullMaterial(0x1f6b45, seed, 4);
   const sphere = new THREE.Mesh(new THREE.SphereGeometry(3.4, 24, 18), hullMat);
   g.add(sphere);
+
+  // Faceted plate tectonics — jade shell geology. A slightly larger,
+  // very-low-poly icosahedron rendered as WIREFRAME-style raised seams
+  // (thin additive lines only, not a solid second shell) gives the sphere
+  // the "armored plates" silhouette cue the spec asks for without adding
+  // draw-call weight or fighting the greeble texture already carrying
+  // panel detail. Kept subtle (accent material, low intensity) — this is
+  // a texture-read cue, not a glowing cage.
+  //
+  // SOTA ROUND 3 FIX (2026-07-30, item 1): this used the raw fleet color
+  // (0x4ade80, bright mint) via MeshBasicMaterial — which ignores all
+  // scene lighting entirely, unlike the PBR hull underneath it (already
+  // correctly darkened to lightness 0.12-0.16 by hullMaterial()'s grimdark
+  // treatment). The result: the hull itself is properly dark jade, but a
+  // fully-unlit bright-mint wireframe sits evenly over the WHOLE sphere
+  // regardless of shadow direction, which is what actually read as "flat
+  // bright mint" — the geology cue was fighting the darkening pass it was
+  // supposed to sit on top of. Fix: darken the wireframe color to match
+  // the hull's own treatment (same HSL-lightness approach as
+  // hullMaterial(), not the raw accent color) and drop opacity further so
+  // the seams read as etched/raised detail at close range without
+  // washing the whole shell in flat color at normal viewing distance.
+  const shellGeo = new THREE.IcosahedronGeometry(3.5, 1);
+  const shellHSL = { h: 0, s: 0, l: 0 };
+  new THREE.Color(col).getHSL(shellHSL);
+  const shellLineColor = new THREE.Color().setHSL(shellHSL.h, Math.min(shellHSL.s, 0.55), 0.22);
+  const shellMat = new THREE.MeshBasicMaterial({
+    color: shellLineColor, transparent: true, opacity: 0.11, wireframe: true,
+  });
+  const shellPlates = new THREE.Mesh(shellGeo, shellMat);
+  g.add(shellPlates);
 
   // equatorial trench band (Death Star silhouette cue, industrialized)
   const band = new THREE.Mesh(
@@ -354,19 +538,36 @@ function buildTurtleSue(seed) {
   band.rotation.x = Math.PI / 2;
   g.add(band);
 
-  // focusing dish (mining beam projector — replaces "superlaser" framing)
+  // Mining turret — FLUSH-MOUNTED, not a floating disconnected orb. A short
+  // stub foot sits ON the hull surface (radius-matched, no gap) and the
+  // housing sits directly on top of the foot, so the eye reads one
+  // continuous mounted structure instead of "ball + separate stick".
   const dishGroup = new THREE.Group();
-  const dish = new THREE.Mesh(
-    new THREE.SphereGeometry(1.05, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+  const turretFoot = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 0.75, 0.5, 12),
     darkTrimMaterial()
   );
-  dish.rotation.x = Math.PI;
+  turretFoot.position.y = 0.25;
+  dishGroup.add(turretFoot);
+  const dish = new THREE.Mesh(
+    new THREE.SphereGeometry(0.95, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
+    darkTrimMaterial()
+  );
+  dish.position.y = 0.5;
   dishGroup.add(dish);
-  const dishRing = new THREE.Mesh(new THREE.TorusGeometry(1.05, 0.06, 6, 20), accentMaterial(col, 0.8));
+  const dishRing = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.06, 6, 20), accentMaterial(col, 1.0));
   dishRing.rotation.x = Math.PI / 2;
+  dishRing.position.y = 0.5;
   dishGroup.add(dishRing);
-  dishGroup.position.set(1.6, 1.2, 2.1);
-  dishGroup.scale.setScalar(1.0);
+  // Orient the whole turret to sit normal-to-surface at a point ON the
+  // sphere (radius 3.4), not offset into open space — this is what removes
+  // the "gap" that read as a rod. Position is on the sphere surface along
+  // a fixed identity direction; rotation aligns the turret's local +Y
+  // (foot-to-dish axis) with that same surface normal so the foot's flat
+  // base sits flush against the curvature.
+  const turretDir = new THREE.Vector3(0.42, 0.62, 0.66).normalize();
+  dishGroup.position.copy(turretDir.clone().multiplyScalar(3.38));
+  dishGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), turretDir);
   g.add(dishGroup);
   g.userData.dish = dishGroup;
 
@@ -376,6 +577,24 @@ function buildTurtleSue(seed) {
   for (const [ex, ey, ez] of enginePositions) {
     engines.push(addEngineNozzle(g, ex, ey, ez, 0.55, col, new THREE.Vector3(0, 0, -1)));
   }
+
+  // Engine ring — the spec's explicit exception for TurtleSue: a sphere
+  // can't be elongated without abandoning the Death Star identity Jeremy
+  // loves, so the "vessel not satellite" signal here is a visible glowing
+  // quarter-band around the rear (drive) hemisphere instead, marking which
+  // side of the sphere is "the engine end" even at a glance before the
+  // nozzle plumes (now much stronger, see addEngineNozzle) are visible.
+  // A partial torus arc (not a full ring) sitting behind/around the 3-nozzle
+  // cluster, following the sphere's curvature.
+  const engineRingArc = new THREE.Mesh(
+    new THREE.TorusGeometry(2.55, 0.09, 6, 20, Math.PI * 1.15),
+    accentMaterial(col, 1.1)
+  );
+  engineRingArc.rotation.x = Math.PI / 2;
+  engineRingArc.rotation.z = Math.PI * 0.55;
+  engineRingArc.position.z = -2.15;
+  g.add(engineRingArc);
+  g.userData.engineRingArc = engineRingArc;
 
   // running lights scattered on hull
   const lights = [];
@@ -390,7 +609,10 @@ function buildTurtleSue(seed) {
   }
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
-  g.userData.beamMount = new THREE.Vector3(1.6, 1.2, 3.1);
+  // Beam now originates from the flush-mounted turret's housing tip, along
+  // the same turretDir used to place/orient the turret above (was a fixed
+  // (1.6,1.2,3.1) offset tied to the old floating-dish position).
+  g.userData.beamMount = turretDir.clone().multiplyScalar(3.38 + 1.0);
   g.userData.cargoMesh = sphere;
   g.userData.cargoBaseColor = hullMat.color.clone();
   g.userData.hullLength = 7;
@@ -480,114 +702,167 @@ function buildGridzilla(seed) {
 }
 
 // --- Rubberband: agile skiff (sleek, banks hard) -----------------------
+// PHASE 3a REWORK (2026-07-30): round 1's perpendicular wing box (a
+// symmetric BoxGeometry crossing the fuselage at 90 degrees) is the exact
+// "satellite with solar panels" silhouette Jeremy called out — confirmed
+// via live 40px crop, it reads as a plus-sign, indistinguishable from
+// Hubble's cross layout. Fix: sweep the wings BACK into a delta/interceptor
+// shape (leading edge angles toward the tail, not perpendicular to the
+// fuselage) so the silhouette reads as an arrowhead pointing along the
+// direction of travel, and stretch the fuselage so length:beam clears the
+// spec's 2.5:1 floor (was ~6.5 hullLength vs ~7.8 wingspan, i.e. WIDER than
+// long — now ~9.5 long vs ~3.4 span, ~2.8:1).
 function buildRubberband(seed) {
   const g = new THREE.Group();
   const col = FLEET.rubberband.color;
   const rand = mulberry32(seed);
 
   const hullMat = greebledHullMaterial(col, seed, 2);
-  // elongated tapered hull via lathe-ish stacked cylinders for a sleek dart
-  const bodyShape = new THREE.CylinderGeometry(0.15, 0.85, 5.6, 8);
+  // Longer, slimmer fuselage (was length 5.6, taper 0.15->0.85; now 7.4,
+  // 0.12->0.62) — the dominant length axis a delta-wing silhouette needs.
+  const bodyShape = new THREE.CylinderGeometry(0.12, 0.62, 7.4, 8);
   const body = new THREE.Mesh(bodyShape, hullMat);
   body.rotation.x = Math.PI / 2;
-  body.position.z = 0.2;
+  body.position.z = 0.4;
   g.add(body);
 
-  // swept wings (flex visually on bank via userData.wingL/R rotation)
-  // Large flat unbroken faces are the one geometry shape where the harsh
-  // grimdark key light overexposes badly — a plain hullMaterial() here
-  // (no greeble map to break up the surface) caught the key light nearly
-  // face-on and rendered as a flat pale slab, visibly lighter than every
-  // other hull on the ship at closeup. Switched to greebledHullMaterial
-  // (repeat=2) so panel-line detail interrupts the flat highlight, and
-  // dropped the +0.03 lightness bump now that the base hull is already
-  // much darker than round 1.
-  const wingGeo = new THREE.BoxGeometry(3.4, 0.08, 1.3);
-  wingGeo.translate(1.9, 0, 0);
+  // Swept delta wings: a tapered quad built from a custom BufferGeometry
+  // (root wide/forward, tip narrow/aft) instead of a perpendicular box —
+  // this is what turns the silhouette from a "+" into an arrowhead.
+  // Points authored in local XZ (X=span, Z=length, root at fuselage).
+  function buildDeltaWing(sign) {
+    const shape = new THREE.Shape();
+    shape.moveTo(0, 1.6);     // root leading edge (forward, near nose)
+    shape.lineTo(sign * 3.3, -1.2); // wingtip (swept back and outward)
+    shape.lineTo(sign * 1.7, -2.0); // wingtip trailing edge
+    shape.lineTo(0, -1.4);    // root trailing edge (aft, near engine)
+    shape.closePath();
+    const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.09, bevelEnabled: false });
+    geo.rotateX(Math.PI / 2); // shape's local Y (length) -> world Z
+    geo.translate(0, -0.02, 0);
+    return geo;
+  }
   const wingMat = greebledHullMaterial(col, seed + 1, 2);
-  const wingL = new THREE.Mesh(wingGeo, wingMat);
-  wingL.position.set(0.5, 0, -0.6);
-  const wingR = wingL.clone();
-  wingR.scale.x = -1;
+  const wingL = new THREE.Mesh(buildDeltaWing(1), wingMat);
+  wingL.position.set(0.35, 0, 0.6);
+  const wingR = new THREE.Mesh(buildDeltaWing(-1), wingMat);
+  wingR.position.set(-0.35, 0, 0.6);
   g.add(wingL, wingR);
-  const wingAccentL = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.1, 1.2), accentMaterial(col, 1.2));
-  wingAccentL.position.set(3.9, 0, -0.6);
+  // Wingtip running-light strakes — small emissive strips along the swept
+  // trailing edge (replaces the round accent blocks, which read as separate
+  // "panel" shapes; a thin strip along the edge instead reads as a hull
+  // seam/light line, reinforcing the elongated silhouette).
+  const wingAccentL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 1.4), accentMaterial(col, 1.2));
+  wingAccentL.position.set(2.6, 0.02, -0.4);
+  wingAccentL.rotation.y = 0.5;
   const wingAccentR = wingAccentL.clone();
-  wingAccentR.position.x = -3.9;
+  wingAccentR.position.x = -2.6;
+  wingAccentR.rotation.y = -0.5;
   g.add(wingAccentL, wingAccentR);
 
-  // nose spike
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.22, 1.4, 6), darkTrimMaterial());
+  // nose spike — lengthened slightly to match the longer fuselage
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.18, 1.8, 6), darkTrimMaterial());
   nose.rotation.x = Math.PI / 2;
-  nose.position.z = 3.2;
+  nose.position.z = 4.5;
   g.add(nose);
 
-  const engines = [addEngineNozzle(g, 0, -0.1, -2.9, 0.42, col, new THREE.Vector3(0, 0, -1))];
+  // Hull running-light line — small dots along the spine, reinforcing the
+  // length axis (spec: "running lights along the hull line").
+  const spineLights = [];
+  for (const zp of [2.6, 0.6, -1.4]) {
+    spineLights.push(addRunningLight(g, 0, 0.42, zp, 0xffffff, 0.08));
+  }
+
+  const engines = [addEngineNozzle(g, 0, -0.1, -3.7, 0.42, col, new THREE.Vector3(0, 0, -1))];
 
   const lights = [
-    addRunningLight(g, 3.9, 0, -0.6, 0xff3b30, 0.16),
-    addRunningLight(g, -3.9, 0, -0.6, 0x30ff5f, 0.16),
+    addRunningLight(g, 2.9, 0, -0.9, 0xff3b30, 0.16),
+    addRunningLight(g, -2.9, 0, -0.9, 0x30ff5f, 0.16),
+    ...spineLights,
   ];
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
-  g.userData.beamMount = new THREE.Vector3(0, -0.3, 2.6);
+  g.userData.beamMount = new THREE.Vector3(0, -0.3, 3.4);
   g.userData.cargoMesh = body;
   g.userData.cargoBaseColor = hullMat.color.clone();
   g.userData.wingL = wingL;
   g.userData.wingR = wingR;
-  g.userData.hullLength = 6.5;
+  g.userData.hullLength = 9.5;
   return { group: g, engines, lights };
 }
 
 // --- Arbitrageur: twin-hulled catamaran with connecting spar -----------
+// PHASE 3a REWORK (2026-07-30): round 1's two identical capsules at ±1.7
+// span joined by a perpendicular crossbar is a symmetric "+"/X silhouette
+// from any top-down angle — the exact satellite read Jeremy flagged, and
+// arguably the worst offender of the six (confirmed live at 40px: reads
+// as antenna cross-panels, not a ship). Fix keeps the twin-hull
+// "barycenter pair" identity (the whole point of Arbitrageur's design)
+// but staggers the hulls fore/aft by a full hull-length instead of
+// side-by-side, and turns the connector from a perpendicular crossbar
+// into a forward-swept spine running ALONG the length axis — the
+// silhouette reads as one elongated asymmetric vessel with a visible
+// twin-drive identity, not a cross.
 function buildArbitrageur(seed) {
   const g = new THREE.Group();
   const col = FLEET.arbitrageur.color;
   const rand = mulberry32(seed);
   const hullMat = greebledHullMaterial(col, seed, 2);
 
+  // Hulls staggered fore/aft (offset along Z, not just split along X) and
+  // lengthened (3.6->4.4) — the stagger is what breaks the mirror-symmetry
+  // that reads as satellite panels; a real barycenter pair orbiting each
+  // other is never perfectly side-by-side at every angle anyway.
   function buildHalfHull(sign) {
     const half = new THREE.Group();
-    const hull = new THREE.Mesh(new THREE.CapsuleGeometry(0.55, 3.6, 4, 8), hullMat);
+    const hull = new THREE.Mesh(new THREE.CapsuleGeometry(0.5, 4.4, 4, 8), hullMat);
     hull.rotation.x = Math.PI / 2;
     half.add(hull);
-    half.position.set(sign * 1.7, 0, 0);
+    half.position.set(sign * 1.5, 0, sign * 1.1);
     return { half, hull };
   }
   const left = buildHalfHull(-1);
   const right = buildHalfHull(1);
   g.add(left.half, right.half);
 
-  // connecting spar (the "barycenter" identity — literally links the two hulls)
+  // Connector spine — now runs diagonally between the staggered hulls
+  // (along the length axis, not a perpendicular crossbar), reinforcing
+  // elongation instead of fighting it. Still the "barycenter" identity —
+  // literally the link between the two hulls — just angled into the
+  // travel direction.
   const sparMat = accentMaterial(col, 0.9);
-  const spar = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.18, 0.5), sparMat);
-  spar.position.set(0, 0, 0.3);
+  const spanX = 3.0, spanZ = 2.2;
+  const sparLen = Math.hypot(spanX, spanZ);
+  const spar = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.18, 0.42), sparMat);
+  spar.rotation.y = Math.atan2(spanX, spanZ);
+  spar.position.set(0, 0, 0.15);
   g.add(spar);
-  const spar2 = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.18, 0.5), darkTrimMaterial());
-  spar2.position.set(0, 0, -1.4);
+  const spar2 = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.16, 0.38), darkTrimMaterial());
+  spar2.rotation.y = Math.atan2(spanX, spanZ);
+  spar2.position.set(0, -0.24, 0.15);
   g.add(spar2);
 
-  // small central sensor/comm mast at the barycenter
+  // central sensor/comm mast at the barycenter (between the staggered hulls)
   const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.4, 6), darkTrimMaterial());
-  mast.position.set(0, 0.7, -0.4);
+  mast.position.set(0, 0.7, 0.15);
   g.add(mast);
-  const mastTip = addRunningLight(g, 0, 1.45, -0.4, col, 0.22);
+  const mastTip = addRunningLight(g, 0, 1.45, 0.15, col, 0.22);
 
   const engines = [
-    addEngineNozzle(g, -1.7, 0, -2.2, 0.4, col, new THREE.Vector3(0, 0, -1)),
-    addEngineNozzle(g, 1.7, 0, -2.2, 0.4, col, new THREE.Vector3(0, 0, -1)),
+    addEngineNozzle(g, -1.5, 0, -1.9, 0.4, col, new THREE.Vector3(0, 0, -1)),
+    addEngineNozzle(g, 1.5, 0, -3.1, 0.4, col, new THREE.Vector3(0, 0, -1)),
   ];
 
   const lights = [
-    addRunningLight(g, -1.7, 0.4, 1.9, 0xff3b30, 0.16),
-    addRunningLight(g, 1.7, 0.4, 1.9, 0x30ff5f, 0.16),
+    addRunningLight(g, -1.5, 0.3, 2.5, 0xff3b30, 0.16),
+    addRunningLight(g, 1.5, 0.3, 3.7, 0x30ff5f, 0.16),
   ];
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
-  g.userData.beamMount = new THREE.Vector3(0, -0.4, 1.2);
+  g.userData.beamMount = new THREE.Vector3(0, -0.4, 3.9);
   g.userData.cargoMesh = spar;
   g.userData.cargoBaseColor = sparMat.color.clone();
-  g.userData.hullLength = 5.5;
+  g.userData.hullLength = 8.0;
   return { group: g, engines, lights };
 }
 
@@ -610,17 +885,41 @@ function buildNexusBrain(seed) {
   // three sensor booms radiating outward — the analytical "reaching out
   // to sense the market" identity, built from hard mechanical parts
   // (rods + dish caps), not a decorative swirl.
+  //
+  // SOTA ROUND 3 FIX (2026-07-30, item 1): a live screenshot described as
+  // "TurtleSue's rod" was actually this ship — TurtleSue's own builder was
+  // re-verified exhaustively (every Mesh/Group enumerated, see armada.js
+  // buildTurtleSue) and contains no matching geometry; NexusBrain's three
+  // booms (CylinderGeometry radius 0.05-0.07, length 2.6 — 2.26x the 1.15
+  // core radius, bare from the hull surface out to the tip) plus two
+  // 0xffffff running lights are the exact "thin silver rod + white
+  // claw/spike, repeated" match. Two fixes: (1) a flared root collar
+  // (a short tapered cylinder, matte trim, flush against the core
+  // surface) so the boom visibly MOUNTS to the hull instead of a bare
+  // hairline cylinder emerging from nothing — same "flush, not floating"
+  // principle as TurtleSue's round-2 turret fix; (2) the rod itself
+  // thickened (0.05-0.07 -> 0.09-0.12) so it doesn't alias to a hairline
+  // at 30-60px, and the tip dish shrunk + given a small mount flare of its
+  // own (0.32 -> 0.22 radius, sits half-embedded in the rod tip via a
+  // shared position rather than glued externally) so it stops reading as
+  // a separate floating white ball.
   const booms = [];
   const boomAngles = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
   for (const a of boomAngles) {
     const boomGroup = new THREE.Group();
-    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 2.6, 6), darkTrimMaterial());
+    // root collar: flares from the core surface (radius 1.15) outward,
+    // eliminates the bare-cylinder-emerging-from-nothing read at the mount
+    const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.5, 8), darkTrimMaterial());
+    collar.rotation.z = Math.PI / 2;
+    collar.position.x = 1.15;
+    boomGroup.add(collar);
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 2.2, 8), darkTrimMaterial());
     rod.rotation.z = Math.PI / 2;
-    rod.position.x = 1.3;
+    rod.position.x = 1.15 + 1.1;
     boomGroup.add(rod);
-    const dish = new THREE.Mesh(new THREE.SphereGeometry(0.32, 10, 8, 0, Math.PI * 2, 0, Math.PI / 1.6), accentMaterial(col, 1.0));
+    const dish = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 8, 0, Math.PI * 2, 0, Math.PI / 1.4), accentMaterial(col, 1.0));
     dish.rotation.z = -Math.PI / 2;
-    dish.position.x = 2.6;
+    dish.position.x = 1.15 + 2.2 - 0.1; // overlaps the rod tip slightly — no gap
     boomGroup.add(dish);
     boomGroup.rotation.z = a;
     boomGroup.position.z = -0.3;
@@ -656,10 +955,29 @@ function buildConfluence(seed) {
   const rand = mulberry32(seed);
   const hullMat = greebledHullMaterial(col, seed, 3);
 
-  // large drum-shaped refinery hull
-  const drum = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 4.4, 14), hullMat);
+  // large drum-shaped refinery hull. Segment count raised 14->22 (cheap,
+  // 6 ships total) so a specular highlight rolls smoothly across the
+  // curve instead of snapping to one flat 25.7-degree face and clipping
+  // to a hard white band under the key light — see the roughness-floor
+  // comment in hullMaterial() for the full specular-blowout writeup.
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 4.4, 22), hullMat);
   drum.rotation.x = Math.PI / 2;
   g.add(drum);
+
+  // Thin silhouette line (TARGET 2, 2026-07-30 restyle) — a bare cylinder
+  // drum at 30-60px with no edge definition is exactly the "clip-art box"
+  // read the brief called out. A cheap EdgesGeometry wireframe (only the
+  // cylinder's real structural edges — end caps + a handful of verticals,
+  // not a dense mesh) traces the hull silhouette without adding a real
+  // draw-call-heavy outline-shader pass. Same technique already used on
+  // the CC station (see buildStation), applied here for the first time on
+  // a ship hull.
+  const drumEdges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(drum.geometry, 25),
+    new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.22 })
+  );
+  drumEdges.rotation.copy(drum.rotation);
+  g.add(drumEdges);
 
   // process rings around the drum
   for (const z of [-1.4, 0, 1.4]) {
@@ -669,31 +987,55 @@ function buildConfluence(seed) {
     g.add(ring);
   }
 
-  // four docking umbilicals — the "four intel feeds" identity, arranged
-  // radially, each ending in a small emissive coupler
+  // four docking umbilicals — the "four intel feeds" identity. ROUND 1
+  // arranged these at perfect 90-degree radial spacing (i+PI/4 for i=0..3)
+  // with equal-length struts — a plan-view silhouette that is, by
+  // construction, a symmetric 4-spoke cross: exactly a satellite antenna
+  // array. Fix keeps four arms (the "four feeds" identity must stay
+  // legible) but sweeps them AFT at an angle (like trailing docking
+  // booms on a real refinery ship, not perpendicular spokes) and varies
+  // their length/angle per-arm so no two are mirror images — breaks the
+  // rotational symmetry that read as "solar panels" while the umbilicals
+  // still visibly radiate from the hull.
   const umbilicals = [];
+  const umbilicalAngles = [Math.PI * 0.2, Math.PI * 0.75, Math.PI * 1.15, Math.PI * 1.85];
   for (let i = 0; i < 4; i++) {
-    const a = (Math.PI / 2) * i + Math.PI / 4;
+    const a = umbilicalAngles[i];
+    const armLen = 1.9 + (i % 2) * 0.5; // alternate lengths, not uniform
     const arm = new THREE.Group();
-    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 1.5, 6), darkTrimMaterial());
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, armLen, 6), darkTrimMaterial());
     strut.rotation.z = Math.PI / 2;
-    strut.position.x = 0.75;
+    strut.position.x = armLen / 2;
     arm.add(strut);
-    const coupler = new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 8), accentMaterial(col, 1.3));
-    coupler.position.x = 1.55;
+    const coupler = new THREE.Mesh(new THREE.SphereGeometry(0.2, 8, 8), accentMaterial(col, 1.3));
+    coupler.position.x = armLen;
     arm.add(coupler);
-    arm.position.set(Math.cos(a) * 1.25, Math.sin(a) * 1.25, 0.6);
+    // Swept AFT (negative Z bias) instead of a flat radial spoke — arms
+    // trail backward off the drum like real docking booms, reinforcing
+    // the length axis instead of fighting it with perpendicular spikes.
+    arm.position.set(Math.cos(a) * 1.2, Math.sin(a) * 1.2, -0.6 - (i % 2) * 0.4);
     arm.rotation.z = a;
+    arm.rotation.x = -0.35; // sweep aft
     umbilicals.push({ arm, coupler });
     g.add(arm);
   }
   g.userData.umbilicals = umbilicals;
 
-  // bow collector cone
+  // bow collector cone — the "black triangle nose" silhouette. Same thin
+  // edge-line treatment as the drum so the cone's profile stays legible
+  // against the space background instead of reading as a flat dark
+  // silhouette with no definition.
   const bow = new THREE.Mesh(new THREE.ConeGeometry(1.0, 1.6, 14), darkTrimMaterial());
   bow.rotation.x = -Math.PI / 2;
   bow.position.z = 3.0;
   g.add(bow);
+  const bowEdges = new THREE.LineSegments(
+    new THREE.EdgesGeometry(bow.geometry, 20),
+    new THREE.LineBasicMaterial({ color: col, transparent: true, opacity: 0.22 })
+  );
+  bowEdges.rotation.copy(bow.rotation);
+  bowEdges.position.copy(bow.position);
+  g.add(bowEdges);
 
   const engines = [];
   for (const [ex, ey] of [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]) {
@@ -723,6 +1065,199 @@ const HULL_BUILDERS = {
 };
 
 // ============================================================
+// CC STATION — the Command Center mothership (Task 3, 2026-07-30).
+// Honors the existing 2D wireframe CC identity (solar_system.js
+// drawSun(): a dark structural lattice with glowing edges, a pulsing
+// core, and "CC" at the center) as a three.js geodesic/icosahedral
+// structure — the dashboard's centerpiece, not another ship. Built at
+// a MUCH larger base unit scale than any hull (hullLength 7-9) since
+// per the spec the 2D CC hub is explicitly exempt from the general
+// size caps (sz 104 vs planet ~30/moon ~19) and the WebGL station
+// should read the same way.
+// ============================================================
+function buildStation(seed) {
+  // BATTLE STATION REBUILD (2026-07-30, Jeremy's directive): the CC hub is
+  // now a moon-sized gray battle station — solid greebled sphere, equatorial
+  // trench, recessed superlaser dish in the upper-left quadrant — replacing
+  // the icosahedral lattice. The lattice's fleet-data plumbing survives
+  // remapped: the dish EMITTER is the new "core" (health/AEGIS pulse, P/L
+  // mood color via StationRig.update, unchanged contract), and the station
+  // "sometimes fires energy": a charge-up of converging rim beams into a
+  // focal point, then a single thick lance — see the superlaser state
+  // machine in StationRig.update. outerEdges/innerEdges are returned as
+  // empty groups so update()'s counter-rotation writes stay no-op-safe.
+  const g = new THREE.Group();
+  const rand = mulberry32(seed);
+
+  // Main hull — solid gray sphere with the same greeble/roughness language
+  // as the ship hulls so it reads as machined plating, not a plain ball.
+  const hullMat = greebledHullMaterial(0x767c88, seed, 5);
+  const hull = new THREE.Mesh(new THREE.SphereGeometry(5.2, 48, 36), hullMat);
+  g.add(hull);
+
+  // Equatorial trench — dark recessed band + two faint light lines along
+  // its edges (the "trench running lights" read).
+  const trench = new THREE.Mesh(new THREE.TorusGeometry(5.14, 0.30, 8, 64), darkTrimMaterial());
+  trench.rotation.x = Math.PI / 2;
+  g.add(trench);
+  const trenchLightMat = new THREE.MeshBasicMaterial({
+    color: 0x9fb8d8, transparent: true, opacity: 0.32,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  for (const off of [-0.36, 0.36]) {
+    const lightRing = new THREE.Mesh(new THREE.TorusGeometry(5.17, 0.024, 4, 64), trenchLightMat);
+    lightRing.rotation.x = Math.PI / 2;
+    lightRing.position.y = off;
+    g.add(lightRing);
+  }
+
+  // Panel seams — thin dark meridian rings (through the poles, varied
+  // longitude) + two latitude rings per hemisphere. Subtle: they break the
+  // sphere into plates without reading as wireframe.
+  for (let mi = 0; mi < 3; mi++) {
+    const seam = new THREE.Mesh(new THREE.TorusGeometry(5.21, 0.028, 4, 64), darkTrimMaterial());
+    seam.rotation.y = (mi / 3) * Math.PI;
+    g.add(seam);
+  }
+  for (const lat of [1.9, -1.9, 3.4, -3.4]) {
+    const r = Math.sqrt(5.21 * 5.21 - lat * lat);
+    const latRing = new THREE.Mesh(new THREE.TorusGeometry(r, 0.022, 4, 56), darkTrimMaterial());
+    latRing.rotation.x = Math.PI / 2;
+    latRing.position.y = lat;
+    g.add(latRing);
+  }
+
+  // Superlaser dish — recessed crater in the upper-left quadrant, tilted
+  // partly toward the camera (+Z) so the concentric detail reads on screen.
+  // Built along local +Y then quaternion-aligned to dishDir (same pattern
+  // as TurtleSue's flush turret).
+  const dishDir = new THREE.Vector3(-0.42, 0.52, 0.74).normalize();
+  const dishGroup = new THREE.Group();
+  const craterWall = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.62, 1.12, 0.55, 28, 1, true), darkTrimMaterial());
+  craterWall.position.y = -0.12;
+  dishGroup.add(craterWall);
+  const dishFace = new THREE.Mesh(
+    new THREE.CircleGeometry(1.55, 28),
+    new THREE.MeshStandardMaterial({ color: 0x3c414b, metalness: 0.35, roughness: 0.8, side: THREE.DoubleSide }));
+  dishFace.rotation.x = -Math.PI / 2;
+  dishFace.position.y = -0.34;
+  dishGroup.add(dishFace);
+  const dishLineMat = new THREE.MeshBasicMaterial({
+    color: 0x8fa8c8, transparent: true, opacity: 0.3,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  for (const rr of [0.55, 1.0, 1.4]) {
+    const dr = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.02, 4, 40), dishLineMat);
+    dr.rotation.x = Math.PI / 2;
+    dr.position.y = -0.3;
+    dishGroup.add(dr);
+  }
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.6, 0.09, 6, 40), darkTrimMaterial());
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = 0.16;
+  dishGroup.add(rim);
+
+  // Dish emitter = the station "core" — keeps the StationRig fleet-mood
+  // contract (opacity/scale pulse from health+AEGIS, P/L color bias).
+  const coreMat = new THREE.MeshBasicMaterial({
+    color: 0xe1f0ff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), coreMat);
+  core.position.y = -0.05;
+  dishGroup.add(core);
+  const coreGlowMat = new THREE.MeshBasicMaterial({
+    color: 0x5a9aff, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const coreGlow = new THREE.Mesh(new THREE.SphereGeometry(0.62, 12, 10), coreGlowMat);
+  coreGlow.position.y = -0.05;
+  dishGroup.add(coreGlow);
+  const coreHaloMat = new THREE.MeshBasicMaterial({
+    color: 0x3a6fd0, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const coreHalo = new THREE.Mesh(new THREE.SphereGeometry(1.0, 12, 10), coreHaloMat);
+  coreHalo.position.y = -0.05;
+  dishGroup.add(coreHalo);
+
+  dishGroup.position.copy(dishDir.clone().multiplyScalar(4.72));
+  dishGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dishDir);
+  g.add(dishGroup);
+
+  // SUPERLASER — hidden until StationRig's state machine fires it.
+  // Charge: 8 thin beams from the dish rim converge on a focal point above
+  // the dish. Fire: one thick tapered lance from the focal point outward.
+  // All meshes exist from build time; firing only mutates opacity/scale.
+  const slGroup = new THREE.Group();
+  slGroup.position.copy(dishGroup.position);
+  // Fire direction is deliberately NOT dishDir: the dish tilts toward the
+  // camera (+Z dominant) for identity, but a lance fired along +Z
+  // foreshortens to an invisible dot in the orthographic view. Cinematic
+  // cheat (the films do the same): fire mostly in the screen plane,
+  // up-left, with just enough +Z that it still reads as "from the dish".
+  const fireDir = new THREE.Vector3(-0.78, 0.45, 0.30).normalize();
+  slGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), fireDir);
+  g.add(slGroup);
+  const SL_COLOR = 0x54ff9e;
+  const slRimMat = new THREE.MeshBasicMaterial({
+    color: SL_COLOR, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const focal = new THREE.Vector3(0, 2.6, 0);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const from = new THREE.Vector3(Math.cos(a) * 1.45, 0.15, Math.sin(a) * 1.45);
+    const segLen = from.distanceTo(focal);
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.075, segLen, 5, 1, true), slRimMat);
+    seg.position.copy(from.clone().add(focal).multiplyScalar(0.5));
+    seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), focal.clone().sub(from).normalize());
+    slGroup.add(seg);
+  }
+  const slFlareMat = new THREE.MeshBasicMaterial({
+    color: 0xd6ffe8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const slFlare = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), slFlareMat);
+  slFlare.position.copy(focal);
+  slGroup.add(slFlare);
+  const slMainMat = new THREE.MeshBasicMaterial({
+    color: SL_COLOR, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const slMain = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.22, 55, 10, 1, true), slMainMat);
+  slMain.position.set(0, focal.y + 27.5, 0);
+  slGroup.add(slMain);
+  const slGlowMat = new THREE.MeshBasicMaterial({
+    color: SL_COLOR, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const slGlow = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 0.5, 55, 10, 1, true), slGlowMat);
+  slGlow.position.set(0, focal.y + 27.5, 0);
+  slGroup.add(slGlow);
+
+  // City lights — small emissive points scattered on the hull surface
+  // (kept off the dish quadrant), amber/cool-white like lit viewports.
+  const dockingLights = [];
+  for (let i = 0; i < 22 && dockingLights.length < 16; i++) {
+    const theta = rand() * Math.PI * 2, phi = Math.acos(2 * rand() - 1);
+    const v = new THREE.Vector3(
+      Math.sin(phi) * Math.cos(theta), Math.cos(phi), Math.sin(phi) * Math.sin(theta));
+    if (v.dot(dishDir) > 0.86) continue;
+    const p = v.multiplyScalar(5.24);
+    const light = addRunningLight(g, p.x, p.y, p.z, i % 3 === 0 ? 0xffd27a : 0xcfe4ff, 0.12);
+    dockingLights.push(light);
+  }
+
+  // No-op rotation targets — StationRig.update spins these (lattice-era
+  // contract); empty groups keep that write harmless on the solid hull.
+  const outerEdges = new THREE.Group();
+  const innerEdges = new THREE.Group();
+  g.add(outerEdges); g.add(innerEdges);
+
+  g.userData.hullLength = 10.4; // large relative to ship hullLength 6.5-9
+  return { group: g, core, coreGlow, coreHalo, coreMat, coreGlowMat, coreHaloMat, outerEdges, innerEdges, dockingLights,
+    sl: { rimMat: slRimMat, flare: slFlare, flareMat: slFlareMat, mainMat: slMainMat, glowMat: slGlowMat } };
+}
+
+// ============================================================
 // Mining beam — layered additive geometry, not a flat line.
 // Cone (volumetric core) + two thin cylinders (inner hot core,
 // outer soft glow) + a particle stream flowing toward the ship.
@@ -734,6 +1269,28 @@ const HULL_BUILDERS = {
 // repaint it per trade.
 const BEAM_LONG_COLOR = 0x30ff6a;
 const BEAM_SHORT_COLOR = 0xff3b30;
+
+// Static radial spark-line geometry for the impact flare's third layer
+// (hot core + soft halo + spark lines, per item 1d). Built ONCE and shared
+// across every ship's beam — updateBeam only mutates rotation/scale/
+// opacity on the LineSegments mesh per frame, never geometry, so this is
+// free in the hot loop regardless of how many beams are active.
+let _sparkGeoCache = null;
+function sparkLinesGeometry() {
+  if (_sparkGeoCache) return _sparkGeoCache;
+  const n = 6;
+  const pos = new Float32Array(n * 2 * 3);
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * Math.PI * 2;
+    const len = 0.55 + (i % 2) * 0.25; // alternate short/long, less uniform burst
+    pos[i * 6 + 0] = 0; pos[i * 6 + 1] = 0; pos[i * 6 + 2] = 0;
+    pos[i * 6 + 3] = Math.cos(a) * len; pos[i * 6 + 4] = Math.sin(a) * len; pos[i * 6 + 5] = 0;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  _sparkGeoCache = geo;
+  return geo;
+}
 
 function buildBeam(colorHex, particleCount) {
   const group = new THREE.Group();
@@ -757,19 +1314,72 @@ function buildBeam(colorHex, particleCount) {
   // beam never appeared where expected. Radii bumped up (0.06->0.11,
   // 0.22->0.4) — the original was too thin to read at 24-40px on the
   // 50-inch display even when correctly positioned.
-  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.11, 1, 8, 1, true), coreMat);
+  // SOTA ROUND 4 (2026-07-30): the constant-radius cylinders read as a
+  // solid metal ROD in any still frame — screenshot-confirmed as "green
+  // sphere with a lollipop stick" at dashboard scale. Energy reads as
+  // energy through three cues matter doesn't have: TAPER (flares toward
+  // the work end), LONGITUDINAL FADE (dissipates toward the emitter),
+  // and MOTION VISIBLE IN A FREEZE-FRAME (discrete pulse rings caught
+  // mid-flight, not just a sine on opacity). Local +Y points ship ->
+  // target (updateBeam aligns the group quaternion), so radiusTop is
+  // the IMPACT end and radiusBottom the EMITTER end.
+  const _beamFade = _beamFadeTexture();
+  coreMat.alphaMap = _beamFade;
+  glowMat.alphaMap = _beamFade;
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.05, 1, 8, 1, true), coreMat);
   group.add(core);
 
-  // outer volumetric glow: wider cylinder, softer
-  const glow = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 1, 10, 1, true), glowMat);
+  // outer volumetric glow: wider tapered cone, softer
+  const glow = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.13, 1, 10, 1, true), glowMat);
   group.add(glow);
 
-  // impact flare at the rock end
+  // traveling pulse rings — 3 thin tori riding the beam axis from
+  // emitter to impact. These are what make a STILL frame read as flow:
+  // discrete wavefronts caught mid-transit, unambiguous direction.
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: colorHex, transparent: true, opacity: 0.55,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
+  });
+  const rings = [];
+  for (let ri = 0; ri < 3; ri++) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.035, 6, 16), ringMat);
+    ring.rotation.x = Math.PI / 2; // torus axis onto local Y (beam axis)
+    group.add(ring);
+    rings.push(ring);
+  }
+
+  // impact flare at the rock end — layered: hot core + soft halo
   const flareMat = new THREE.MeshBasicMaterial({
     color: colorHex, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const flare = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), flareMat);
   group.add(flare);
+  const haloMat = new THREE.MeshBasicMaterial({
+    color: colorHex, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const flareHalo = new THREE.Mesh(new THREE.SphereGeometry(0.6, 10, 8), haloMat);
+  group.add(flareHalo);
+
+  // radial spark lines at the impact point (item 1d's third flare layer —
+  // hot core + soft halo above, sparks here). Static geometry built once
+  // module-wide and reused across every ship's beam (sparkLinesGeometry
+  // caches after first call) — updateBeam only touches rotation/scale/
+  // opacity per frame, never geometry, so this costs nothing in the hot
+  // loop.
+  const sparkMat = new THREE.LineBasicMaterial({
+    color: colorHex, transparent: true, opacity: 0.7,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const sparks = new THREE.LineSegments(sparkLinesGeometry(), sparkMat);
+  group.add(sparks);
+
+  // emitter glow — small hot point at the ship end so the beam visibly
+  // ORIGINATES from the turret instead of materializing mid-space.
+  const emitterMat = new THREE.MeshBasicMaterial({
+    color: colorHex, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  const emitter = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), emitterMat);
+  group.add(emitter);
 
   // extraction particles flowing from impact point back to the ship
   const pGeo = new THREE.BufferGeometry();
@@ -786,7 +1396,8 @@ function buildBeam(colorHex, particleCount) {
   const points = new THREE.Points(pGeo, pMat);
   group.add(points);
 
-  return { group, core, glow, flare, points, seeds, coreMat, glowMat, flareMat, pMat, particleCount, colorHex };
+  return { group, core, glow, flare, flareHalo, sparks, rings, emitter, points, seeds,
+    coreMat, glowMat, flareMat, haloMat, sparkMat, ringMat, emitterMat, pMat, particleCount, colorHex };
 }
 
 // Repaint a beam's four materials to the direction color (LONG=green,
@@ -798,6 +1409,11 @@ function setBeamDirectionColor(beam, isLong) {
   beam.glowMat.color.set(c);
   beam.flareMat.color.set(c);
   beam.pMat.color.set(c);
+  // ROUND 4 layers — halo, pulse rings, emitter all carry direction color
+  if (beam.haloMat) beam.haloMat.color.set(c);
+  if (beam.ringMat) beam.ringMat.color.set(c);
+  if (beam.emitterMat) beam.emitterMat.color.set(c);
+  if (beam.sparkMat) beam.sparkMat.color.set(c);
 }
 
 function updateBeam(beam, shipWorldPos, targetWorldPos, t, intensity, radiusScale) {
@@ -834,6 +1450,50 @@ function updateBeam(beam, shipWorldPos, targetWorldPos, t, intensity, radiusScal
   const flarePulse = 0.8 + 0.4 * Math.sin(t * 9.0);
   beam.flare.scale.setScalar(flarePulse * intensity * rs);
 
+  // ROUND 4: layered flare halo — breathes out of phase with the hot core
+  // so the impact point shimmers instead of strobing as one blob.
+  if (beam.flareHalo) {
+    beam.flareHalo.position.set(0, len / 2, 0);
+    beam.flareHalo.scale.setScalar((0.9 + 0.3 * Math.sin(t * 9.0 + 1.7)) * intensity * rs);
+    beam.haloMat.opacity = 0.22 * intensity;
+  }
+
+  // Impact flare, third layer (item 1d): radial spark lines, slow
+  // rotation + a sharper independent pulse on a different phase than the
+  // hot core/halo so the burst doesn't read as one mechanically
+  // synchronized blob.
+  if (beam.sparks) {
+    beam.sparks.position.set(0, len / 2, 0);
+    beam.sparks.rotation.z = t * 0.6;
+    const sparkPulse = 0.7 + 0.5 * Math.max(0, Math.sin(t * 7.0 + 0.4));
+    beam.sparks.scale.setScalar(sparkPulse * intensity * rs);
+    beam.sparkMat.opacity = 0.6 * intensity * sparkPulse;
+  }
+
+  // ROUND 4: emitter glow pinned to the ship end — beam visibly starts
+  // at the turret, not in open space.
+  if (beam.emitter) {
+    beam.emitter.position.set(0, -len / 2, 0);
+    beam.emitter.scale.setScalar((0.85 + 0.25 * Math.sin(t * 7.0)) * rs);
+    beam.emitterMat.opacity = 0.7 * intensity;
+  }
+
+  // ROUND 4: traveling pulse rings — evenly phase-offset wavefronts
+  // marching emitter -> impact. Position/scale mutation only (meshes are
+  // created once in buildBeam), so nothing allocates per frame. Rings
+  // swell and brighten slightly as they approach the impact end, matching
+  // the cone taper so they always hug the beam surface.
+  if (beam.rings) {
+    for (let ri = 0; ri < beam.rings.length; ri++) {
+      const ph = (t * 0.6 + ri / beam.rings.length) % 1; // 0 ship -> 1 impact
+      const ring = beam.rings[ri];
+      ring.position.set(0, (ph - 0.5) * len, 0);
+      const ringR = (0.35 + ph * 0.85) * rs; // track the taper: thin at emitter, wide at impact
+      ring.scale.set(ringR, ringR, ringR);
+    }
+    beam.ringMat.opacity = 0.55 * intensity;
+  }
+
   // Particles: flow from target (rock) to ship (cargo), looping.
   // Computed directly in the beam group's LOCAL frame (along local Y,
   // from -len/2 at the ship end to +len/2 at the target end) rather
@@ -845,10 +1505,19 @@ function updateBeam(beam, shipWorldPos, targetWorldPos, t, intensity, radiusScal
   // applied the group's own translation, is what sent the whole
   // particle stream far from the ship (visible as a disconnected
   // dotted sliver elsewhere on screen instead of a beam at the ship).
+  // ROUND 4/3 (item 1c, "double density near the impact end"): particleCount
+  // is fixed at construction (buildBeam's BufferAttribute is sized to it),
+  // so adding more particles per frame would mean reallocating geometry in
+  // the hot loop — not allowed. Instead the existing fixed set is
+  // redistributed: warping `along` with a power curve packs more of the
+  // SAME particles' time-in-view near phase=1 (impact) than phase=0 (ship),
+  // reading as denser activity at the work end without a single new
+  // particle or any geometry change.
   const posAttr = beam.points.geometry.getAttribute('position');
   for (let i = 0; i < beam.particleCount; i++) {
     const phase = (beam.seeds[i] + t * 0.35) % 1;
-    const along = 1 - phase; // 0 -> ship end, 1 -> target end
+    const alongRaw = 1 - phase; // 0 -> ship end, 1 -> target end
+    const along = Math.pow(alongRaw, 0.6); // bias time-in-view toward impact (along=1)
     const yLocal = (along - 0.5) * len; // -len/2 (ship) .. +len/2 (target)
     const jitter = (beam.seeds[i] - 0.5) * 0.18 * rs;
     posAttr.setXYZ(i, jitter, yLocal, jitter * 0.6);
@@ -915,6 +1584,20 @@ class ShipRig {
     // (see setQuality) would read the wrong sign. tradeDirection is
     // ONLY ever written by onEvent() and is what beam coloring uses.
     this.tradeDirection = 1; // 1 = LONG (green), -1 = SHORT (red)
+    // SOTA ROUND 3 (2026-07-30): the beam MATERIAL is constructed above
+    // with the ship's fleet identity color (buildBeam(def.color,...)), not
+    // a direction color — tradeDirection defaults to 1 (LONG) but that
+    // default was never actually painted onto the beam. A naive
+    // "repaint only if tradeDirection changed" guard in syncOpenPositions
+    // would therefore silently skip repainting any position that happens
+    // to be LONG (tradeDirection already numerically equals the default),
+    // leaving its beam stuck on fleet-identity color forever. This flag
+    // tracks whether the beam has EVER been painted to a real direction
+    // color (by either onEvent's TRADE_OPEN or syncOpenPositions' cold-
+    // start reconciliation) so the first paint always happens regardless
+    // of whether the derived direction happens to match the numeric
+    // default.
+    this.beamDirectionPainted = false;
     this.targetWorldPos = new THREE.Vector3();
     this.shipWorldPos = new THREE.Vector3();
     this.lastEventPair = '';
@@ -958,6 +1641,159 @@ class ShipRig {
       this.sceneRef.remove(this.group);
       this.sceneRef.remove(this.beam.group);
     }
+  }
+}
+
+// ============================================================
+// Station rig — wraps the CC mothership build with slow majestic
+// rotation and data-driven core pulse (Task 3, 2026-07-30).
+// ============================================================
+class StationRig {
+  constructor(seed) {
+    const built = buildStation(seed);
+    this.group = built.group;
+    this.core = built.core;
+    this.coreGlow = built.coreGlow;
+    this.coreHalo = built.coreHalo;
+    this.coreMat = built.coreMat;
+    this.coreGlowMat = built.coreGlowMat;
+    this.coreHaloMat = built.coreHaloMat;
+    this.outerEdges = built.outerEdges;
+    this.innerEdges = built.innerEdges;
+    this.currentScale = 1;
+    this.scaleTarget = 1;
+    this.sceneRef = null;
+    // Superlaser state machine (battle-station rebuild, 2026-07-30):
+    // idle -> charging (rim beams converge, 1.6s) -> firing (main lance,
+    // ~1.45s) -> back to idle with a randomized 40-90s cooldown. First
+    // fire lands 25-60s after page load so the station shows off early.
+    this.sl = built.sl;
+    this.slState = 'idle';
+    this.slTimer = 25 + Math.random() * 35;
+    this.slPhase = 0;
+  }
+
+  attachToScene(scene) {
+    this.sceneRef = scene;
+    scene.add(this.group);
+  }
+
+  // meta = {health, eventRate, aegisScore, pnlSign} — same read-only
+  // inputs the 2D drawSun()/_drawSunCinematic() centerpiece consumes.
+  update(dt, t, node, view, worldW, worldH, meta) {
+    if (!node) { this.group.visible = false; return; }
+    this.group.visible = true;
+
+    const scenePos = worldToScene(node.x, node.y, view, worldW, worldH);
+    const sz = Math.max(1, node.currentSize || 104);
+    // Same "hullSpan proportional to 2D body radius" contract ships use
+    // (see _tick's targetHullSpan), but stretched further (3.3x vs 2.6x)
+    // since the CC hub is explicitly exempt from the general size caps
+    // and should read as the scene's centerpiece.
+    const targetSpan = sz * 3.3;
+    this.scaleTarget = targetSpan / this.group.userData.hullLength;
+    this.currentScale += (this.scaleTarget - this.currentScale) * Math.min(1, dt * 4);
+    this.group.position.set(scenePos.x, scenePos.y, 0);
+    this.group.scale.setScalar(this.currentScale * view.zoom);
+
+    // SLOW MAJESTIC ROTATION — two axes at very different periods so it
+    // never looks like it's spinning on a fixed axis; counter-rotating
+    // inner/outer edge sets echo the 2D lattice's two counter-rotating
+    // shells (solar_system.js drawSun ~line 367-368: outer ~90s/rev,
+    // inner ~60s/rev opposite direction).
+    // Oscillating sway instead of a full revolution (battle-station rebuild):
+    // a 140s spin carried the superlaser dish behind the sphere most of the
+    // time, hiding the station's identity feature and any firing sequence
+    // from the camera. A slow +-31 degree yaw sway keeps the dish on the
+    // visible hemisphere permanently while the body still feels alive.
+    this.group.rotation.y = Math.sin(t * (Math.PI * 2 / 180)) * 0.55;
+    this.group.rotation.x = Math.sin(t * (Math.PI * 2 / 260)) * 0.18;
+    this.outerEdges.rotation.z = t * (Math.PI * 2 / 90);
+    this.innerEdges.rotation.z = -t * (Math.PI * 2 / 60);
+    this.innerEdges.rotation.y = -t * (Math.PI * 2 / 60);
+
+    // CORE PULSE — brightness/rate from real fleet data, not invented.
+    const health = meta.health != null ? meta.health : 1;
+    const eventRate = meta.eventRate || 0;
+    const aegisScore = meta.aegisScore != null ? meta.aegisScore : 0.02;
+    // Weave/poll breathing — mirrors drawSun's _weaveBright 10s-cycle
+    // pulse (solar_system.js ~line 453-454) so the WebGL core beats in
+    // the same rhythm as the 2D version did before it (visual continuity
+    // across the fullscreen suppression swap).
+    const weavePhase = (t % 10) / 10;
+    const weaveBright = Math.max(0, 1 - weavePhase * 2.2);
+    // Event-rate adds a faster shimmer on top — more fleet activity
+    // (trades, signals, alerts) = more restless core, same idea as the
+    // 2D data-surge arcs whose spawn chance scales with AEGIS score and
+    // whose frequency reads as "the core is busy".
+    const activityPulse = 0.5 + 0.5 * Math.sin(t * (2 + eventRate * 0.8));
+    const coreBrightness = 0.55 + health * 0.25 + weaveBright * 0.25 + activityPulse * 0.15 * Math.min(1, eventRate / 3);
+    this.coreMat.opacity = Math.min(1, coreBrightness);
+    const coreScalePulse = 1 + weaveBright * 0.16 + Math.sin(t * 1.5) * 0.05;
+    this.core.scale.setScalar(coreScalePulse);
+    this.coreGlow.scale.setScalar(coreScalePulse * (1.15 + aegisScore * 0.35));
+    this.coreGlowMat.opacity = 0.3 + aegisScore * 0.15 + weaveBright * 0.15;
+    this.coreHalo.scale.setScalar(coreScalePulse * (1.05 + weaveBright * 0.2));
+    this.coreHaloMat.opacity = 0.08 + weaveBright * 0.08 + Math.min(1, eventRate / 3) * 0.05;
+
+    // PnL-SIGN COLOR BIAS — net-profitable fleet biases the core/glow
+    // toward green, net-negative toward red, flat/unknown stays the
+    // native cool blue. A gentle tint, not a full recolor — the station
+    // should still read as "the CC hub", just with a mood.
+    const pnlSign = meta.pnlSign || 0;
+    if (pnlSign > 0) {
+      this.coreMat.color.setRGB(0.78, 0.98, 0.88);
+      this.coreGlowMat.color.setHex(0x30ff8a);
+      this.coreHaloMat.color.setHex(0x1a8a4a);
+    } else if (pnlSign < 0) {
+      this.coreMat.color.setRGB(0.98, 0.82, 0.80);
+      this.coreGlowMat.color.setHex(0xff4a3b);
+      this.coreHaloMat.color.setHex(0x8a2a1a);
+    } else {
+      this.coreMat.color.setHex(0xe1f0ff);
+      this.coreGlowMat.color.setHex(0x5a9aff);
+      this.coreHaloMat.color.setHex(0x3a6fd0);
+    }
+
+    // SUPERLASER — "the station can sometimes also fire energy". Pure
+    // opacity/scale mutation on meshes built once in buildStation; nothing
+    // allocates here. Sequence reads in stills: converging rim beams while
+    // charging, then a thick tapered lance with a flickering focal flare.
+    const sl = this.sl;
+    if (sl) {
+      if (this.slState === 'idle') {
+        this.slTimer -= dt;
+        if (this.slTimer <= 0) { this.slState = 'charging'; this.slPhase = 0; }
+      } else if (this.slState === 'charging') {
+        this.slPhase += dt;
+        const k = Math.min(1, this.slPhase / 1.6);
+        sl.rimMat.opacity = 0.85 * k;
+        sl.flareMat.opacity = 0.9 * k * (0.7 + 0.3 * Math.sin(t * 20));
+        sl.flare.scale.setScalar(0.6 + k * 0.8);
+        if (this.slPhase >= 1.6) { this.slState = 'firing'; this.slPhase = 0; }
+      } else if (this.slState === 'firing') {
+        this.slPhase += dt;
+        const kIn = Math.min(1, this.slPhase / 0.12);
+        const kOut = this.slPhase > 2.2 ? Math.max(0, 1 - (this.slPhase - 2.2) / 0.55) : 1;
+        const flicker = 0.85 + 0.15 * Math.sin(t * 40);
+        sl.mainMat.opacity = 0.9 * kIn * kOut * flicker;
+        sl.glowMat.opacity = 0.3 * kIn * kOut;
+        sl.rimMat.opacity = 0.6 * kOut;
+        sl.flareMat.opacity = 1.0 * kOut;
+        sl.flare.scale.setScalar(1.5 * flicker);
+        if (this.slPhase >= 2.75) {
+          this.slState = 'idle';
+          this.slTimer = 40 + Math.random() * 50;
+          sl.mainMat.opacity = 0; sl.glowMat.opacity = 0;
+          sl.rimMat.opacity = 0; sl.flareMat.opacity = 0;
+          sl.flare.scale.setScalar(0.6);
+        }
+      }
+    }
+  }
+
+  dispose() {
+    if (this.sceneRef) this.sceneRef.remove(this.group);
   }
 }
 
@@ -1093,6 +1929,10 @@ const Armada = {
       seed += 137;
     }
 
+    // Build the CC mothership station (Task 3, 2026-07-30)
+    _station = new StationRig(9001);
+    _station.attachToScene(_scene);
+
     _disposed = false;
     this._initialized = true;
 
@@ -1127,7 +1967,7 @@ const Armada = {
 
   getQuality() { return _qualityLevel; },
 
-  syncFromNodes(nodesLike, view) {
+  syncFromNodes(nodesLike, view, ccMeta) {
     if (!_scene || !nodesLike) return;
     _lastView = view || _lastView;
     for (const id of TRADER_IDS) {
@@ -1136,6 +1976,36 @@ const Armada = {
       if (!rig || !node) continue;
       rig._pendingNode = node;
     }
+    // CC station (Task 3): position/size come from the same _orbNodes.cc
+    // entry the 2D hub reads; pulse data comes from the optional third
+    // arg (health/eventRate/aegisScore/pnlSign — see command_center_v4.html
+    // _orbArmadaSync for the exact read sites this mirrors).
+    _pendingCCNode = nodesLike.cc || null;
+    if (ccMeta) _lastCCMeta = ccMeta;
+  },
+
+  // True once the station mesh exists AND has received at least one real
+  // CC node sync — the host page gates its 2D-suppression on this so it
+  // never hides the 2D hub before the WebGL replacement has any position
+  // to render at (avoids a one-frame "CC vanishes" flash on cold load).
+  get hasStation() {
+    return !!(_station && _pendingCCNode);
+  },
+
+  // Manually trigger the station's superlaser sequence (charge -> fire).
+  // Used for visual verification and available from the console:
+  // window.Armada.fireSuperlaser()
+  fireSuperlaser() {
+    if (_station && _station.slState === 'idle') _station.slTimer = 0;
+  },
+
+  // Read-only view of the superlaser state machine, for debugging.
+  get superlaserState() {
+    return _station ? {
+      state: _station.slState, timer: _station.slTimer, phase: _station.slPhase,
+      hasSl: !!_station.sl,
+      mainOpacity: _station.sl ? _station.sl.mainMat.opacity : null,
+    } : null;
   },
 
   onEvent(evt) {
@@ -1151,6 +2021,7 @@ const Armada = {
       rig.lastEventPair = data.pair || '';
       const isShort = /SHORT/i.test(data.direction || 'LONG');
       rig.tradeDirection = isShort ? -1 : 1;
+      rig.beamDirectionPainted = true;
       // Beam color = trade direction (green LONG / red SHORT) per spec —
       // NOT the ship's fleet identity color. Repainted on every open so
       // a ship that flips direction between trades gets the right color.
@@ -1158,8 +2029,92 @@ const Armada = {
     } else if (/TRADE_CLOSE/.test(type)) {
       const pnl = data.pnl || 0;
       rig.state = 'retracting';
-      rig.cargoGlow = pnl >= 0 ? 1 : -1;
+      // SOTA pass (2026-07-30, finding 6): was a flat +-1 (win/loss only,
+      // every close read identically regardless of size) — the spec asks
+      // for "cargo glow proportional to P/L". $40 is a soft normalization
+      // point (a strong single-trade result for this fleet's pool size,
+      // not a hard cap elsewhere in the codebase) picked so a typical
+      // small win/loss still visibly glows rather than reading as barely-lit.
+      const pnlMag = Math.min(1, Math.abs(pnl) / 40);
+      rig.cargoGlow = pnl >= 0 ? Math.max(0.35, pnlMag) : -Math.max(0.35, pnlMag);
       rig.cargoGlowDecay = 1.0;
+      rig.cargoGlowMag = pnlMag;
+    }
+  },
+
+  // Cold-start / reconnect reconciliation (2026-07-30 fix): onEvent() above
+  // ONLY flips a ship to 'mining' on a live TRADE_OPEN SSE event arriving
+  // WHILE this page is already loaded and listening. A position that was
+  // already open before that (page load, reload, or a missed/dropped SSE
+  // message) never fires that event here, so its beam silently never
+  // lights — the ship sits in 'idle' forever even though the bot has a
+  // real open position. This reconciles ship state against ground-truth
+  // reservation data (the host page's ovData.portfolio.reservations,
+  // already polled independently on its own cadence — no new fetch added
+  // here) every sync tick. Idempotent and side-effect-free by design:
+  // unlike onEvent() it does NOT play a sound/xenolanguage transmission
+  // (that must stay tied to the real moment a trade opens/closes, not to
+  // a periodic poll). Only drives the idle<->mining transition PLUS the
+  // beam direction color (see below) — no other rig state.
+  //
+  // SOTA ROUND 3 FIX (2026-07-30, item 1, "default-color trap"): this
+  // function previously did NOT touch tradeDirection/beam color at all,
+  // reasoning "direction isn't known from a bare reservation" — that
+  // reasoning was WRONG. command_center.py's reservation dicts DO carry a
+  // "direction" field ("LONG"/"SHORT", see command_center.py ~line 3612
+  // `"direction": data["direction"]`), it was simply never read here. Net
+  // effect: any position that was already open before page load (or before
+  // the SSE listener attached) kept its beam on the ship's fleet-identity
+  // default color forever, since only a live TRADE_OPEN event (onEvent
+  // above) ever called setBeamDirectionColor. At a glance this looked
+  // exactly like "the rod/beam is the wrong/default color" — e.g.
+  // TurtleSue (fleet color mint) showing a pale mint beam instead of
+  // LONG-green for its live UNI/USD position. Fixed by deriving direction
+  // per bot from the same reservation array already being scanned (last
+  // reservation seen per bot wins on directional conflict — cheap, no
+  // extra pass, and matches the existing "one beam per bot regardless of
+  // reservation count" simplification already documented below) and
+  // repainting via setBeamDirectionColor whenever direction is known and
+  // differs from what's already applied. This runs every sync tick (same
+  // cadence as the idle<->mining reconciliation), so it also self-heals a
+  // ship that flips direction across reservations without ever needing a
+  // TRADE_OPEN event to correct it.
+  syncOpenPositions(reservations) {
+    if (!Array.isArray(reservations)) return;
+    const openBotIds = new Set();
+    const dirByBot = {}; // botId -> true(long)/false(short), last-reservation-wins
+    for (let i = 0; i < reservations.length; i++) {
+      const r = reservations[i];
+      if (!r || !r.bot_id) continue;
+      const id = String(r.bot_id).toLowerCase();
+      openBotIds.add(id);
+      if (r.direction) dirByBot[id] = !/SHORT/i.test(r.direction);
+    }
+    for (const id in _ships) {
+      const rig = _ships[id];
+      const shouldBeOpen = openBotIds.has(id);
+      if (shouldBeOpen && (rig.state === 'idle' || rig.state === 'dormant') && rig.alive) {
+        rig.state = 'mining';
+      } else if (!shouldBeOpen && rig.state === 'mining') {
+        // Bot has no live reservation anymore but we never saw its
+        // TRADE_CLOSE (missed event / reconnect) — retract cleanly rather
+        // than leaving a beam on for a position that's actually closed.
+        rig.state = 'retracting';
+      }
+      if (shouldBeOpen && dirByBot.hasOwnProperty(id)) {
+        const isLong = dirByBot[id];
+        const wantDir = isLong ? 1 : -1;
+        // !beamDirectionPainted forces the FIRST paint even when wantDir
+        // already numerically matches the tradeDirection constructor
+        // default (1/LONG) — see the flag's declaration in the ShipRig
+        // constructor for why a plain !== guard alone would silently skip
+        // repainting any position that happens to be LONG.
+        if (rig.tradeDirection !== wantDir || !rig.beamDirectionPainted) {
+          rig.tradeDirection = wantDir;
+          rig.beamDirectionPainted = true;
+          setBeamDirectionColor(rig.beam, isLong);
+        }
+      }
     }
   },
 
@@ -1168,6 +2123,8 @@ const Armada = {
     if (_rafId) { cancelAnimationFrame(_rafId); _rafId = null; }
     for (const id in _ships) _ships[id].dispose();
     _ships = {};
+    if (_station) { _station.dispose(); _station = null; }
+    _pendingCCNode = null;
     if (_renderer) {
       _renderer.dispose();
       if (_canvas && _canvas.parentElement) _canvas.parentElement.removeChild(_canvas);
@@ -1217,7 +2174,22 @@ const Armada = {
       // scale: hull length should read proportionally to the 2D body
       // radius so ships don't dwarf or vanish relative to their planet
       // marker. hullLength (~6-8 "px units") * scaleFactor ~= 2.4*sz
-      const targetHullSpan = sz * 2.6;
+      //
+      // SOTA pass (2026-07-30, finding 6 — "armada invisible"): 2.6x body
+      // radius was legible in the Phase 1-3a dev harness (fixed formation,
+      // no zoom range) but on the real fullscreen scene, node.currentSize
+      // for trader bodies is often small (moon/planet tier, ~14-22px base)
+      // and the whole scene additionally shrinks under _orbZoom at anything
+      // less than 1x — compounding into genuinely sub-legible ship hulls on
+      // a 50" panel viewed from across a room. Raised the proportional
+      // multiplier AND added a floor in absolute screen-space px (applied
+      // after the *view.zoom scale below is computed) so a ship never
+      // shrinks below a legible minimum regardless of how small its host
+      // node or how far zoomed out the camera is — this is the single
+      // highest-leverage fix for this finding, per session memory noting
+      // "engine light is what says ship at distance" only works if the
+      // hull carrying that light is actually visible in the first place.
+      const targetHullSpan = sz * 3.6;
       const baseLen = rig.group.userData.hullLength || 7;
       rig.scaleTarget = targetHullSpan / baseLen;
       rig.currentScale += (rig.scaleTarget - rig.currentScale) * Math.min(1, dt * 6);
@@ -1228,13 +2200,28 @@ const Armada = {
       // entirely instead of reading as a cold derelict.
       rig.group.visible = true;
       rig.group.position.set(scenePos.x, scenePos.y, 0);
-      rig.group.scale.setScalar(rig.currentScale * view.zoom);
+      // Legibility floor (finding 6): rig.currentScale*view.zoom maps ~1:1
+      // to CSS-px hull span in this camera setup (see worldToScene/ortho
+      // camera contract), so a plain scalar floor here is a real min
+      // on-screen size, not a proxy. 0.62 keeps ships readable even at
+      // _ORB deep-zoom-out with a small host node, without visibly
+      // "popping" bigger than nearby planet markers at normal zoom (the
+      // proportional 3.6x formula above already dominates in the common
+      // case; this floor only engages at the small/far extreme).
+      const finalScale = Math.max(0.62, rig.currentScale * view.zoom);
+      rig.group.scale.setScalar(finalScale);
 
       // orientation: face direction of travel using position delta;
       // fall back to a gentle idle yaw when nearly stationary.
       if (rig.prevPos) {
         const dx = scenePos.x - rig.prevPos.x, dy = scenePos.y - rig.prevPos.y;
         const speed = Math.hypot(dx, dy);
+        // Smoothed speed (screen px/frame, not normalized to dt — deliberately
+        // matches the existing `speed>0.05` heading-follow threshold's units
+        // so the exhaust plume and the heading logic agree on what "moving"
+        // means). Drives the engine exhaust plume length/opacity below —
+        // real orbital motion, not a fake idle animation.
+        rig.speedSmoothed = THREE.MathUtils.lerp(rig.speedSmoothed || 0, speed, Math.min(1, dt * 5));
         if (speed > 0.05) {
           const targetAngle = Math.atan2(dx, dy); // atan2(x,y): 0 = facing +Y (toward +Y = "up" in scene, ship built facing +Z)
           // Ship forward axis is +Z (screen-plane); rotate around Z axis
@@ -1246,8 +2233,27 @@ const Armada = {
           while (diff > Math.PI) diff -= Math.PI * 2;
           while (diff < -Math.PI) diff += Math.PI * 2;
           rig.group.rotation.z = cur + diff * Math.min(1, dt * 3);
-          // bank into turns (Rubberband flexes wings extra on bank)
-          const bank = THREE.MathUtils.clamp(diff * 1.5, -0.6, 0.6);
+          // BANK FIX (2026-07-30): bank was driven directly off `diff`
+          // (the raw per-frame heading error), which is NEVER zero for a
+          // ship in steady circular orbit — every body on this dashboard
+          // is always turning a little every frame, so bank sat pinned
+          // near its 0.6rad (~34deg) cap almost continuously instead of
+          // only during genuine sharp turns/migrations. A ship's own
+          // wrapper Y axis is its forward/heading axis (see ORIENTATION
+          // WRAPPER comment above), so a sustained large `rotation.y`
+          // rolls the flat top-down silhouette out of the XY view plane
+          // toward the camera — a round tapered hull (Rubberband's dart
+          // body) rolled like this reads exactly as a foreshortened
+          // side-profile fuselage ("airliner in the sky") instead of a
+          // flat top-down ship, which was Jeremy's verbatim complaint.
+          // Fix: normalize diff by dt so bank reflects genuine ANGULAR
+          // RATE of the heading (rad/sec), not the raw per-frame delta,
+          // and cut the cap by ~4x (0.6->0.15rad, ~8.6deg) so steady
+          // orbital curvature reads as a subtle lean, not a full roll —
+          // sharp direction changes (migration, retrograde) still bank
+          // visibly since angular rate spikes briefly during those.
+          const turnRate = dt > 0.0001 ? diff / dt : 0;
+          const bank = THREE.MathUtils.clamp(turnRate * 0.06, -0.15, 0.15);
           rig.group.rotation.y = THREE.MathUtils.lerp(rig.group.rotation.y, bank, dt * 4);
           if (rig.group.userData.wingL) {
             rig.group.userData.wingL.rotation.z = THREE.MathUtils.lerp(rig.group.userData.wingL.rotation.z, -bank * 0.8, dt * 5);
@@ -1277,7 +2283,30 @@ const Armada = {
         }
       }
       if (rig.group.userData.dish) {
-        rig.group.userData.dish.rotation.z = Math.sin(t * 0.3) * 0.15;
+        // TurtleSue turret redesign (2026-07-30): the dish group now carries
+        // a base orientation set via .quaternion (flush-mounted to the hull
+        // surface, see buildTurtleSue) instead of sitting at the identity
+        // rotation. Setting .rotation.z directly here would silently stomp
+        // that base quaternion (three.js re-derives one from the other, and
+        // writing to .rotation forces an Euler decomposition of whatever
+        // quaternion is currently live) — so the wobble is now applied as a
+        // small extra rotation On TOP of the mount orientation, composed
+        // via quaternion multiplication, not a raw Euler set.
+        const dishG = rig.group.userData.dish;
+        if (!dishG.userData.baseQuat) dishG.userData.baseQuat = dishG.quaternion.clone();
+        const wobble = new THREE.Quaternion().setFromAxisAngle(
+          new THREE.Vector3(0, 1, 0), Math.sin(t * 0.3) * 0.15
+        );
+        dishG.quaternion.copy(dishG.userData.baseQuat).multiply(wobble);
+        // Idle scanner pulse on the accent ring — without this the turret
+        // is a dark, unlit blob against the hull (the exact "dead rod"
+        // read the redesign is meant to fix). Mirrors the engine idle-pulse
+        // language (0.55 +/- 0.25 sine) so it reads as active machinery,
+        // not decoration.
+        if (dishG.children[2] && dishG.children[2].material) {
+          dishG.children[2].material.emissiveIntensity =
+            (rig.state === 'mining' ? 1.6 : 0.6 + 0.35 * Math.sin(t * 1.6));
+        }
       }
 
       // ---- state machine: idle -> mining -> retracting -> idle ----
@@ -1303,6 +2332,26 @@ const Armada = {
         eng.glowMat.opacity = THREE.MathUtils.lerp(eng.glowMat.opacity, Math.min(1, target), dt * 4);
         const s = rig.state === 'mining' ? 1.15 : 1.0;
         eng.glow.scale.setScalar(THREE.MathUtils.lerp(eng.glow.scale.x, s, dt * 4));
+
+        // EXHAUST PLUME (Phase 3a, 2026-07-30): this is the primary "vessel,
+        // not satellite" signal at 30-60px per the spec — a glowing dot
+        // reads as a status LED, a stretching plume reads as propulsion.
+        // Length/opacity scale with rig.speedSmoothed (real orbital speed,
+        // screen px/frame) so a body coasting through a slow arc shows a
+        // short flicker and a body on a sharp migration/retrograde burn
+        // trails visible fire — motion-linked, not a fixed decoration.
+        // Dormant ships get a near-zero floor (cold engines, per spec
+        // "engines dark, ship drifts cold"); mining adds a small constant
+        // boost on top of speed since a ship holding position while mining
+        // still has engines under load (station-keeping thrust).
+        if (eng.plume) {
+          const speedNorm = Math.min(1, (rig.speedSmoothed || 0) / 3.5);
+          let plumeTarget = rig.state === 'dormant' ? 0.04 : 0.15 + speedNorm * 1.3;
+          if (rig.state === 'mining') plumeTarget += 0.35;
+          eng.plume.scale.z = THREE.MathUtils.lerp(eng.plume.scale.z, plumeTarget, dt * 5);
+          const opTarget = rig.state === 'dormant' ? 0.03 : 0.22 + speedNorm * 0.45 + (rig.state === 'mining' ? 0.15 : 0);
+          eng.plumeMat.opacity = THREE.MathUtils.lerp(eng.plumeMat.opacity, Math.min(0.9, opTarget), dt * 5);
+        }
       }
 
       // cargo hold glow: profit green pulse / loss red vent, decaying
@@ -1312,8 +2361,14 @@ const Armada = {
           const isProfit = rig.cargoGlow > 0;
           const glowColor = isProfit ? new THREE.Color(0x30ff6a) : new THREE.Color(0xff3b30);
           const amt = rig.cargoGlowDecay;
+          // SOTA pass (2026-07-30, finding 6): magnitude (rig.cargoGlowMag,
+          // 0..1 from the real |pnl|/40 normalization at TRADE_CLOSE) now
+          // scales peak brightness, not just decay envelope — a $2 win and
+          // a $35 win used to glow identically at amt*1.4; now the bigger
+          // result visibly reads as a bigger result.
+          const mag = rig.cargoGlowMag != null ? rig.cargoGlowMag : 1;
           cargoMesh.material.emissive = glowColor;
-          cargoMesh.material.emissiveIntensity = amt * 1.4;
+          cargoMesh.material.emissiveIntensity = amt * (0.7 + mag * 1.1);
           rig.cargoGlowDecay -= dt * (isProfit ? 0.35 : 0.5); // loss vents faster than profit glow fades
         } else if (rig.state === 'mining') {
           // slow brighten while position held (holding cargo)
@@ -1364,6 +2419,11 @@ const Armada = {
       if (rig.state === 'dormant') {
         rig.group.rotation.y += (0 - rig.group.rotation.y) * dt;
       }
+    }
+
+    // CC mothership station (Task 3, 2026-07-30)
+    if (_station) {
+      _station.update(dt, t, _pendingCCNode, view, _worldW, _worldH, _lastCCMeta);
     }
 
     // ensure world matrices are current before beam mount math above

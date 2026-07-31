@@ -2699,4 +2699,487 @@ CosmicCanvas.prototype.draw = function(ctx, now, regime) {
     }
 };
 
+/* ═══════════════════════════════════════════════════════════════════════
+   DEEP FIELD — living deep-space wilderness around the fleet (2026-07-30)
+   ───────────────────────────────────────────────────────────────────────
+   Jeremy's ask, verbatim: "i just want to be able to zoom out and see more
+   of the vivarium! more space and shit going on in space, shit naturally
+   developes and dies in space. a true vivarium would show that." This is
+   the payoff for the _ORB_ZOOM_MIN=0.38 pure-camera zoom floor shipped
+   earlier the same day (command_center_v4.html ~line 818) — pulling back
+   used to reveal dead black void; this populates that void with a sparse,
+   eerie, procedurally alive backdrop that is NEVER mistakable for fleet
+   data (no click targets, no tooltips, no data binding of any kind).
+
+   ARCHITECTURE
+   World-space, not screen-space — unlike CosmicCanvas above (which is a
+   static backdrop sized to canvas w/h once and never moves relative to
+   the camera beyond the shared setTransform), every DeepField object has
+   a world (x,y) placed in an ANNULUS around the fleet's live bounding
+   circle (1.1x-3x its radius) and is drawn under the exact same
+   ctx.setTransform(zoom,pan) the fleet itself uses (see _orbRender,
+   command_center_v4.html ~line 2892) — so it is mostly hidden behind/
+   beyond the fleet at zoom=1 and progressively revealed as the camera
+   pulls back, with zero special-casing.
+
+   DETERMINISM — THE ACTUAL "VIVARIUM" PART
+   Every object's appearance is a pure function of (seed, slotIndex,
+   cycleIndex, elapsedMs) — never a per-frame Math.random() call, which
+   would desync from the persisted state on every reload. A tiny
+   mulberry32 PRNG (deterministic, seeded) draws each slot's per-cycle
+   traits (position, hue pick, size, exact durations) once per cycle from
+   a hash of (seed, slotIndex, cycleIndex), and the lifecycle phase within
+   a cycle is computed analytically from elapsed time — so "fast-forward
+   from stored epoch to now" is just evaluating the same pure functions at
+   a larger elapsedMs, not replaying frames. A returning viewer who was
+   away 6 hours sees nebulae mid-way through cycles they never watched
+   start, supernovae that fired and finished off-session, nurseries born
+   from those deaths already brightening. See DeepField.prototype.sync().
+
+   PALETTE — deliberately disjoint from every fleet/UI color
+   Fleet faction lines (_FACTION_LINK_RGB, command_center_v4.html ~1191):
+     gold 201,162,39 (Veinrunners) / cyan-teal 34,211,211 (Tidewrights) /
+     silver-violet 179,157,219 (The Accord) / white 225,225,225 (Warden).
+   Alert/status greens+reds used fleet-wide for regime/PnL are likewise
+   avoided. Deep field uses: dust rust/ember (12,60,80 hue band, low sat,
+   dark), ice blue (200-210 hue, cold/desaturated), faint violet-grey
+   (255-265 hue, NOT the 179,157,219 Accord silver-violet — pushed bluer
+   and darker), and bone-white remnants (0 sat, warm-grey not pure white).
+   Full hex/hsla accounting is in the command_center_v4.html DeepField
+   integration comment and the session report.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* --- Deterministic PRNG: mulberry32, seeded by a single uint32 --- */
+function _dfHash(seed, a, b, c) {
+    /* Fold (seed, a, b, c) into one uint32 via a cheap avalanche mix —
+       NOT cryptographic, just needs to decorrelate nearby integer inputs
+       so adjacent slot/cycle indices don't produce visually similar draws. */
+    var h = (seed | 0) ^ 0x9e3779b9;
+    h = Math.imul(h ^ (a | 0), 0x85ebca6b);
+    h = Math.imul(h ^ (b | 0), 0xc2b2ae35);
+    h = Math.imul(h ^ (c | 0), 0x27d4eb2f);
+    h ^= h >>> 15;
+    return h >>> 0;
+}
+/* mulberry32 PRNG advanced from a hashed seed — returns a function that
+   yields deterministic floats in [0,1) on each call, fully reproducible
+   given the same (seed,a,b,c) tuple. */
+function _dfRng(seed, a, b, c) {
+    var s = _dfHash(seed, a, b, c) || 1;
+    return function () {
+        s |= 0; s = (s + 0x6D2B79F5) | 0;
+        var t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+/* --- DeepField object counts / perf budget ---
+   Hard cap ~20-30 concurrent live objects total (nebulae + supernova/
+   remnant/nursery slots + comets), per the brief. Kept as named slot
+   counts (not one pooled array) because each class has a distinct
+   lifecycle function — simpler to reason about and just as cheap. */
+var _DF_NEBULA_SLOTS = 7;      /* independent nebula lifecycle slots */
+/* Supernova slot count — MUST stay 1. Each slot independently fires an
+   event every 8-15min (randomized per-instance, see _supernovaAt), so N
+   slots means an N-times-too-frequent combined rate — verified against
+   the brief's "about one per 8-15 min" via a standalone harness: 3 slots
+   measured 14 events/hour combined (one every ~4.3min), 3x over-spec.
+   1 slot alone measures 4-5 events/hour (one every ~12-15min avg),
+   matching the ask. A slot's own long nursery/remnant tail (see
+   _supernovaAt's totalLife ~13min) already keeps something visible at
+   the death site between flashes, so a single slot does not read as
+   "nothing ever happens" — it reads as the intended RARE, eerie event. */
+var _DF_SN_SLOTS = 1;
+var _DF_COMET_SLOTS = 4;       /* wandering outer-field comets/debris */
+/* Total worst case: 7 + 3*1 + 4 = 14 live draws/frame — comfortably under the 20-30 cap. */
+
+/* --- Palette pools (see block comment above for the "why disjoint" case) --- */
+var _DF_NEBULA_HUES = [8, 14, 200, 208, 258, 264];   /* dust-rust / ember, ice-blue, faint violet-grey */
+var _DF_SN_REMNANT_HUE = 206;  /* cold ice-blue shock ring */
+var _DF_SN_FLASH_HUE = 40;     /* brief warm-white flash, desaturated fast — not fleet gold (201,162,39 is far more saturated/yellow) */
+
+function DeepField(seed) {
+    this.seed = seed >>> 0;
+    this.center = { x: 0, y: 0 };   /* fleet bounding-circle center, world space */
+    this.innerR = 300;              /* annulus inner radius, recomputed from live fleet bbox */
+    this.outerR = 900;              /* annulus outer radius */
+    this.epoch = Date.now();        /* wall-clock ms this field's timeline is anchored to */
+    /* Debug/verification hook state — see _deepFieldForceSupernova() */
+    this._forcedSN = null;
+}
+
+/* Recompute the annulus from the live fleet's worst-case reach. Called
+   every frame from _orbRender's L0b block (cheap — one ~18-node pass), so
+   the annulus always matches the CURRENT fixed world layout with no extra
+   coupling to resize/fullscreen-toggle call sites.
+
+   `maxVisibleR` is the world-space radius from center that is EVER
+   reachable by pulling the camera back to _ORB_ZOOM_MIN (half the
+   canvas's smaller screen dimension, divided by the zoom floor) — passed
+   in by the caller since only command_center_v4.html knows _ORB_ZOOM_MIN
+   and the live canvas size. Without this clamp, the first version of this
+   function sized outerR at a flat 3x fleet-reach multiplier, which (at
+   this fleet's actual footprint) worked out to ~3050 world units — but
+   pulling all the way back to the 0.38 zoom floor only ever reveals
+   ~1800 world units of radius on this display, so ~40% of the annulus
+   was permanently unreachable dead weight. Clamping outerR to
+   maxVisibleR (with a small margin so the very edge isn't a hard cutoff)
+   means every object placed is eventually visible, i.e. actually part of
+   the "vivarium you discover by zooming out" instead of wasted allocation. */
+DeepField.prototype.fitToFleet = function (orbNodes, maxVisibleR) {
+    var cx = 0, cy = 0;
+    var xs = [], ys = [];
+    for (var id in orbNodes) {
+        var n = orbNodes[id];
+        if (!n || !n.alive) continue;
+        xs.push(n.x); ys.push(n.y);
+    }
+    if (xs.length) {
+        cx = xs.reduce(function (a, b) { return a + b; }, 0) / xs.length;
+        cy = ys.reduce(function (a, b) { return a + b; }, 0) / ys.length;
+    }
+    /* Distance from that centroid to the furthest body's OWN edge — the
+       fleet's true worst-case occupied radius. Uses live x/y (not
+       orbitRadius) because the centroid itself is also live-x/y-derived;
+       mixing a live centroid with phase-invariant orbitRadius reach would
+       overstate the footprint by double-counting the star triangle's own
+       spread. This is a snapshot of "how big does the fleet look THIS
+       frame", which is exactly what "1.1x its radius" should mean. */
+    var reach = 0;
+    for (var id2 in orbNodes) {
+        var n2 = orbNodes[id2];
+        if (!n2 || !n2.alive) continue;
+        var dx = n2.x - cx, dy = n2.y - cy;
+        var d = Math.sqrt(dx * dx + dy * dy) + (n2.currentSize || n2.size || 10);
+        reach = Math.max(reach, d);
+    }
+    if (reach < 50) reach = 400; /* fallback before first real layout pass */
+    this.center.x = cx; this.center.y = cy;
+    this.innerR = reach * 1.1;
+    var wantOuter = reach * 3.0;
+    var cap = (maxVisibleR && maxVisibleR > this.innerR * 1.3) ? maxVisibleR * 0.94 : wantOuter;
+    this.outerR = Math.min(wantOuter, Math.max(cap, this.innerR * 1.3));
+};
+
+/* --- Deterministic nebula lifecycle ---
+   One "slot" cycles forever: bloom -> hold -> disperse -> gap -> (repeat
+   with fresh per-cycle traits drawn from a new hash). Every quantity here
+   is a pure function of (seed, slot, cycleIndex, tInCycle) so evaluating
+   it at elapsedMs=6*3600*1000 costs the same as elapsedMs=1000 — no
+   frame replay needed for the fast-forward-on-load requirement. */
+DeepField.prototype._nebulaAt = function (slot, elapsedMs) {
+    var bloomMs = 120000, disperseMs = 150000; /* ~2min bloom, 2.5min disperse (within the 2-5min ask) */
+    var holdMs = 90000 + (slot % 3) * 40000;    /* stagger so slots don't sync */
+    var gapMs = 70000 + (slot % 4) * 55000;
+    var period = bloomMs + holdMs + disperseMs + gapMs;
+    var cycleIndex = Math.floor(elapsedMs / period);
+    var tInCycle = elapsedMs - cycleIndex * period;
+    var rng = _dfRng(this.seed, 101 + slot, cycleIndex, 0);
+    var ang = rng() * Math.PI * 2;
+    var distT = rng(); /* 0..1 across the annulus */
+    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var hue = _DF_NEBULA_HUES[Math.floor(rng() * _DF_NEBULA_HUES.length)];
+    var maxR = 140 + rng() * 220;
+    var maxAlpha = 0.09 + rng() * 0.07; /* sparse/eerie, but must actually read against pure black — first pass (0.05-0.10 with a steep falloff gradient) washed out to near-invisible in verification */
+    var scX = 0.55 + rng() * 0.7, scY = 0.55 + rng() * 0.7;
+    var rot = rng() * Math.PI;
+
+    var phase, t01, r, alpha;
+    if (tInCycle < bloomMs) { phase = 'bloom'; t01 = tInCycle / bloomMs; r = maxR * t01; alpha = maxAlpha * t01; }
+    else if (tInCycle < bloomMs + holdMs) { phase = 'hold'; t01 = (tInCycle - bloomMs) / holdMs; r = maxR; alpha = maxAlpha * (0.92 + 0.08 * Math.sin(t01 * Math.PI * 4)); }
+    else if (tInCycle < bloomMs + holdMs + disperseMs) { phase = 'disperse'; t01 = (tInCycle - bloomMs - holdMs) / disperseMs; r = maxR * (1 + t01 * 0.6); alpha = maxAlpha * (1 - t01); }
+    else { phase = 'gap'; t01 = 0; r = 0; alpha = 0; }
+
+    return {
+        alive: alpha > 0.002, phase: phase,
+        x: this.center.x + Math.cos(ang) * dist,
+        y: this.center.y + Math.sin(ang) * dist,
+        r: r, alpha: alpha, hue: hue, scX: scX, scY: scY, rot: rot,
+        cycleIndex: cycleIndex, slot: slot
+    };
+};
+
+/* --- Deterministic supernova/remnant/nursery lifecycle ---
+   A single slot's timeline, walked as a hash-chain of inter-arrival
+   gaps (a discrete-time Poisson-ish process) rather than one fixed
+   period, so events land "about one per 8-15min, randomized per-
+   instance" as asked, not on a metronome. Walking the chain from t=0 to
+   elapsedMs costs O(events-so-far) hash calls — at most a few hundred
+   even after days of real time, trivially cheap once per object per
+   frame is too much so callers should call this at most once/sec (see
+   _orbDeepFieldTick in command_center_v4.html) and cache the result. */
+DeepField.prototype._supernovaAt = function (slot, elapsedMs) {
+    var flashMs = 900;             /* brilliant brief flash */
+    var remnantMs = 75000;         /* expanding ring, 60-90s ask -> 75s mid-point */
+    var nurseryRiseMs = 240000;    /* nursery brightens over minutes following */
+    var nurseryHoldMs = 260000;    /* then sits dim-but-visible for a while */
+    var nurseryFadeMs = 140000;    /* then fades — slot frees for the next event */
+
+    var t = 0, idx = 0, rng, gapMs;
+    /* Walk forward through inter-arrival gaps until we pass elapsedMs.
+       Each gap is drawn 8-15min (randomized) from a slot+idx-keyed rng. */
+    while (true) {
+        rng = _dfRng(this.seed, 401 + slot, idx, 0);
+        gapMs = (8 + rng() * 7) * 60000;
+        if (t + gapMs > elapsedMs) break;
+        t += gapMs;
+        idx++;
+    }
+    /* `t` = start time of the CURRENT (most recent) event in this slot's
+       chain; elapsedMs - t = how far into that event's lifecycle we are.
+       Before the first event ever fires (idx===0 and elapsedMs<t+gapMs
+       but t===0), treat as dormant. */
+    var sinceStart = elapsedMs - t;
+    var eventRng = _dfRng(this.seed, 501 + slot, idx, 0);
+    var ang = eventRng() * Math.PI * 2;
+    var distT = eventRng();
+    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var x = this.center.x + Math.cos(ang) * dist;
+    var y = this.center.y + Math.sin(ang) * dist;
+
+    var totalLife = flashMs + remnantMs + nurseryRiseMs + nurseryHoldMs + nurseryFadeMs;
+    if (idx === 0 && sinceStart < 0) {
+        /* Never fired yet in this timeline (very early elapsedMs) */
+        return { phase: 'dormant', x: x, y: y, slot: slot, idx: idx };
+    }
+    if (sinceStart > totalLife) {
+        /* Fully faded — dormant until the NEXT event in the chain, which
+           by construction is still `gapMs` away (we stopped the walk
+           right before it). Return dormant at the upcoming event's site
+           so nothing is drawn. */
+        return { phase: 'dormant', x: x, y: y, slot: slot, idx: idx };
+    }
+    if (sinceStart < flashMs) {
+        var ft = sinceStart / flashMs;
+        return { phase: 'flash', x: x, y: y, t01: ft, alpha: 1 - ft * 0.3, r: 3 + ft * 14, slot: slot, idx: idx };
+    }
+    if (sinceStart < flashMs + remnantMs) {
+        var rt = (sinceStart - flashMs) / remnantMs;
+        return { phase: 'remnant', x: x, y: y, t01: rt, r: 10 + rt * 130, alpha: (1 - rt) * 0.5, slot: slot, idx: idx };
+    }
+    var nurT = sinceStart - flashMs - remnantMs;
+    if (nurT < nurseryRiseMs) {
+        var nt = nurT / nurseryRiseMs;
+        return { phase: 'nursery', x: x, y: y, t01: nt, alpha: 0.03 + nt * 0.08, r: 25 + nt * 40, slot: slot, idx: idx };
+    }
+    if (nurT < nurseryRiseMs + nurseryHoldMs) {
+        var ht = (nurT - nurseryRiseMs) / nurseryHoldMs;
+        return { phase: 'nursery', x: x, y: y, t01: ht, alpha: 0.11 + Math.sin(ht * Math.PI * 6) * 0.015, r: 65, slot: slot, idx: idx };
+    }
+    var fadeT = (nurT - nurseryRiseMs - nurseryHoldMs) / nurseryFadeMs;
+    return { phase: 'nursery', x: x, y: y, t01: fadeT, alpha: Math.max(0, 0.11 * (1 - fadeT)), r: 65, slot: slot, idx: idx };
+};
+
+/* --- Wandering outer-field comets/debris ---
+   Parallel to _orbComets (command_center_v4.html) but ambient, not
+   trade-triggered: deterministic phase from elapsed time, drifting on a
+   long slow arc through the annulus. Extends the existing comet visual
+   language (bright head + fading tail) outward rather than inventing a
+   new look. */
+DeepField.prototype._cometAt = function (slot, elapsedMs) {
+    var rng = _dfRng(this.seed, 701 + slot, 0, 0);
+    var period = (140 + rng() * 220) * 1000; /* 140-360s full crossing */
+    var phase0 = rng();
+    var ang = rng() * Math.PI * 2;           /* chord direction across the annulus */
+    var offsetDist = (this.innerR + rng() * (this.outerR - this.innerR));
+    var perpOff = (rng() - 0.5) * this.outerR * 1.4;
+    var t = ((elapsedMs / period) + phase0) % 1;
+    if (t < 0) t += 1;
+    /* Straight chord through the field, perpendicular offset varies by comet */
+    var dirX = Math.cos(ang), dirY = Math.sin(ang);
+    var perpX = -dirY, perpY = dirX;
+    var travel = (t - 0.5) * this.outerR * 2.4;
+    var x = this.center.x + dirX * travel + perpX * perpOff;
+    var y = this.center.y + dirY * travel + perpY * perpOff;
+    var d = Math.sqrt((x - this.center.x) * (x - this.center.x) + (y - this.center.y) * (y - this.center.y));
+    var visible = d > this.innerR * 0.85 && d < this.outerR * 1.05;
+    return { visible: visible, x: x, y: y, dirX: dirX, dirY: dirY, slot: slot };
+};
+
+/* --- Draw pass: reads current lifecycle state for every slot and paints
+   it. World-space coordinates — caller has already applied the zoom/pan
+   setTransform, so nothing here needs to know about the camera. --- */
+DeepField.prototype.draw = function (ctx, now, zoomBoost) {
+    var elapsedMs = now - this.epoch;
+    var i;
+    /* ROUND 2 (2026-07-30, target 3b): DeepField draws entirely in
+       world-space under the same camera transform as everything else, so
+       as the camera pulls back toward the zoom floor these objects shrink
+       in SCREEN size exactly like every other body — on top of already-low
+       base alphas (0.09-0.16 range, tuned to read against pure black at
+       zoom~1), the combined shrink+dim made the deep field "nearly vanish"
+       at far zoom instead of filling more of the revealed frame the way a
+       real pulled-back sky would. zoomBoost is a >=1 multiplier (1 at
+       zoom=1, growing toward the floor — see call site in
+       command_center_v4.html for the exact ramp tied to _ORB_ZOOM_MIN)
+       applied to every alpha value below, layered on top of (not
+       replacing) the existing global screen-blend exposure lift — that
+       pass brightens the WHOLE frame uniformly, this makes the deep-field
+       objects specifically punch back up as their screen footprint
+       shrinks. Radius gets a smaller, secondary boost (objects should
+       still feel like they're receding, just not disappearing). */
+    var zb = zoomBoost || 1;
+    var zbR = 1 + (zb - 1) * 0.35; /* radius grows slower than alpha — recede, don't balloon */
+
+    /* Nebulae — soft radial-gradient clouds, sparse and eerie */
+    for (i = 0; i < _DF_NEBULA_SLOTS; i++) {
+        var neb = this._nebulaAt(i, elapsedMs);
+        if (!neb.alive) continue;
+        var rr = Math.max(0.1, Math.abs(neb.r) * zbR);
+        var nA = Math.min(1, neb.alpha * zb);
+        ctx.save();
+        ctx.translate(neb.x, neb.y);
+        ctx.rotate(neb.rot);
+        ctx.scale(neb.scX, neb.scY);
+        var g = ctx.createRadialGradient(0, 0, 0, 0, 0, rr);
+        g.addColorStop(0, 'hsla(' + neb.hue + ',30%,14%,' + nA + ')');
+        g.addColorStop(0.4, 'hsla(' + neb.hue + ',26%,10%,' + (nA * 0.55) + ')');
+        g.addColorStop(0.75, 'hsla(' + neb.hue + ',22%,7%,' + (nA * 0.18) + ')');
+        g.addColorStop(1, 'hsla(0,0%,0%,0)');
+        ctx.fillStyle = g;
+        ctx.beginPath();
+        ctx.arc(0, 0, rr, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
+    /* Supernova / remnant / nursery slots */
+    for (i = 0; i < _DF_SN_SLOTS; i++) {
+        var sn = this._forcedSN && this._forcedSN.slot === i
+            ? this._forcedSN.stateAt(elapsedMs)
+            : this._supernovaAt(i, elapsedMs);
+        if (sn.phase === 'dormant') continue;
+        var snA = Math.min(1, sn.alpha * zb);
+        if (sn.phase === 'flash') {
+            var fr = Math.max(0.1, Math.abs(sn.r) * zbR);
+            var fg = ctx.createRadialGradient(sn.x, sn.y, 0, sn.x, sn.y, fr * 6);
+            fg.addColorStop(0, 'hsla(' + _DF_SN_FLASH_HUE + ',20%,92%,' + snA + ')');
+            fg.addColorStop(0.15, 'hsla(' + _DF_SN_FLASH_HUE + ',30%,70%,' + (snA * 0.6) + ')');
+            fg.addColorStop(0.5, 'hsla(' + _DF_SN_REMNANT_HUE + ',35%,45%,' + (snA * 0.18) + ')');
+            fg.addColorStop(1, 'hsla(0,0%,0%,0)');
+            ctx.fillStyle = fg;
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, fr * 6, 0, Math.PI * 2); ctx.fill();
+            ctx.fillStyle = 'rgba(255,250,240,' + snA + ')';
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, fr, 0, Math.PI * 2); ctx.fill();
+        } else if (sn.phase === 'remnant') {
+            var rr2 = Math.max(0.1, Math.abs(sn.r) * zbR);
+            ctx.strokeStyle = 'hsla(' + _DF_SN_REMNANT_HUE + ',40%,60%,' + snA + ')';
+            ctx.lineWidth = Math.max(0.5, 2.4 * (1 - sn.t01));
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, rr2, 0, Math.PI * 2); ctx.stroke();
+            var rg = ctx.createRadialGradient(sn.x, sn.y, Math.max(0.1, rr2 * 0.6), sn.x, sn.y, rr2 * 1.15);
+            rg.addColorStop(0, 'hsla(' + _DF_SN_REMNANT_HUE + ',35%,40%,0)');
+            rg.addColorStop(0.7, 'hsla(' + _DF_SN_REMNANT_HUE + ',35%,40%,' + (snA * 0.35) + ')');
+            rg.addColorStop(1, 'hsla(0,0%,0%,0)');
+            ctx.fillStyle = rg;
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, rr2 * 1.15, 0, Math.PI * 2); ctx.fill();
+        } else if (sn.phase === 'nursery') {
+            var nr = Math.max(0.1, Math.abs(sn.r) * zbR);
+            var ng = ctx.createRadialGradient(sn.x, sn.y, 0, sn.x, sn.y, nr);
+            /* Bone-white/faint-violet nursery glow — distinct from the remnant's ice-blue ring */
+            ng.addColorStop(0, 'hsla(262,22%,60%,' + snA + ')');
+            ng.addColorStop(0.5, 'hsla(206,25%,45%,' + (snA * 0.5) + ')');
+            ng.addColorStop(1, 'hsla(0,0%,0%,0)');
+            ctx.fillStyle = ng;
+            ctx.beginPath(); ctx.arc(sn.x, sn.y, nr, 0, Math.PI * 2); ctx.fill();
+            /* A few dim proto-star points seeded from the same site */
+            var nrng = _dfRng(this.seed, 601 + i, sn.idx, 0);
+            for (var pj = 0; pj < 5; pj++) {
+                var pa = nrng() * Math.PI * 2, pd = nrng() * nr * 0.7;
+                var px = sn.x + Math.cos(pa) * pd, py = sn.y + Math.sin(pa) * pd;
+                ctx.fillStyle = 'hsla(240,15%,80%,' + Math.min(1, snA * 1.3) + ')';
+                ctx.beginPath(); ctx.arc(px, py, 0.8, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+    }
+
+    /* Wandering comets/debris */
+    for (i = 0; i < _DF_COMET_SLOTS; i++) {
+        var cm = this._cometAt(i, elapsedMs);
+        if (!cm.visible) continue;
+        var tailLen = 26 * zbR;
+        var tx = cm.x - cm.dirX * tailLen, ty = cm.y - cm.dirY * tailLen;
+        var cg = ctx.createLinearGradient(cm.x, cm.y, tx, ty);
+        cg.addColorStop(0, 'rgba(200,210,225,' + Math.min(1, 0.22 * zb) + ')');
+        cg.addColorStop(1, 'rgba(200,210,225,0)');
+        ctx.strokeStyle = cg;
+        ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(cm.x, cm.y); ctx.lineTo(tx, ty); ctx.stroke();
+        ctx.fillStyle = 'rgba(215,222,235,' + Math.min(1, 0.35 * zb) + ')';
+        ctx.beginPath(); ctx.arc(cm.x, cm.y, 1.1 * zbR, 0, Math.PI * 2); ctx.fill();
+    }
+};
+
+/* --- Persistence: localStorage['cosmos_deepfield_v1'] = {seed, epoch} ---
+   `epoch` is the wall-clock ms the timeline is anchored to; every
+   lifecycle function above takes elapsedMs = now-epoch, so simply NOT
+   resetting epoch on reload is what makes the sky "age forward" — the
+   viewer returns to find every slot's phase already advanced to wherever
+   (now-epoch) lands it, with zero replay cost. */
+var _DF_LS_KEY = 'cosmos_deepfield_v1';
+DeepField.load = function () {
+    var seed, epoch;
+    try {
+        var raw = localStorage.getItem(_DF_LS_KEY);
+        if (raw) {
+            var parsed = JSON.parse(raw);
+            if (parsed && typeof parsed.seed === 'number' && typeof parsed.epoch === 'number') {
+                seed = parsed.seed; epoch = parsed.epoch;
+            }
+        }
+    } catch (e) { /* localStorage unavailable/corrupt — fall through to fresh seed */ }
+    if (seed == null) {
+        seed = (Math.random() * 4294967296) >>> 0;
+        epoch = Date.now();
+        DeepField._save(seed, epoch);
+    }
+    var df = new DeepField(seed);
+    df.epoch = epoch;
+    return df;
+};
+DeepField._save = function (seed, epoch) {
+    try {
+        localStorage.setItem(_DF_LS_KEY, JSON.stringify({ seed: seed, epoch: epoch }));
+    } catch (e) { /* storage full/disabled — field still runs, just won't persist across reloads */ }
+};
+DeepField.prototype.persist = function () {
+    DeepField._save(this.seed, this.epoch);
+};
+
+/* --- Debug/verification hooks (see window._deepFieldDebug below in
+   command_center_v4.html for the externally-reachable wrapper — this
+   file's top-level functions are NOT window.X unless explicitly assigned,
+   same IIFE-scoping trap documented in project_composition_fix_2026_07_30.md
+   for the main script; solar_system.js is a plain non-module script tag
+   though, so its top-level `function`/`var` ARE already on window here —
+   confirmed no extra window.X= needed for DeepField itself.) --- */
+DeepField.prototype.forceSupernova = function (slot) {
+    var s = (slot == null ? 0 : slot) % _DF_SN_SLOTS;
+    var nowMs = Date.now();
+    var self = this;
+    var elapsedAtTrigger = nowMs - this.epoch;
+    var rng = _dfRng(this.seed, 501 + s, 999999, 0);
+    var ang = rng() * Math.PI * 2, distT = rng();
+    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var fx = this.center.x + Math.cos(ang) * dist, fy = this.center.y + Math.sin(ang) * dist;
+    var startElapsed = elapsedAtTrigger;
+    this._forcedSN = {
+        slot: s,
+        stateAt: function (elapsedMs) {
+            var sinceStart = elapsedMs - startElapsed;
+            var flashMs = 900, remnantMs = 75000, nurseryRiseMs = 240000, nurseryHoldMs = 260000, nurseryFadeMs = 140000;
+            if (sinceStart < 0) return { phase: 'dormant', x: fx, y: fy };
+            if (sinceStart < flashMs) { var ft = sinceStart / flashMs; return { phase: 'flash', x: fx, y: fy, t01: ft, alpha: 1 - ft * 0.3, r: 3 + ft * 14 }; }
+            if (sinceStart < flashMs + remnantMs) { var rt = (sinceStart - flashMs) / remnantMs; return { phase: 'remnant', x: fx, y: fy, t01: rt, r: 10 + rt * 130, alpha: (1 - rt) * 0.5 }; }
+            var nurT = sinceStart - flashMs - remnantMs;
+            if (nurT < nurseryRiseMs) { var nt = nurT / nurseryRiseMs; return { phase: 'nursery', x: fx, y: fy, t01: nt, alpha: 0.03 + nt * 0.08, r: 25 + nt * 40, idx: 999999 }; }
+            if (nurT < nurseryRiseMs + nurseryHoldMs) { var ht = (nurT - nurseryRiseMs) / nurseryHoldMs; return { phase: 'nursery', x: fx, y: fy, t01: ht, alpha: 0.11, r: 65, idx: 999999 }; }
+            var fadeT = (nurT - nurseryRiseMs - nurseryHoldMs) / nurseryFadeMs;
+            if (fadeT > 1) { self._forcedSN = null; return { phase: 'dormant', x: fx, y: fy }; }
+            return { phase: 'nursery', x: fx, y: fy, t01: fadeT, alpha: Math.max(0, 0.11 * (1 - fadeT)), r: 65, idx: 999999 };
+        }
+    };
+    return { x: fx, y: fy, slot: s };
+};
+
 

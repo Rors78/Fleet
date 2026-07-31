@@ -5,6 +5,138 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Command Center v4</title>
 <link rel="stylesheet" href="dashboard.css">
+<style>
+/* ══════════════════════════════════════════════════════════════
+   OVERVIEW MISSION-CONTROL UPSCALE (2026-07-31)
+   Scoped entirely under #ovGrid so it cannot leak into COSMOS
+   fullscreen (#orbFsCanvas etc.) or the per-bot dv2-* detail tabs.
+   ══════════════════════════════════════════════════════════════ */
+
+/* ── 1. Typographic hierarchy: tabular figures everywhere in the grid,
+   so columns of numbers stop wiggling as digits change ── */
+#ovGrid, #ovGrid * {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hero numbers — the 3-4 figures the eye should land on first:
+   AEGIS score ring value, Pool total, fleet Expectancy, Sentiment F&G */
+#ovGrid .ov-hero-num {
+  font-size: 2.1rem;
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+}
+#ovGrid .ov-hero-label {
+  font-size: 0.56rem;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--ov-dim);
+}
+/* Existing big-number classes get the same tabular/weight treatment
+   even where the hero class isn't applied (portfolio Pool row etc.) */
+#ovGrid .ov-exp-big,
+#ovGrid .ov-big-num,
+#ovGrid #ovAegisScore {
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+}
+
+/* ── 2. State-driven de-emphasis ── */
+#ovGrid .ov-dead-row {
+  opacity: 0.4;
+  filter: saturate(0.6);
+}
+#ovGrid .ov-dead-row:hover {
+  opacity: 0.7;
+}
+#ovGrid .ov-dead-val {
+  color: var(--ov-dim) !important;
+}
+#ovGrid .ov-zero-fill {
+  opacity: 0.35;
+}
+
+/* ── 3. Sentiment big-number clipping fix ──
+   Root cause: line-height:1 on a bold 1.6-2rem glyph in a tight
+   flex column clips the ascender/ring of tabular digits like "2" "5"
+   in JetBrains Mono at heavy weight. Give the line box real room
+   and a hair of top padding instead of trusting line-height:1. */
+#ovGrid #ovCellSentiment .ov-cell-body {
+  padding-top: 4px;
+}
+#ovGrid #ovSentimentNum.ov-big-num {
+  line-height: 1.3;
+  padding-top: 2px;
+  overflow: visible;
+}
+
+/* ── 5. State-tinted panels: header underline + 1px border glow.
+   Default calm cyan (inherited from .ov-cell-hdr / .ov-cell border).
+   JS toggles these classes on the .ov-cell wrapper based on data
+   already in that panel's own render path — no new polling. */
+#ovGrid .ov-cell-hdr {
+  transition: color 0.4s ease, border-color 0.4s ease;
+}
+#ovGrid .ov-cell.ov-state-warn {
+  border-color: rgba(245,158,11,0.45);
+  box-shadow: inset 0 1px 0 rgba(245,158,11,0.08);
+}
+#ovGrid .ov-cell.ov-state-warn .ov-cell-hdr {
+  color: #f59e0b;
+  border-bottom-color: rgba(245,158,11,0.35);
+}
+#ovGrid .ov-cell.ov-state-alert {
+  border-color: rgba(239,68,68,0.55);
+  animation: ov-alert-pulse 1.6s ease-in-out infinite;
+}
+#ovGrid .ov-cell.ov-state-alert .ov-cell-hdr {
+  color: #ef4444;
+  border-bottom-color: rgba(239,68,68,0.4);
+}
+@keyframes ov-alert-pulse {
+  0%, 100% { box-shadow: inset 0 1px 0 rgba(239,68,68,0.1), 0 0 0 rgba(239,68,68,0); }
+  50%      { box-shadow: inset 0 1px 0 rgba(239,68,68,0.18), 0 0 10px rgba(239,68,68,0.25); }
+}
+
+/* ── 6. Value-change micro-motion: brief brightness pulse on
+   any element whose rendered value just changed. CSS class toggle
+   only — no per-frame JS, timer just removes the class after ~280ms. */
+#ovGrid .ov-flash {
+  animation: ov-value-flash 0.28s ease-out;
+}
+@keyframes ov-value-flash {
+  0%   { filter: brightness(2.1); }
+  100% { filter: brightness(1); }
+}
+
+/* ── 7. Mission-control depth ── */
+#ovGrid .ov-cell {
+  transition: border-color 0.4s ease, box-shadow 0.4s ease;
+  background: linear-gradient(180deg, rgba(255,255,255,0.025) 0%, rgba(0,0,0,0) 6%), #000000 !important;
+  box-shadow: inset 0 1px 0 rgba(255,255,255,0.035), inset 0 0 0 1px rgba(255,255,255,0.01);
+}
+#ovGrid .ov-cell-hdr {
+  letter-spacing: 1.9px;
+}
+/* Ultra-faint background grid texture on the page — data-canvas feel,
+   not scanlines-over-text. Sits behind the cells via #ovGrid's own
+   background, well below any text layer. */
+#ovGrid {
+  background-image:
+    linear-gradient(rgba(255,255,255,0.012) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255,255,255,0.012) 1px, transparent 1px);
+  background-size: 28px 28px;
+}
+
+/* ── 4. Sparkline canvases ── */
+#ovGrid .ov-spark {
+  display: block;
+  width: 40px;
+  height: 14px;
+  flex-shrink: 0;
+}
+</style>
 </head>
 <body>
 <!-- V4 shell — identical DOM structure to v3 for JS compatibility -->
@@ -30,6 +162,10 @@
       <button class="sound-btn" id="soundBtn" title="Toggle fleet soundscape">&#x1f507;</button>
       <div class="sse-dot" id="sseDot" title="SSE stream"></div>
       <div class="header-clock" id="headerClock">--:--:--</div>
+      <!-- Build stamp (2026-07-31): visible deploy identity so "is my page
+           cached?" is a two-second glance instead of a debugging session.
+           Bump COSMOS_BUILD on every deploy. -->
+      <div id="buildStamp" style="font-size:9px;color:#4a5568;letter-spacing:1px;align-self:center;margin-left:8px;" title="deployed build"></div>
       <button class="header-help">?
         <div class="legend">
           0 / Esc — Overview<br>1–9 — Focus bot<br>R — Refresh<br>
@@ -63,7 +199,7 @@
               id="ovAegisArc" class="ov-aegis-arc"/>
           </svg>
           <div style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;">
-            <span style="font-family:var(--font);font-size:0.75rem;font-weight:700;color:var(--ov-text)" id="ovAegisScore">--</span>
+            <span class="ov-hero-num" style="font-family:var(--font);font-size:1.05rem;color:var(--ov-text)" id="ovAegisScore">--</span>
           </div>
         </div>
         <div style="flex:1;min-width:0;">
@@ -101,6 +237,7 @@
             <th style="width:26px;">Trd</th>
             <th style="width:32px;">WR%</th>
             <th style="width:44px;">PnL</th>
+            <th style="width:44px;" title="Cumulative P/L trend, last 8 closed trades">Trend</th>
             <th style="width:40px;">Exp/Tr</th>
             <th style="width:44px;">PF</th>
             <th style="width:14px;">St</th>
@@ -118,6 +255,10 @@
     <div class="ov-cell-body" style="display:flex;flex-direction:column;gap:0;">
       <div id="ovPortfolioSummary" style="flex-shrink:0;">
         <div class="ov-sub-text">Loading...</div>
+      </div>
+      <div id="ovEquitySparkWrap" style="display:none;align-items:center;gap:6px;flex-shrink:0;margin-top:2px;padding-top:3px;border-top:1px solid rgba(30,41,59,0.3);">
+        <span style="font-size:0.55rem;color:var(--ov-dim);font-family:var(--font);letter-spacing:0.5px;">EQUITY</span>
+        <canvas id="ovEquitySpark" class="ov-spark" style="margin-left:auto;"></canvas>
       </div>
       <div id="ovAltPortfolio" style="border-top:1px solid var(--ov-border);margin:4px 0;padding-top:4px;flex-shrink:0;display:none;"></div>
       <div id="ovPromotions" style="border-top:1px solid var(--ov-border);margin:4px 0;padding-top:4px;flex-shrink:0;display:none;"></div>
@@ -150,15 +291,15 @@
         <span style="font-size:0.55rem;color:var(--ov-dim);font-family:var(--font-mono,monospace);margin-left:auto;" id="ovTgUptime">--</span>
       </div>
       <div style="display:flex;gap:6px;flex-shrink:0;margin:4px 0;">
-        <div style="flex:1;background:rgba(200,169,110,0.08);border:1px solid rgba(200,169,110,0.2);border-radius:4px;padding:6px;text-align:center;">
+        <div id="ovTgPaidBox" style="flex:1;background:rgba(200,169,110,0.08);border:1px solid rgba(200,169,110,0.2);border-radius:4px;padding:6px;text-align:center;">
           <div style="font-size:1.3rem;font-weight:700;font-family:var(--font);color:#c8a96e;" id="ovTgPaid2">--</div>
           <div style="font-size:0.52rem;color:var(--ov-muted);font-family:var(--font);text-transform:uppercase;letter-spacing:0.8px;">Intelligence</div>
         </div>
-        <div style="flex:1;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:4px;padding:6px;text-align:center;">
+        <div id="ovTgFreeBox" style="flex:1;background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.2);border-radius:4px;padding:6px;text-align:center;">
           <div style="font-size:1.3rem;font-weight:700;font-family:var(--font);color:#22c55e;" id="ovTgFree2">--</div>
           <div style="font-size:0.52rem;color:var(--ov-muted);font-family:var(--font);text-transform:uppercase;letter-spacing:0.8px;">Pulse</div>
         </div>
-        <div style="flex:1;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);border-radius:4px;padding:6px;text-align:center;">
+        <div id="ovTgFailedBox" style="flex:1;background:rgba(239,68,68,0.06);border:1px solid rgba(239,68,68,0.15);border-radius:4px;padding:6px;text-align:center;">
           <div style="font-size:1.3rem;font-weight:700;font-family:var(--font);color:#ef4444;" id="ovTgFailed2">0</div>
           <div style="font-size:0.52rem;color:var(--ov-muted);font-family:var(--font);text-transform:uppercase;letter-spacing:0.8px;">Failed</div>
         </div>
@@ -216,15 +357,15 @@
   <div class="ov-cell" id="ovCellSentiment">
     <div class="ov-cell-hdr">SENTIMENT</div>
     <div class="ov-cell-body" style="display:flex;flex-direction:column;align-items:center;justify-content:center;">
-      <div class="ov-big-num" id="ovSentimentNum" style="color:var(--ov-muted);font-size:1.6rem;">--</div>
-      <div class="ov-big-label" id="ovSentimentLabel" style="font-size:0.58rem;margin-top:2px;">UNKNOWN</div>
+      <div class="ov-big-num ov-hero-num" id="ovSentimentNum" style="color:var(--ov-muted);font-size:2rem;">--</div>
+      <div class="ov-hero-label" id="ovSentimentLabel" style="margin-top:2px;">UNKNOWN</div>
       <div id="ovFundingRates" style="margin-top:4px;width:100%;"></div>
     </div>
   </div>
 
   <!-- R3C2-3: Event Stream -->
   <div class="ov-cell" id="ovCellEvents">
-    <div class="ov-cell-hdr">EVENT STREAM <span class="ov-ev-cnt" id="ovEvCount"></span></div>
+    <div class="ov-cell-hdr" style="display:flex;align-items:center;">EVENT STREAM <span class="ov-ev-cnt" id="ovEvCount"></span><canvas id="ovEvRateSpark" class="ov-spark" style="margin-left:auto;width:34px;height:11px;" title="event rate, last 10 polls"></canvas></div>
     <div class="ov-event-stream" id="ovEventStream" style="flex:1;overflow:hidden;display:flex;flex-direction:column;gap:0;">
       <div style="padding:8px;font-size:0.65rem;color:var(--ov-dim);">Connecting...</div>
     </div>
@@ -235,7 +376,7 @@
     <div class="ov-cell-hdr">EXPECTANCY</div>
     <div class="ov-cell-body" id="ovFeeAnalysis">
       <div style="margin-bottom:5px;flex-shrink:0;">
-        <div class="ov-exp-big" id="ovExpBig" style="color:var(--ov-muted);font-size:1.3rem;">--</div>
+        <div class="ov-exp-big ov-hero-num" id="ovExpBig" style="color:var(--ov-muted);font-size:2rem;">--</div>
         <div class="ov-exp-sub" id="ovExpSub" style="font-size:0.6rem;">-- trades</div>
       </div>
       <div class="ov-gauge-wrap" style="flex-shrink:0;">
@@ -449,6 +590,8 @@ var cardPulseTimers = {};
 /* ===== DOM REFS ===== */
 var $connLost     = document.getElementById("connLost");
 var $headerClock  = document.getElementById("headerClock");
+var COSMOS_BUILD="b0731.10"; /* bump on every deploy — shown in header */
+(function(){var bs=document.getElementById("buildStamp");if(bs)bs.textContent=COSMOS_BUILD;})();
 var $pillsBar     = document.getElementById("pillsBar");
 var $tradingGrid  = document.getElementById("tradingGrid");
 var $intelGrid    = document.getElementById("intelGrid");
@@ -16399,6 +16542,9 @@ var ovLastDeployment = null;   /* {botName, amount, ts} */
 /* ── Engine last-fired pair tracking ── */
 var ovEngineLastPair = {};     /* engineName -> {pair, ts} */
 
+/* ── Event-rate sparkline history (last 10 poll samples, trailing-60s count each) ── */
+var ovEventRateHistory = [];
+
 /* ── Overview event stream (separate from sidebar stream) ── */
 function ovSanitize(str){
   if(!str) return '';
@@ -16489,12 +16635,27 @@ function renderOvEventStream(el){
   /* Build distribution counts from all recent events */
   var _evAll = ovData.recentEvents || [];
   var _distAlert = 0, _distWarn = 0, _distCouncil = 0, _distTrade = 0;
+  var _hasDenial = false, _hasEmergency = false;
+  var _nowTint = Date.now()/1000;
   for(var _di=0;_di<_evAll.length;_di++){
     var _dt = (_evAll[_di].type||"");
+    var _dts = _evAll[_di].ts || _evAll[_di].timestamp || 0;
     if(/EMERGENCY|ALERT|DENIAL/.test(_dt)) _distAlert++;
     else if(/WARNING|REGIME_CHANGE|CATASTROPHE/.test(_dt)) _distWarn++;
     else if(/TRADE_OPEN|TRADE_CLOSE/.test(_dt)) _distTrade++;
     else if(/EUCLID|QUANTUM|MANIFOLD|CYCLE|CAUSAL|NEWTON|EINSTEIN|SHANNON|BOLTZMANN|CHAOS|STRUCTURE|CATASTROPHE|BOOK_PHASE|RIEMANN/.test(_dt)) _distCouncil++;
+    /* Only recent (last 5min) denials/emergencies drive the tint — an
+       hour-old denial shouldn't leave the panel red forever. */
+    if((_nowTint - _dts) < 300){
+      if(/PORTFOLIO_DENIAL/.test(_dt)) _hasDenial = true;
+      if(/EMERGENCY/.test(_dt)) _hasEmergency = true;
+    }
+  }
+  var _hasExtremeWhale = (ovData.whaleAlerts||[]).some(function(w){ return w.tier==="EXTREME"; });
+  var _eventsCell = document.getElementById("ovCellEvents");
+  if(_eventsCell){
+    _eventsCell.classList.toggle("ov-state-alert", _hasEmergency || _hasExtremeWhale);
+    _eventsCell.classList.toggle("ov-state-warn", !(_hasEmergency || _hasExtremeWhale) && _hasDenial);
   }
   var _distHdr = '<div style="font-family:var(--font-mono,monospace);font-size:0.58rem;color:var(--ov-dim);padding:1px 0 3px;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
     +'<span style="color:#ef4444">ALERT:'+_distAlert+'</span>'
@@ -16555,6 +16716,56 @@ function ovRegimeArrow(r){
   return "\u2192";
 }
 
+/* ── Value-change micro-motion ──
+   Compares an element's about-to-be-set text against what it already
+   shows; if different, toggles a CSS class that drives a brief (~280ms)
+   brightness pulse (see .ov-flash in the <style> block). Pure CSS
+   animation — no per-frame JS, no timers beyond the one-shot cleanup. */
+function ovFlashIfChanged(el, newText){
+  if(!el) return;
+  var prev = el.getAttribute("data-ovval");
+  if(prev !== null && prev !== String(newText)){
+    el.classList.remove("ov-flash");
+    /* Force reflow so re-adding the class restarts the animation even
+       if a flash from the previous poll is still in flight. */
+    void el.offsetWidth;
+    el.classList.add("ov-flash");
+  }
+  el.setAttribute("data-ovval", String(newText));
+}
+
+/* ── Tiny sparkline canvas renderer (post-inject pattern) ──
+   Draws a single-stroke line, no axes, into a small canvas already
+   present in the DOM. Caller passes a plain array of numbers (oldest
+   first). Silently no-ops if the canvas isn't there yet or has no size
+   (matches the drawTurtleSuePanel-style guard used elsewhere). */
+function ovDrawSpark(canvasId, values, color){
+  var cv = document.getElementById(canvasId);
+  if(!cv) return;
+  var W = cv.clientWidth || 40, H = cv.clientHeight || 14;
+  if(!W || !H) return;
+  var dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(W*dpr); cv.height = Math.round(H*dpr);
+  var ctx = cv.getContext("2d");
+  ctx.setTransform(dpr,0,0,dpr,0,0);
+  ctx.clearRect(0,0,W,H);
+  if(!values || values.length < 2) return;
+  var lo = Math.min.apply(null, values), hi = Math.max.apply(null, values);
+  var range = hi - lo;
+  if(range < 1e-9) range = 1; /* flat series — draw a flat mid-line, not a divide-by-zero */
+  var padY = 1.5;
+  ctx.beginPath();
+  for(var i=0;i<values.length;i++){
+    var x = (i/(values.length-1)) * W;
+    var y = H - padY - ((values[i]-lo)/range) * (H - padY*2);
+    if(i===0) ctx.moveTo(x,y); else ctx.lineTo(x,y);
+  }
+  ctx.strokeStyle = color || "#06b6d4";
+  ctx.lineWidth = 1.25;
+  ctx.lineJoin = "round";
+  ctx.stroke();
+}
+
 /* ── Main overview render (called every 10s + on SSE) ── */
 function renderOverview(){
   if(activeTab !== 0) return;
@@ -16587,7 +16798,11 @@ function renderOvAegis(){
   var deploy = aegisState.recommended_deploy;
 
   var scoreEl = document.getElementById("ovAegisScore");
-  if(scoreEl) scoreEl.textContent = score != null ? score.toFixed(3) : "--";
+  if(scoreEl){
+    var scoreTxt = score != null ? score.toFixed(3) : "--";
+    ovFlashIfChanged(scoreEl, scoreTxt);
+    scoreEl.textContent = scoreTxt;
+  }
 
   var arc = document.getElementById("ovAegisArc");
   if(arc && score != null){
@@ -16728,6 +16943,7 @@ function renderOvSentiment(){
     else if(val <= 55){ color="#eab308"; label="NEUTRAL"; }
     else if(val <= 75){ color="#84cc16"; label="GREED"; }
     else { color="#22c55e"; label="EXTREME GREED"; }
+    ovFlashIfChanged(numEl, val);
     numEl.textContent = val;
     numEl.style.color = color;
     lblEl.textContent = label;
@@ -16824,16 +17040,22 @@ function renderOvPortfolioSummary(){
   else if(depPctNum >= 50){ riskClass="ov-risk-amber"; riskLabel="MODERATE"; }
   else { riskClass="ov-risk-green";  riskLabel="OK"; }
 
-  function portRow(label, val, sub){
-    return '<div style="display:flex;justify-content:space-between;align-items:baseline;padding:3px 0;border-bottom:1px solid rgba(30,41,59,0.3);">'
-      +'<span style="font-size:0.65rem;color:var(--ov-muted);font-family:var(--font);">'+label+'</span>'
-      +'<span style="font-family:var(--font);font-size:0.75rem;font-weight:700;color:var(--ov-text);">'+val
+  function portRow(label, val, sub, hero, extraClass){
+    var valSize = hero ? '1.35rem' : '0.75rem';
+    return '<div class="'+(extraClass||'')+'" style="display:flex;justify-content:space-between;align-items:baseline;padding:'+(hero?'4px 0 5px':'3px 0')+';border-bottom:1px solid rgba(30,41,59,0.3);">'
+      +'<span class="'+(hero?'ov-hero-label':'')+'" style="font-size:0.65rem;color:var(--ov-muted);font-family:var(--font);">'+label+'</span>'
+      +'<span class="'+(hero?'ov-hero-num':'')+'" style="font-family:var(--font);font-size:'+valSize+';font-weight:'+(hero?800:700)+';color:var(--ov-text);">'+val
       +(sub?'<span style="font-size:0.6rem;color:var(--ov-dim);font-weight:400;margin-left:4px;">'+sub+'</span>':'')
       +'</span>'
       +'</div>';
   }
 
-  var h = portRow("Pool", fmt$(total), "total")
+  /* Flash the Pool hero row only when the total actually changes between polls */
+  var _poolPrev = el.getAttribute("data-ovpool");
+  var _poolFlash = (_poolPrev !== null && _poolPrev !== String(total)) ? "ov-flash" : "";
+  el.setAttribute("data-ovpool", String(total));
+
+  var h = portRow("Pool", fmt$(total), "total", true, _poolFlash)
     +portRow("Available", fmt$(avail), availPct+"%")
     +portRow("Deployed",  fmt$(deployed), depPct+"%")
     +portRow("Long",      fmt$(longAmt), "hdRoom: "+fmt$(longHdRm))
@@ -16865,6 +17087,11 @@ function renderOvPortfolioSummary(){
   var nowP = Date.now()/1000;
   var resAll = p && Array.isArray(p.reservations) ? p.reservations : [];
   var staleCount = resAll.filter(function(r){ return r.reserved_at && (nowP - r.reserved_at) > 7200; }).length;
+
+  /* State-tint the panel border/header: amber while stale reservations exist */
+  var _portfolioCell = document.getElementById("ovCellPortfolio");
+  if(_portfolioCell) _portfolioCell.classList.toggle("ov-state-warn", staleCount > 0);
+
   h += '<div style="font-size:0.58rem;font-family:var(--font);color:'+(staleCount>0?'#f59e0b':'var(--ov-dim)')+';margin-top:2px;">'
     +'Stale reservations: <span style="font-weight:700">'+staleCount+'</span>'
   +'</div>';
@@ -16915,6 +17142,35 @@ function renderOvPortfolioSummary(){
   }
 
   el.innerHTML = h;
+
+  /* Equity sparkline — built client-side from the already-fetched
+     /api/trades cache (_tradeCache), no new backend polling. Cumulative
+     sum of every closed trade's net P&L across the fleet, oldest first. */
+  var sparkWrap = document.getElementById("ovEquitySparkWrap");
+  if(sparkWrap){
+    if(!_tradeCacheLoaded){
+      sparkWrap.style.display = "none";
+    } else {
+      var _allTr = [];
+      for(var _sbid in _tradeCache){
+        var _sList = _tradeCache[_sbid];
+        for(var _si=0;_si<_sList.length;_si++){
+          var _st = _sList[_si];
+          if(_st.pnl != null) _allTr.push({ts:_st.ts||0, pnl:_st.pnl});
+        }
+      }
+      if(_allTr.length < 2){
+        sparkWrap.style.display = "none";
+      } else {
+        _allTr.sort(function(a,b){ return (a.ts||0)-(b.ts||0); });
+        var _run = 0, _series = [];
+        for(var _ai=0;_ai<_allTr.length;_ai++){ _run += _allTr[_ai].pnl; _series.push(_run); }
+        sparkWrap.style.display = "flex";
+        var _sparkColor = _series[_series.length-1] >= _series[0] ? "#22c55e" : "#ef4444";
+        ovDrawSpark("ovEquitySpark", _series, _sparkColor);
+      }
+    }
+  }
 }
 
 /* ── 1C-b. Kraken Promotions (fridge notes) ── */
@@ -17272,13 +17528,21 @@ function _renderTgPanel(){
   var paidEl = document.getElementById("ovTgPaid2");
   var freeEl = document.getElementById("ovTgFree2");
   var failEl = document.getElementById("ovTgFailed2");
-  if(paidEl) paidEl.textContent = isErr ? "--" : (ch.paid_sent_today || 0);
-  if(freeEl) freeEl.textContent = isErr ? "--" : (ch.free_sent_today || 0);
+  var paidCount = isErr ? null : (ch.paid_sent_today || 0);
+  var freeCount = isErr ? null : (ch.free_sent_today || 0);
+  if(paidEl) paidEl.textContent = paidCount == null ? "--" : paidCount;
+  if(freeEl) freeEl.textContent = freeCount == null ? "--" : freeCount;
   if(failEl){
     var fails = isErr ? "--" : (ch.failed_today || 0);
     failEl.textContent = fails;
     failEl.style.color = fails > 0 ? "#ef4444" : "#22c55e";
   }
+  /* De-emphasize "nothing sent" boxes. Failed:0 is a good-state signal
+     (already colored green for it), not dead data — never dim it. */
+  var paidBox = document.getElementById("ovTgPaidBox");
+  var freeBox = document.getElementById("ovTgFreeBox");
+  if(paidBox) paidBox.classList.toggle("ov-zero-fill", !paidCount);
+  if(freeBox) freeBox.classList.toggle("ov-zero-fill", !freeCount);
 
   // SSE events, rate limit, queue
   var sseEvEl = document.getElementById("ovTgSseEvents");
@@ -17578,12 +17842,21 @@ function renderOvWhaleIntel(){
       _heatH += '<div style="font-size:0.6rem;color:var(--ov-dim);font-family:var(--font);margin-top:2px;">monitoring '+(_nMon!=null?_nMon:"?")+' pairs</div>';
     }
     el.innerHTML = _heatH;
+    var _whaleCellClear = document.getElementById("ovCellWhale");
+    if(_whaleCellClear){ _whaleCellClear.classList.remove("ov-state-alert","ov-state-warn"); }
     return;
   }
 
   /* Summary counts */
   var extremeCount = list.filter(function(x){ return (x.tier||"").toUpperCase()==="EXTREME"; }).length;
   var highCount = list.filter(function(x){ return (x.tier||"").toUpperCase()==="HIGH"; }).length;
+
+  /* State-tint: red pulse on any EXTREME whale, amber on HIGH-only */
+  var _whaleCell = document.getElementById("ovCellWhale");
+  if(_whaleCell){
+    _whaleCell.classList.toggle("ov-state-alert", extremeCount > 0);
+    _whaleCell.classList.toggle("ov-state-warn", extremeCount === 0 && highCount > 0);
+  }
 
   var h = '<div style="font-size:0.62rem;font-family:var(--font);margin-bottom:6px;">'
     +'<span style="color:var(--ov-red)">'+extremeCount+' EXTREME</span>'
@@ -17682,7 +17955,18 @@ function renderOvSignalQuality(){
     var bar = document.getElementById(barId);
     var valEl = document.getElementById(valId);
     if(bar) bar.style.width = (val!=null ? Math.min(100, Math.max(0, val*100)) : 0).toFixed(1)+"%";
-    if(valEl) valEl.textContent = val!=null ? val.toFixed(3) : "--";
+    if(valEl){
+      var newTxt = val!=null ? val.toFixed(3) : "--";
+      ovFlashIfChanged(valEl, newTxt);
+      valEl.textContent = newTxt;
+    }
+    /* De-emphasize rows carrying no real signal (null or ~0.000) — data
+       stays visible (still literally "0.000"), just visually recedes. */
+    var row = bar ? bar.closest(".ov-sq-row") : null;
+    if(row){
+      var isZero = (val == null) || (Math.abs(val) < 0.0005);
+      row.classList.toggle("ov-zero-fill", isZero);
+    }
   }
 
   var consensus  = c.consensus_entropy  != null ? c.consensus_entropy  : (c.consensus || c.signal_consensus);
@@ -17877,6 +18161,17 @@ function renderOvScoreboard(){
     if(v==null) return '<td style="color:#334155">&mdash;</td>';
     return '<td style="color:'+(v>=0?"#22c55e":"#ef4444")+';text-align:right;font-family:var(--font-mono,monospace)">'+(v>=0?"+":"")+fmt$(v)+'</td>';
   }
+  function sparkCell(botId){
+    var trades = getBotTrades ? getBotTrades(botId, 8) : [];
+    if(!trades.length) return '<td></td>';
+    /* getBotTrades returns newest-first; sparkline reads oldest-first */
+    var pnls = [];
+    for(var _sci=trades.length-1;_sci>=0;_sci--){
+      if(trades[_sci].pnl != null) pnls.push(trades[_sci].pnl);
+    }
+    if(pnls.length < 2) return '<td></td>';
+    return '<td style="padding:0 2px;"><canvas class="ov-spark" data-spark-bot="'+botId+'" style="width:38px;height:12px;"></canvas></td>';
+  }
   function pfCell(v){
     if(v==null) return '<td style="color:#334155">&mdash;</td>';
     var cls = v>=1.5?"ov-fee-ok":v>=1?"ov-fee-mid":"ov-fee-high";
@@ -17976,7 +18271,12 @@ function renderOvScoreboard(){
       lastStr = '<span style="color:#334155">&mdash;</span>';
     }
 
-    h += '<tr onclick="window._setTab('+tabIdx+')" style="cursor:pointer;">'
+    /* State-driven de-emphasis: a row carrying no trade/PnL data (and no
+       intel metric standing in for one) recedes so live rows — e.g. a
+       loss that actually happened — visually outrank rows with nothing
+       to show. Never hides the row or its real (zero) values. */
+    var _isDeadRow = !(e.trades > 0) && e.netPnl == null && !_intelMetric;
+    h += '<tr onclick="window._setTab('+tabIdx+')" style="cursor:pointer;" class="'+(_isDeadRow?'ov-dead-row':'')+'">'
       +'<td style="color:#334155;text-align:right;font-family:var(--font-mono,monospace);width:14px;padding:2px 1px">'+(i+1)+'</td>'
       +'<td style="text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:2px 2px">'
         +'<span class="ov-score-dot" style="background:'+dotColor+';'+dotBorder+'"></span>'
@@ -17984,6 +18284,7 @@ function renderOvScoreboard(){
       +'<td style="color:#64748b;text-align:right;padding:2px 1px">'+trStr+'</td>'
       +'<td style="color:#64748b;text-align:right;padding:2px 1px">'+wrStr+'</td>'
       +pnlCell(e.netPnl)
+      +sparkCell(e.def.id)
       +expCell(e.expTrade)
       +pfCell(e.profitFactor)
       +'<td style="text-align:center;padding:2px 1px">'+statusDot+'</td>'
@@ -17999,13 +18300,33 @@ function renderOvScoreboard(){
     +'<td style="text-align:right;color:var(--ov-text);padding:2px 1px">'+fleetTrades+'</td>'
     +'<td></td>'
     +pnlCell(fleetNet||null)
+    +'<td></td>'
     +expCell(fleetExpTrade)
     +'<td></td>'
     +'<td></td>'
     +'<td></td>'
     +'</tr>';
 
-  if(tbody) tbody.innerHTML = h;
+  if(tbody){
+    tbody.innerHTML = h;
+    /* Post-inject: draw per-bot P/L sparklines now that the canvases exist in the DOM */
+    var _sparkCanvases = tbody.querySelectorAll("canvas[data-spark-bot]");
+    for(var _sc=0;_sc<_sparkCanvases.length;_sc++){
+      var _scCv = _sparkCanvases[_sc];
+      var _scBot = _scCv.getAttribute("data-spark-bot");
+      var _scTrades = getBotTrades(_scBot, 8);
+      var _scPnls = [];
+      for(var _sci2=_scTrades.length-1;_sci2>=0;_sci2--){
+        if(_scTrades[_sci2].pnl != null) _scPnls.push(_scTrades[_sci2].pnl);
+      }
+      if(_scPnls.length < 2) continue;
+      /* Cumulative within the visible window so the line reads as a trend, not raw noise */
+      var _scRun = 0, _scSeries = [];
+      for(var _si3=0;_si3<_scPnls.length;_si3++){ _scRun += _scPnls[_si3]; _scSeries.push(_scRun); }
+      _scCv.id = "ovSparkBot_"+_scBot;
+      ovDrawSpark(_scCv.id, _scSeries, _scSeries[_scSeries.length-1] >= _scSeries[0] ? "#22c55e" : "#ef4444");
+    }
+  }
   /* Also update old tbody for any code referencing it */
   if(tbodyOld && tbodyOld !== tbody){
     /* Minimal old format for compat */
@@ -18140,6 +18461,7 @@ function renderOvFeeAnalysis(){
     var _arrow = exp > _prevExp ? ' <span style="color:#22c55e">\u2191</span>' : ' <span style="color:#ef4444">\u2193</span>';
     _prevExpHtml = ' <span style="font-size:0.55rem;color:var(--ov-dim)">(prev: <span style="color:'+_prevColor+'">'+_prevSign+'$'+Math.abs(_prevExp).toFixed(2)+'</span>)'+_arrow+'</span>';
   }
+  ovFlashIfChanged(bigEl, expSign+Math.abs(exp).toFixed(2));
   bigEl.innerHTML = '<span style="color:'+expColor+'">'+expSign+'$'+Math.abs(exp).toFixed(2)+'</span> / trade'+_prevExpHtml;
   bigEl.style.color = expColor;
   if(subEl) subEl.textContent = trades + " trades";
@@ -18272,6 +18594,14 @@ function fetchOverviewData(){
       if(!Array.isArray(evts)) return;
       var now = Date.now()/1000;
       ovData.recentEvents = evts;
+
+      /* Event-rate sparkline history — one sample per real poll tier (10s),
+         not per SSE render, so bursts don't make the spark noise. Counts
+         events seen in the trailing 60s at each sample. */
+      var _rateWindow = evts.filter(function(e){ return (now-(e.ts||e.timestamp||0)) < 60; }).length;
+      ovEventRateHistory.push(_rateWindow);
+      if(ovEventRateHistory.length > 10) ovEventRateHistory.shift();
+      if(activeTab===0) ovDrawSpark("ovEvRateSpark", ovEventRateHistory, "#06b6d4");
 
       ovData.whaleAlerts = evts.filter(function(e){
         return e.type === "WHALE_ALERT" && (now - (e.ts||e.timestamp||0)) < 300;

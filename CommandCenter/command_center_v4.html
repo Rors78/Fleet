@@ -3033,16 +3033,30 @@ function _drawConstellation(ctx){
    renders independently (see armada.js Armada._startLoop/_tick), so this
    call is just a cheap position/state handoff, not a render trigger. */
 var _armadaInitTried=false;
+var _armadaInitFails=0;
 function _orbArmadaSync(){
   if(!window.Armada) return; /* module not loaded yet — retried next frame */
   if(!_armadaInitTried){
-    _armadaInitTried=true;
+    /* Only mark tried once the mount actually exists — setting the flag
+       unconditionally made init a one-shot race against the DOM: if the
+       first render frame after the module loaded ran before #armadaMount
+       was in the document, Armada never initialized for the whole session
+       (observed live 2026-07-30: _initialized stuck false, no canvas). */
     var mount=document.getElementById("armadaMount");
     if(mount){
+      _armadaInitTried=true;
       try{
         window.Armada.init(mount,{quality:"high"});
         window.Armada.setQuality("high");
-      }catch(e){console.error("Armada init failed:",e);}
+      }catch(e){
+        console.error("Armada init failed:",e);
+        /* A transient throw (zero-size mount mid-layout, WebGL context
+           hiccup) must not kill Armada for the whole session — retry on
+           subsequent frames, bounded so a genuinely broken environment
+           doesn't error-spam forever. */
+        _armadaInitFails++;
+        if(_armadaInitFails<120) _armadaInitTried=false;
+      }
     }
   }
   if(!window.Armada._initialized) return;
@@ -3097,7 +3111,19 @@ function _orbRender(timestamp){
     _orbSizeCanvas();
   }
 
-  _initOrbital();
+  /* _initOrbital sat OUTSIDE the frame try/catch (2026-07-31): one throw
+     inside it was UNCAUGHT, so the tail requestAnimationFrame never ran and
+     the whole render loop died silently on frame one — black scene, empty
+     _orbNodes, no "Orbital render error" log (that catch never saw it).
+     Wrap + stash the error on window so it's inspectable, and keep the
+     loop alive to retry next frame (init flag is only set on success path
+     inside; a throw before node-build leaves it re-runnable). */
+  try{ _initOrbital(); }
+  catch(e){
+    window.__orbInitError=String(e&&e.stack||e);
+    console.error("Orbital init error:",e);
+    _orbInitialized=false; /* force retry — never leave a half-init locked in */
+  }
 
   /* === FRAME BUDGET — drop layers only after 5 consecutive slow frames (Ryzen 9 5900XT: ~16ms normal) === */
   var frameDelta=timestamp-_orbPrevFrameTime;
@@ -14672,147 +14698,151 @@ function _drawMoonHiveMind(ctx,x,y,r,now){
 
 /* PHITEX / Sedna — extreme deep red, barely lit, dark crimson/maroon, coldest and most distant */
 function _drawMoonPhitex(ctx,x,y,r,now,fleetScore){
+  /* ═══ PHITEX: MOLTEN LAVA WORLD (2026-07-31, Jeremy's reference image) ═══
+     Deep red molten sphere, charred near-black crust plates, glowing magma
+     fissures running between the plates, sun-relative terminator + rim.
+     The thermodynamic identity survives: fissure glow intensity and pulse
+     rate are driven by fleetScore (hotter fleet = more violent surface).
+     Perf: crust + fissures are baked ONCE into two offscreen canvases
+     (base sphere+plates, and a fissure-only glow layer) keyed to render
+     size; per-frame work is two drawImage calls + terminator/rim
+     gradients. Regenerated only when the body's on-screen size changes
+     by >15% (zoom), never per frame. */
   var s=r*1.4;
   var _ccN=_orbNodes.cc;var _sx=_ccN?_ccN.x:x;var _sy=_ccN?_ccN.y:y;
   var sunA=Math.atan2(_sy-y,_sx-x);
   var lx=Math.cos(sunA),ly=Math.sin(sunA);
-  /* Sedna is so far from the sun that sunlit side is barely brighter than dark side */
-  var offX=lx*s*0.12,offY=ly*s*0.12; /* very small illumination offset */
 
-  /* L1: Extremely faint outer glow — so distant even reflected light barely reaches us */
-  var outerG=ctx.createRadialGradient(x,y,Math.max(0.1,s*0.88),x,y,Math.max(0.1,s*1.18));
-  outerG.addColorStop(0,"rgba(0,0,0,0)");
-  outerG.addColorStop(0.5,"rgba(120,18,8,0.04)");
-  outerG.addColorStop(1,"rgba(0,0,0,0)");
-  ctx.fillStyle=outerG;ctx.beginPath();ctx.arc(x,y,s*1.18,0,Math.PI*2);ctx.fill();
+  /* --- Offscreen bake (cached) --- */
+  var C=window._phitexLava;
+  if(!C||Math.abs(C.s-s)/Math.max(1,s)>0.15){
+    var S=Math.max(32,Math.ceil(s*2.4));      /* texture box, body dia + margin */
+    var cx=S/2,cy=S/2,R=s*1.08;               /* slight overscan hides seams */
+    var seed=1337;
+    var rnd=function(){seed=(seed*1103515245+12345)&0x7fffffff;return seed/0x7fffffff;};
+    var base=document.createElement("canvas");base.width=S;base.height=S;
+    var b=base.getContext("2d");
+    var glow=document.createElement("canvas");glow.width=S;glow.height=S;
+    var g=glow.getContext("2d");
 
-  /* L2: Base sphere — extreme deep red, dark crimson/maroon.
-     The surface is coated in organic tholins from cosmic ray bombardment over billions of years.
-     The Sun is merely a bright star from here — no meaningful warming */
-  var baseG=ctx.createRadialGradient(x+offX,y+offY,0,x-offX*0.2,y-offY*0.2,s*1.02);
-  baseG.addColorStop(0,"rgb(145,22,10)");     /* barely lit — deep crimson */
-  baseG.addColorStop(0.35,"rgb(112,15,6)");   /* maroon mid */
-  baseG.addColorStop(0.62,"rgb(80,10,4)");    /* very dark red */
-  baseG.addColorStop(0.82,"rgb(45,5,2)");     /* near-black deep shadow */
-  baseG.addColorStop(1,"rgb(8,1,0)");         /* absolute dark — merges with space */
-  ctx.fillStyle=baseG;ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.fill();
+    /* Molten base sphere — hot red core shading to dark maroon limb */
+    var bg=b.createRadialGradient(cx-R*0.25,cy-R*0.25,R*0.1,cx,cy,R);
+    bg.addColorStop(0,"rgb(196,32,20)");
+    bg.addColorStop(0.45,"rgb(150,20,12)");
+    bg.addColorStop(0.75,"rgb(96,12,8)");
+    bg.addColorStop(1,"rgb(34,4,3)");
+    b.fillStyle=bg;b.beginPath();b.arc(cx,cy,R,0,Math.PI*2);b.fill();
+    b.save();b.beginPath();b.arc(cx,cy,R,0,Math.PI*2);b.clip();
 
-  /* L3: Surface variation — clipped to disk */
-  ctx.save();ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.clip();
-  ctx.save();ctx.translate(x,y);ctx.rotate(now/350000); /* very slow — ~10 hour period */
+    /* Charred crust plates — irregular radial-jitter blobs, near-black,
+       subtly varied so they read as cooled rock rafts on the melt */
+    var plates=[];
+    var plateN=7;
+    for(var pi=0;pi<plateN;pi++){
+      var pa=rnd()*Math.PI*2, pd=R*(0.15+rnd()*0.72);
+      var px=cx+Math.cos(pa)*pd, py=cy+Math.sin(pa)*pd;
+      var pr=R*(0.22+rnd()*0.30);
+      var verts=[];var vn=9+((rnd()*4)|0);
+      for(var vi=0;vi<vn;vi++){
+        var va=(vi/vn)*Math.PI*2;
+        var vr=pr*(0.62+rnd()*0.55);
+        verts.push([px+Math.cos(va)*vr,py+Math.sin(va)*vr]);
+      }
+      plates.push(verts);
+      var shade=14+(rnd()*14)|0;
+      b.fillStyle="rgb("+(shade+8)+","+((shade*0.55)|0)+","+((shade*0.45)|0)+")";
+      b.beginPath();b.moveTo(verts[0][0],verts[0][1]);
+      for(var vj=1;vj<vn;vj++){
+        var mvx=(verts[vj][0]+verts[(vj+1)%vn][0])/2,mvy=(verts[vj][1]+verts[(vj+1)%vn][1])/2;
+        b.quadraticCurveTo(verts[vj][0],verts[vj][1],mvx,mvy);
+      }
+      b.closePath();b.fill();
+      /* faint hot underglow bleeding around each raft edge (baked, dim) */
+      b.strokeStyle="rgba(255,72,24,0.25)";b.lineWidth=Math.max(1,R*0.02);
+      b.stroke();
+    }
+    b.restore();
 
-  /* Tholin patches — slightly different red tones from varying organic deposits */
-  var tholins=[
-    {tx:-s*0.20,ty:-s*0.25,tr:s*0.32,ta:0.12,dr:155,dg:24,db:12},
-    {tx:s*0.30, ty:s*0.15, tr:s*0.25,ta:0.10,dr:100,dg:12,db:5},
-    {tx:-s*0.10,ty:s*0.38, tr:s*0.20,ta:0.08,dr:130,dg:18,db:8},
-    {tx:s*0.18, ty:-s*0.40,tr:s*0.18,ta:0.09,dr:90, dg:10,db:4}
-  ];
-  for(var ti=0;ti<tholins.length;ti++){
-    var th=tholins[ti];
-    var thG=ctx.createRadialGradient(th.tx,th.ty,0,th.tx,th.ty,Math.max(0.1,th.tr));
-    thG.addColorStop(0,"rgba("+th.dr+","+th.dg+","+th.db+","+th.ta+")");
-    thG.addColorStop(0.55,"rgba("+(th.dr*0.6|0)+","+(th.dg*0.5|0)+","+(th.db*0.5|0)+","+(th.ta*0.4)+")");
-    thG.addColorStop(1,"rgba(0,0,0,0)");
-    ctx.fillStyle=thG;ctx.beginPath();ctx.arc(th.tx,th.ty,th.tr,0,Math.PI*2);ctx.fill();
+    /* Fissure glow layer — plate outlines + branching cracks, bright hot,
+       on transparent bg so runtime can pulse it additively */
+    g.save();g.beginPath();g.arc(cx,cy,R,0,Math.PI*2);g.clip();
+    g.shadowColor="rgba(255,90,20,0.9)";
+    for(var qi=0;qi<plates.length;qi++){
+      var vv=plates[qi];
+      g.shadowBlur=Math.max(3,R*0.07);
+      g.strokeStyle="rgba(255,120,40,0.85)";
+      g.lineWidth=Math.max(0.8,R*0.022);
+      g.beginPath();g.moveTo(vv[0][0],vv[0][1]);
+      for(var qj=1;qj<vv.length;qj++){
+        var qmx=(vv[qj][0]+vv[(qj+1)%vv.length][0])/2,qmy=(vv[qj][1]+vv[(qj+1)%vv.length][1])/2;
+        g.quadraticCurveTo(vv[qj][0],vv[qj][1],qmx,qmy);
+      }
+      g.closePath();g.stroke();
+      /* hot white-orange core line inside the glow stroke */
+      g.shadowBlur=0;
+      g.strokeStyle="rgba(255,200,120,0.55)";
+      g.lineWidth=Math.max(0.5,R*0.01);
+      g.stroke();
+    }
+    /* branching interior cracks — short jittered polylines */
+    g.shadowBlur=Math.max(2,R*0.05);
+    for(var ci=0;ci<10;ci++){
+      var ca=rnd()*Math.PI*2, cd=R*rnd()*0.8;
+      var cpx=cx+Math.cos(ca)*cd, cpy=cy+Math.sin(ca)*cd;
+      var steps=3+((rnd()*3)|0);
+      g.strokeStyle="rgba(255,100,30,"+(0.35+rnd()*0.35).toFixed(2)+")";
+      g.lineWidth=Math.max(0.6,R*0.014);
+      g.beginPath();g.moveTo(cpx,cpy);
+      var wa=rnd()*Math.PI*2;
+      for(var si=0;si<steps;si++){
+        wa+=(rnd()-0.5)*1.4;
+        cpx+=Math.cos(wa)*R*0.12;cpy+=Math.sin(wa)*R*0.12;
+        g.lineTo(cpx,cpy);
+      }
+      g.stroke();
+    }
+    g.restore();
+    C=window._phitexLava={s:s,S:S,base:base,glowL:glow};
   }
 
-  /* Possible water ice patches — methanol/water ice showing through tholins */
-  var icePatch=[
-    {ix:s*0.08,iy:-s*0.15,ir:s*0.10},
-    {ix:-s*0.35,iy:s*0.30,ir:s*0.07}
-  ];
-  for(var ii=0;ii<icePatch.length;ii++){
-    var ip=icePatch[ii];
-    var ipG=ctx.createRadialGradient(ip.ix,ip.iy,0,ip.ix,ip.iy,Math.max(0.1,ip.ir));
-    ipG.addColorStop(0,"rgba(160,80,55,0.12)");/* reddish-pink where ice peeks through */
-    ipG.addColorStop(0.6,"rgba(140,60,40,0.06)");
-    ipG.addColorStop(1,"rgba(0,0,0,0)");
-    ctx.fillStyle=ipG;ctx.beginPath();ctx.arc(ip.ix,ip.iy,ip.ir,0,Math.PI*2);ctx.fill();
-  }
+  /* --- Runtime composite --- */
+  var S2=C.S/2;
+  /* faint ambient heat halo */
+  var heat=ctx.createRadialGradient(x,y,Math.max(0.1,s*0.9),x,y,Math.max(0.1,s*1.35));
+  heat.addColorStop(0,"rgba(0,0,0,0)");
+  heat.addColorStop(0.5,"rgba(200,40,12,0.07)");
+  heat.addColorStop(1,"rgba(0,0,0,0)");
+  ctx.fillStyle=heat;ctx.beginPath();ctx.arc(x,y,s*1.35,0,Math.PI*2);ctx.fill();
 
-  ctx.restore();/* end surface rotate */
-  ctx.restore();/* end clip */
+  ctx.save();
+  ctx.translate(x,y);ctx.rotate(now/240000); /* slow molten drift */
+  ctx.drawImage(C.base,-S2,-S2);
+  /* fissure glow pulses with the fleet's thermodynamic state */
+  var fs=(fleetScore!=null?fleetScore:0.5);
+  var pulse=0.55+0.45*Math.sin(now/(700+900*(1-Math.min(1,fs*2))));
+  ctx.globalAlpha=0.45+0.55*pulse*(0.5+fs*0.8);
+  ctx.globalCompositeOperation="lighter";
+  ctx.drawImage(C.glowL,-S2,-S2);
+  ctx.globalCompositeOperation="source-over";
+  ctx.globalAlpha=1;
+  ctx.restore();
 
-  /* Heavy terminator — nearly half the planet is in complete darkness */
-  var termX3=x-lx*s*0.45;var termY3=y-ly*s*0.45;
-  var termG3=ctx.createRadialGradient(termX3,termY3,0,termX3,termY3,Math.max(0.1,s*0.95));
-  termG3.addColorStop(0,"rgba(0,0,0,0)");
-  termG3.addColorStop(0.4,"rgba(0,0,0,0)");
-  termG3.addColorStop(0.72,"rgba(0,0,0,0.35)");
-  termG3.addColorStop(1,"rgba(0,0,0,0.70)");
-  ctx.fillStyle=termG3;ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.fill();
+  /* Sun-relative terminator — shadow side falls away from CC */
+  var termX=x-lx*s*0.45,termY=y-ly*s*0.45;
+  var termG=ctx.createRadialGradient(termX,termY,0,termX,termY,Math.max(0.1,s*1.05));
+  termG.addColorStop(0,"rgba(0,0,0,0)");
+  termG.addColorStop(0.45,"rgba(0,0,0,0)");
+  termG.addColorStop(0.75,"rgba(5,1,0,0.42)");
+  termG.addColorStop(1,"rgba(5,1,0,0.78)");
+  ctx.fillStyle=termG;ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.fill();
 
-  /* Thermodynamic pulse — PHITEX data: thermal signature oscillates with
-     fleet score. Boosted 2026-07-30 (vivarium/identity pass): PHITEX's base
-     sphere is deliberately near-black by design ("coldest and most distant"
-     body in the fleet) which is thematically right but meant the whole
-     body was reading as an empty dark patch at 22px from across the room —
-     the live-data pulse (the one thing that's actually supposed to carry
-     its identity) was even fainter than the sphere it sat on. Alpha/extent
-     raised so the pulse itself becomes PHITEX's readable silhouette. */
-  var pulsePeriod=2000+3000*(1-Math.min(1,(fleetScore||0)*2));
-  var pulseA=Math.max(0,0.14+0.20*Math.sin(now/pulsePeriod))*(0.5+(fleetScore||0.5));
-  if(pulseA>0.005){
-    var pulseG=ctx.createRadialGradient(x,y,s*0.45,x,y,Math.max(0.1,s*1.22));
-    pulseG.addColorStop(0,"rgba(0,0,0,0)");
-    pulseG.addColorStop(0.55,"rgba(210,45,20,"+pulseA.toFixed(3)+")");
-    pulseG.addColorStop(1,"rgba(0,0,0,0)");
-    ctx.fillStyle=pulseG;ctx.beginPath();ctx.arc(x,y,s*1.22,0,Math.PI*2);ctx.fill();
-  }
-  /* Slow-rotating thin ember ring — gives PHITEX a silhouette even when the
-     pulse is at its dim phase, so it never fully disappears between beats. */
-  var emberA=0.10+0.05*Math.sin(now/2600);
-  ctx.strokeStyle="rgba(200,60,30,"+emberA.toFixed(3)+")";
-  ctx.lineWidth=Math.max(0.6,s*0.05);
-  ctx.beginPath();ctx.arc(x,y,s*1.06,0,Math.PI*2);ctx.stroke();
-
-  /* ═══ GOLDEN SPIRAL ARM (Round 2 redesign, 2026-07-30) ═══
-     PHITEX is the thermodynamic/phi engine — directive 2 asks for a golden
-     spiral arm plus the phi-flare (the pulse above, already boosted). A
-     true logarithmic spiral (r = a*e^(b*theta), b tuned to the golden
-     ratio's growth constant) sweeping slowly outward, bright gold against
-     PHITEX's near-black base sphere so it reads as the primary silhouette
-     even though the sphere underneath stays deliberately dark. */
-  /* Re-measured live at PHITEX's actual render size (~18px moon radius,
-     s~25px): a 0.88px line at 0.58 alpha is sub-pixel-effective and the
-     whole body vanished into an anonymous dim smudge — confirmed via
-     zoomed screenshot, not a rendering guess. Line width floor raised well
-     past the old s-relative formula (which degenerates at small s), a
-     soft glow stroke added underneath so the spiral has presence even
-     before AA kicks in, and overall alpha pushed to the readable range the
-     directive's "alpha>=0.5 over >=40% of footprint" bar actually requires. */
-  var phiB = 0.3063489; /* ln(phi)/(pi/2) — true golden-spiral growth rate */
-  var spiralRot = now/6000;
-  var spiralPts=[];
-  for (var th=0; th<=220; th++){
-    var theta = th*0.045;
-    var rr = s*0.10*Math.exp(phiB*theta);
-    if (rr > s*1.45) break;
-    spiralPts.push([x+Math.cos(theta+spiralRot)*rr, y+Math.sin(theta+spiralRot)*rr]);
-  }
-  /* Glow pass — wide, soft, low alpha */
-  ctx.strokeStyle = "rgba(255,200,90,0.28)";
-  ctx.lineWidth = Math.max(2.2, s*0.10);
-  ctx.lineCap = "round";
-  ctx.beginPath();
-  for (var spi=0; spi<spiralPts.length; spi++){ if(spi===0) ctx.moveTo(spiralPts[spi][0],spiralPts[spi][1]); else ctx.lineTo(spiralPts[spi][0],spiralPts[spi][1]); }
+  /* thin hot rim on the lit limb */
+  ctx.save();
+  ctx.beginPath();ctx.arc(x,y,s*0.99,sunA-1.25,sunA+1.25);
+  ctx.strokeStyle="rgba(255,120,60,0.35)";
+  ctx.lineWidth=Math.max(0.8,s*0.04);
   ctx.stroke();
-  /* Core pass — bright, crisp, this is the primary silhouette line */
-  ctx.strokeStyle = "rgba(255,215,130,0.85)";
-  ctx.lineWidth = Math.max(1.4, s*0.055);
-  ctx.beginPath();
-  for (var spi2=0; spi2<spiralPts.length; spi2++){ if(spi2===0) ctx.moveTo(spiralPts[spi2][0],spiralPts[spi2][1]); else ctx.lineTo(spiralPts[spi2][0],spiralPts[spi2][1]); }
-  ctx.stroke();
-  ctx.lineCap = "butt";
-  /* Bright seed point at the spiral's origin — sells "this is generative",
-     also anchors identity when the arm itself is rotated mostly edge-on */
-  var seedG=ctx.createRadialGradient(x,y,0,x,y,Math.max(0.1,s*0.22));
-  seedG.addColorStop(0,"rgba(255,235,180,0.85)");
-  seedG.addColorStop(0.5,"rgba(255,210,120,0.35)");
-  seedG.addColorStop(1,"rgba(255,190,90,0)");
-  ctx.fillStyle=seedG;
-  ctx.beginPath();ctx.arc(x,y,Math.max(0.1,s*0.22),0,Math.PI*2);ctx.fill();
+  ctx.restore();
 }
 
 /* Contrarian / Iapetus — extreme two-tone: jet black leading hemisphere, bright white trailing */

@@ -1460,18 +1460,40 @@ function buildStation(seed) {
   const slFlare = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), slFlareMat);
   slFlare.position.copy(focal);
   slGroup.add(slFlare);
+  // Lance = gradient-textured PLANE strips, not cones. Screenshot-confirmed
+  // defect: open-ended additive cones viewed side-on are brightest at their
+  // silhouette edges (longest path through the "tube"), so the fired lance
+  // read as two parallel rails with a hollow gap. The camera is a fixed
+  // orthographic view down -Z, so an XY plane needs no billboarding: a
+  // cross-beam gradient (soft edge -> hot white core -> soft edge) renders
+  // as one solid luminous column, film-style. Two stacked strips: wide soft
+  // glow + narrow hot core. Plane height runs along local +Y = fire axis.
+  const slBeamTex = (() => {
+    const cv = document.createElement('canvas');
+    cv.width = 64; cv.height = 2;
+    const bctx = cv.getContext('2d');
+    const grad = bctx.createLinearGradient(0, 0, 64, 0);
+    grad.addColorStop(0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.30, 'rgba(255,255,255,0.28)');
+    grad.addColorStop(0.5, 'rgba(255,255,255,1)');
+    grad.addColorStop(0.70, 'rgba(255,255,255,0.28)');
+    grad.addColorStop(1, 'rgba(255,255,255,0)');
+    bctx.fillStyle = grad;
+    bctx.fillRect(0, 0, 64, 2);
+    return new THREE.CanvasTexture(cv);
+  })();
   const slMainMat = new THREE.MeshBasicMaterial({
-    color: SL_COLOR, transparent: true, opacity: 0,
-    blending: THREE.AdditiveBlending, depthWrite: false,
+    map: slBeamTex, color: 0xd8ffe9, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slMain = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.22, 55, 10, 1, true), slMainMat);
+  const slMain = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 55), slMainMat);
   slMain.position.set(0, focal.y + 27.5, 0);
   slGroup.add(slMain);
   const slGlowMat = new THREE.MeshBasicMaterial({
-    color: SL_COLOR, transparent: true, opacity: 0,
-    blending: THREE.AdditiveBlending, depthWrite: false,
+    map: slBeamTex, color: SL_COLOR, transparent: true, opacity: 0,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slGlow = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 0.5, 55, 10, 1, true), slGlowMat);
+  const slGlow = new THREE.Mesh(new THREE.PlaneGeometry(4.2, 55), slGlowMat);
   slGlow.position.set(0, focal.y + 27.5, 0);
   slGroup.add(slGlow);
 
@@ -2094,9 +2116,10 @@ class StationRig {
         sl.rimMat.opacity = 0.6 * kOut;
         sl.flareMat.opacity = 1.0 * kOut;
         sl.flare.scale.setScalar(1.5 * flicker);
-        if (this.slPhase >= 2.75) {
+        if (this.slPhase >= 2.75 + (this.slHold || 0)) {
           this.slState = 'idle';
           this.slTimer = 40 + Math.random() * 50;
+          this.slHold = 0; // manual hold never carries into organic auto-fires
           sl.mainMat.opacity = 0; sl.glowMat.opacity = 0;
           sl.rimMat.opacity = 0; sl.flareMat.opacity = 0;
           sl.flare.scale.setScalar(0.6);
@@ -2312,8 +2335,13 @@ const Armada = {
   // Manually trigger the station's superlaser sequence (charge -> fire).
   // Used for visual verification and available from the console:
   // window.Armada.fireSuperlaser()
-  fireSuperlaser() {
-    if (_station && _station.slState === 'idle') _station.slTimer = 0;
+  // Optional holdSeconds extends the burn beyond the default ~2.75s —
+  // handy for demos on the big screen (and for catching it on camera).
+  fireSuperlaser(holdSeconds) {
+    if (_station && _station.slState === 'idle') {
+      _station.slTimer = 0;
+      _station.slHold = Math.max(0, Number(holdSeconds) || 0);
+    }
   },
 
   // Read-only view of the superlaser state machine, for debugging.

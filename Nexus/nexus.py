@@ -732,8 +732,34 @@ class GaussianBeliefFusion:
         fused_var = 1.0 / total_prec
         fused_conf = max(0.0, min(1.0, 1.0 - fused_var))
 
-        best_single = max(precisions)
-        info_gain = total_prec / best_single if best_single > 0 else 1.0
+        # Information gain: bits gained by precision-weighted (Gauss-optimal)
+        # fusion over a NAIVE equal-weighted average of the same N sources.
+        #
+        # var_naive = variance of a plain average of N estimates, each with
+        #             its own variance 1/precision_i:
+        #               var_naive = (1/N^2) * sum(1/precision_i)
+        # var_opt   = variance of the precision-weighted fusion (the BLUE
+        #             estimator): var_opt = 1 / sum(precision_i)
+        # info_gain_bits = 0.5 * log2(var_naive / var_opt)
+        #
+        # At UNIFORM weights (self.accuracy all equal — the untrained
+        # default state) precision-weighted fusion IS the naive average,
+        # so var_naive == var_opt and info_gain == 0 bits exactly: there is
+        # no informational advantage to claim yet because the model hasn't
+        # learned which sources are more trustworthy. Gain only grows once
+        # self.accuracy differentiates sources (post 50+ scored cycles),
+        # which is when precision-weighting actually starts outperforming
+        # a plain average. This replaces the old total_prec/best_single
+        # formula, which degenerated to exactly n_sources at uniform
+        # weights (a source count mislabeled as "information gain").
+        n_sources = len(precisions)
+        if n_sources > 0 and total_prec > 0:
+            var_naive = sum(1.0 / p for p in precisions) / (n_sources ** 2)
+            var_opt = 1.0 / total_prec
+            info_gain = 0.5 * math.log2(var_naive / var_opt) if var_opt > 0 else 0.0
+            info_gain = max(0.0, info_gain)  # guard float noise at exact uniformity
+        else:
+            info_gain = 0.0
 
         if fused_val > 0.6:
             regime = "BULL"
@@ -1085,6 +1111,11 @@ class NexusEngine:
         self._prev_vol_forecast = "NEUTRAL"
         self._prev_character = "QUIET"
         self._event_pub = EventPublisher(COMMAND_CENTER, "nexus") if EventPublisher else None
+        # Emit-on-change state for MANIFOLD_WARNING: {pair: (above_threshold, interpretation)}
+        # Prevents re-firing every 15s scan cycle while a pair stays elevated --
+        # only emits on entry into the warning band or a change in manifold
+        # classification, mirroring how a state machine should gate alerts.
+        self._prev_manifold_state = {}
 
     def _log(self, msg):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -1808,18 +1839,30 @@ class NexusEngine:
                     pass
 
             # Council: MANIFOLD_WARNING when regime change probability > 0.6
+            # Emit-on-change: only fire when a pair newly crosses into the
+            # warning band, or its manifold classification changes while
+            # still elevated. Otherwise a pair sitting above threshold for
+            # minutes would re-emit identical warnings every 15s scan.
             if _council_loaded:
                 for pair_name, ig in info_geo_results.items():
                     try:
-                        if ig.get("regime_change_probability", 0) > 0.6:
+                        prob = ig.get("regime_change_probability", 0)
+                        interp = ig.get("interpretation", "")
+                        above = prob > 0.6
+                        prev_above, prev_interp = self._prev_manifold_state.get(
+                            pair_name, (False, None))
+
+                        if above and (not prev_above or interp != prev_interp):
                             self._event_pub.emit("MANIFOLD_WARNING", {
                                 "pair": pair_name,
-                                "regime_change_probability": ig["regime_change_probability"],
+                                "regime_change_probability": prob,
                                 "fisher_metric": ig["fisher_metric"],
                                 "geodesic_velocity": ig["geodesic_velocity"],
                                 "model_reliability": ig.get("model_reliability", 1.0),
-                                "interpretation": ig.get("interpretation", ""),
+                                "interpretation": interp,
                             })
+
+                        self._prev_manifold_state[pair_name] = (above, interp)
                     except Exception:
                         pass
 

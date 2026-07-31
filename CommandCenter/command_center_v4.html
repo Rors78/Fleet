@@ -590,7 +590,7 @@ var cardPulseTimers = {};
 /* ===== DOM REFS ===== */
 var $connLost     = document.getElementById("connLost");
 var $headerClock  = document.getElementById("headerClock");
-var COSMOS_BUILD="b0731.12"; /* bump on every deploy — shown in header */
+var COSMOS_BUILD="b0731.13"; /* bump on every deploy — shown in header */
 (function(){var bs=document.getElementById("buildStamp");if(bs)bs.textContent=COSMOS_BUILD;})();
 var $pillsBar     = document.getElementById("pillsBar");
 var $tradingGrid  = document.getElementById("tradingGrid");
@@ -656,7 +656,16 @@ function escHtml(s){
      instead of a thrown TypeError that blacks out the page. */
   return String(s).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");
 }
-function fmtNum(v,d){if(v==null||isNaN(v)) return "--"; return Number(v).toFixed(d)}
+function fmtNum(v,d){
+  if(v==null||isNaN(v)) return "--";
+  var n=Number(v);
+  /* Fix 2 (AEGIS audit 2026-07-31): normalize negative-zero before toFixed —
+     any tiny negative float (e.g. -0.00003) formats as the confusing "-0.000"
+     otherwise. Applies fleet-wide since every panel routes numbers through
+     this one helper. */
+  if(n===0) n=0;
+  return n.toFixed(d);
+}
 function fmtPrice(v){
   if(!v||v===0) return "--";
   if(typeof v!=="number") return String(v);
@@ -9106,7 +9115,10 @@ function fetchAegisDetailData(){
     var sc=data.raw.score;
     if(sc!=null){
       window.aegisScoreHistory.push(+sc);
-      if(window.aegisScoreHistory.length>50) window.aegisScoreHistory.shift();
+      /* Fix 1 (audit 2026-07-31): session-length ring buffer — was 50 samples
+         (~4min at the 5s poll interval), extended to 120 (~10min) so the
+         SCORE HISTORY panel has enough depth to show real trend, not noise. */
+      if(window.aegisScoreHistory.length>120) window.aegisScoreHistory.shift();
       try{sessionStorage.setItem('aegisScHist',JSON.stringify(window.aegisScoreHistory));}catch(e){}
     }
     /* Re-render if still on AEGIS tab */
@@ -9165,6 +9177,11 @@ function buildAegisView(def,b){
            regime==="CAUTIOUS"?"#f39c12":
            "#e74c3c";  /* DEFENSIVE = red */
   var _aeRegimeLabel=function(s){return s>=0.8?"AGGRESSIVE":s>=0.5?"NORMAL":s>=0.2?"CAUTIOUS":"DEFENSIVE";};
+  /* Fix 7: fixed 3-char badge system — no mid-word truncation ("DEFE") anywhere on the tab. */
+  var _aeBadge3=function(regWord){
+    var m={"DEFENSIVE":"DEF","CAUTIOUS":"CAU","NORMAL":"NOR","AGGRESSIVE":"AGG"};
+    return m[(regWord||"").toUpperCase()]||(regWord||"--").substring(0,3).toUpperCase();
+  };
 
   /* -- Shared component definitions -- */
   var compData=[
@@ -9187,6 +9204,25 @@ function buildAegisView(def,b){
   var _aeConsensus2="RANGING";
   var _aeMaxCount2=0;
   for(var _nk2 in _aeNormCounts2){if(_aeNormCounts2[_nk2]>_aeMaxCount2){_aeMaxCount2=_aeNormCounts2[_nk2];_aeConsensus2=_nk2;}}
+
+  /* Fix 3 (audit 2026-07-31): taxonomy reconciliation.
+     _aeNormCounts2 above is the LUMPED/compatible bucket set (feeds the H
+     entropy formula — untouched, that's AEGIS scoring, not a dashboard bug)
+     where RANGE/EQUILIBRIUM/NEUTRAL/DEFENSIVE/MIXED/CHOP/NORMAL/etc all fold
+     into one "RANGING" bucket. The CONSENSUS MATRIX card (R2C2) instead groups
+     by the literal, unmodified regime string per bot — a STRICT count. The two
+     panels used to report different numbers for what looked like the same
+     fact ("AGREEMENT 5/7 RANGING" vs matrix "RANGING (3)") with no way to see
+     both were legitimate simultaneously. _aeStrictCounts is that same strict
+     grouping, computed once here so every card that wants a true "N/total
+     literally-X" count uses this shared source instead of re-deriving it. */
+  var _aeStrictCounts={};
+  for(var _rkS in regSources){
+    var _rvS=(regSources[_rkS]||"UNKNOWN").toUpperCase();
+    _aeStrictCounts[_rvS]=(_aeStrictCounts[_rvS]||0)+1;
+  }
+  var _aeStrictTop="UNKNOWN",_aeStrictTopCount=0;
+  for(var _skS in _aeStrictCounts){if(_aeStrictCounts[_skS]>_aeStrictTopCount){_aeStrictTopCount=_aeStrictCounts[_skS];_aeStrictTop=_skS;}}
 
   /* Compute H (entropy) from sources */
   var totalSrcs=rsKeys.length||1;
@@ -9233,6 +9269,24 @@ function buildAegisView(def,b){
   var _portDeployed=_port.deployed||_port.total_reserved||0;
   var _aegisCap=_portTotal*(throttlePct/100);
 
+  /* ENFORCEMENT MISMATCH cross-check (audit 2026-07-31 directive):
+     the engine-side band bug (dashboard showing CAUTIOUS while portfolio
+     enforcement actually ran DEFENSIVE) is already fixed in aegis.py — this
+     is the dashboard-side guard so that class of bug is visible on screen
+     the moment it happens again, instead of being silently trusted.
+     Ground truth for what's ACTUALLY enforced right now is
+     ovData.portfolio.limits.max_deployed_pct (PortfolioManager.limits,
+     command_center.py — the value reserve() gates against), independently
+     derivable as 100-cash_floor_pct if "limits" itself is ever missing.
+     throttlePct above is AEGIS's own self-reported cap from its /api/snapshot
+     — the two numbers SHOULD always agree; when they don't, that gap IS the
+     bug, not a display quirk, so it's rendered as an explicit warning rather
+     than either number silently winning. */
+  var _portLimits=_port.limits||{};
+  var _enforcedPct=typeof _portLimits.max_deployed_pct==="number"?_portLimits.max_deployed_pct:
+                    (typeof _port.cash_floor_pct==="number"?100-_port.cash_floor_pct:null);
+  var _enforcementMismatch=_enforcedPct!=null&&typeof throttlePct==="number"&&Math.abs(_enforcedPct-throttlePct)>=1;
+
   var h='<div class="dv2-frame">';
 
   /* Title strip */
@@ -9243,6 +9297,15 @@ function buildAegisView(def,b){
   h+='<span class="dv2-uptime">Cycle '+cycle+(raw.scan_duration_s?' · '+fmtNum(raw.scan_duration_s,1)+'s':'')+'</span>';
   h+='<span class="dv2-port">:8079</span>';
   h+='</div>';
+
+  /* ENFORCEMENT MISMATCH banner — amber, sits above the KPI strip so it is
+     the first thing visible if AEGIS's self-reported cap and the portfolio's
+     actually-enforced cap ever disagree again. */
+  if(_enforcementMismatch){
+    h+='<div style="padding:5px 12px;background:rgba(245,158,11,0.14);border-top:1px solid #f59e0b;border-bottom:1px solid #f59e0b;font-family:Courier New,monospace;font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.5px">';
+    h+='⚠ ENFORCEMENT MISMATCH: engine says '+fmtNum(throttlePct,0)+'%, portfolio enforcing '+fmtNum(_enforcedPct,0)+'%';
+    h+='</div>';
+  }
 
   /* KPI strip */
   h+='<div class="dv2-stats-strip">';
@@ -9272,14 +9335,22 @@ function buildAegisView(def,b){
   h+='<div style="font-size:10px;color:'+regC+';letter-spacing:2px;margin-top:2px">'+ escHtml(regime)+'</div>';
   h+='<div style="font-size:9px;color:#475569;margin-top:2px">Max deploy: <b style="color:'+regC+'">'+(typeof maxDeploy==="number"?maxDeploy+'%':maxDeploy)+'</b></div>';
   h+='</div>';
-  h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px;border-top:1px solid #1e293b;padding-top:6px">FORMULA</div>';
-  h+='<div style="font-family:Courier New,monospace;font-size:9px;color:#475569;margin-bottom:6px;line-height:1.6">';
-  h+='tradability = max(0.25,(1-H^0.7)×C)×boost<br>';
-  h+='boost       = min(1+0.15×(1-H), 1.12)<br>';
-  h+='confidence  = (W+1)/2 if W≠0 else 1.0<br>';
-  h+='phi_pen     = min(Φ×0.5, 0.05)<br>';
-  h+='safety      = (1-S)×(1-phi_pen)×(1-ρ×0.15)<br>';
-  h+='score       = trad × conf × safety';
+  /* Fix 8 (audit 2026-07-31): substitute live component values into each
+     formula line so the symbolic form and its current evaluated result are
+     both visible — "tradability = max(0.25,(1-H^0.7)×C)×boost = 0.293"
+     instead of static reference text. Every value here is the same variable
+     already computed above (tradability/confidence/safety/H_val/etc from
+     aegis.py's compute_aegis() mirror at the top of this function) — no new
+     computation, just display. */
+  var _boostVal=Math.min(1.0+0.15*(1-H_val),1.12);
+  h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px;border-top:1px solid #1e293b;padding-top:6px">FORMULA (LIVE)</div>';
+  h+='<div style="font-family:Courier New,monospace;font-size:9px;color:#64748b;margin-bottom:6px;line-height:1.75">';
+  h+='tradability = max(0.25,(1-H^0.7)×C)×boost = <b style="color:#f39c12">'+fmtNum(tradability,4)+'</b><br>';
+  h+='boost       = min(1+0.15×(1-H), 1.12) = <b style="color:#e2e8f0">'+fmtNum(_boostVal,4)+'</b><br>';
+  h+='confidence  = (W+1)/2 if W≠0 else 1.0 = <b style="color:#e2e8f0">'+fmtNum(confidence,4)+'</b><br>';
+  h+='phi_pen     = min(Φ×0.5, 0.05) = <b style="color:#e2e8f0">'+fmtNum(phi_penalty,4)+'</b><br>';
+  h+='safety      = (1-S)×(1-phi_pen)×(1-ρ×0.15) = <b style="color:#e2e8f0">'+fmtNum(safety,4)+'</b><br>';
+  h+='score       = trad × conf × safety = <b style="color:'+regC+'">'+fmtNum(tradability*confidence*safety,4)+'</b>';
   h+='</div>';
   var _fvRow=function(label,val,note,col){return '<div class="dv2-kv"><span class="dv2-kv-k">'+label+'</span><span class="dv2-kv-v" style="color:'+(col||'#e2e8f0')+'">'+val+(note?'<span style="color:#475569;font-weight:400;font-size:9px"> '+note+'</span>':'')+ '</span></div>';};
   h+=_fvRow('tradability',fmtNum(tradability,4),tradability<=0.25?'(floored)':'','#f39c12');
@@ -9301,20 +9372,33 @@ function buildAegisView(def,b){
     for(var ri=0;ri<rsKeys.length;ri++){
       var rk=rsKeys[ri];
       var rv=regSources[rk]||"--";
+      /* Fix 6: canonical UPPERCASE display everywhere on this list — bots
+         report regime strings in whatever case their own code uses ('bear'
+         vs 'RANGING'), so the RAW string was leaking mixed case onto the tab.
+         rvUpper is already the canonical form used for color+alignment logic;
+         now it's also what's shown, matching standards.py's UPPERCASE
+         regime convention used fleet-wide. */
       var rvUpper=rv.toUpperCase();
       var srcC=rvUpper.indexOf("BULL")>=0||rvUpper==="DEPLOY"?"#2ecc71":rvUpper.indexOf("BEAR")>=0||rvUpper.indexOf("FEAR")>=0?"#e74c3c":rvUpper.indexOf("RANG")>=0?"#3498db":"#94a3b8";
       var normRv=_aeNormMap[rvUpper]||rvUpper;
       var aligned=normRv===_aeConsensus2;
-      h+='<tr><td class="hi">'+escHtml(rk)+'</td><td style="color:'+srcC+'">'+escHtml(rv)+'</td>';
+      h+='<tr><td class="hi">'+escHtml(rk)+'</td><td style="color:'+srcC+'">'+escHtml(rvUpper)+'</td>';
       h+='<td class="r">'+(aligned?'<span style="color:#2ecc71">✔</span>':'<span style="color:#e74c3c">✗</span>')+'</td></tr>';
     }
     h+='</tbody></table>';
     h+='<div style="margin-top:6px;padding:5px 6px;background:rgba(0,0,0,0.2);border:1px solid #1e293b;font-size:9px">';
+    /* Fix 3: both taxonomies shown, each explicitly labeled, so the number
+       here always matches — by definition — the CONSENSUS MATRIX card's
+       strict count for the same regime word. No more silent disagreement
+       between two panels claiming to describe the same fleet. */
     h+='<div style="color:#475569;margin-bottom:2px">AGREEMENT</div>';
+    h+='<div style="margin-bottom:3px"><b style="color:#e2e8f0">'+_aeStrictTopCount+'/'+totalSrcs+'</b> <span style="color:#475569">'+escHtml(_aeStrictTop)+' <i style="color:#334155">(strict)</i></span></div>';
     var _rgKsSorted=Object.keys(_aeNormCounts2).sort(function(a,x){return _aeNormCounts2[x]-_aeNormCounts2[a];});
+    h+='<div>';
     _rgKsSorted.forEach(function(rg){
-      h+='<span style="margin-right:8px"><b style="color:#e2e8f0">'+_aeNormCounts2[rg]+'/'+totalSrcs+'</b> <span style="color:#475569">'+rg+'</span></span>';
+      h+='<span style="margin-right:8px"><b style="color:#e2e8f0">'+_aeNormCounts2[rg]+'/'+totalSrcs+'</b> <span style="color:#475569">'+rg.toLowerCase()+'-compatible</span></span>';
     });
+    h+='</div>';
     h+='<div style="margin-top:3px">DISAGREEMENT: <b style="color:'+(_aeEntropyNorm>0.8?'#e74c3c':_aeEntropyNorm>0.5?'#f39c12':'#2ecc71')+'">'+(Object.keys(_aeNormCounts2).length>=5?"HIGH":Object.keys(_aeNormCounts2).length>=3?"MED":"LOW")+'</b>';
     h+=' &nbsp; H = <b style="color:'+(H_val>=0.9?'#e74c3c':'#f39c12')+'">'+fmtNum(_aeEntropyRaw,3)+' bits (norm '+fmtNum(_aeEntropyNorm,3)+')</b></div>';
     h+='</div>';
@@ -9323,34 +9407,36 @@ function buildAegisView(def,b){
   }
   h+='</div></div>';
 
-  /* R1C3: SCORE HISTORY */
+  /* R1C3: SCORE HISTORY
+     Fix 1 (audit 2026-07-31): fixed 0-1 axis + regime bands now live inside
+     _aeDrawSparkline() (canvas), ring buffer extended to 120 samples above.
+     Fix 7: the old table truncated regime words to 4 chars ("DEFE"); replaced
+     entirely with a compact min/max/now/trend readout using a fixed 3-char
+     badge system (DEF/CAU/NOR/AGG) via _aeBadge3(), applied consistently. */
   h+='<div class="dv2-card">';
   h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:#9b59b6"></div>SCORE HISTORY<span class="dv2-card-hdr-right">'+(sparkHist.length||scoreHist.length)+' pts</span></div>';
   h+='<div style="flex:1;display:flex;flex-direction:column;overflow:hidden">';
-  h+='<div id="ae-spark-wrap" style="height:70px;flex-shrink:0;margin-bottom:4px"><canvas id="ae-spark-canvas" style="width:100%;height:100%"></canvas></div>';
-  var _histSrc=sparkHist.length>0?sparkHist:scoreHist.slice(-8);
+  h+='<div id="ae-spark-wrap" style="height:84px;flex-shrink:0;margin-bottom:4px"><canvas id="ae-spark-canvas" style="width:100%;height:100%"></canvas></div>';
+  var _histSrc=sparkHist.length>0?sparkHist:scoreHist.slice(-120);
   if(_histSrc.length>0){
-    h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:2px">LAST '+Math.min(8,_histSrc.length)+' CYCLES</div>';
-    h+='<table class="dv2-table" style="font-size:9px"><thead><tr><th>N</th><th>SCORE</th><th>REGIME</th></tr></thead><tbody>';
-    var _hSlice=_histSrc.slice(-8).reverse();
-    for(var hi2=0;hi2<_hSlice.length;hi2++){
-      var _hv=+(_hSlice[hi2]);
-      var _hReg=_aeRegimeLabel(_hv);
-      var _hC=_hv>=0.5?'#2ecc71':_hv>=0.2?'#f39c12':'#e74c3c';
-      h+='<tr><td style="color:#475569">'+( hi2===0?'NOW':'-'+hi2)+'</td>';
-      h+='<td style="color:'+_hC+'">'+fmtNum(_hv,4)+'</td>';
-      h+='<td style="color:'+_hC+'">'+_hReg.substring(0,4).toUpperCase()+'</td></tr>';
-    }
-    h+='</tbody></table>';
     var _allH=_histSrc.map(function(v){return +v;});
     var _minH=Math.min.apply(null,_allH),_maxH=Math.max.apply(null,_allH);
     var _avgH=_allH.reduce(function(a,v){return a+v;},0)/(_allH.length||1);
-    var _firstH=_allH[0],_lastH=_allH[_allH.length-1];
-    h+='<div style="margin-top:4px;padding:3px 0;font-size:9px;color:#475569;border-top:1px solid #1e293b">';
-    h+='Trend: <b style="color:'+(_lastH>_firstH+0.005?'#2ecc71':_lastH<_firstH-0.005?'#e74c3c':'#94a3b8')+'">'+(_lastH>_firstH+0.005?'UP':_lastH<_firstH-0.005?'DOWN':'FLAT')+'</b>';
-    h+=' Avg: <b style="color:#e2e8f0">'+fmtNum(_avgH,4)+'</b>';
-    h+=' Min: <b style="color:#e74c3c">'+fmtNum(_minH,4)+'</b>';
-    h+=' Max: <b style="color:#2ecc71">'+fmtNum(_maxH,4)+'</b></div>';
+    var _nowH=_allH[_allH.length-1];
+    /* Trend = compare current value against the mean of the earlier half of
+       the visible window, not just sample[0] (which is noisy at small N). */
+    var _halfIdx=Math.max(0,Math.floor(_allH.length/2)-1);
+    var _earlyAvg=_allH.slice(0,Math.max(1,_halfIdx+1)).reduce(function(a,v){return a+v;},0)/Math.max(1,_halfIdx+1);
+    var _trendDir=_nowH>_earlyAvg+0.005?'UP':_nowH<_earlyAvg-0.005?'DOWN':'FLAT';
+    var _trendC=_trendDir==='UP'?'#2ecc71':_trendDir==='DOWN'?'#e74c3c':'#94a3b8';
+    var _nowC=_nowH>=0.8?'#3498db':_nowH>=0.5?'#2ecc71':_nowH>=0.2?'#f39c12':'#e74c3c';
+    h+='<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px 8px;font-size:9px">';
+    h+='<div class="dv2-kv"><span class="dv2-kv-k">NOW</span><span class="dv2-kv-v" style="color:'+_nowC+'">'+fmtNum(_nowH,4)+' <span style="font-size:8px;color:'+_nowC+'">'+_aeBadge3(_aeRegimeLabel(_nowH))+'</span></span></div>';
+    h+='<div class="dv2-kv"><span class="dv2-kv-k">TREND</span><span class="dv2-kv-v" style="color:'+_trendC+'">'+_trendDir+'</span></div>';
+    h+='<div class="dv2-kv"><span class="dv2-kv-k">MIN</span><span class="dv2-kv-v" style="color:#e74c3c">'+fmtNum(_minH,4)+' <span style="font-size:8px;color:#e74c3c">'+_aeBadge3(_aeRegimeLabel(_minH))+'</span></span></div>';
+    h+='<div class="dv2-kv"><span class="dv2-kv-k">MAX</span><span class="dv2-kv-v" style="color:#2ecc71">'+fmtNum(_maxH,4)+' <span style="font-size:8px;color:#2ecc71">'+_aeBadge3(_aeRegimeLabel(_maxH))+'</span></span></div>';
+    h+='</div>';
+    h+='<div style="margin-top:4px;padding:3px 0;font-size:9px;color:#475569;border-top:1px solid #1e293b">Avg: <b style="color:#e2e8f0">'+fmtNum(_avgH,4)+'</b> &nbsp; over <b style="color:#e2e8f0">'+_allH.length+'</b> samples (~'+Math.round(_allH.length*5/60)+'m at 5s poll)</div>';
   } else {
     h+='<div style="color:#475569;font-style:italic;font-size:10px;padding:8px 0;text-align:center">Building history…</div>';
   }
@@ -9421,7 +9507,14 @@ function buildAegisView(def,b){
     {sym:"S",label:"Port Stress", raw:S_val,rawU:"",norm:S_val,
      effect:S_val===0?"HELPING":S_val<0.1?"MINOR":"DRAGGING",effC:S_val===0?"#2ecc71":S_val<0.1?"#f39c12":"#e74c3c",
      note:"penalty −"+fmtNum(S_val,3)},
-    {sym:"Φ",label:"PHITEX",   raw:phi_val,rawU:"",norm:phi_val,
+    {sym:"Φ",label:"PHITEX",   raw:phi_val,rawU:"",
+     /* Fix 2 (audit 2026-07-31): PHITEX's raw scale isn't 0-1 like the other
+        five rows — phi_penalty caps out at phi_val=0.1 (min(phi_val*0.5,0.05)),
+        so feeding phi_val straight into the shared 0-100% bar gave every real
+        reading a near-invisible sliver even when it was meaningfully "high"
+        for PHITEX's own scale. Normalize against that same 0.1 cap so the bar
+        is legible, same as every other component. */
+     norm:Math.min(1,phi_val/0.1),
      effect:phi_penalty>0.2?"DRAGGING":phi_penalty>0.05?"MINOR DRAG":"HELPING",effC:phi_penalty>0.2?"#e74c3c":phi_penalty>0.05?"#f39c12":"#2ecc71",
      note:"penalty −"+fmtNum(phi_penalty,3)},
     {sym:"ρ",label:"Correlation",raw:rho_val,rawU:"",norm:rho_val,
@@ -9431,20 +9524,35 @@ function buildAegisView(def,b){
   for(var cbi=0;cbi<_compDefs2.length;cbi++){
     var _cb=_compDefs2[cbi];
     var _barPct=Math.min(100,Math.round(_cb.norm*100));
-    h+='<div style="margin-bottom:5px;padding:4px 6px;background:rgba(0,0,0,0.15);border-left:2px solid '+_cb.effC+'">';
+    /* Fix 2: zero/near-zero contributions (|v|<0.005) read as dim NEUTRAL/"-"
+       instead of whatever HELPING/HURTING label the raw thresholds would
+       otherwise assign a value that's indistinguishable from noise. */
+    var _isNearZero=Math.abs(_cb.raw)<0.005;
+    var _effLabel=_isNearZero?"—":_cb.effect;
+    var _effColor=_isNearZero?"#475569":_cb.effC;
+    var _barColor=_isNearZero?"#334155":_cb.effC;
+    h+='<div style="margin-bottom:5px;padding:4px 6px;background:rgba(0,0,0,0.15);border-left:2px solid '+_barColor+'">';
     h+='<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:2px">';
     h+='<span style="font-size:10px;color:#e2e8f0"><b style="color:#94a3b8">'+_cb.sym+'</b> '+_cb.label+'</span>';
-    h+='<span style="font-size:9px;font-weight:700;color:'+_cb.effC+'">'+_cb.effect+'</span></div>';
-    h+='<div style="height:4px;background:rgba(0,0,0,0.3);border-radius:2px;margin-bottom:3px"><div style="height:4px;width:'+_barPct+'%;background:'+_cb.effC+';border-radius:2px;opacity:0.7"></div></div>';
-    h+='<div style="display:flex;justify-content:space-between;font-size:9px"><span style="color:#475569">'+_cb.note+'</span><span style="color:#94a3b8">'+fmtNum(_cb.raw,3)+(_cb.rawU?' '+_cb.rawU:'')+'</span></div></div>';
+    h+='<span style="font-size:9px;font-weight:700;color:'+_effColor+'">'+_effLabel+'</span></div>';
+    h+='<div style="height:4px;background:rgba(0,0,0,0.3);border-radius:2px;margin-bottom:3px"><div style="height:4px;width:'+_barPct+'%;background:'+_barColor+';border-radius:2px;opacity:0.7"></div></div>';
+    h+='<div style="display:flex;justify-content:space-between;font-size:9px"><span style="color:#475569">'+_cb.note+'</span><span style="color:#e2e8f0">'+fmtNum(_cb.raw,3)+(_cb.rawU?' '+_cb.rawU:'')+'</span></div></div>';
   }
   h+='</div></div>';
 
-  /* R2C2: CONSENSUS MATRIX */
+  /* R2C2: CONSENSUS MATRIX
+     Fix 3: this card's primary grouping is now built directly off the same
+     _aeStrictCounts computed once above (regSources, literal strings, no
+     lumping) instead of re-deriving an independent-but-equivalent grouping —
+     so it is definitionally impossible for this card and the AGREEMENT
+     "(strict)" line to disagree. The _masterGroups fallback (live bot regime
+     fields, used only when raw.regime_sources is empty) is a different data
+     source by necessity, not a competing taxonomy — labeled explicitly below
+     so that source switch is never silent. */
   h+='<div class="dv2-card">';
-  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:#16a085"></div>CONSENSUS MATRIX</div>';
+  h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:#16a085"></div>CONSENSUS MATRIX<span class="dv2-card-hdr-right">strict</span></div>';
   h+='<div class="dv2-scroll">';
-  h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px">REGIME GROUPS</div>';
+  h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px">REGIME GROUPS (STRICT)</div>';
   var _rawGroups={};
   for(var _rgi in regSources){
     var _rgRaw=(regSources[_rgi]||"UNKNOWN").toUpperCase();
@@ -9462,8 +9570,12 @@ function buildAegisView(def,b){
     _masterGroups[_mbReg].push(_mb.id||"?");
   }
   var _mgKeys=Object.keys(_masterGroups).sort(function(a,x){return _masterGroups[x].length-_masterGroups[a].length;});
+  var _usingFallbackSrc=_rawGroupKeys.length===0&&_mgKeys.length>0;
   var _srcGroups=_rawGroupKeys.length>0?_rawGroups:_masterGroups;
   var _srcKeys=_rawGroupKeys.length>0?_rawGroupKeys:_mgKeys;
+  if(_usingFallbackSrc){
+    h+='<div style="font-size:8px;color:#f39c12;margin-bottom:4px">regime_sources empty — showing live bot regimes instead (different source)</div>';
+  }
   if(_srcKeys.length>0){
     for(var _sgi=0;_sgi<_srcKeys.length;_sgi++){
       var _sg=_srcKeys[_sgi],_sgBots=_srcGroups[_sg];
@@ -9520,7 +9632,14 @@ function buildAegisView(def,b){
   h+='<div class="dv2-scroll">';
   h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin-bottom:4px">CURRENT IMPACT</div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Regime</span><span class="dv2-kv-v" style="color:'+regC+'">'+escHtml(regime)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Cap enforced</span><span class="dv2-kv-v" style="color:'+regC+'">'+throttlePct+'% = '+fmt$(_aegisCap)+'</span></div>';
+  /* Relabeled from "Cap enforced" — this KV was AEGIS's own self-reported cap
+     presented as if already confirmed-enforced. It's now explicitly "engine
+     says" with the portfolio's actual enforced figure directly beneath it —
+     the same cross-check driving the ENFORCEMENT MISMATCH banner above,
+     visible here even when they agree (so the honest source is never hidden,
+     not just surfaced during a mismatch). */
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Engine says</span><span class="dv2-kv-v" style="color:'+regC+'">'+fmtNum(throttlePct,0)+'% = '+fmt$(_aegisCap)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Portfolio enforcing</span><span class="dv2-kv-v" style="color:'+(_enforcementMismatch?'#f59e0b':'#2ecc71')+'">'+(_enforcedPct!=null?fmtNum(_enforcedPct,0)+'%':'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Deployed</span><span class="dv2-kv-v" style="color:'+(_portDeployed>_aegisCap?'#e74c3c':'#e2e8f0')+'">'+fmt$(_portDeployed)+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Buffer</span><span class="dv2-kv-v" style="color:#2ecc71">'+fmt$(Math.max(0,_aegisCap-_portDeployed))+'</span></div>';
   h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin:6px 0 4px;border-top:1px solid #1e293b;padding-top:6px">AT CAUTIOUS (60%)</div>';
@@ -9584,6 +9703,17 @@ function buildAegisView(def,b){
     /* Explanatory subtitle */
     h+='<div style="font-size:8px;color:#334155;line-height:1.4;margin-top:4px">W_position measures fleet exposure in whale-active pairs. When overlap exceeds 15%, reduces max deployment as a risk throttle. Does not affect AEGIS score.</div>';
   }
+
+  /* Fix 5 (audit 2026-07-31): generic per-tab event stream, added here as its
+     own labeled subsection. Distinct from RECENT DENIALS (AEGIS-caused
+     denials, business content) and OPS LOG (AEGIS's own log lines) above —
+     this is the fleet-relevance-filtered feed: AEGIS's own events first,
+     always-shown fleet-critical events (EMERGENCY/PORTFOLIO_DENIAL/whale
+     EXTREME/LIMIT_CHANGE), everything else from other bots' engine chatter
+     collapsed to a rollup count. See buildBotEventStreamHTML — same function
+     every other bot tab uses via buildDetailView's generic fallback. */
+  h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin:6px 0 4px;border-top:1px solid #1e293b;padding-top:6px">EVENT STREAM</div>';
+  h+=buildBotEventStreamHTML('aegis',{limit:6});
   h+='</div></div>';
 
   h+='</div>'; /* /dv2-body */
@@ -9619,26 +9749,40 @@ function _aeDrawSparkline(){
   var rawC=(_botDataCache.aegis)||{};
   var hist=(window.aegisScoreHistory.length>1?window.aegisScoreHistory:rawC.score_history||[]).map(function(v){return +v;});
   if(hist.length<2){ctx.fillStyle='rgba(71,85,105,0.4)';ctx.font='9px Courier New';ctx.fillText('Building...',4,H/2+3);return;}
-  var minV=Math.min.apply(null,hist),maxV=Math.max.apply(null,hist);
-  var range=Math.max(0.01,maxV-minV);
+  /* Fix 1 (audit 2026-07-31): FIXED 0-1 Y axis, not data-min/max autoscale.
+     The old autoscale (range=max(0.01,maxV-minV)) collapsed to a near-zero
+     window on AEGIS's typically-stable score, pinning the line flat against
+     the bottom of an otherwise-empty plot. A fixed axis makes "flat" mean
+     "the score genuinely isn't moving," not "the axis math broke." */
   var padT=4,padB=4,padL=2,padR=2;
   var xS=function(i){return padL+i/(hist.length-1)*(W-padL-padR);};
-  var yS=function(v){return padT+(1-(v-minV)/range)*(H-padT-padB);};
+  var yS=function(v){var c=Math.max(0,Math.min(1,v));return padT+(1-c)*(H-padT-padB);};
   var bgG=ctx.createRadialGradient(W/2,H/2,0,W/2,H/2,Math.max(W,H));
   bgG.addColorStop(0,'rgba(30,41,59,0.3)');bgG.addColorStop(1,'rgba(6,10,18,0.1)');
   ctx.fillStyle=bgG;ctx.fillRect(0,0,W,H);
+  /* Four regime threshold bands (0/0.2/0.5/0.8/1) as faint filled zones,
+     colored per regime, drawn BEFORE the score line so the line reads on top. */
+  var _bands=[
+    {lo:0.0,hi:0.2,col:'rgba(231,76,60,0.10)'},   /* DEFENSIVE */
+    {lo:0.2,hi:0.5,col:'rgba(243,156,18,0.09)'},  /* CAUTIOUS */
+    {lo:0.5,hi:0.8,col:'rgba(46,204,113,0.08)'},  /* NORMAL */
+    {lo:0.8,hi:1.0,col:'rgba(52,152,219,0.10)'}   /* AGGRESSIVE */
+  ];
+  _bands.forEach(function(bd){
+    var yTop=yS(bd.hi),yBot=yS(bd.lo);
+    ctx.fillStyle=bd.col;
+    ctx.fillRect(0,yTop,W,Math.max(0.1,yBot-yTop));
+  });
   [0.2,0.5,0.8].forEach(function(t){
-    if(t>=minV-0.01&&t<=maxV+0.01){
-      var ty=yS(t);
-      ctx.beginPath();ctx.moveTo(0,ty);ctx.lineTo(W,ty);
-      ctx.strokeStyle=t>=0.5?'rgba(46,204,113,0.25)':t>=0.2?'rgba(243,156,18,0.25)':'rgba(231,76,60,0.25)';
-      ctx.lineWidth=0.5;ctx.setLineDash([2,3]);ctx.stroke();ctx.setLineDash([]);
-      ctx.fillStyle='rgba(71,85,105,0.6)';ctx.font='7px Courier New';
-      ctx.fillText(fmtNum(t,1),3,ty-1);
-    }
+    var ty=yS(t);
+    ctx.beginPath();ctx.moveTo(0,ty);ctx.lineTo(W,ty);
+    ctx.strokeStyle=t>=0.5?'rgba(46,204,113,0.35)':'rgba(243,156,18,0.35)';
+    ctx.lineWidth=0.5;ctx.setLineDash([2,3]);ctx.stroke();ctx.setLineDash([]);
+    ctx.fillStyle='rgba(148,163,184,0.7)';ctx.font='7px Courier New';
+    ctx.fillText(fmtNum(t,1),3,ty-1);
   });
   var lastV=hist[hist.length-1];
-  var lineCol=lastV>=0.5?'rgba(46,204,113,':lastV>=0.2?'rgba(243,156,18,':'rgba(231,76,60,';
+  var lineCol=lastV>=0.8?'rgba(52,152,219,':lastV>=0.5?'rgba(46,204,113,':lastV>=0.2?'rgba(243,156,18,':'rgba(231,76,60,';
   ctx.beginPath();
   hist.forEach(function(v,i){i===0?ctx.moveTo(xS(0),yS(v)):ctx.lineTo(xS(i),yS(v));});
   ctx.lineTo(xS(hist.length-1),H);ctx.lineTo(xS(0),H);ctx.closePath();
@@ -11421,6 +11565,72 @@ function _buildOfflineBanner(def,b){
   h+='</div>';
   return h;
 }
+/* ===== Fix 5 (AEGIS audit 2026-07-31): generic per-tab event stream =====
+   Applies to every bot detail tab, not just AEGIS. Three-tier relevance:
+     1. Events FROM or ABOUT this tab's own bot — always shown, first-class.
+     2. Fleet-critical types — always shown regardless of source bot:
+        EMERGENCY* (incl. EMERGENCY_REDUCE), PORTFOLIO_DENIAL/
+        PORTFOLIO_RESERVE_DENIED, WHALE_ALERT with tier===EXTREME, and
+        LIMIT_CHANGE (matched defensively — not a currently-emitted type as of
+        2026-07-31, wired ahead of time so it activates the moment it exists).
+     3. Everything else (NEXUS council engine chatter — SCHWARZSCHILD,
+        CYCLE_DETECTED, MANIFOLD_WARNING, etc — from OTHER bots) collapses
+        into a single dim "+N engine events" rollup line instead of flooding
+        a bot's own tab with noise that isn't about that bot.
+   Was previously ad hoc per-bot (Gridzilla's buildGridzillaView had its own
+   inline filter, R2C2 "RECENT EVENTS" — every other tab had nothing). This
+   is the one shared implementation; buildGridzillaView's inline filter is
+   untouched (not asked for) but every bot lacking a bespoke event card now
+   gets one via buildDetailView's generic fallback path, and AEGIS gets one
+   in its own R2C4 FLEET IMPACT card (see buildAegisView). */
+var _FLEET_CRITICAL_EVENT_RE=/EMERGENCY|PORTFOLIO_DENIAL|PORTFOLIO_RESERVE_DENIED|LIMIT_CHANGE/;
+var _ENGINE_CHATTER_EVENT_RE=/^(MANIFOLD_WARNING|CYCLE_DETECTED|QUANTUM_COLLAPSE|CAUSAL_FLOW|SHANNON_ENTROPY|BOOK_PHASE|CHAOS_STATE|STRUCTURE_FORMING|CATASTROPHE_WARNING|NEWTON_FORCE|NEWTON_REACTION|EUCLID_LEVEL|EINSTEIN_ENERGY|EINSTEIN_CURVE|EINSTEIN_FIELD|SCHWARZSCHILD_HORIZON|RIEMANN_SURFACE|CURVATURE_EVENT)$/;
+function buildBotEventStreamHTML(botId,opts){
+  opts=opts||{};
+  var limit=opts.limit||8;
+  var evAll=(typeof ovData!=="undefined"&&ovData.recentEvents)?ovData.recentEvents:[];
+  var own=[],critical=[],chatterCount=0;
+  for(var i=0;i<evAll.length;i++){
+    var ev=evAll[i]||{};
+    var src=(ev.source||"").toLowerCase();
+    var type=ev.type||"";
+    var d=ev.data||{};
+    var isOwn=src===botId||(d.bot_id||"").toLowerCase()===botId;
+    var isExtremeWhale=type==="WHALE_ALERT"&&(d.tier==="EXTREME");
+    var isCritical=_FLEET_CRITICAL_EVENT_RE.test(type)||isExtremeWhale;
+    if(isOwn){ own.push(ev); continue; }
+    if(isCritical){ critical.push(ev); continue; }
+    if(_ENGINE_CHATTER_EVENT_RE.test(type)){ chatterCount++; continue; }
+    /* Non-critical, non-own, non-engine-chatter (e.g. another trader's
+       TRADE_OPEN) — not shown, not counted; keeps the rollup honest about
+       what it's summarizing (engine chatter specifically, not "everything"). */
+  }
+  var merged=own.concat(critical).sort(function(a,b2){
+    return (b2.ts||b2.timestamp||0)-(a.ts||a.timestamp||0);
+  }).slice(0,limit);
+  if(merged.length===0&&chatterCount===0){
+    return '<div style="font-size:9px;color:#475569;font-style:italic;padding:4px 0">No relevant events yet</div>';
+  }
+  var h='';
+  for(var mi=0;mi<merged.length;mi++){
+    var mev=merged[mi],mt=mev.type||"?",md=mev.data||{};
+    var msrc=(mev.source||md.bot_id||"?");
+    var mIsOwn=(msrc||"").toLowerCase()===botId;
+    var mIsCrit=_FLEET_CRITICAL_EVENT_RE.test(mt)||(mt==="WHALE_ALERT"&&md.tier==="EXTREME");
+    var mCol=mIsCrit?"#ef4444":mIsOwn?"#e2e8f0":"#94a3b8";
+    var mTs=mev.ts||mev.timestamp;
+    h+='<div style="font-size:9px;padding:2px 0;border-bottom:1px solid rgba(30,41,59,0.3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">';
+    h+='<span style="color:'+mCol+(mIsCrit?';font-weight:700':'')+'">'+escHtml(mt)+'</span>';
+    if(!mIsOwn) h+=' <span style="color:#475569">'+escHtml(msrc)+'</span>';
+    if(md.pair) h+=' <span style="color:#64748b">'+escHtml(md.pair)+'</span>';
+    if(mTs) h+=' <span style="color:#334155;float:right">'+ago(mTs)+'</span>';
+    h+='</div>';
+  }
+  if(chatterCount>0){
+    h+='<div style="font-size:9px;color:#334155;font-style:italic;padding:3px 0 0">+'+chatterCount+' engine events</div>';
+  }
+  return h;
+}
 function buildDetailView(def,b){
   /* Offline banner — injected into the panel HTML after the title area */
   var _offBanner=_buildOfflineBanner(def,b);
@@ -11532,6 +11742,12 @@ function buildDetailView(def,b){
   if(health.memory_percent) h+='<div class="dv-stat"><div class="label">Memory</div><div class="value">'+fmtNum(health.memory_percent,1)+'%</div></div>';
   if(health.threads_healthy!=null) h+='<div class="dv-stat"><div class="label">Threads</div><div class="value">'+health.threads_healthy+'/'+health.total_threads+'</div></div>';
   h+='</div></div>';
+  /* Fix 5: generic per-tab event stream — every bot without a bespoke detail
+     view (i.e. everything falling through to this generic path) now gets
+     relevance-filtered events instead of nothing. See buildBotEventStreamHTML. */
+  h+='<div class="dv-section"><div class="dv-section-title">Event Stream</div>';
+  h+=buildBotEventStreamHTML(def.id);
+  h+='</div>';
   h+='<div style="text-align:right;font-family:\'Courier New\',monospace;font-size:10px;color:#475569;margin-top:1rem;padding-top:6px;border-top:1px solid #1e293b">Updated '+(b?ago(b.last_seen):"--")+'</div>';
   h+='</div>'; /* /dv2-frame */
   return h;
@@ -11811,13 +12027,15 @@ function renderSidebar(botId){
   if(!uptimeStr && rawH.uptime_seconds != null) uptimeStr = fmtUptime(rawH.uptime_seconds);
   if(!uptimeStr) uptimeStr = "--";
 
-  /* CPU / Mem / Threads — bots vary in field layout */
-  var sys    = rawH.system || rawH;
-  var cpu    = sys.cpu_pct != null ? sys.cpu_pct : (sys.cpu != null ? sys.cpu : null);
-  var mem    = sys.mem_pct != null ? sys.mem_pct : (sys.memory_percent != null ? sys.memory_percent : (sys.mem != null ? sys.mem : null));
-  var thrH   = sys.threads_healthy != null ? sys.threads_healthy : (sys.threads != null ? sys.threads : null);
-  var thrT   = sys.total_threads != null ? sys.total_threads : null;
-  var thrStr = thrH!=null ? (thrH + (thrT!=null ? "/"+thrT : "")) : "--";
+  /* Fix 4 (AEGIS audit 2026-07-31): CPU/Memory/Threads rows deleted — verified
+     no bot in the fleet emits process-level metrics (no psutil import in
+     aegis.py or turtlebot.py; command_center.py's own _normalize_aegis
+     hardcodes uptime:null and has no cpu/mem/thread fields at all). These
+     were permanent dead placeholders on every bot's sidebar, not just
+     AEGIS's, so they're removed here rather than gated per-bot. Uptime stays
+     — it IS genuinely populated for bots that report it (norm.uptime /
+     raw.uptime_s / raw.uptime_seconds), just not AEGIS itself. If a bot ever
+     adds real process telemetry, re-add rows reading sys.cpu_pct etc. */
   var lastSeen = b.last_seen ? ago(b.last_seen) : "--";
 
   var h1 = '<div class="sb-dsec">';
@@ -11825,9 +12043,6 @@ function renderSidebar(botId){
   h1 += sbRow("Status", statusDot);
   h1 += sbRow("Uptime", orDash(uptimeStr));
   h1 += sbRow("Port", def.port);
-  h1 += sbRow("CPU", cpu!=null ? pct1(cpu) : "--");
-  h1 += sbRow("Memory", mem!=null ? pct1(mem) : "--");
-  h1 += sbRow("Threads", thrStr);
   h1 += sbRow("Last seen", lastSeen);
   h1 += '</div>';
 

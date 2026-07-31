@@ -568,111 +568,212 @@ function addCargoBayGlow(group, x, y, z, w, h, d, rotX = 0) {
 // round-3 investigation confirmed this geometry was never the source of
 // any reported rod (the real rod was TurtleSue's mining BEAM, see
 // buildBeam/updateBeam, fixed separately this round).
+// ADULT-GRADE REBUILD (2026-07-31, Jeremy's "adult watching" mandate): the
+// SOTA-round sphere kept its Death Star identity but was still fundamentally
+// ONE primitive (a sphere) plus attachments floating on its surface — the
+// icosahedral wireframe fought the greeble texture instead of reinforcing
+// it, and the turret/vents/antenna, while flush-mounted, were the only
+// silhouette breaks the sphere had. Rebuild keeps the armored-sphere
+// identity (Jeremy loves it, don't abandon it) but treats the sphere as a
+// CHASSIS that dozens of real sub-assemblies are bolted to, ILM-miniature
+// style: a belt of hull-plate caps (hexagonal armor plates proud of the
+// surface, not a texture), a heavy polar drill assembly (not a smooth
+// turret dome), a rear drive collar with visible manifold plumbing, and
+// scattered maintenance clusters — so the silhouette in black reads as
+// "armored industrial moon with machinery," not "green ball."
 function buildTurtleSue(seed) {
   const g = new THREE.Group();
   const col = FLEET.turtlesue.color;
   const rand = mulberry32(seed);
+  const trim = darkTrimMaterial();
+  const accent = accentMaterial(col, 1.0);
 
   // Hull tint runs DARKER than the identity color (deep jade vs bright
   // mint) — screenshot-verified that the full-brightness identity green
   // reads as flat plastic at dashboard scale; the bright color stays on
   // beams/accents/lights where emissive-bright is correct.
   const hullMat = greebledHullMaterial(0x1f6b45, seed, 4);
-  const sphere = new THREE.Mesh(new THREE.SphereGeometry(3.4, 24, 18), hullMat);
+  const sphere = new THREE.Mesh(new THREE.SphereGeometry(3.3, 26, 20), hullMat);
   g.add(sphere);
 
-  // Faceted plate tectonics — jade shell geology. A slightly larger,
-  // very-low-poly icosahedron rendered as WIREFRAME-style raised seams
-  // (thin additive lines only, not a solid second shell) gives the sphere
-  // the "armored plates" silhouette cue the spec asks for without adding
-  // draw-call weight or fighting the greeble texture already carrying
-  // panel detail. Kept subtle (accent material, low intensity) — this is
-  // a texture-read cue, not a glowing cage.
-  //
-  // SOTA ROUND 3 FIX (2026-07-30, item 1): this used the raw fleet color
-  // (0x4ade80, bright mint) via MeshBasicMaterial — which ignores all
-  // scene lighting entirely, unlike the PBR hull underneath it (already
-  // correctly darkened to lightness 0.12-0.16 by hullMaterial()'s grimdark
-  // treatment). The result: the hull itself is properly dark jade, but a
-  // fully-unlit bright-mint wireframe sits evenly over the WHOLE sphere
-  // regardless of shadow direction, which is what actually read as "flat
-  // bright mint" — the geology cue was fighting the darkening pass it was
-  // supposed to sit on top of. Fix: darken the wireframe color to match
-  // the hull's own treatment (same HSL-lightness approach as
-  // hullMaterial(), not the raw accent color) and drop opacity further so
-  // the seams read as etched/raised detail at close range without
-  // washing the whole shell in flat color at normal viewing distance.
-  const shellGeo = new THREE.IcosahedronGeometry(3.5, 1);
+  // --- ARMOR PLATE BELT: a ring of proud hexagonal-ish plate caps (flat
+  // hexagonal-prism meshes, not decals) breaking the equator so the eye
+  // never reads a single unbroken curved surface across the widest part of
+  // the silhouette. Each plate is individually seated flush to the sphere
+  // normal at that point (position = normal*radius, orient to normal) —
+  // real armor plating follows the hull curvature panel by panel.
+  const plateGroup = new THREE.Group();
+  const plateCount = 10;
+  for (let i = 0; i < plateCount; i++) {
+    const a = (i / plateCount) * Math.PI * 2;
+    const dir = new THREE.Vector3(Math.cos(a), (rand() - 0.5) * 0.28, Math.sin(a)).normalize();
+    const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.68, 0.22, 6), i % 3 === 0 ? trim : hullMat);
+    plate.position.copy(dir.clone().multiplyScalar(3.32));
+    plate.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    plate.rotation.y += rand() * Math.PI;
+    plateGroup.add(plate);
+    // rivet-like corner bolts — tiny, only every other plate to avoid
+    // repeat-fatigue at small scale while still reading as fastened metal
+    if (i % 2 === 0) {
+      const bolt = new THREE.Mesh(new THREE.SphereGeometry(0.05, 5, 4), trim);
+      bolt.position.copy(dir.clone().multiplyScalar(3.44));
+      plateGroup.add(bolt);
+    }
+  }
+  g.add(plateGroup);
+
+  // --- Secondary raised panel seam cage: kept from the prior pass but
+  // dropped opacity further and de-emphasized — now a QUIET background
+  // texture cue sitting under the much stronger armor-plate belt above,
+  // not the primary "armored" signal anymore.
+  const shellGeo = new THREE.IcosahedronGeometry(3.36, 1);
   const shellHSL = { h: 0, s: 0, l: 0 };
   new THREE.Color(col).getHSL(shellHSL);
-  const shellLineColor = new THREE.Color().setHSL(shellHSL.h, Math.min(shellHSL.s, 0.55), 0.22);
+  const shellLineColor = new THREE.Color().setHSL(shellHSL.h, Math.min(shellHSL.s, 0.55), 0.2);
   const shellMat = new THREE.MeshBasicMaterial({
-    color: shellLineColor, transparent: true, opacity: 0.11, wireframe: true,
+    color: shellLineColor, transparent: true, opacity: 0.08, wireframe: true,
   });
   const shellPlates = new THREE.Mesh(shellGeo, shellMat);
   g.add(shellPlates);
 
-  // equatorial trench band (Death Star silhouette cue, industrialized)
-  const band = new THREE.Mesh(
-    new THREE.TorusGeometry(3.42, 0.14, 6, 32),
-    darkTrimMaterial()
-  );
+  // equatorial trench band (Death Star silhouette cue, industrialized) —
+  // widened and given a stepped double-ring profile (two nested toruses of
+  // different radius/thickness) instead of one uniform ring, so the trench
+  // reads as a recessed structural channel with a raised lip, not a single
+  // thin painted line.
+  const band = new THREE.Mesh(new THREE.TorusGeometry(3.4, 0.16, 6, 36), trim);
   band.rotation.x = Math.PI / 2;
   g.add(band);
+  const bandLip = new THREE.Mesh(new THREE.TorusGeometry(3.4, 0.05, 5, 36), hullMat);
+  bandLip.rotation.x = Math.PI / 2;
+  bandLip.position.y = 0.14;
+  g.add(bandLip);
+  // trench conduit clusters — short pipe stubs racked along the trench,
+  // evenly spaced, breaking the ring into segments with real plumbing read
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.3, 6), trim);
+    pipe.position.set(Math.cos(a) * 3.4, 0, Math.sin(a) * 3.4);
+    pipe.rotation.z = Math.PI / 2;
+    pipe.rotation.y = a;
+    g.add(pipe);
+  }
 
   // CARGO BAY GLOW (finding 4): a row of small windowed cargo-bay slits
   // set INTO the trench, own material instance — this is what pulses on
   // P/L now, never the jade shell itself.
   const cargoBay = addCargoBayGlow(g, 2.3, 0, 2.2, 0.5, 0.22, 0.9, 0.15);
+  // window strip flanking the cargo bay — small repeated bright slits
+  // (scale-contrast greeble) selling "this is a big hull with many decks"
+  for (let i = -2; i <= 2; i++) {
+    if (i === 0) continue;
+    const w = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.08, 0.08), accent);
+    const wDir = new THREE.Vector3(2.3, 0, 2.2).normalize();
+    const tangent = new THREE.Vector3(-wDir.z, 0, wDir.x);
+    w.position.copy(wDir.clone().multiplyScalar(3.35).add(tangent.clone().multiplyScalar(i * 0.28)));
+    g.add(w);
+  }
 
-  // Mining turret — FLUSH-MOUNTED, not a floating disconnected orb. A short
-  // stub foot sits ON the hull surface (radius-matched, no gap) and the
-  // housing sits directly on top of the foot, so the eye reads one
-  // continuous mounted structure instead of "ball + separate stick".
+  // --- POLAR DRILL ASSEMBLY (was a smooth stacked turret) — now a real
+  // mechanical drill head: fluted bit, gearbox housing with visible ribs,
+  // twin hydraulic-strut mounts flanking the base, and a rotating collar
+  // ring. Flush-seated on the hull surface via the same normal-mount
+  // technique as before (foot on surface, no floating gap).
   const dishGroup = new THREE.Group();
-  const turretFoot = new THREE.Mesh(
-    new THREE.CylinderGeometry(0.55, 0.75, 0.5, 12),
-    darkTrimMaterial()
-  );
-  turretFoot.position.y = 0.25;
+  const turretFoot = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.85, 0.42, 12), trim);
+  turretFoot.position.y = 0.21;
   dishGroup.add(turretFoot);
-  const dish = new THREE.Mesh(
-    new THREE.SphereGeometry(0.95, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2),
-    darkTrimMaterial()
-  );
-  dish.position.y = 0.5;
-  dishGroup.add(dish);
-  const dishRing = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.06, 6, 20), accentMaterial(col, 1.0));
-  dishRing.rotation.x = Math.PI / 2;
-  dishRing.position.y = 0.5;
-  dishGroup.add(dishRing);
-  // Orient the whole turret to sit normal-to-surface at a point ON the
-  // sphere (radius 3.4), not offset into open space — this is what removes
-  // the "gap" that read as a rod. Position is on the sphere surface along
-  // a fixed identity direction; rotation aligns the turret's local +Y
-  // (foot-to-dish axis) with that same surface normal so the foot's flat
-  // base sits flush against the curvature.
+  // gearbox housing — ribbed cylinder (radial box "fins" around it) instead
+  // of a bare drum, this is what says "mechanism," not "cap"
+  const gearbox = new THREE.Mesh(new THREE.CylinderGeometry(0.7, 0.72, 0.6, 12), hullMat);
+  gearbox.position.y = 0.72;
+  dishGroup.add(gearbox);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.5, 0.1), trim);
+    rib.position.set(Math.cos(a) * 0.74, 0.72, Math.sin(a) * 0.74);
+    rib.rotation.y = -a;
+    dishGroup.add(rib);
+  }
+  // rotating collar ring — sits between gearbox and drill bit, the
+  // "moving part" cue
+  const collarRing = new THREE.Mesh(new THREE.TorusGeometry(0.68, 0.09, 6, 20), accent);
+  collarRing.rotation.x = Math.PI / 2;
+  collarRing.position.y = 1.05;
+  dishGroup.add(collarRing);
+  // fluted drill bit — cone with longitudinal groove ribs (small boxes
+  // radiating around the cone), the working tip a "dish" never sold
+  const drillBit = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.15, 8), trim);
+  drillBit.position.y = 1.65;
+  dishGroup.add(drillBit);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const flute = new THREE.Mesh(new THREE.BoxGeometry(0.05, 1.0, 0.05), hullMat);
+    flute.position.set(Math.cos(a) * 0.32, 1.55, Math.sin(a) * 0.32);
+    flute.rotation.y = -a;
+    dishGroup.add(flute);
+  }
+  // twin hydraulic struts flanking the base — visible mounting hardware
+  // connecting the drill housing back down to the hull surface, the exact
+  // "mounting" cue the mandate calls for
+  for (const sx of [-1, 1]) {
+    const strutPivot = new THREE.Vector3(sx * 0.55, 0.35, 0.2);
+    const strut = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.75, 6), trim);
+    strut.position.copy(strutPivot);
+    strut.rotation.z = sx * 0.35;
+    dishGroup.add(strut);
+    const strutCap = new THREE.Mesh(new THREE.SphereGeometry(0.08, 6, 6), trim);
+    strutCap.position.set(sx * 0.85, 0.62, 0.2);
+    dishGroup.add(strutCap);
+  }
+  // Orient the whole assembly to sit normal-to-surface at a point ON the
+  // sphere, foot flush against curvature.
   const turretDir = new THREE.Vector3(0.42, 0.62, 0.66).normalize();
-  dishGroup.position.copy(turretDir.clone().multiplyScalar(3.38));
+  dishGroup.position.copy(turretDir.clone().multiplyScalar(3.3));
   dishGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), turretDir);
   g.add(dishGroup);
   g.userData.dish = dishGroup;
 
-  // rear engine cluster (dreadnought pushed by 3 heavy nozzles)
+  // --- REAR DRIVE COLLAR: replaces the bare 3-nozzle cluster with a real
+  // drive assembly — a recessed heat-shield collar ring the three nozzles
+  // are mounted INTO (visible mounting flanges), plus manifold plumbing
+  // (curved pipe runs) connecting the nozzles to the hull, so the engine
+  // end reads as a built structure, not three tubes stuck to a ball.
+  const driveCollar = new THREE.Mesh(new THREE.TorusGeometry(2.15, 0.32, 8, 24, Math.PI * 1.3), trim);
+  driveCollar.rotation.x = Math.PI / 2;
+  driveCollar.rotation.z = Math.PI * 0.35;
+  driveCollar.position.z = -2.55;
+  driveCollar.scale.z = 0.55; // flatten into a shield-like collar, not a full donut
+  g.add(driveCollar);
+
   const engines = [];
   const enginePositions = [[-1.4, -1.2, -3.2], [1.4, -1.2, -3.2], [0, -2.1, -2.9]];
   for (const [ex, ey, ez] of enginePositions) {
+    // mounting flange plate behind each nozzle — the flush-seat cue
+    const flange = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.72, 0.14, 10), hullMat);
+    flange.position.set(ex, ey, ez + 0.35);
+    flange.rotation.x = Math.PI / 2;
+    g.add(flange);
     engines.push(addEngineNozzle(g, ex, ey, ez, 0.55, col, new THREE.Vector3(0, 0, -1)));
+  }
+  // manifold pipe runs — curved-look pipe segments (short angled cylinder
+  // chains) linking the three engine flanges back toward the hull core,
+  // visible plumbing hint per the mandate's "mechanical logic" bar
+  const manifoldPairs = [[[-1.4, -1.2, -3.0], [0, -1.7, -2.6]], [[1.4, -1.2, -3.0], [0, -1.7, -2.6]]];
+  for (const [from, to] of manifoldPairs) {
+    const fromV = new THREE.Vector3(...from), toV = new THREE.Vector3(...to);
+    const mid = fromV.clone().add(toV).multiplyScalar(0.5);
+    const len = fromV.distanceTo(toV);
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, len, 6), trim);
+    pipe.position.copy(mid);
+    pipe.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), toV.clone().sub(fromV).normalize());
+    g.add(pipe);
   }
 
   // Engine ring — the spec's explicit exception for TurtleSue: a sphere
   // can't be elongated without abandoning the Death Star identity Jeremy
   // loves, so the "vessel not satellite" signal here is a visible glowing
-  // quarter-band around the rear (drive) hemisphere instead, marking which
-  // side of the sphere is "the engine end" even at a glance before the
-  // nozzle plumes (now much stronger, see addEngineNozzle) are visible.
-  // A partial torus arc (not a full ring) sitting behind/around the 3-nozzle
-  // cluster, following the sphere's curvature.
+  // quarter-band around the rear (drive) hemisphere.
   const engineRingArc = new THREE.Mesh(
     new THREE.TorusGeometry(2.55, 0.09, 6, 20, Math.PI * 1.15),
     accentMaterial(col, 1.1)
@@ -695,31 +796,73 @@ function buildTurtleSue(seed) {
       i % 2 === 0 ? 0xff3b30 : 0xffffff, 0.22));
   }
 
-  // MINING-RIG ANATOMY (finding 3): a small comms/nav antenna array and
-  // two processing vent stacks bolted to the shell — a sphere alone reads
-  // as a moon, these small mechanical protrusions are what say "someone
-  // works here" without fighting the Death Star silhouette identity.
+  // MINING-RIG ANATOMY (finding 3): comms/nav antenna array, now a small
+  // CLUSTER (mast + two shorter whips + a small dish) instead of a single
+  // mast, plus processing vent stacks — bolted assemblies that break the
+  // sphere's silhouette in multiple places, not just one point.
   const antDir = new THREE.Vector3(-0.3, 0.85, 0.2).normalize();
   const antBase = antDir.clone().multiplyScalar(3.4);
-  const antMast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.045, 0.9, 5), darkTrimMaterial());
+  const antMast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.045, 0.9, 5), trim);
   antMast.position.copy(antBase.clone().add(antDir.clone().multiplyScalar(0.45)));
   antMast.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), antDir);
   g.add(antMast);
+  const antBaseCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 0.1, 8), hullMat);
+  antBaseCollar.position.copy(antBase);
+  antBaseCollar.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), antDir);
+  g.add(antBaseCollar);
   addRunningLight(g, ...antBase.clone().add(antDir.clone().multiplyScalar(0.9)).toArray(), 0xff3b30, 0.05);
-  const ventDirs = [new THREE.Vector3(0.55, -0.6, -0.55).normalize(), new THREE.Vector3(-0.6, -0.55, -0.5).normalize()];
+  // small companion whip + dish, clustered near the main mast — reads as
+  // an actual comms array rather than one lone stick
+  const whip2Dir = new THREE.Vector3(-0.15, 0.9, 0.35).normalize();
+  const whip2Base = whip2Dir.clone().multiplyScalar(3.38);
+  const whip2 = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.025, 0.45, 5), trim);
+  whip2.position.copy(whip2Base.clone().add(whip2Dir.clone().multiplyScalar(0.22)));
+  whip2.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), whip2Dir);
+  g.add(whip2);
+  const commsDishDir = new THREE.Vector3(-0.42, 0.78, 0.05).normalize();
+  const commsDish = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.02, 0.12, 10, 1, true), trim);
+  commsDish.position.copy(commsDishDir.clone().multiplyScalar(3.44));
+  commsDish.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), commsDishDir);
+  g.add(commsDish);
+
+  const ventDirs = [
+    new THREE.Vector3(0.55, -0.6, -0.55).normalize(),
+    new THREE.Vector3(-0.6, -0.55, -0.5).normalize(),
+    new THREE.Vector3(0.15, -0.75, 0.35).normalize(),
+  ];
   for (const vd of ventDirs) {
-    const vBase = vd.clone().multiplyScalar(3.35);
-    const vent = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.3, 8), darkTrimMaterial());
+    const vBase = vd.clone().multiplyScalar(3.32);
+    const vent = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.3, 8), trim);
     vent.position.copy(vBase);
     vent.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), vd);
     g.add(vent);
+    // grille cap on each vent — small ribbed disc, reads as louvered
+    // exhaust vs a bare cylinder stub
+    const grille = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.17, 0.04, 8), hullMat);
+    grille.position.copy(vBase.clone().add(vd.clone().multiplyScalar(0.17)));
+    grille.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), vd);
+    g.add(grille);
+  }
+
+  // small maintenance hatch cluster — three flush hatch plates with corner
+  // bolts, a repeated-detail greeble run that sells "many decks/access
+  // points" per the scale-contrast principle
+  const hatchDirs = [
+    new THREE.Vector3(-0.75, -0.15, 0.62).normalize(),
+    new THREE.Vector3(-0.68, -0.05, 0.4).normalize(),
+    new THREE.Vector3(-0.82, 0.1, 0.5).normalize(),
+  ];
+  for (const hd of hatchDirs) {
+    const hatch = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.05, 0.22), trim);
+    hatch.position.copy(hd.clone().multiplyScalar(3.35));
+    hatch.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), hd);
+    g.add(hatch);
   }
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
-  // Beam now originates from the flush-mounted turret's housing tip, along
-  // the same turretDir used to place/orient the turret above (was a fixed
-  // (1.6,1.2,3.1) offset tied to the old floating-dish position).
-  g.userData.beamMount = turretDir.clone().multiplyScalar(3.38 + 1.0);
+  // Beam now originates from the drill assembly's tip, along the same
+  // turretDir used to place/orient the assembly above.
+  g.userData.beamMount = turretDir.clone().multiplyScalar(3.3 + 1.9);
   g.userData.cargoMesh = cargoBay;
   g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 7;
@@ -727,52 +870,100 @@ function buildTurtleSue(seed) {
 }
 
 // --- Gridzilla: lattice-frame harvester (visible truss) ---------------
+// ADULT-GRADE REBUILD (2026-07-31): the open-truss identity is right (an
+// exposed girder cage reads as industrial by construction) but the ring+4-
+// strut repeat was too regular/thin to survive scrutiny — real trusses have
+// diagonal cross-bracing (triangulated, not square, cells — square frames
+// under load are a structural cliche that reads as "toy Erector set"),
+// gusset plates at every joint (not bare strut-meets-strut), and the ore
+// pods need visible rack RAILS, not pods floating mid-truss with no
+// support. Added a service crane arm at the bow (working-machine cue) and
+// thickened primary chords vs bracing so there's a clear structural
+// hierarchy (like a real lattice boom) instead of every strut the same gauge.
 function buildGridzilla(seed) {
   const g = new THREE.Group();
   const col = FLEET.gridzilla.color;
   const rand = mulberry32(seed);
   const trim = darkTrimMaterial();
   const hullMat = greebledHullMaterial(col, seed, 2);
-  // Small emissive ACCENT used sparingly (strut tips + scoop rim only) —
-  // an earlier version used this on all 16 main struts + the scoop glow,
-  // which combined with ACES tone mapping blew the whole silhouette out
-  // to a solid flat-white/yellow blob with zero readable structure.
-  // Structural members must stay on matte hull/trim material; emissive
-  // is reserved for small highlight points so the lattice reads as
-  // machinery, not a glowing lantern.
   const accentDot = accentMaterial(col, 1.1);
 
-  // central spine
+  // central spine — the primary load-bearing chord, visibly thicker than
+  // any bracing member so the truss reads as hierarchical structure
   const spine = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 7), hullMat);
   g.add(spine);
+  // spine flange ribs — periodic collar rings around the spine where truss
+  // rings attach, the "bolted assembly" mounting cue instead of struts
+  // meeting a bare box with no visible joint
+  for (let fz = -3; fz <= 3; fz += 1.5) {
+    const flange = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.62, 0.12), trim);
+    flange.position.z = fz;
+    g.add(flange);
+  }
 
-  // truss frame — repeated box struts forming an open lattice cage
-  // around the spine (harvester silhouette, very non-spherical).
-  // Structural rings/struts use matte hull/trim material so the cage
-  // reads as machined metal; only the strut JOINTS get a small emissive
-  // dot for detail, keeping total glowing surface area low.
+  // truss frame — 4 primary corner CHORDS (continuous, run the full
+  // length, thicker) plus diagonal cross-bracing between ring stations
+  // (triangulated, not just perpendicular struts) plus gusset plates at
+  // every joint. This is what turns "square wireframe box" into "the kind
+  // of truss a crane boom or radio tower actually uses."
   const struts = new THREE.Group();
   const ringCount = 5;
+  const ringZs = [], ringSizes = [];
   for (let i = 0; i < ringCount; i++) {
-    const z = -3 + (i * 6) / (ringCount - 1);
-    const rSize = 1.6 - Math.abs(i - (ringCount - 1) / 2) * 0.12;
-    const ringGeo = new THREE.TorusGeometry(rSize, 0.06, 5, 4); // square-ish frame
+    ringZs.push(-3 + (i * 6) / (ringCount - 1));
+    ringSizes.push(1.6 - Math.abs(i - (ringCount - 1) / 2) * 0.12);
+  }
+  // ring frames (square-ish, kept — the periodic bulkhead read)
+  for (let i = 0; i < ringCount; i++) {
+    const ringGeo = new THREE.TorusGeometry(ringSizes[i], 0.06, 5, 4);
     const ring = new THREE.Mesh(ringGeo, hullMat);
     ring.rotation.z = Math.PI / 4;
-    ring.position.z = z;
+    ring.position.z = ringZs[i];
     struts.add(ring);
-    if (i < ringCount - 1) {
-      for (let c = 0; c < 4; c++) {
-        const a = (Math.PI / 2) * c + Math.PI / 4;
-        const strut = new THREE.Mesh(new THREE.BoxGeometry(0.08, 0.08, 6 / (ringCount - 1) + 0.15), trim);
-        strut.position.set(Math.cos(a) * rSize, Math.sin(a) * rSize, z + 3 / (ringCount - 1));
-        struts.add(strut);
-        // small emissive joint node — the only glow on the truss itself
-        if (i % 2 === 0) {
-          const joint = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 6), accentDot);
-          joint.position.copy(strut.position);
-          struts.add(joint);
-        }
+  }
+  // 4 continuous primary chords — corner-to-corner, thicker than the ring
+  // frames, running the whole spine length. Real lattice booms carry load
+  // through the corner chords, not the cross-members.
+  const chordAngles = [Math.PI / 4, Math.PI * 0.75, Math.PI * 1.25, Math.PI * 1.75];
+  for (const a of chordAngles) {
+    const avgR = (ringSizes[0] + ringSizes[ringSizes.length - 1]) / 2;
+    const chord = new THREE.Mesh(new THREE.BoxGeometry(0.11, 0.11, 6.3), trim);
+    chord.position.set(Math.cos(a) * avgR, Math.sin(a) * avgR, 0);
+    struts.add(chord);
+  }
+  // diagonal cross-bracing between consecutive ring stations — triangulated
+  // Warren-truss pattern (zig-zag diagonals), the real structural-logic cue
+  for (let i = 0; i < ringCount - 1; i++) {
+    const z0 = ringZs[i], z1 = ringZs[i + 1];
+    const r0 = ringSizes[i], r1 = ringSizes[i + 1];
+    const segLen = z1 - z0;
+    for (let c = 0; c < 4; c++) {
+      const a0 = chordAngles[c];
+      const a1 = chordAngles[(c + 1) % 4];
+      const p0 = new THREE.Vector3(Math.cos(a0) * r0, Math.sin(a0) * r0, z0);
+      const p1 = new THREE.Vector3(Math.cos(a1) * r1, Math.sin(a1) * r1, z1);
+      const mid = p0.clone().add(p1).multiplyScalar(0.5);
+      const len = p0.distanceTo(p1);
+      const diag = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, len, 5), trim);
+      diag.position.copy(mid);
+      diag.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), p1.clone().sub(p0).normalize());
+      struts.add(diag);
+      // gusset plate at each diagonal's midpoint-facing joint — small flat
+      // triangle-ish plate reading as a fastened connector, not a bare
+      // strut intersection
+      if (i % 2 === 0) {
+        const gusset = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.03), hullMat);
+        gusset.position.copy(p0);
+        struts.add(gusset);
+      }
+    }
+    // strut joint emissive nodes — kept sparse per the "small highlight
+    // points only" emissive rule
+    if (i % 2 === 0) {
+      for (const a of chordAngles) {
+        const joint = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 6), accentDot);
+        joint.position.set(Math.cos(a) * r0, Math.sin(a) * r0, z0);
+        struts.add(joint);
       }
     }
   }
@@ -788,22 +979,65 @@ function buildGridzilla(seed) {
   scoopGlow.rotation.z = Math.PI / 4;
   scoopGlow.position.z = 4.3;
   g.add(scoopGlow);
+  // scoop rim structural spokes — 4 short ribs from cone edge to the ring,
+  // the "mechanical" read the smooth cone alone doesn't sell
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 8;
+    const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.7), trim);
+    spoke.position.set(Math.cos(a) * 1.1, Math.sin(a) * 1.1, 4.0);
+    spoke.rotation.x = -0.25;
+    g.add(spoke);
+  }
+
+  // --- SERVICE CRANE ARM (new): a small articulated-looking boom off the
+  // dorsal spine, folded back along the hull — the "this rig actively
+  // works" mechanical-logic cue the mandate calls out explicitly. Built
+  // from a pivot mount, two boom segments at a slight angle (elbow read),
+  // and a claw-like grapple head.
+  const craneMount = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.3, 8), trim);
+  craneMount.rotation.x = Math.PI / 2;
+  craneMount.position.set(0.3, 0.5, 1.2);
+  g.add(craneMount);
+  const craneSeg1 = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.12, 1.4), hullMat);
+  craneSeg1.position.set(0.3, 0.62, 0.55);
+  craneSeg1.rotation.x = 0.35;
+  g.add(craneSeg1);
+  const craneSeg2 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 1.0), hullMat);
+  craneSeg2.position.set(0.3, 1.0, -0.3);
+  craneSeg2.rotation.x = -0.55;
+  g.add(craneSeg2);
+  const craneClaw = new THREE.Mesh(new THREE.ConeGeometry(0.12, 0.3, 5), trim);
+  craneClaw.rotation.x = Math.PI * 0.65;
+  craneClaw.position.set(0.3, 1.35, -0.75);
+  g.add(craneClaw);
 
   // MINING-RIG ANATOMY (finding 3): ore container cluster racked inside
-  // the open truss cage (amidships, where a real harvester would carry
-  // its haul), a small lit crew capsule dwarfed by the lattice, and a
-  // whip antenna array — the working-vessel details a bare truss cage
-  // alone doesn't sell.
+  // the open truss cage on visible RACK RAILS (a thin beam each pod's band
+  // clips to) rather than floating unsupported mid-truss, a small lit crew
+  // capsule dwarfed by the lattice, and a whip antenna array.
   const oreMat = darkTrimMaterial();
   const orePositions = [[0.75, 0.75, -0.4], [-0.75, 0.75, 0.8], [0.75, -0.75, 1.4], [-0.8, -0.7, -0.9]];
+  // rack rail — a thin rod running the ore-pod bay length, the pods "clip"
+  // to this the way real cargo racking constrains its load
+  const rackRail = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3.2, 5), trim);
+  rackRail.position.set(0.78, 0.78, 0.3);
+  g.add(rackRail);
+  const rackRail2 = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 3.2, 5), trim);
+  rackRail2.position.set(-0.78, -0.72, 0.3);
+  g.add(rackRail2);
   for (const [px, py, pz] of orePositions) {
     const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.9, 8), oreMat);
     pod.position.set(px, py, pz);
+    pod.rotation.x = Math.PI / 2;
     g.add(pod);
     const band = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.025, 4, 10), accentMaterial(col, 0.7));
-    band.rotation.x = Math.PI / 2;
+    band.rotation.y = Math.PI / 2;
     band.position.set(px, py, pz);
     g.add(band);
+    // rack clip — small bracket where the pod meets its rail
+    const clip = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.06, 0.1), trim);
+    clip.position.set(px, py + (py > 0 ? 0.05 : -0.05), pz);
+    g.add(clip);
   }
   // crew capsule — small, tucked against the spine, dwarfed by the truss
   const crewCapsule = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.5, 4, 6), hullMat);
@@ -826,10 +1060,21 @@ function buildGridzilla(seed) {
   // "cargo". This mesh alone pulses now.
   const cargoBay = addCargoBayGlow(g, 0, -0.32, 0.9, 0.42, 0.16, 1.1);
 
-  // engines at stern, arranged in the truss square
+  // engines at stern, arranged in the truss square, each on a mounting
+  // flange plate (was bare nozzles welded to open air at the truss corners)
   const engines = [];
   for (const [ex, ey] of [[-1.1, -1.1], [1.1, -1.1], [-1.1, 1.1], [1.1, 1.1]]) {
+    const flange = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.1), hullMat);
+    flange.position.set(ex, ey, -3.35);
+    g.add(flange);
     engines.push(addEngineNozzle(g, ex, ey, -3.6, 0.32, col, new THREE.Vector3(0, 0, -1)));
+  }
+  // radiator fins near the engine cluster — thin flat plates, the
+  // "heat management near the drive" mechanical-logic cue
+  for (const [rx, ry] of [[-1.1, 0], [1.1, 0], [0, -1.1]]) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.02, 0.55), trim);
+    fin.position.set(rx * 0.75, ry * 0.75 - 0.1, -2.75);
+    g.add(fin);
   }
 
   const lights = [];
@@ -856,33 +1101,66 @@ function buildGridzilla(seed) {
 // direction of travel, and stretch the fuselage so length:beam clears the
 // spec's 2.5:1 floor (was ~6.5 hullLength vs ~7.8 wingspan, i.e. WIDER than
 // long — now ~9.5 long vs ~3.4 span, ~2.8:1).
+// ADULT-GRADE REBUILD (2026-07-31): the delta silhouette is right (arrowhead,
+// not a cross) but the fuselage was one bare tapered cylinder and the wings
+// were one flat extruded quad each — exactly the "naked primitive" problem.
+// Rebuild adds a raised dorsal spine ridge (breaks the cylinder's smooth
+// profile), a canopy/cockpit bubble with a frame (interceptor needs a
+// pilot-read greenhouse, not just a nose cone), wing root fairings (the
+// wing-to-fuselage blend real aircraft always have — a flat wing meeting a
+// round fuselage with zero transition is a paper-airplane tell), intake
+// scoops ahead of the engine (mechanical logic: engines need to breathe),
+// and hardpoint nubs under the wings (armed-vessel read, matches the escort
+// wedge language). Kept the 2.5:1+ length:span ratio and hullLength within
+// 20% of the current 9.5.
 function buildRubberband(seed) {
   const g = new THREE.Group();
   const col = FLEET.rubberband.color;
   const rand = mulberry32(seed);
+  const trim = darkTrimMaterial();
+  const accent = accentMaterial(col, 1.2);
 
   const hullMat = greebledHullMaterial(col, seed, 2);
-  // Longer, slimmer fuselage (was length 5.6, taper 0.15->0.85; now 7.4,
-  // 0.12->0.62) — the dominant length axis a delta-wing silhouette needs.
   const bodyShape = new THREE.CylinderGeometry(0.12, 0.62, 7.4, 8);
   const body = new THREE.Mesh(bodyShape, hullMat);
   body.rotation.x = Math.PI / 2;
   body.position.z = 0.4;
   g.add(body);
 
+  // dorsal spine ridge — a thin raised box running the fuselage length,
+  // breaks the cylinder's perfectly round cross-section silhouette
+  const spineRidge = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.22, 5.6), trim);
+  spineRidge.position.set(0, 0.42, 0.6);
+  g.add(spineRidge);
+
+  // canopy/cockpit bubble — a small flattened dome forward of the sensor
+  // pod, with a thin frame ring at its base, the "someone is flying this"
+  // read an interceptor silhouette needs
+  const canopy = new THREE.Mesh(
+    new THREE.SphereGeometry(0.34, 12, 8, 0, Math.PI * 2, 0, Math.PI / 1.8),
+    new THREE.MeshStandardMaterial({ color: 0x0a1018, metalness: 0.2, roughness: 0.15, emissive: 0x0a141c, emissiveIntensity: 0.6 })
+  );
+  canopy.scale.set(1, 0.72, 1.5);
+  canopy.position.set(0, 0.54, 2.1);
+  g.add(canopy);
+  const canopyFrame = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.03, 5, 14), trim);
+  canopyFrame.rotation.x = Math.PI / 2;
+  canopyFrame.scale.set(1, 1.45, 1);
+  canopyFrame.position.set(0, 0.4, 2.1);
+  g.add(canopyFrame);
+
   // Swept delta wings: a tapered quad built from a custom BufferGeometry
   // (root wide/forward, tip narrow/aft) instead of a perpendicular box —
   // this is what turns the silhouette from a "+" into an arrowhead.
-  // Points authored in local XZ (X=span, Z=length, root at fuselage).
   function buildDeltaWing(sign) {
     const shape = new THREE.Shape();
-    shape.moveTo(0, 1.6);     // root leading edge (forward, near nose)
-    shape.lineTo(sign * 3.3, -1.2); // wingtip (swept back and outward)
-    shape.lineTo(sign * 1.7, -2.0); // wingtip trailing edge
-    shape.lineTo(0, -1.4);    // root trailing edge (aft, near engine)
+    shape.moveTo(0, 1.6);
+    shape.lineTo(sign * 3.3, -1.2);
+    shape.lineTo(sign * 1.7, -2.0);
+    shape.lineTo(0, -1.4);
     shape.closePath();
     const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.09, bevelEnabled: false });
-    geo.rotateX(Math.PI / 2); // shape's local Y (length) -> world Z
+    geo.rotateX(Math.PI / 2);
     geo.translate(0, -0.02, 0);
     return geo;
   }
@@ -892,11 +1170,20 @@ function buildRubberband(seed) {
   const wingR = new THREE.Mesh(buildDeltaWing(-1), wingMat);
   wingR.position.set(-0.35, 0, 0.6);
   g.add(wingL, wingR);
-  // Wingtip running-light strakes — small emissive strips along the swept
-  // trailing edge (replaces the round accent blocks, which read as separate
-  // "panel" shapes; a thin strip along the edge instead reads as a hull
-  // seam/light line, reinforcing the elongated silhouette).
-  const wingAccentL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 1.4), accentMaterial(col, 1.2));
+
+  // wing root fairings — a wedge block at the wing/fuselage junction on
+  // each side, the aerodynamic-blend cue a flat wing meeting a round
+  // fuselage with zero transition never has (real aircraft always fillet
+  // this joint)
+  for (const sign of [1, -1]) {
+    const fairing = new THREE.Mesh(new THREE.BoxGeometry(0.45, 0.28, 1.3), hullMat);
+    fairing.position.set(sign * 0.5, -0.08, 0.5);
+    fairing.rotation.y = sign * 0.15;
+    g.add(fairing);
+  }
+
+  // Wingtip running-light strakes
+  const wingAccentL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 1.4), accent);
   wingAccentL.position.set(2.6, 0.02, -0.4);
   wingAccentL.rotation.y = 0.5;
   const wingAccentR = wingAccentL.clone();
@@ -904,24 +1191,74 @@ function buildRubberband(seed) {
   wingAccentR.rotation.y = -0.5;
   g.add(wingAccentL, wingAccentR);
 
-  // nose spike — lengthened slightly to match the longer fuselage
-  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.18, 1.8, 6), darkTrimMaterial());
+  // hardpoint nubs under each wing — small angular blocks with a tiny
+  // forward stub, the "this fighter is armed" cue the mandate calls out
+  for (const sign of [1, -1]) {
+    for (const wz of [1.1, -0.2]) {
+      const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.16, 0.4), trim);
+      pylon.position.set(sign * (1.6 + Math.abs(wz) * 0.3), -0.22, wz);
+      g.add(pylon);
+      const stub = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.32, 6), trim);
+      stub.rotation.x = Math.PI / 2;
+      stub.position.set(sign * (1.6 + Math.abs(wz) * 0.3), -0.32, wz + 0.05);
+      g.add(stub);
+    }
+  }
+
+  // nose spike with a mounting collar (was a bare cone floating at the
+  // fuselage tip — now visibly rooted)
+  const noseCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.2, 8), trim);
+  noseCollar.rotation.x = Math.PI / 2;
+  noseCollar.position.z = 3.7;
+  g.add(noseCollar);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.18, 1.8, 6), trim);
   nose.rotation.x = Math.PI / 2;
   nose.position.z = 4.5;
   g.add(nose);
+  // small nose sensor ring — thin accent band just behind the tip
+  const noseRing = new THREE.Mesh(new THREE.TorusGeometry(0.14, 0.02, 4, 10), accent);
+  noseRing.rotation.x = Math.PI / 2;
+  noseRing.position.z = 4.0;
+  g.add(noseRing);
 
-  // MINING-RIG ANATOMY (finding 3): a small dorsal sensor pod + whip
-  // antenna along the spine — a fast survey/interceptor skiff still needs
-  // a working-vessel greeble cue, not just a bare aerodynamic hull.
-  const sensorPod = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.55), darkTrimMaterial());
-  sensorPod.position.set(0, 0.5, 1.6);
+  // MINING-RIG ANATOMY (finding 3): dorsal sensor pod, now with a mount
+  // base + small dish detail instead of one bare box, plus whip antenna.
+  const sensorBase = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.1, 0.6), trim);
+  sensorBase.position.set(0, 0.44, 1.6);
+  g.add(sensorBase);
+  const sensorPod = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.2, 0.5), hullMat);
+  sensorPod.position.set(0, 0.55, 1.6);
   g.add(sensorPod);
-  const whip = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.02, 0.7, 5), darkTrimMaterial());
+  const sensorLens = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.05, 8), accent);
+  sensorLens.rotation.z = Math.PI / 2;
+  sensorLens.position.set(0.15, 0.55, 1.6);
+  g.add(sensorLens);
+  const whip = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.02, 0.7, 5), trim);
   whip.position.set(0, 0.85, 0.9);
   g.add(whip);
 
-  // Hull running-light line — small dots along the spine, reinforcing the
-  // length axis (spec: "running lights along the hull line").
+  // engine housing ring — the "flush-mount" cue at the stern before the
+  // nozzle itself, so the nozzle reads as mounted-into the hull rather
+  // than glued to the aft cap
+  const engineHousing = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.58, 0.6, 10), hullMat);
+  engineHousing.rotation.x = Math.PI / 2;
+  engineHousing.position.set(0, -0.1, -3.4);
+  g.add(engineHousing);
+  // intake scoops flanking the engine housing — mechanical-logic cue:
+  // engines need to breathe, this is what sells "working propulsion" up
+  // close vs a bare nozzle stuck on the tail
+  for (const sign of [1, -1]) {
+    const intake = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.5, 8, 1, true), trim);
+    intake.rotation.z = Math.PI / 2;
+    intake.position.set(sign * 0.55, -0.15, -2.4);
+    g.add(intake);
+    const intakeLip = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.03, 5, 12), hullMat);
+    intakeLip.rotation.y = Math.PI / 2;
+    intakeLip.position.set(sign * 0.8, -0.15, -2.4);
+    g.add(intakeLip);
+  }
+
+  // Hull running-light line — small dots along the spine
   const spineLights = [];
   for (const zp of [2.6, 0.6, -1.4]) {
     spineLights.push(addRunningLight(g, 0, 0.42, zp, 0xffffff, 0.08));
@@ -929,10 +1266,12 @@ function buildRubberband(seed) {
 
   const engines = [addEngineNozzle(g, 0, -0.1, -3.7, 0.42, col, new THREE.Vector3(0, 0, -1))];
 
-  // CARGO BAY GLOW (finding 4): small ventral cargo strip, own material —
-  // previously `cargoMesh` pointed at the WHOLE fuselage (`body`), so every
-  // P/L close repainted the entire hull's emissive rather than a bay.
+  // CARGO BAY GLOW (finding 4): small ventral cargo strip, own material
   const cargoBay = addCargoBayGlow(g, 0, -0.5, -0.4, 0.3, 0.14, 1.6);
+  // small access hatch flanking the cargo strip — panel-line greeble
+  const hatchL = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.03, 0.3), trim);
+  hatchL.position.set(0.22, -0.52, -0.4);
+  g.add(hatchL);
 
   const lights = [
     addRunningLight(g, 2.9, 0, -0.9, 0xff3b30, 0.16),
@@ -962,21 +1301,49 @@ function buildRubberband(seed) {
 // into a forward-swept spine running ALONG the length axis — the
 // silhouette reads as one elongated asymmetric vessel with a visible
 // twin-drive identity, not a cross.
+// ADULT-GRADE REBUILD (2026-07-31): the staggered-hull stagger already
+// solved the mirror-symmetry problem, but each hull was still one bare
+// capsule with a cone glued to the tip, and the connector spar was two flat
+// boxes — none of the three primitives had any secondary structure. Rebuild
+// adds hull collar rings (segment breaks along each capsule, so it doesn't
+// read as one smooth pill), an equipment box cluster amidships on each hull
+// (the "two rigs, not two balloons" cue), visible spar-to-hull mounting
+// gussets (the connector currently just clips through both hulls with no
+// joint), and asymmetric secondary antennae so the twin-hull pair reads as
+// two distinct rigs cooperating, not a mirrored copy-paste.
 function buildArbitrageur(seed) {
   const g = new THREE.Group();
   const col = FLEET.arbitrageur.color;
   const rand = mulberry32(seed);
+  const trim = darkTrimMaterial();
+  const accent = accentMaterial(col, 0.9);
   const hullMat = greebledHullMaterial(col, seed, 2);
 
-  // Hulls staggered fore/aft (offset along Z, not just split along X) and
-  // lengthened (3.6->4.4) — the stagger is what breaks the mirror-symmetry
-  // that reads as satellite panels; a real barycenter pair orbiting each
-  // other is never perfectly side-by-side at every angle anyway.
+  // Hulls staggered fore/aft (offset along Z, not just split along X) —
+  // the stagger is what breaks the mirror-symmetry that reads as satellite
+  // panels; a real barycenter pair orbiting each other is never perfectly
+  // side-by-side at every angle anyway.
   function buildHalfHull(sign) {
     const half = new THREE.Group();
     const hull = new THREE.Mesh(new THREE.CapsuleGeometry(0.5, 4.4, 4, 8), hullMat);
     hull.rotation.x = Math.PI / 2;
     half.add(hull);
+    // hull collar rings — segment breaks along the capsule length, the
+    // "this is a built hull, not a smooth pill" cue
+    for (const cz of [-1.6, -0.2, 1.2]) {
+      const collar = new THREE.Mesh(new THREE.TorusGeometry(0.53, 0.05, 5, 14), trim);
+      collar.rotation.x = Math.PI / 2;
+      collar.position.z = cz;
+      half.add(collar);
+    }
+    // equipment box cluster amidships — 2-3 small boxes bolted to the
+    // hull's dorsal surface, the "two independent working rigs" cue that
+    // a bare capsule alone can never sell no matter how it's staggered
+    for (const [bx, bz, bw] of [[0.35, -0.4, 0.4], [-0.3, 0.3, 0.3], [0.15, 1.0, 0.25]]) {
+      const box = new THREE.Mesh(new THREE.BoxGeometry(bw, 0.22, bw * 1.2), trim);
+      box.position.set(bx, 0.42, bz);
+      half.add(box);
+    }
     half.position.set(sign * 1.5, 0, sign * 1.1);
     return { half, hull };
   }
@@ -985,53 +1352,87 @@ function buildArbitrageur(seed) {
   g.add(left.half, right.half);
 
   // MINING-RIG ANATOMY (finding 3): a stubby drill/processing head capping
-  // each hull's bow — the "twin driver" identity gets a real working tip
-  // instead of ending in a bare capsule dome, echoing the barycenter-pair
-  // silhouette with visible purpose.
+  // each hull's bow, now with a visible mounting flange (was the drill
+  // meeting the capsule with zero transition) plus a small hydraulic strut
+  // pair per drill — the "mounted assembly" cue applied consistently.
   for (const half of [left, right]) {
-    const drillHead = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.0, 7), darkTrimMaterial());
+    const drillFlange = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.5, 0.18, 10), hullMat);
+    drillFlange.rotation.x = Math.PI / 2;
+    drillFlange.position.set(0, 0, 2.05);
+    half.half.add(drillFlange);
+    const drillHead = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.0, 7), trim);
     drillHead.rotation.x = -Math.PI / 2;
     drillHead.position.set(0, 0, 2.65);
     half.half.add(drillHead);
-    const drillRing = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.045, 5, 12), accentMaterial(col, 0.9));
+    const drillRing = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.045, 5, 12), accent);
     drillRing.rotation.x = Math.PI / 2;
     drillRing.position.set(0, 0, 2.3);
     half.half.add(drillRing);
+    // small flute ribs on the drill cone — repeated-detail scale contrast.
+    // Added to half.half (each hull's own local group) so they inherit that
+    // hull's fore/aft stagger offset instead of landing at world-origin.
+    for (let i = 0; i < 5; i++) {
+      const a = (i / 5) * Math.PI * 2;
+      const flute = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.75, 0.04), hullMat);
+      flute.position.set(Math.cos(a) * 0.22, Math.sin(a) * 0.22, 2.55);
+      half.half.add(flute);
+    }
   }
 
-  // Connector spine — now runs diagonally between the staggered hulls
-  // (along the length axis, not a perpendicular crossbar), reinforcing
-  // elongation instead of fighting it. Still the "barycenter" identity —
-  // literally the link between the two hulls — just angled into the
-  // travel direction.
-  const sparMat = accentMaterial(col, 0.9);
+  // Connector spine — runs diagonally between the staggered hulls (along
+  // the length axis), reinforcing elongation. Now with visible mounting
+  // gussets where it meets each hull (was a flat box just clipping through
+  // both capsules with no joint read).
   const spanX = 3.0, spanZ = 2.2;
   const sparLen = Math.hypot(spanX, spanZ);
-  const spar = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.18, 0.42), sparMat);
+  const spar = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.18, 0.42), accent);
   spar.rotation.y = Math.atan2(spanX, spanZ);
   spar.position.set(0, 0, 0.15);
   g.add(spar);
-  const spar2 = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.16, 0.38), darkTrimMaterial());
+  const spar2 = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.16, 0.38), trim);
   spar2.rotation.y = Math.atan2(spanX, spanZ);
   spar2.position.set(0, -0.24, 0.15);
   g.add(spar2);
+  // mounting gussets at both spar ends — a small flared collar where the
+  // connector visibly meets each hull's surface
+  for (const sign of [1, -1]) {
+    const gusset = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.5), trim);
+    gusset.position.set(sign * 1.5, -0.05, sign * 1.1);
+    gusset.rotation.y = Math.atan2(spanX, spanZ);
+    g.add(gusset);
+  }
 
-  // central sensor/comm mast at the barycenter (between the staggered hulls)
-  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.4, 6), darkTrimMaterial());
+  // central sensor/comm mast at the barycenter (between the staggered
+  // hulls), with a secondary shorter asymmetric whip so the pair doesn't
+  // mirror perfectly even at the connector
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 1.4, 6), trim);
   mast.position.set(0, 0.7, 0.15);
   g.add(mast);
+  const mastBase = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.14, 8), hullMat);
+  mastBase.position.set(0, 0.05, 0.15);
+  g.add(mastBase);
   const mastTip = addRunningLight(g, 0, 1.45, 0.15, col, 0.22);
+  const secondaryWhip = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.03, 0.6, 5), trim);
+  secondaryWhip.position.set(0.22, 0.4, -0.15);
+  secondaryWhip.rotation.z = 0.3;
+  g.add(secondaryWhip);
 
   const engines = [
     addEngineNozzle(g, -1.5, 0, -1.9, 0.4, col, new THREE.Vector3(0, 0, -1)),
     addEngineNozzle(g, 1.5, 0, -3.1, 0.4, col, new THREE.Vector3(0, 0, -1)),
   ];
+  // radiator fin pair near the engines — heat-management mechanical cue
+  const finL = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.02, 0.32), trim);
+  finL.position.set(-1.5, -0.32, -1.7);
+  g.add(finL);
+  const finR = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.02, 0.32), trim);
+  finR.position.set(1.5, -0.32, -2.9);
+  g.add(finR);
 
   // CARGO BAY GLOW (finding 4): dedicated glow mesh riding the connector
-  // spar — previously `cargoMesh` pointed at `spar` itself (an accent-
-  // material barycenter link doing double-duty as fleet-identity light
-  // AND P/L indicator). Separated so the spar keeps its steady identity
-  // glow and this small strip alone carries P/L state.
+  // spar — previously `cargoMesh` pointed at `spar` itself. Separated so
+  // the spar keeps its steady identity glow and this small strip alone
+  // carries P/L state.
   const cargoBay = addCargoBayGlow(g, 0, 0.02, 0.15, 0.5, 0.1, 0.24);
   cargoBay.rotation.y = Math.atan2(spanX, spanZ);
 
@@ -1049,20 +1450,59 @@ function buildArbitrageur(seed) {
 }
 
 // --- NexusBrain: science vessel, sensor booms (replaces cortex swirl) --
+// ADULT-GRADE REBUILD (2026-07-31): the icosahedral core plus a bare cone
+// spike is still two naked primitives glued together. Rebuild adds a ring
+// of small equipment boxes girdling the core (breaks the icosahedron's
+// crystalline silhouette with mounted hardware), a spike collar + fin
+// fairings (the cone now visibly integrates with the core instead of
+// piercing through it), and thickens the rear service module treatment
+// with visible plumbing between it and the core — matches the same
+// "mounted, not floating" discipline applied to every other hull this pass.
 function buildNexusBrain(seed) {
   const g = new THREE.Group();
   const col = FLEET.nexusbrain.color;
   const rand = mulberry32(seed);
+  const trim = darkTrimMaterial();
+  const accent = accentMaterial(col, 1.0);
   const hullMat = greebledHullMaterial(col, seed, 2);
 
   const core = new THREE.Mesh(new THREE.IcosahedronGeometry(1.15, 1), hullMat);
   g.add(core);
 
-  // forward command spike
-  const spike = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2.2, 6), darkTrimMaterial());
+  // equipment box girdle — small boxes ringing the core's midsection,
+  // mounted hardware breaking the crystalline facets so the core reads as
+  // an instrumented hull, not a bare geometric solid
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    const dir = new THREE.Vector3(Math.cos(a), 0.1, Math.sin(a)).normalize();
+    const box = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.18, 0.3), i % 2 === 0 ? trim : hullMat);
+    box.position.copy(dir.clone().multiplyScalar(1.22));
+    box.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir);
+    g.add(box);
+  }
+
+  // forward command spike, now with a mounting collar fairing where it
+  // meets the core (was a bare cone piercing straight through the surface)
+  const spikeCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.62, 0.35, 10), hullMat);
+  spikeCollar.rotation.x = Math.PI / 2;
+  spikeCollar.position.z = 1.0;
+  g.add(spikeCollar);
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const finlet = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.22, 0.4), trim);
+    finlet.position.set(Math.cos(a) * 0.5, Math.sin(a) * 0.5, 1.0);
+    finlet.rotation.z = a;
+    g.add(finlet);
+  }
+  const spike = new THREE.Mesh(new THREE.ConeGeometry(0.5, 2.2, 6), trim);
   spike.rotation.x = Math.PI / 2;
   spike.position.z = 2.0;
   g.add(spike);
+  // spike tip sensor ring — small accent band near the point
+  const spikeTipRing = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.025, 4, 10), accent);
+  spikeTipRing.rotation.x = Math.PI / 2;
+  spikeTipRing.position.z = 2.85;
+  g.add(spikeTipRing);
 
   // three sensor booms radiating outward — the analytical "reaching out
   // to sense the market" identity, built from hard mechanical parts
@@ -1110,11 +1550,36 @@ function buildNexusBrain(seed) {
   }
   g.userData.booms = booms;
 
-  // rear service module
+  // rear service module — now with a collar fairing at the core junction
+  // and visible conduit runs (three curved-look pipe segments) linking it
+  // back to the core, so the module reads as an attached, plumbed system
+  // rather than a second bare cylinder floating behind the icosahedron.
+  const rearCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.75, 0.3, 10), trim);
+  rearCollar.rotation.x = Math.PI / 2;
+  rearCollar.position.z = -0.75;
+  g.add(rearCollar);
   const rear = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.9, 1.6, 10), hullMat);
   rear.rotation.x = Math.PI / 2;
   rear.position.z = -1.6;
   g.add(rear);
+  // ribbed detail bands on the rear module — breaks the smooth taper
+  for (const rz of [-1.2, -2.0]) {
+    const ridge = new THREE.Mesh(new THREE.TorusGeometry(0.83, 0.03, 5, 12), trim);
+    ridge.rotation.x = Math.PI / 2;
+    ridge.position.z = rz;
+    g.add(ridge);
+  }
+  // conduit runs — three thin pipes bridging core surface to rear collar
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2 + 0.4;
+    const from = new THREE.Vector3(Math.cos(a) * 0.5, Math.sin(a) * 0.5, -0.5);
+    const to = new THREE.Vector3(Math.cos(a) * 0.65, Math.sin(a) * 0.65, -1.0);
+    const mid = from.clone().add(to).multiplyScalar(0.5);
+    const conduit = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, from.distanceTo(to), 5), trim);
+    conduit.position.copy(mid);
+    conduit.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), to.clone().sub(from).normalize());
+    g.add(conduit);
+  }
 
   // MINING-RIG ANATOMY (finding 3): a small lit crew module, dwarfed by
   // the icosahedral core + boom array around it — this is the "someone's
@@ -1150,10 +1615,19 @@ function buildNexusBrain(seed) {
 }
 
 // --- Confluence: refinery flagship, four docking umbilicals ------------
+// ADULT-GRADE REBUILD (2026-07-31): the drum already carries the most
+// secondary structure of the six (edge lines, process rings, ore pods,
+// umbilicals) — the remaining bare-primitive reads are the engine block
+// (four nozzles on open air with no housing) and the bow cone (a smooth
+// dark triangle with only an edge outline). Added an engine block manifold
+// housing (visible mounting plate the four nozzles sit IN, plus tank/
+// plumbing hints alongside) and bow collar ribbing so the collector cone
+// integrates with the drum instead of just touching it.
 function buildConfluence(seed) {
   const g = new THREE.Group();
   const col = FLEET.confluence.color;
   const rand = mulberry32(seed);
+  const trim = darkTrimMaterial();
   const hullMat = greebledHullMaterial(col, seed, 3);
 
   // large drum-shaped refinery hull. Segment count raised 14->22 (cheap,
@@ -1226,7 +1700,7 @@ function buildConfluence(seed) {
   // edge-line treatment as the drum so the cone's profile stays legible
   // against the space background instead of reading as a flat dark
   // silhouette with no definition.
-  const bow = new THREE.Mesh(new THREE.ConeGeometry(1.0, 1.6, 14), darkTrimMaterial());
+  const bow = new THREE.Mesh(new THREE.ConeGeometry(1.0, 1.6, 14), trim);
   bow.rotation.x = -Math.PI / 2;
   bow.position.z = 3.0;
   g.add(bow);
@@ -1237,6 +1711,25 @@ function buildConfluence(seed) {
   bowEdges.rotation.copy(bow.rotation);
   bowEdges.position.copy(bow.position);
   g.add(bowEdges);
+  // bow collar — a stepped ring where the cone meets the drum, the "these
+  // are two separately built assemblies, bolted together" cue instead of
+  // one shape blending seamlessly into the other
+  const bowCollar = new THREE.Mesh(new THREE.CylinderGeometry(1.15, 1.02, 0.3, 14), hullMat);
+  bowCollar.rotation.x = Math.PI / 2;
+  bowCollar.position.z = 2.3;
+  g.add(bowCollar);
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2;
+    const bolt = new THREE.Mesh(new THREE.SphereGeometry(0.045, 5, 4), trim);
+    bolt.position.set(Math.cos(a) * 1.12, Math.sin(a) * 1.12, 2.3);
+    g.add(bolt);
+  }
+  // small forward sensor cluster on the bow face — a purpose greeble the
+  // smooth cone tip otherwise lacks
+  const bowSensor = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.13, 0.18, 8), trim);
+  bowSensor.rotation.x = Math.PI / 2;
+  bowSensor.position.z = 3.75;
+  g.add(bowSensor);
 
   // MINING-RIG ANATOMY (finding 3): racked ore pods along the drum's
   // flanks — this is what turns "boxy hauler" into a proper container
@@ -1257,9 +1750,37 @@ function buildConfluence(seed) {
     }
   }
 
+  // engine manifold housing — a flat mounting plate the four nozzles sit
+  // IN (was four nozzles hanging in open air behind the drum with no
+  // structure connecting them), plus tank-cluster plumbing hints (two
+  // small cylindrical tanks with connecting pipe runs) alongside — the
+  // "propellant feed" mechanical-logic cue a refinery hauler needs.
+  const manifoldPlate = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.4, 0.28, 20), hullMat);
+  manifoldPlate.rotation.x = Math.PI / 2;
+  manifoldPlate.position.z = -2.15;
+  g.add(manifoldPlate);
   const engines = [];
   for (const [ex, ey] of [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]) {
+    const flange = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.1, 10), trim);
+    flange.position.set(ex, ey, -2.28);
+    flange.rotation.x = Math.PI / 2;
+    g.add(flange);
     engines.push(addEngineNozzle(g, ex, ey, -2.4, 0.36, col, new THREE.Vector3(0, 0, -1)));
+  }
+  // twin propellant tanks flanking the manifold, each with a strap band
+  // and a short feed pipe running to the manifold plate
+  for (const sign of [1, -1]) {
+    const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.9, 10), trim);
+    tank.rotation.z = Math.PI / 2;
+    tank.position.set(sign * 1.55, 0, -1.5);
+    g.add(tank);
+    const tankBand = new THREE.Mesh(new THREE.TorusGeometry(0.29, 0.03, 4, 12), hullMat);
+    tankBand.rotation.y = Math.PI / 2;
+    tankBand.position.set(sign * 1.55, 0, -1.5);
+    g.add(tankBand);
+    const feedPipe = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.55, 5), trim);
+    feedPipe.position.set(sign * 1.55, 0, -1.85);
+    g.add(feedPipe);
   }
 
   const lights = [];
@@ -2082,11 +2603,29 @@ function updateBeam(beam, shipWorldPos, targetWorldPos, t, intensity, radiusScal
 // Dark angular wedge — small, cheap, reads as "fighter" purely from
 // silhouette (a flattened arrowhead) at the tiny scale escorts render at.
 // ============================================================
+// ADULT-GRADE REBUILD (2026-07-31): the single flat extruded wedge was
+// exactly the "naked primitive" problem at fighter scale — one shape, no
+// sub-assembly, no armament read. Template stays cheap (geometry/materials
+// built ONCE, shared via clone/instancing across every escort in the scene
+// — up to 12 on screen at once, so per-mesh cost still matters here more
+// than on the six named traders) but the hull is now composed from a
+// canopy hump + two hardpoint nubs + a small intake scoop, all sharing the
+// cached geometries/materials so the draw-call profile barely moves.
 let _escortGeoCache = null;
 let _escortMatCache = null;
 let _escortEngineMatCache = null;
+let _escortCanopyGeoCache = null, _escortCanopyMatCache = null;
+let _escortHardpointGeoCache = null, _escortHardpointMatCache = null;
+let _escortIntakeGeoCache = null;
 function buildEscortTemplate() {
-  if (_escortGeoCache) return { geo: _escortGeoCache, mat: _escortMatCache, engineMat: _escortEngineMatCache };
+  if (_escortGeoCache) {
+    return {
+      geo: _escortGeoCache, mat: _escortMatCache, engineMat: _escortEngineMatCache,
+      canopyGeo: _escortCanopyGeoCache, canopyMat: _escortCanopyMatCache,
+      hardpointGeo: _escortHardpointGeoCache, hardpointMat: _escortHardpointMatCache,
+      intakeGeo: _escortIntakeGeoCache,
+    };
+  }
   const shape = new THREE.Shape();
   shape.moveTo(0, 1.0);       // nose
   shape.lineTo(0.42, -0.55);  // right wingtip
@@ -2110,8 +2649,28 @@ function buildEscortTemplate() {
     color: 0xbcd4ff, transparent: true, opacity: 0.85,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
+  // canopy glint — a tiny flattened dome forward of center, bright/glossy
+  // so it catches the key light as a hard highlight point (the "canopy
+  // glint" the mandate names explicitly) — cheap low-poly, shared geo/mat
+  const canopyGeo = new THREE.SphereGeometry(0.09, 8, 6, 0, Math.PI * 2, 0, Math.PI / 1.9);
+  const canopyMat = new THREE.MeshStandardMaterial({
+    color: 0x0a1420, metalness: 0.15, roughness: 0.08,
+    emissive: 0x0e1b28, emissiveIntensity: 0.5,
+  });
+  // hardpoint nubs — small angular blocks under each wing, the "armed
+  // fighter" read; shared geo/mat, positioned per-side in buildEscort
+  const hardpointGeo = new THREE.BoxGeometry(0.06, 0.05, 0.16);
+  const hardpointMat = new THREE.MeshStandardMaterial({ color: 0x14141a, metalness: 0.55, roughness: 0.55 });
+  // intake scoop — a short open-ended tapered cylinder tucked under the
+  // nose, the "this fighter breathes" mechanical-logic cue at fighter scale
+  const intakeGeo = new THREE.CylinderGeometry(0.05, 0.07, 0.14, 6, 1, true);
   _escortGeoCache = geo; _escortMatCache = mat; _escortEngineMatCache = engineMat;
-  return { geo, mat, engineMat };
+  _escortCanopyGeoCache = canopyGeo; _escortCanopyMatCache = canopyMat;
+  _escortHardpointGeoCache = hardpointGeo; _escortHardpointMatCache = hardpointMat;
+  _escortIntakeGeoCache = intakeGeo;
+  return {
+    geo, mat, engineMat, canopyGeo, canopyMat, hardpointGeo, hardpointMat, intakeGeo,
+  };
 }
 
 function buildEscort() {
@@ -2119,6 +2678,30 @@ function buildEscort() {
   const group = new THREE.Group();
   const hull = new THREE.Mesh(tpl.geo, tpl.mat);
   group.add(hull);
+
+  // canopy hump — sits just forward of center, breaks the flat wedge top
+  // surface and gives the silhouette a "pilot's compartment" bump when
+  // viewed from the side, plus the specular glint from above
+  const canopy = new THREE.Mesh(tpl.canopyGeo, tpl.canopyMat);
+  canopy.scale.set(1, 0.6, 1.3);
+  canopy.position.set(0, 0.04, 0.28);
+  group.add(canopy);
+
+  // hardpoint nubs — one under each wingtip, small angular blocks that
+  // read as ordnance/sensor pods even at 6-10px on screen
+  const hpL = new THREE.Mesh(tpl.hardpointGeo, tpl.hardpointMat);
+  hpL.position.set(0.3, -0.04, -0.1);
+  group.add(hpL);
+  const hpR = new THREE.Mesh(tpl.hardpointGeo, tpl.hardpointMat);
+  hpR.position.set(-0.3, -0.04, -0.1);
+  group.add(hpR);
+
+  // intake scoop tucked under the nose
+  const intake = new THREE.Mesh(tpl.intakeGeo, tpl.mat);
+  intake.rotation.x = Math.PI / 2;
+  intake.position.set(0, -0.05, 0.45);
+  group.add(intake);
+
   // tiny engine glow at the tail notch — the only light this small hull
   // carries, matches the "small dark angular wedge with tiny engine
   // glows" spec line.

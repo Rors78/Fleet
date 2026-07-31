@@ -240,9 +240,7 @@ class ArbitrageurEngine:
         # Log buffer for snapshot (must be before _load_positions which calls _log)
         self._log_buf = deque(maxlen=30)
 
-        # Position persistence
         self._positions_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arbitrageur_state.json")
-        self._load_positions()
 
         # Fleet integration
         self._bus = BusListener() if BusListener else None
@@ -250,6 +248,12 @@ class ArbitrageurEngine:
                            if PortfolioClient else None)
         self._publisher = (EventPublisher(CC_URL, "arbitrageur")
                            if EventPublisher else None)
+
+        # Position persistence — MUST come after _portfolio exists: the v1
+        # migration path releases old spread reservations through it, and
+        # loading before it was created crashed the load on every boot (the
+        # migration never completed, so the state file re-migrated forever).
+        self._load_positions()
 
         # Live Kraken spot execution
         self._kraken = None

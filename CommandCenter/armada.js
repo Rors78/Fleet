@@ -112,53 +112,31 @@ function mulberry32(seed) {
 // ============================================================
 // Shared material helpers — matte PBR-ish hulls, restrained palette
 // ============================================================
+// REALISM OVERHAUL (2026-07-30, finding 1): Jeremy's verdict on the
+// grimdark pass was "cartoon crap... preschool cartoons" despite the hull
+// already being dark — the remaining problem wasn't lightness, it was that
+// EVERY ship still read as "a single flat color, just a darker one" with a
+// thin colored hairline for a seam. Real industrial livery is neutral
+// GUNMETAL GRAY (not a tinted-toward-the-fleet-color gray) with the
+// identity color demoted to a deliberate painted STRIPE band + placard
+// decals, the way a real mining/cargo fleet paints hull numbers and
+// warning chevrons rather than dyeing the whole hull. Hull base color is
+// now a genuinely neutral desaturated gray (sat<=0.05, was <=0.14 — still
+// picking up a faint per-ship cast) so ships read as "the same fleet,
+// individually marked" rather than "six different pastel toys".
 function hullMaterial(colorHex, opts = {}) {
-  const c = new THREE.Color(colorHex);
-  // GRIMDARK PASS (2026-07-30): hull albedo is dark oxidized gunmetal —
-  // the bot's fleet color is now an ACCENT ONLY (panel seams, engine glow,
-  // running lights, ~5-10% of surface area), never the hull base. Round 1
-  // used lightness 0.32 + sat<=0.35 which read as pastel painted plastic
-  // ("mint green", "lavender", "peach") under flat even lighting — Jeremy's
-  // explicit callout. Fix is two-part: (1) hull lightness drops to a
-  // near-black 0.10-0.16 band with a faint per-ship color tint (sat<=0.14)
-  // so ships stay distinguishable from each other without reading as
-  // "colored", and (2) metalness/roughness are varied (0.55-0.75 / 0.35-0.55)
-  // so specular highlights go tight and hard instead of soft-and-waxy.
-  // The procedural env map (buildProceduralEnvMap) + harsh key light below
-  // supply the specular response higher metalness needs — confirmed at
-  // 30-60px this does NOT collapse to a black blob (see roughness floor).
-  const hsl = { h: 0, s: 0, l: 0 };
-  c.getHSL(hsl);
-  const hullColor = new THREE.Color().setHSL(hsl.h, Math.min(hsl.s, 0.14), 0.12 + (opts.lightness || 0));
-  // Tiny emissive floor (NOT the accent color — a near-black neutral
-  // lift) so a flat face aimed directly at the camera (e.g. Confluence's
-  // cylinder end-cap) is never a 100%-unlit black silhouette. This is
-  // a "never fully dark" floor, not a glow — imperceptible except on
-  // the specific geometry/angle combos that would otherwise go black.
+  // Neutral industrial gunmetal — NOT tinted by the ship's identity color.
+  // A faction fleet shares one hull-paint spec; individuality comes from
+  // livery stripes/decals (see livery stripe UVs in greebleTexture) and
+  // accent emissives, not from tinting the base metal itself.
+  const baseL = 0.10 + (opts.lightness || 0);
+  const hullColor = new THREE.Color().setHSL(0.6, 0.04, baseL);
   return new THREE.MeshStandardMaterial({
     color: hullColor,
     metalness: opts.metalness != null ? opts.metalness : 0.62,
-    // SPECULAR-BLOWOUT FIX (2026-07-30, live-composite pass): 0.45 base
-    // roughness combined with metalness 0.62 + the hard single-direction
-    // key light (intensity 4.4) produces a near-mirror specular streak
-    // on any low-poly curved surface (Confluence's 14-segment drum cylinder
-    // is the confirmed repro) whenever that surface's normal happens to
-    // roll through the light's reflection vector — which the static
-    // "circle formation" dev-harness pose never exposed, but the live
-    // dashboard's real orbital headings do, at almost any zoom. Root
-    // cause is the SAME failure family as feedback_webgl_pbr_lighting_traps
-    // trap #5 (large-surface-area blowout) — here the "large surface" is
-    // a whole cylinder panel rather than an emissive material. Raised the
-    // roughness floor 0.45->0.58 so the specular lobe widens and softens
-    // (oxidized/brushed gunmetal, not polished chrome) instead of
-    // clipping to a hard white band under ACES tone mapping. Verified this
-    // does NOT reintroduce the flat "toy plastic" look (trap #6) — hull
-    // lightness/saturation/ambient are untouched, only the specular TIGHTNESS
-    // changes, and the darker base color + hard key light direction still
-    // produce real shadow falloff.
     roughness: opts.roughness != null ? opts.roughness : 0.58,
     flatShading: !!opts.flat,
-    emissive: new THREE.Color(0x0a0a10),
+    emissive: new THREE.Color(0x050508),
     emissiveIntensity: 1,
   });
 }
@@ -219,57 +197,135 @@ function darkTrimMaterial() {
 // so hulls read as machined/plated even at tiny screen sizes, without
 // external assets. Cached per color so we don't regenerate per-ship.
 //
+// REALISM OVERHAUL (2026-07-30, finding 1): "flat saturated hulls" verdict
+// applied even to the already-darkened grimdark pass, because the ONLY
+// per-ship visual language was two thin colored hairlines — everything
+// else was a uniform flat gray. Real industrial plating reads through
+// VALUE variation panel-to-panel (some plates weathered darker, some
+// brighter factory-fresh), grime accumulating in corners/seams (ambient
+// occlusion), streak wear trailing from panel edges, and a genuine
+// LIVERY BAND — a painted stripe with a stenciled placard, not a hairline
+// — carrying the identity color. All still procedural/canvas-only, no
+// external assets, cached per (color, seed) so cost is one-time.
+//
 // CRITICAL: map textures MULTIPLY against material.color in three.js
-// (finalColor = color * map). An early version used a near-black
-// (#14141a) base fill here, which crushed every hull to near-solid-black
-// once multiplied against the already-dark hull color — this was the
-// root cause of TurtleSue/Confluence/NexusBrain rendering as unreadable
-// black discs. The base MUST be neutral/light (~0.8-1.0) so it only
-// ADDS panel-line detail without darkening the underlying hull color.
-// Roughness uses a SEPARATE, low-contrast texture (roughness maps don't
-// want the same high-contrast pattern as an albedo detail map).
+// (finalColor = color * map). The base fill MUST stay neutral/light
+// (~0.75-0.85, not near-black) so it only ADDS plating detail without
+// crushing the already-dark hull color to solid black (confirmed prior
+// regression — see git history). Roughness uses a SEPARATE, low-contrast
+// texture (roughness maps should nudge, not swing wildly).
 const _greebleCache = new Map();
 function greebleTexture(colorHex, seed) {
   const key = colorHex + '_' + seed;
   if (_greebleCache.has(key)) return _greebleCache.get(key);
-  const size = 256;
+  const size = 512; // doubled (was 256) — panel-line + wear detail aliased
+                     // to mush at 256 once repeat counts dropped for the
+                     // larger single-panel plating language below.
   const cv = document.createElement('canvas');
   cv.width = size; cv.height = size;
   const ctx = cv.getContext('2d');
   const rand = mulberry32(seed);
-  // Neutral light-gray base so multiplying against hullColor PRESERVES
-  // the intended color instead of darkening it.
-  ctx.fillStyle = '#d8d8de';
+  ctx.fillStyle = '#c6c6cc';
   ctx.fillRect(0, 0, size, size);
-  const accent = '#' + new THREE.Color(colorHex).getHexString();
-  // Sparse, LOW-frequency panel lines — at 24-40px on-screen a dense
-  // fine grid just aliases to gray mush, so use fewer/thicker cells.
-  ctx.strokeStyle = 'rgba(0,0,0,0.35)';
-  ctx.lineWidth = 2;
-  const cell = 42 + Math.floor(rand() * 20);
+
+  // --- 1. Per-panel value variation — the core "machined plating" cue.
+  // A coarse grid of rectangular plates, each given its OWN flat fill
+  // value (not a gradient) so adjacent plates read as physically
+  // separate pieces of metal, the way individual hull plates on a real
+  // ship never match in exact tone.
+  const cell = 70 + Math.floor(rand() * 24);
+  const cols = Math.ceil(size / cell), rows = Math.ceil(size / cell);
+  for (let cy = 0; cy < rows; cy++) {
+    for (let cx = 0; cx < cols; cx++) {
+      const r = rand();
+      // ~15% of panels noticeably darker (weathered/replaced plate),
+      // most sit within a tight band near the base value.
+      let shade;
+      if (r < 0.15) shade = -0.16 - rand() * 0.08;
+      else if (r < 0.30) shade = 0.06 + rand() * 0.05;
+      else shade = (rand() - 0.5) * 0.05;
+      const v = shade >= 0 ? `rgba(255,255,255,${shade.toFixed(3)})` : `rgba(0,0,0,${(-shade).toFixed(3)})`;
+      ctx.fillStyle = v;
+      ctx.fillRect(cx * cell, cy * cell, cell, cell);
+    }
+  }
+
+  // --- 2. Thin dark panel-line grid over the value variation — sparse,
+  // low-frequency (a dense fine grid aliases to gray mush at 24-40px on
+  // screen).
+  ctx.strokeStyle = 'rgba(0,0,0,0.42)';
+  ctx.lineWidth = 2.5;
   for (let x = 0; x <= size; x += cell) {
     ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, size); ctx.stroke();
   }
   for (let y = 0; y <= size; y += cell) {
     ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size, y); ctx.stroke();
   }
-  // A handful of larger panel blocks (subtle shade variation, not deep shadow)
-  for (let i = 0; i < 10; i++) {
-    const w = 20 + rand() * 40, h = 20 + rand() * 40;
-    const x = rand() * size, y = rand() * size;
-    ctx.fillStyle = rand() > 0.5 ? 'rgba(0,0,0,0.12)' : 'rgba(255,255,255,0.10)';
-    ctx.fillRect(x, y, w, h);
+
+  // --- 3. Ambient-occlusion smudges at panel-line intersections/corners
+  // — soft dark radial blobs where grime/shadow would naturally collect
+  // on a real hull, breaking up the mechanical regularity of the grid.
+  for (let cy = 0; cy <= rows; cy++) {
+    for (let cx = 0; cx <= cols; cx++) {
+      if (rand() > 0.55) continue; // not every joint — patchy, not uniform
+      const jx = cx * cell, jy = cy * cell;
+      const r = 10 + rand() * 16;
+      const grad = ctx.createRadialGradient(jx, jy, 0, jx, jy, r);
+      grad.addColorStop(0, `rgba(0,0,0,${(0.22 + rand() * 0.16).toFixed(3)})`);
+      grad.addColorStop(1, 'rgba(0,0,0,0)');
+      ctx.fillStyle = grad;
+      ctx.fillRect(jx - r, jy - r, r * 2, r * 2);
+    }
   }
-  // Bright accent seams — the only color hint on the hull. Bumped from
-  // '55' (33% alpha) to '88' (53%) for the grimdark pass: against a much
-  // darker hull base these seams are now doing more identity work, so
-  // they need to survive the multiply and still read at 30-60px.
-  ctx.strokeStyle = accent + '88';
-  ctx.lineWidth = 2.5;
-  for (let i = 0; i < 2; i++) {
-    const y = rand() * size;
-    ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(size, y); ctx.stroke();
+
+  // --- 4. Streak wear — thin vertical drips trailing down from a handful
+  // of panel edges (atmospheric/coolant staining), the single detail that
+  // most reads as "this ship has actually flown somewhere" rather than
+  // factory-fresh CG plastic.
+  for (let i = 0; i < 7; i++) {
+    const x = rand() * size;
+    const y0 = rand() * size * 0.5;
+    const len = 40 + rand() * 90;
+    const grad = ctx.createLinearGradient(x, y0, x, y0 + len);
+    grad.addColorStop(0, 'rgba(0,0,0,0.24)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(x - (2 + rand() * 3), y0, 4 + rand() * 6, len);
   }
+
+  // --- 5. LIVERY BAND — the real identity carrier (replaces the old
+  // hairline seams). A painted horizontal stripe band with a darker
+  // "stencil placard" block inset, at a fixed saturation so six ships
+  // share one paint spec and differ only by hue — reads as fleet
+  // markings, not a colored hull. Band position varies per-seed so it
+  // doesn't always land in the same spot on every hull type.
+  const identity = new THREE.Color(colorHex);
+  const idHSL = { h: 0, s: 0, l: 0 };
+  identity.getHSL(idHSL);
+  const stripeColor = new THREE.Color().setHSL(idHSL.h, 0.55, 0.42);
+  const stripeHex = '#' + stripeColor.getHexString();
+  const bandY = size * (0.32 + rand() * 0.36);
+  const bandH = size * 0.09;
+  ctx.fillStyle = stripeHex;
+  ctx.globalAlpha = 0.85;
+  ctx.fillRect(0, bandY, size, bandH);
+  ctx.globalAlpha = 1;
+  // thin darker pinstripe borders on the band so it reads as applied
+  // paint with masking-tape edges, not a texture bleed
+  ctx.strokeStyle = 'rgba(0,0,0,0.4)';
+  ctx.lineWidth = 3;
+  ctx.beginPath(); ctx.moveTo(0, bandY); ctx.lineTo(size, bandY); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(0, bandY + bandH); ctx.lineTo(size, bandY + bandH); ctx.stroke();
+  // stencil placard — a dark block with thin bright hazard-style corner
+  // ticks, the "hull number" read at a glance without needing real text
+  const plX = size * (0.12 + rand() * 0.5), plW = size * 0.16, plH = bandH * 0.72;
+  const plY = bandY + (bandH - plH) / 2;
+  ctx.fillStyle = 'rgba(10,10,14,0.55)';
+  ctx.fillRect(plX, plY, plW, plH);
+  ctx.strokeStyle = 'rgba(230,230,235,0.55)';
+  ctx.lineWidth = 1.5;
+  ctx.strokeRect(plX + 3, plY + 3, plW - 6, plH - 6);
+
   const tex = new THREE.CanvasTexture(cv);
   tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -361,8 +417,8 @@ function _beamFadeTexture() {
   return tex;
 }
 
-function greebledHullMaterial(colorHex, seed, repeat = 3) {
-  const mat = hullMaterial(colorHex);
+function greebledHullMaterial(colorHex, seed, repeat = 3, opts) {
+  const mat = hullMaterial(colorHex, opts);
   const tex = greebleTexture(colorHex, seed);
   const t = tex.clone();
   t.needsUpdate = true;
@@ -456,6 +512,32 @@ function addRunningLight(group, x, y, z, colorHex, size = 0.35) {
   return dot;
 }
 
+// CARGO BAY GLOW MESH (finding 4, realism overhaul 2026-07-30): the P/L
+// glow system used to drive `userData.cargoMesh.material.emissive` — and
+// every hull pointed that at its MAIN hull mesh (sphere/spine/drum/etc),
+// which is exactly why TurtleSue stayed neon green regardless of the dark
+// jade base: the glow logic was literally repainting the whole hull's
+// emissive color every close. Worse, several hulls share ONE material
+// instance across multiple meshes (e.g. Gridzilla's spine/rings/scoop all
+// reference the same `hullMat` object), so mutating "the cargo mesh"'s
+// material silently glowed every mesh sharing that material too.
+// Fix: every hull gets a dedicated small window-strip/vent mesh with its
+// OWN unique MeshStandardMaterial instance (never shared, never the hull
+// material), built here and returned for the builder to store as
+// userData.cargoMesh. The hull base color itself is never touched again —
+// only this small glow strip lights up on P/L.
+function addCargoBayGlow(group, x, y, z, w, h, d, rotX = 0) {
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x101014, metalness: 0.2, roughness: 0.6,
+    emissive: new THREE.Color(0x0a0a0e), emissiveIntensity: 0.15,
+  });
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  mesh.position.set(x, y, z);
+  mesh.rotation.x = rotX;
+  group.add(mesh);
+  return mesh;
+}
+
 // ============================================================
 // HULL BUILDERS — six procedural ships, unit scale ~ hull length 8-12
 // units along local +Z (forward). Each returns {group, engines[], lights[]}
@@ -538,6 +620,11 @@ function buildTurtleSue(seed) {
   band.rotation.x = Math.PI / 2;
   g.add(band);
 
+  // CARGO BAY GLOW (finding 4): a row of small windowed cargo-bay slits
+  // set INTO the trench, own material instance — this is what pulses on
+  // P/L now, never the jade shell itself.
+  const cargoBay = addCargoBayGlow(g, 2.3, 0, 2.2, 0.5, 0.22, 0.9, 0.15);
+
   // Mining turret — FLUSH-MOUNTED, not a floating disconnected orb. A short
   // stub foot sits ON the hull surface (radius-matched, no gap) and the
   // housing sits directly on top of the foot, so the eye reads one
@@ -608,13 +695,33 @@ function buildTurtleSue(seed) {
       i % 2 === 0 ? 0xff3b30 : 0xffffff, 0.22));
   }
 
+  // MINING-RIG ANATOMY (finding 3): a small comms/nav antenna array and
+  // two processing vent stacks bolted to the shell — a sphere alone reads
+  // as a moon, these small mechanical protrusions are what say "someone
+  // works here" without fighting the Death Star silhouette identity.
+  const antDir = new THREE.Vector3(-0.3, 0.85, 0.2).normalize();
+  const antBase = antDir.clone().multiplyScalar(3.4);
+  const antMast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.045, 0.9, 5), darkTrimMaterial());
+  antMast.position.copy(antBase.clone().add(antDir.clone().multiplyScalar(0.45)));
+  antMast.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), antDir);
+  g.add(antMast);
+  addRunningLight(g, ...antBase.clone().add(antDir.clone().multiplyScalar(0.9)).toArray(), 0xff3b30, 0.05);
+  const ventDirs = [new THREE.Vector3(0.55, -0.6, -0.55).normalize(), new THREE.Vector3(-0.6, -0.55, -0.5).normalize()];
+  for (const vd of ventDirs) {
+    const vBase = vd.clone().multiplyScalar(3.35);
+    const vent = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.2, 0.3, 8), darkTrimMaterial());
+    vent.position.copy(vBase);
+    vent.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), vd);
+    g.add(vent);
+  }
+
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
   // Beam now originates from the flush-mounted turret's housing tip, along
   // the same turretDir used to place/orient the turret above (was a fixed
   // (1.6,1.2,3.1) offset tied to the old floating-dish position).
   g.userData.beamMount = turretDir.clone().multiplyScalar(3.38 + 1.0);
-  g.userData.cargoMesh = sphere;
-  g.userData.cargoBaseColor = hullMat.color.clone();
+  g.userData.cargoMesh = cargoBay;
+  g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 7;
   return { group: g, engines, lights };
 }
@@ -682,6 +789,43 @@ function buildGridzilla(seed) {
   scoopGlow.position.z = 4.3;
   g.add(scoopGlow);
 
+  // MINING-RIG ANATOMY (finding 3): ore container cluster racked inside
+  // the open truss cage (amidships, where a real harvester would carry
+  // its haul), a small lit crew capsule dwarfed by the lattice, and a
+  // whip antenna array — the working-vessel details a bare truss cage
+  // alone doesn't sell.
+  const oreMat = darkTrimMaterial();
+  const orePositions = [[0.75, 0.75, -0.4], [-0.75, 0.75, 0.8], [0.75, -0.75, 1.4], [-0.8, -0.7, -0.9]];
+  for (const [px, py, pz] of orePositions) {
+    const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 0.9, 8), oreMat);
+    pod.position.set(px, py, pz);
+    g.add(pod);
+    const band = new THREE.Mesh(new THREE.TorusGeometry(0.33, 0.025, 4, 10), accentMaterial(col, 0.7));
+    band.rotation.x = Math.PI / 2;
+    band.position.set(px, py, pz);
+    g.add(band);
+  }
+  // crew capsule — small, tucked against the spine, dwarfed by the truss
+  const crewCapsule = new THREE.Mesh(new THREE.CapsuleGeometry(0.22, 0.5, 4, 6), hullMat);
+  crewCapsule.rotation.x = Math.PI / 2;
+  crewCapsule.position.set(0, 0.45, -1.5);
+  g.add(crewCapsule);
+  addRunningLight(g, 0.1, 0.6, -1.3, 0xcfe4ff, 0.06);
+  addRunningLight(g, -0.1, 0.6, -1.7, 0xcfe4ff, 0.06);
+  // whip antenna array — asymmetric, off the spine
+  for (const [ax, ay, az, alen] of [[0.3, 1.15, -2.6, 1.1], [-0.55, 0.95, -2.3, 0.7]]) {
+    const whip = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.03, alen, 5), darkTrimMaterial());
+    whip.position.set(ax, ay + alen / 2, az);
+    g.add(whip);
+  }
+
+  // CARGO BAY GLOW (finding 4): a dedicated glow strip along the spine's
+  // cargo rack, own material instance — previously `cargoMesh` pointed at
+  // `spine`, which SHARES `hullMat` with every truss ring/scoop, so the
+  // old P/L glow silently lit the entire lattice every close, not just
+  // "cargo". This mesh alone pulses now.
+  const cargoBay = addCargoBayGlow(g, 0, -0.32, 0.9, 0.42, 0.16, 1.1);
+
   // engines at stern, arranged in the truss square
   const engines = [];
   for (const [ex, ey] of [[-1.1, -1.1], [1.1, -1.1], [-1.1, 1.1], [1.1, 1.1]]) {
@@ -695,8 +839,8 @@ function buildGridzilla(seed) {
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
   g.userData.beamMount = new THREE.Vector3(0, 0, 4.6);
-  g.userData.cargoMesh = spine;
-  g.userData.cargoBaseColor = trim.color.clone();
+  g.userData.cargoMesh = cargoBay;
+  g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 8;
   return { group: g, engines, lights };
 }
@@ -766,6 +910,16 @@ function buildRubberband(seed) {
   nose.position.z = 4.5;
   g.add(nose);
 
+  // MINING-RIG ANATOMY (finding 3): a small dorsal sensor pod + whip
+  // antenna along the spine — a fast survey/interceptor skiff still needs
+  // a working-vessel greeble cue, not just a bare aerodynamic hull.
+  const sensorPod = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.22, 0.55), darkTrimMaterial());
+  sensorPod.position.set(0, 0.5, 1.6);
+  g.add(sensorPod);
+  const whip = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.02, 0.7, 5), darkTrimMaterial());
+  whip.position.set(0, 0.85, 0.9);
+  g.add(whip);
+
   // Hull running-light line — small dots along the spine, reinforcing the
   // length axis (spec: "running lights along the hull line").
   const spineLights = [];
@@ -775,6 +929,11 @@ function buildRubberband(seed) {
 
   const engines = [addEngineNozzle(g, 0, -0.1, -3.7, 0.42, col, new THREE.Vector3(0, 0, -1))];
 
+  // CARGO BAY GLOW (finding 4): small ventral cargo strip, own material —
+  // previously `cargoMesh` pointed at the WHOLE fuselage (`body`), so every
+  // P/L close repainted the entire hull's emissive rather than a bay.
+  const cargoBay = addCargoBayGlow(g, 0, -0.5, -0.4, 0.3, 0.14, 1.6);
+
   const lights = [
     addRunningLight(g, 2.9, 0, -0.9, 0xff3b30, 0.16),
     addRunningLight(g, -2.9, 0, -0.9, 0x30ff5f, 0.16),
@@ -783,8 +942,8 @@ function buildRubberband(seed) {
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
   g.userData.beamMount = new THREE.Vector3(0, -0.3, 3.4);
-  g.userData.cargoMesh = body;
-  g.userData.cargoBaseColor = hullMat.color.clone();
+  g.userData.cargoMesh = cargoBay;
+  g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.wingL = wingL;
   g.userData.wingR = wingR;
   g.userData.hullLength = 9.5;
@@ -825,6 +984,21 @@ function buildArbitrageur(seed) {
   const right = buildHalfHull(1);
   g.add(left.half, right.half);
 
+  // MINING-RIG ANATOMY (finding 3): a stubby drill/processing head capping
+  // each hull's bow — the "twin driver" identity gets a real working tip
+  // instead of ending in a bare capsule dome, echoing the barycenter-pair
+  // silhouette with visible purpose.
+  for (const half of [left, right]) {
+    const drillHead = new THREE.Mesh(new THREE.ConeGeometry(0.42, 1.0, 7), darkTrimMaterial());
+    drillHead.rotation.x = -Math.PI / 2;
+    drillHead.position.set(0, 0, 2.65);
+    half.half.add(drillHead);
+    const drillRing = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.045, 5, 12), accentMaterial(col, 0.9));
+    drillRing.rotation.x = Math.PI / 2;
+    drillRing.position.set(0, 0, 2.3);
+    half.half.add(drillRing);
+  }
+
   // Connector spine — now runs diagonally between the staggered hulls
   // (along the length axis, not a perpendicular crossbar), reinforcing
   // elongation instead of fighting it. Still the "barycenter" identity —
@@ -853,6 +1027,14 @@ function buildArbitrageur(seed) {
     addEngineNozzle(g, 1.5, 0, -3.1, 0.4, col, new THREE.Vector3(0, 0, -1)),
   ];
 
+  // CARGO BAY GLOW (finding 4): dedicated glow mesh riding the connector
+  // spar — previously `cargoMesh` pointed at `spar` itself (an accent-
+  // material barycenter link doing double-duty as fleet-identity light
+  // AND P/L indicator). Separated so the spar keeps its steady identity
+  // glow and this small strip alone carries P/L state.
+  const cargoBay = addCargoBayGlow(g, 0, 0.02, 0.15, 0.5, 0.1, 0.24);
+  cargoBay.rotation.y = Math.atan2(spanX, spanZ);
+
   const lights = [
     addRunningLight(g, -1.5, 0.3, 2.5, 0xff3b30, 0.16),
     addRunningLight(g, 1.5, 0.3, 3.7, 0x30ff5f, 0.16),
@@ -860,8 +1042,8 @@ function buildArbitrageur(seed) {
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
   g.userData.beamMount = new THREE.Vector3(0, -0.4, 3.9);
-  g.userData.cargoMesh = spar;
-  g.userData.cargoBaseColor = sparMat.color.clone();
+  g.userData.cargoMesh = cargoBay;
+  g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 8.0;
   return { group: g, engines, lights };
 }
@@ -934,7 +1116,26 @@ function buildNexusBrain(seed) {
   rear.position.z = -1.6;
   g.add(rear);
 
+  // MINING-RIG ANATOMY (finding 3): a small lit crew module, dwarfed by
+  // the icosahedral core + boom array around it — this is the "someone's
+  // aboard this science rig" cue the bare geometric core alone can't sell.
+  const crewMat = greebledHullMaterial(0x8a8a92, seed + 5, 1);
+  const crewPod = new THREE.Mesh(new THREE.CapsuleGeometry(0.28, 0.6, 4, 8), crewMat);
+  crewPod.rotation.x = Math.PI / 2;
+  crewPod.position.set(0, -0.55, 0.7);
+  g.add(crewPod);
+  addRunningLight(g, 0.22, -0.55, 1.0, 0xcfe4ff, 0.06);
+  addRunningLight(g, -0.22, -0.55, 1.0, 0xffd27a, 0.06);
+  addRunningLight(g, 0, -0.55, 0.35, 0xcfe4ff, 0.05);
+
   const engines = [addEngineNozzle(g, 0, 0, -2.6, 0.5, col, new THREE.Vector3(0, 0, -1))];
+
+  // CARGO BAY GLOW (finding 4): dedicated data-vault glow panel on the
+  // rear service module, own material — previously `cargoMesh` was `rear`,
+  // which SHARES `hullMat` with `core` (the whole icosahedral body), so
+  // the old P/L glow silently lit the entire science-vessel core too.
+  const cargoBay = addCargoBayGlow(g, 0, 0.5, -1.8, 0.5, 0.14, 0.7);
+
   const lights = [
     addRunningLight(g, 0, 1.2, -0.3, 0xffffff, 0.16),
     addRunningLight(g, 0, -1.2, -0.3, 0xffffff, 0.16),
@@ -942,8 +1143,8 @@ function buildNexusBrain(seed) {
 
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
   g.userData.beamMount = new THREE.Vector3(0, 0, 3.0);
-  g.userData.cargoMesh = rear;
-  g.userData.cargoBaseColor = hullMat.color.clone();
+  g.userData.cargoMesh = cargoBay;
+  g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 6;
   return { group: g, engines, lights };
 }
@@ -1037,6 +1238,25 @@ function buildConfluence(seed) {
   bowEdges.position.copy(bow.position);
   g.add(bowEdges);
 
+  // MINING-RIG ANATOMY (finding 3): racked ore pods along the drum's
+  // flanks — this is what turns "boxy hauler" into a proper container
+  // ship (visible cargo, not just a smooth tank) while keeping the drum
+  // silhouette identity intact. Pods sit in two rows, port/starboard,
+  // clamped to the hull with a simple strap band.
+  const podMat = darkTrimMaterial();
+  const podRows = [-1.05, 1.05];
+  const podZs = [-1.7, -0.55, 0.6, 1.75];
+  for (const py of podRows) {
+    for (let pi = 0; pi < podZs.length; pi++) {
+      const pod = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.5, 0.95), podMat);
+      pod.position.set(0, py * 1.15, podZs[pi]);
+      g.add(pod);
+      const strap = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.06, 1.0), accentMaterial(col, 0.6));
+      strap.position.copy(pod.position);
+      g.add(strap);
+    }
+  }
+
   const engines = [];
   for (const [ex, ey] of [[-0.9, -0.9], [0.9, -0.9], [-0.9, 0.9], [0.9, 0.9]]) {
     engines.push(addEngineNozzle(g, ex, ey, -2.4, 0.36, col, new THREE.Vector3(0, 0, -1)));
@@ -1047,10 +1267,16 @@ function buildConfluence(seed) {
     lights.push(addRunningLight(g, (rand() - 0.5) * 2.6, (rand() - 0.5) * 2.6, (rand() - 0.5) * 4, 0xffffff, 0.16));
   }
 
+  // CARGO BAY GLOW (finding 4): a dedicated viewport strip set into the
+  // drum between two ore pod rows, own material — previously `cargoMesh`
+  // was `drum` itself, so every P/L close repainted the ENTIRE refinery
+  // hull's emissive rather than a bay.
+  const cargoBay = addCargoBayGlow(g, 1.1, 0, 0.05, 0.24, 0.4, 0.9);
+
   g.userData.forwardAxis = new THREE.Vector3(0, 0, 1);
   g.userData.beamMount = new THREE.Vector3(0, 0, 3.9);
-  g.userData.cargoMesh = drum;
-  g.userData.cargoBaseColor = hullMat.color.clone();
+  g.userData.cargoMesh = cargoBay;
+  g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 7.5;
   return { group: g, engines, lights };
 }
@@ -1091,7 +1317,23 @@ function buildStation(seed) {
 
   // Main hull — solid gray sphere with the same greeble/roughness language
   // as the ship hulls so it reads as machined plating, not a plain ball.
-  const hullMat = greebledHullMaterial(0x767c88, seed, 5);
+  // FINDING 6 (station lighting): lightness bumped above the ship-hull
+  // default (opts.lightness +0.09, ~0.19 total vs ships' ~0.10) — the
+  // station is meant to read as a distinct "moon-sized gray hull" against
+  // the fleet's near-black ships, and a lighter base gives the single hard
+  // key light a much stronger TERMINATOR to work with (more total range
+  // between lit and shadow side), which is what makes the trench/dish
+  // read through real value contrast instead of relying on their edge
+  // lines alone.
+  const hullMat = greebledHullMaterial(0x767c88, seed, 5, { lightness: 0.09 });
+  // Cut this mesh's own env-map (ambient-like fill) contribution well
+  // below the scene default (1.0) — envMapIntensity is per-material, so
+  // this dims the station's ambient-equivalent fill specifically without
+  // touching the global hemisphere/ambient the ships also rely on for
+  // their own "never fully dark" floor. Less ambient fill here = the key
+  // light's terminator does more of the work = trench/dish read through
+  // real shadow, not just their edge-line traces.
+  hullMat.envMapIntensity = 0.55;
   const hull = new THREE.Mesh(new THREE.SphereGeometry(5.2, 48, 36), hullMat);
   g.add(hull);
 
@@ -1531,6 +1773,64 @@ function updateBeam(beam, shipWorldPos, targetWorldPos, t, intensity, radiusScal
 }
 
 // ============================================================
+// ESCORT WINGS (finding 5, realism overhaul 2026-07-30): each trader rig
+// gets two small escort fighters holding loose formation off its flanks —
+// "punctuation, not clutter" per spec. Geometry/material built ONCE and
+// shared via clone() (three.js Mesh.clone() shares the material reference
+// and the geometry reference by default — geometry is never mutated per-
+// instance so that's safe, and sharing one material means all escorts in
+// the scene are one draw-call-cheap family, no per-ship variation needed
+// since these are anonymous wing-mates, not identity-bearing hulls).
+// Dark angular wedge — small, cheap, reads as "fighter" purely from
+// silhouette (a flattened arrowhead) at the tiny scale escorts render at.
+// ============================================================
+let _escortGeoCache = null;
+let _escortMatCache = null;
+let _escortEngineMatCache = null;
+function buildEscortTemplate() {
+  if (_escortGeoCache) return { geo: _escortGeoCache, mat: _escortMatCache, engineMat: _escortEngineMatCache };
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 1.0);       // nose
+  shape.lineTo(0.42, -0.55);  // right wingtip
+  shape.lineTo(0.14, -0.4);
+  shape.lineTo(0, -0.65);     // tail notch (engine sits here)
+  shape.lineTo(-0.14, -0.4);
+  shape.lineTo(-0.42, -0.55); // left wingtip
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.1, bevelEnabled: false });
+  geo.rotateX(Math.PI / 2);
+  geo.translate(0, -0.05, 0);
+  // Same neutral gunmetal language as the trader hulls (finding 1) — dark,
+  // angular, no faction color on the body itself; escorts are anonymous
+  // wing-mates, not individually branded.
+  const mat = new THREE.MeshStandardMaterial({
+    color: new THREE.Color().setHSL(0.6, 0.03, 0.07),
+    metalness: 0.6, roughness: 0.62,
+    emissive: new THREE.Color(0x050508), emissiveIntensity: 1,
+  });
+  const engineMat = new THREE.MeshBasicMaterial({
+    color: 0xbcd4ff, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+  });
+  _escortGeoCache = geo; _escortMatCache = mat; _escortEngineMatCache = engineMat;
+  return { geo, mat, engineMat };
+}
+
+function buildEscort() {
+  const tpl = buildEscortTemplate();
+  const group = new THREE.Group();
+  const hull = new THREE.Mesh(tpl.geo, tpl.mat);
+  group.add(hull);
+  // tiny engine glow at the tail notch — the only light this small hull
+  // carries, matches the "small dark angular wedge with tiny engine
+  // glows" spec line.
+  const engineGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.16), tpl.engineMat.clone());
+  engineGlow.position.set(0, -0.02, -0.66);
+  group.add(engineGlow);
+  return { group, engineGlow };
+}
+
+// ============================================================
 // Ship rig — wraps a hull group with animation state machine
 // ============================================================
 class ShipRig {
@@ -1608,6 +1908,17 @@ class ShipRig {
     this.prevPos = null;
     this.scaleTarget = 1;
     this.currentScale = 1;
+
+    // ESCORT WINGS (finding 5): two small fighters per trader rig, loose
+    // formation off the flanks. Each escort tracks its OWN lag-filtered
+    // position (escort.lagPos) so it visibly trails the rig's motion by a
+    // beat rather than being welded on — "piloted, not welded" per spec.
+    // Left/right mirrored offsets + a phase seed so the bob/sway isn't
+    // synchronized between the pair.
+    this.escorts = [
+      { ...buildEscort(), side: 1, phase: Math.random() * Math.PI * 2, lagPos: null },
+      { ...buildEscort(), side: -1, phase: Math.random() * Math.PI * 2, lagPos: null },
+    ];
   }
 
   setQuality(q) {
@@ -1634,12 +1945,14 @@ class ShipRig {
     this.sceneRef = scene;
     scene.add(this.group);
     scene.add(this.beam.group);
+    for (const esc of this.escorts) scene.add(esc.group);
   }
 
   dispose() {
     if (this.sceneRef) {
       this.sceneRef.remove(this.group);
       this.sceneRef.remove(this.beam.group);
+      for (const esc of this.escorts) this.sceneRef.remove(esc.group);
     }
   }
 }
@@ -1878,46 +2191,50 @@ const Armada = {
     // to keep hulls looking like lit metal at 24-40px, no HDRI asset needed.
     _scene.environment = buildProceduralEnvMap(_renderer);
 
-    // GRIMDARK LIGHTING PASS (2026-07-30): round 1's four roughly-equal
-    // omnidirectional lights (key 3.2, rim 1.6, fill 2.2, ambient 1.1)
-    // flattened every hull to soft even brightness — no dominant shadow
-    // side, which read as "toy plastic under a softbox" per Jeremy's
-    // callout. Contrast IS the aesthetic now: one hard, slightly-cool
-    // key light dominates (single clear shadow direction), rim/fill are
-    // dropped to genuinely dim accents that only keep the AWAY-from-key
-    // hemisphere from going pure black, and ambient is cut hard so
-    // unlit panels can actually read as unlit. This is deliberately a
-    // harsher ratio than "realistic" three-point lighting — silhouette
-    // + running lights/accents carry readability at 30-60px, not ambient
-    // fill, per the spec's "dark-but-defined" bar.
-    const key = new THREE.DirectionalLight(0xdbe6ff, 4.4);
+    // UNIFIED KEY LIGHT PASS (2026-07-30, finding 2 — realism overhaul):
+    // the prior grimdark pass already cut ambient/fill hard, but the key
+    // was a cool blue-white (0xdbe6ff) — this rework switches it to a true
+    // WARM-WHITE sun color (matches the 2D scene's star side, upper-left-
+    // front) since a cool key was fighting the "sunlit metal" read and
+    // contributing to the flat/synthetic verdict. One light dominates
+    // completely; everything else exists ONLY to keep the shadow
+    // hemisphere from crushing to pure black, never to add a second
+    // readable light direction. No hull material carries emissive-as-
+    // color — emissive is reserved for engine glow/running lights/windows/
+    // beams (see hullMaterial's near-black emissive floor) — so every
+    // ship genuinely has a lit side and a shadow side driven by this key.
+    const key = new THREE.DirectionalLight(0xfff2df, 4.6);
     key.position.set(-40, 60, 80);
     _scene.add(key);
 
-    // Rim: was a near-key-strength fill light (1.6) — cut to a thin cool
-    // edge light so silhouettes stay separable from near-black space
-    // without lighting the whole away-facing hemisphere.
-    const rim = new THREE.DirectionalLight(0x6f88ff, 0.55);
+    // Cool rim/back light — thin edge light from behind-below so a hull's
+    // AWAY-from-key silhouette edge still separates from near-black space
+    // instead of vanishing into it. Deliberately cool (contrasts the warm
+    // key) since a cool rim against a warm key is the classic cue that
+    // reads as "real light in a real scene" rather than "flat toy" — kept
+    // dim enough that it never functions as a second front-facing key.
+    const rim = new THREE.DirectionalLight(0x4d6fff, 0.6);
     rim.position.set(50, -30, -60);
     _scene.add(rim);
 
     // Dim headlight-ish fill from near the camera — kept ONLY so a flat
     // surface normal to the view axis (e.g. Confluence's cylinder
-    // end-cap) never goes to a 100%-unlit black disc. Cut from 2.2 to
-    // 0.35: round 1's value was strong enough to act as a second key
-    // light and wash out the shadow side the whole pass is built around.
-    const fill = new THREE.DirectionalLight(0x8fa0d0, 0.35);
+    // end-cap) never goes to a 100%-unlit black disc. Stays far below key
+    // strength so it never washes out the shadow side the pass is built
+    // around.
+    const fill = new THREE.DirectionalLight(0x8fa0d0, 0.3);
     fill.position.set(0, 10, 150);
     _scene.add(fill);
 
-    // Ambient floor cut hard (was 1.1) — this was the single biggest
-    // contributor to the flat pastel look, since ambient light ignores
-    // normal direction entirely and lifts every face equally regardless
-    // of the key light's direction. Low value here is what lets the
-    // higher metalness (hullMaterial) and darker albedo actually show
-    // deep shadow falloff instead of being overridden.
-    const ambient = new THREE.AmbientLight(0x404858, 0.32);
-    _scene.add(ambient);
+    // Hemisphere fill replaces the old flat AmbientLight — sky/ground
+    // split (cool-blue "sky" above, near-black "ground" below) gives the
+    // low-level fill a sense of DIRECTION even at minimum strength, which
+    // a normal-agnostic AmbientLight can never do. This is what keeps the
+    // terminator (lit vs shadow side) reading as real environmental light
+    // rather than a light source glued to the camera. Intensity stays low
+    // — this must never compete with the key.
+    const hemi = new THREE.HemisphereLight(0x4a5a78, 0x08080a, 0.28);
+    _scene.add(hemi);
 
     // Build the six trader ships
     _ships = {};
@@ -2162,7 +2479,11 @@ const Armada = {
     for (const id of TRADER_IDS) {
       const rig = _ships[id];
       const node = rig._pendingNode;
-      if (!node) { rig.group.visible = false; rig.beam.group.visible = false; continue; }
+      if (!node) {
+        rig.group.visible = false; rig.beam.group.visible = false;
+        for (const esc of rig.escorts) esc.group.visible = false;
+        continue;
+      }
 
       const alive = !!node.alive;
       rig.alive = alive;
@@ -2270,6 +2591,52 @@ const Armada = {
       const bob = Math.sin(rig.idlePhase) * (alive ? 1.4 : 0.4);
       rig.group.position.z = bob;
 
+      // ESCORT WINGS (finding 5): loose flank formation, updated in _tick
+      // so escorts inherit the rig's own scale/zoom math rather than
+      // duplicating it. Skipped below a zoom-derived legibility floor —
+      // at that scale the trader hull itself is barely readable, so a
+      // pair of even-smaller escorts would be pure clutter/cost for zero
+      // visual return ("skip escorts below a zoom threshold if perf
+      // demands" per spec).
+      const escortsVisible = alive && finalScale > 0.9;
+      for (const esc of rig.escorts) {
+        esc.group.visible = escortsVisible;
+        if (!escortsVisible) continue;
+        // Target flank position: offset from the ship along its OWN local
+        // right/back axes (derived from group.rotation.z heading, matching
+        // the ship's own screen-plane heading convention) so the pair
+        // holds station relative to the hull's facing, not world axes.
+        const heading = rig.group.rotation.z;
+        const flankDist = rig.hullGroup.userData.hullLength ? rig.hullGroup.userData.hullLength * 0.85 : 6;
+        const rightX = Math.cos(heading), rightY = Math.sin(heading);
+        const backX = Math.sin(heading), backY = -Math.cos(heading);
+        const targetX = scenePos.x + rightX * flankDist * esc.side - backX * flankDist * 0.55;
+        const targetY = scenePos.y + rightY * flankDist * esc.side - backY * flankDist * 0.55;
+        // Lag filter: escort chases a trailing copy of the target, not the
+        // target itself — this is what reads as "piloted" (a real wingman
+        // reacts a beat late) instead of rigidly welded to the lead ship.
+        if (!esc.lagPos) esc.lagPos = { x: targetX, y: targetY };
+        esc.lagPos.x += (targetX - esc.lagPos.x) * Math.min(1, dt * 2.2);
+        esc.lagPos.y += (targetY - esc.lagPos.y) * Math.min(1, dt * 2.2);
+        // Independent bob/sway per escort (own phase seed) so the pair
+        // never moves in lockstep with each other or the lead ship.
+        esc.phase += dt * 1.6;
+        const sway = Math.sin(esc.phase) * 1.1;
+        const bobZ = Math.cos(esc.phase * 0.8) * 0.9 + bob * 0.4;
+        esc.group.position.set(esc.lagPos.x + rightX * sway * 0.3, esc.lagPos.y + rightY * sway * 0.3, bobZ);
+        // Escort scale rides the SAME on-screen scale factor as the lead
+        // ship (currentScale*zoom) so it shrinks/grows together at any
+        // zoom level, just at its own small fixed fraction.
+        esc.group.scale.setScalar(finalScale * 2.6);
+        // Heading: mostly matches the lead ship, with a small independent
+        // wobble so it doesn't look mechanically locked to the parent's
+        // rotation.
+        esc.group.rotation.z = heading + Math.sin(esc.phase * 0.5) * 0.12;
+        if (esc.engineGlow) {
+          esc.engineGlow.material.opacity = 0.55 + 0.3 * Math.sin(esc.phase * 3.0);
+        }
+      }
+
       // hull-specific idle flourishes
       if (rig.group.userData.booms) {
         for (let bi = 0; bi < rig.group.userData.booms.length; bi++) {
@@ -2354,7 +2721,13 @@ const Armada = {
         }
       }
 
-      // cargo hold glow: profit green pulse / loss red vent, decaying
+      // cargo hold glow: profit green pulse / loss red vent, decaying.
+      // FINDING 4 FIX (2026-07-30): userData.cargoMesh now points at a
+      // small dedicated glow mesh built by addCargoBayGlow() (own unique
+      // material instance) on every hull, never the main hull mesh — this
+      // loop's material mutation logic is unchanged, but it now only ever
+      // repaints that small bay, so the hull base color/livery from
+      // finding 1 is never overwritten by P/L state.
       const cargoMesh = rig.group.userData.cargoMesh;
       if (cargoMesh && cargoMesh.material && rig.group.userData.cargoBaseColor) {
         if (rig.cargoGlowDecay > 0.001) {

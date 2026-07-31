@@ -843,6 +843,7 @@ function OrbNode(id,cfg,def,angle,cw,ch){
   this.fixed=(hier.type==="sun");
   this.size=hier.sz||cfg.sz||14;
   this.currentSize=this.size;
+  this.depthAlpha=1; /* depth-of-plane brightness cue, see update()'s size-cap block */
   this.mass=hier.mass||cfg.mass||1;
   this.gravitationalRadius=hier.gravitationalRadius||0;
   this.personality=hier.pers||cfg.pers||"steady";
@@ -976,6 +977,16 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
     this.eventBurst*=0.95;
     this.energy+=(this.energyTarget-this.energy)*0.02;
     this.currentSize=this.size*this.sizeMultiplier;
+    /* Depth cue applies to dormant bodies too, same formula as the live
+       path below — a dormant body drifting on the far side should still
+       read as farther away, not skip the cue just because it's inactive. */
+    if(_orbIsFS){
+      var _depthTDead=Math.max(-1,Math.min(1,(this.y-cy)/(H*0.5)));
+      this.currentSize*=1+_depthTDead*0.11;
+      this.depthAlpha=Math.max(0.5,Math.min(1.3,1+_depthTDead*0.15));
+    } else {
+      this.depthAlpha=1;
+    }
     this.trail.push({x:this.x,y:this.y,t:now});while(this.trail.length>30) this.trail.shift();
     return;
   }
@@ -1164,6 +1175,40 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
      moon = 4.3x). Capped tight — a star can still visibly swell on a real
      event but can't out-run the size-ratio budget the whole scene depends on. */
   else if(this.celestialType==="star") rawSize=Math.min(rawSize,this.size*1.15);
+
+  /* DEPTH-OF-PLANE CUE (2026-07-30, reference-image pass): bodies on the far
+     side of the tilted ecliptic (screen-y above the CC/tilt center, cy —
+     CC sits fixed at (cx,cy), see the `this.fixed` branch above) read
+     slightly smaller/dimmer; near side (below cy) reads slightly
+     larger/brighter. This is the single choke point where currentSize is
+     finalized for every non-fixed/non-dead body (grep-verified — no other
+     assignment to this.currentSize exists after this line in update()), so
+     modulating HERE means hit-testing, labels, and armada.js's WebGL ships
+     (which read node.currentSize straight off this same object, confirmed
+     via grep in solar_system.js/armada.js) all automatically pick up the
+     depth cue with no second parallel size value that could drift out of
+     sync with what's actually hit-tested.
+     depthAlpha is a NEW field (not previously in OrbNode — grep-verified)
+     carrying the brightness half of the cue; cheap draw call sites wrap
+     their paint with ctx.globalAlpha*=depthAlpha rather than every one of
+     the ~18 per-bot cinema renderers being retrofitted individually.
+     Widget (non-FS) view keeps depthAlpha=1/no size modulation — this is a
+     fullscreen cinematic cue only, per the brief. */
+  if(_orbIsFS&&!this.fixed){
+    /* Normalize this body's offset from the tilt center against the
+       system's actual vertical reach (H*0.5 is a safe generous bound —
+       cheaper than tracking a true per-frame max, and the effect is meant
+       to be a gentle bias, not a precise depth sort). Clamped to ±1. */
+    var _depthT=Math.max(-1,Math.min(1,(this.y-cy)/(H*0.5)));
+    /* _depthT>0 (below center, near side) -> larger/brighter.
+       _depthT<0 (above center, far side) -> smaller/dimmer. */
+    var _depthSizeMul=1+_depthT*0.11;   /* +-11%, within the brief's +-10-12% */
+    var _depthAlphaMul=1+_depthT*0.15;  /* +-15% */
+    rawSize*=_depthSizeMul;
+    this.depthAlpha=Math.max(0.5,Math.min(1.3,_depthAlphaMul));
+  } else {
+    this.depthAlpha=1;
+  }
   this.currentSize=rawSize;
   this.energy+=(this.energyTarget-this.energy)*0.02;
   this.energy=Math.max(0.1,Math.min(1.0,this.energy));
@@ -2187,6 +2232,13 @@ function _drawNode(ctx,nd){
   if(nd.id==="cc") return; /* Sun drawn separately by drawSun */
   var x=nd.x,y=nd.y,sz=nd.currentSize;
   _drawTrail(ctx,nd);
+  /* DEPTH-OF-PLANE brightness cue (2026-07-30) — wraps the body paint only,
+     not the label queued below (text legibility shouldn't dim with depth).
+     nd.depthAlpha defaults to 1 (see OrbNode constructor + non-FS branches
+     in update()), so this is a no-op outside fullscreen. globalAlpha is
+     restored immediately after the paint block, before _queueLabel. */
+  ctx.save();
+  ctx.globalAlpha=nd.depthAlpha!=null?nd.depthAlpha:1;
   if(!nd.alive){
     /* Dormant: slow breathing glow + dim orbital ring — intentionally sleeping */
     var _breathe=0.28+Math.sin(Date.now()/3500+nd.pulsePhase)*0.10;
@@ -2231,6 +2283,7 @@ function _drawNode(ctx,nd){
       }
     }
   }
+  ctx.restore();
   /* Label — queued, not drawn here. See _drawLabelsWithCollisionAvoidance,
      which runs once at end-of-frame once every body's position is known. */
   {
@@ -2249,6 +2302,116 @@ function _drawShockwave(ctx,w){
   if(w.r<50){var fa=w.op*0.1*(1-w.r/50);ctx.fillStyle="rgba("+w.rgb+","+fa+")";
     ctx.beginPath();ctx.arc(w.x,w.y,w.r,0,Math.PI*2);ctx.fill();}
   return true;
+}
+
+/* ═══ WARM KEY WASH + COLD VIGNETTE — single dominant light source
+   (2026-07-30, reference-image pass) ═══
+   World-space additive gold wash radiating from CC (the scene's real light
+   source for lighting purposes — the WebGL station via armada.js, or the 2D
+   sun sprite when Armada isn't live; either way CC's world x/y is the right
+   anchor), plus a screen-space cold blue-black vignette biased toward the
+   far corners. Combines with the existing "screen"-blend exposure lift
+   (~line 3824, later in the pipeline) rather than fighting it: this wash
+   uses "lighter" blending at low alpha in WORLD space, drawn early (L2b,
+   right after the sun/CC draw), so it's just another light contribution
+   baked into the scene before the late screen-space exposure pass lifts
+   everything uniformly afterward — same relationship the exposure lift
+   already has with every other glow in the file (star coronas, gravity
+   zones, etc). Not a second competing exposure system. */
+function _drawWarmKeyWash(ctx,now){
+  var cc=_orbNodes.cc;
+  if(!cc) return;
+  /* Radius roughly the inner system's extent — reuse the same "reach past
+     the outer star orbit" logic _drawEclipticDisc uses, but tighter (this
+     is a KEY light falloff, not the full disc), so it reads as light
+     radiating from the source rather than a second disc-sized wash. */
+  var innerR=200;
+  var starIds4=["oracle","deepblue","nexus"];
+  for(var i=0;i<starIds4.length;i++){
+    var s=_orbNodes[starIds4[i]];
+    if(s&&s.orbitRadius) innerR=Math.max(innerR,s.orbitRadius*0.65);
+  }
+  innerR=Math.max(0.1,innerR);
+  ctx.save();
+  ctx.globalCompositeOperation="lighter";
+  var washG=ctx.createRadialGradient(cc.x,cc.y,0,cc.x,cc.y,innerR);
+  washG.addColorStop(0,   "rgba(255,205,120,0.055)");
+  washG.addColorStop(0.4, "rgba(230,170,90,0.028)");
+  washG.addColorStop(1,   "rgba(230,170,90,0)");
+  ctx.fillStyle=washG;
+  ctx.beginPath();ctx.arc(cc.x,cc.y,innerR,0,Math.PI*2);ctx.fill();
+  ctx.restore();
+}
+
+/* Cold blue-black vignette biased toward the far screen corners — screen
+   space, drawn late (with the exposure lift) so it isn't itself lifted by
+   that pass (matching how the exposure comment explains the HUD ordering:
+   "so the HUD's own fixed alphas aren't double-lifted" — same reasoning
+   applies here). Four corner-anchored radial gradients rather than one
+   centered vignette, since a single center-out vignette would darken CC
+   itself, fighting the warm wash instead of complementing it. */
+function _drawColdVignette(ctx,W,H){
+  var corners=[[0,0],[W,0],[0,H],[W,H]];
+  var cr=Math.max(0.1,Math.max(W,H)*0.62);
+  ctx.save();
+  ctx.globalCompositeOperation="source-over";
+  for(var i=0;i<corners.length;i++){
+    var vg=ctx.createRadialGradient(corners[i][0],corners[i][1],0,corners[i][0],corners[i][1],cr);
+    vg.addColorStop(0,"rgba(6,10,22,0.16)");
+    vg.addColorStop(0.6,"rgba(6,10,22,0.05)");
+    vg.addColorStop(1,"rgba(6,10,22,0)");
+    ctx.fillStyle=vg;
+    ctx.fillRect(0,0,W,H);
+  }
+  ctx.restore();
+}
+
+/* ═══ BODY SHADOW STREAKS — single cached sprite, stretched+rotated per body
+   (2026-07-30, reference-image pass) ═══
+   Sells the "one dominant light source" read via long shadows pointing away
+   from CC, matching the reference image. Baked ONCE to a small offscreen
+   sprite (a soft elongated radial-gradient streak) and reused every frame —
+   no per-frame gradient creation, per the performance rule. Fullscreen only;
+   stars and planets per the brief (moons skipped — frame-budget-cheap
+   already since it's a single drawImage, but the brief explicitly scopes
+   this to stars/planets so moons are left out rather than adding unasked-for
+   per-frame cost across 8 more bodies). */
+var _shadowSprite=null;
+var _SHADOW_SPRITE_W=64,_SHADOW_SPRITE_H=20;
+function _bakeShadowSprite(){
+  var sc=document.createElement("canvas");
+  sc.width=_SHADOW_SPRITE_W;sc.height=_SHADOW_SPRITE_H;
+  var sctx=sc.getContext("2d");
+  /* Streak runs left(bright, near body)->right(fades to transparent),
+     drawn as a horizontal elongated gradient; draw-time code rotates it to
+     point away from CC and positions its bright end at the body. */
+  var g=sctx.createRadialGradient(6,_SHADOW_SPRITE_H/2,0,_SHADOW_SPRITE_W*0.55,_SHADOW_SPRITE_H/2,_SHADOW_SPRITE_W*0.6);
+  g.addColorStop(0,"rgba(4,5,10,0.30)");
+  g.addColorStop(0.35,"rgba(4,5,10,0.14)");
+  g.addColorStop(1,"rgba(4,5,10,0)");
+  sctx.fillStyle=g;
+  sctx.beginPath();sctx.ellipse(_SHADOW_SPRITE_W*0.4,_SHADOW_SPRITE_H/2,_SHADOW_SPRITE_W*0.6,_SHADOW_SPRITE_H/2,0,0,Math.PI*2);sctx.fill();
+  _shadowSprite=sc;
+}
+function _drawBodyShadow(ctx,body){
+  if(!body||!body.alive||body.fixed) return; /* CC itself casts no shadow of its own */
+  if(!_shadowSprite) _bakeShadowSprite();
+  var cc=_orbNodes.cc;
+  if(!cc) return;
+  var dx=body.x-cc.x,dy=body.y-cc.y;
+  var dist=Math.sqrt(dx*dx+dy*dy);
+  if(dist<1) return; /* body sits on CC — no defined shadow direction */
+  var ang=Math.atan2(dy,dx); /* points AWAY from CC, through the body */
+  var sz=Math.max(0.1,body.currentSize);
+  var len=sz*3.2; /* long shadow — sells the single-light-source read */
+  var wid=sz*0.9;
+  ctx.save();
+  ctx.translate(body.x,body.y);
+  ctx.rotate(ang);
+  /* Sprite's bright end sits at local origin (the body), stretching out
+     along +x (now rotated to point away from CC) to length `len`. */
+  ctx.drawImage(_shadowSprite,0,-wid/2,len,wid);
+  ctx.restore();
 }
 
 /* --- Star system gravity zones ---
@@ -2446,6 +2609,161 @@ function _drawMoonCinemaOverlay(ctx,moon,now){
   }
 }
 
+/* ═══ ETCHED ECLIPTIC DISC — cinematic centerpiece (2026-07-30, reference-image
+   pass) ═══
+   Jeremy's reference: a dark etched vinyl-record disc for the orbital plane,
+   dust bands, seeded debris, warm-to-cold radial tint. Baked to an offscreen
+   canvas — fullscreen only — and only rebaked when zoom regime or canvas
+   size drifts >15%, per the performance rule (never allocate gradients/
+   canvases in the per-frame path). Center + tiltY are read from the exact
+   same sources _drawOrbitPath uses (_orbNodes.cc, _orbEllipseTiltY()) so the
+   grooves and the dashed orbit rings drawn later in the pipeline can never
+   drift apart into visibly mismatched ellipses. */
+var _discCanvas=null,_discCtx=null;
+var _discBakeW=0,_discBakeH=0,_discBakeZoomBucket=-1,_discBakeTiltY=0;
+var _discOuterR=0; /* world-space radius the disc was baked to cover, used to place it at draw time */
+
+/* Deterministic PRNG (mulberry32) — the file has no existing seeded-random
+   helper (grep-verified), and Math.random() would make the debris field
+   re-shuffle on every rebake, which would read as flickering/popping dust
+   rather than a stable etched surface. Fixed seed = stable across rebakes,
+   resizes, and reloads. */
+function _discMulberry32(seed){
+  return function(){
+    seed|=0;seed=seed+0x6D2B79F5|0;
+    var t=Math.imul(seed^seed>>>15,1|seed);
+    t=t+Math.imul(t^t>>>7,61|t)^t;
+    return((t^t>>>14)>>>0)/4294967296;
+  };
+}
+
+function _discNeedsRebake(w,h,zoomBucket){
+  if(!_discCanvas) return true;
+  if(_discBakeW===0) return true;
+  var dw=Math.abs(w-_discBakeW)/Math.max(1,_discBakeW);
+  var dh=Math.abs(h-_discBakeH)/Math.max(1,_discBakeH);
+  if(dw>0.15||dh>0.15) return true;
+  if(zoomBucket!==_discBakeZoomBucket) return true;
+  return false;
+}
+
+/* Bakes the full etched disc — grooves, dust bands, seeded debris, radial
+   tint — to an offscreen canvas sized to cover the system's outer extent.
+   Called only from _drawEclipticDisc below, gated by _discNeedsRebake. */
+function _bakeEclipticDisc(outerR,tiltY){
+  var pad=8; /* small margin so the softest outer groove doesn't clip */
+  var cw=Math.max(2,Math.ceil((outerR+pad)*2));
+  var ch=Math.max(2,Math.ceil((outerR+pad)*2*tiltY));
+  if(!_discCanvas){_discCanvas=document.createElement("canvas");}
+  _discCanvas.width=cw;_discCanvas.height=ch;
+  _discCtx=_discCanvas.getContext("2d");
+  var dctx=_discCtx;
+  var ccx=cw/2,ccy=ch/2;
+  _discOuterR=outerR;
+
+  var rng=_discMulberry32(0xC05105); /* fixed seed — "COSMOS" adjacent, arbitrary but constant */
+
+  /* 1: Warm-to-cold radial tint base — faint warm gold near center, falling
+     to cold desaturated blue-gray at the rim. This is the base wash the
+     grooves/dust/debris all sit on top of. */
+  var tintR=Math.max(0.1,outerR+pad);
+  var tintG=dctx.createRadialGradient(ccx,ccy,0,ccx,ccy,tintR);
+  tintG.addColorStop(0,   "rgba(120,95,55,0.10)");
+  tintG.addColorStop(0.35,"rgba(90,80,70,0.07)");
+  tintG.addColorStop(0.7, "rgba(55,65,85,0.05)");
+  tintG.addColorStop(1,   "rgba(30,38,55,0.03)");
+  dctx.fillStyle=tintG;
+  dctx.beginPath();dctx.ellipse(ccx,ccy,Math.max(0.1,outerR),Math.max(0.1,outerR*tiltY),0,0,Math.PI*2);dctx.fill();
+
+  /* 2: Fine concentric grooves — 60-100 of them, most whisper-faint, a
+     handful brighter "lanes". Count scales mildly with outerR so a small
+     widget-scale bake (never happens today since this is FS-only, but kept
+     safe) doesn't over-draw. */
+  var grooveCount=Math.max(60,Math.min(100,Math.round(outerR/9)));
+  for(var gi=0;gi<grooveCount;gi++){
+    var gt=gi/grooveCount;
+    var gr=Math.max(0.1,8+gt*(outerR-8));
+    var isLane=rng()<0.09; /* ~9% of grooves are brighter "lanes" */
+    var baseA=isLane?(0.05+rng()*0.05):(0.008+rng()*0.014);
+    /* Warm near center, cooling toward rim — tint the groove stroke itself */
+    var warmT=1-gt;
+    var grR=Math.floor(150+60*warmT),grG=Math.floor(140+40*warmT),grB=Math.floor(150-30*warmT);
+    dctx.strokeStyle="rgba("+grR+","+grG+","+grB+","+baseA.toFixed(4)+")";
+    dctx.lineWidth=isLane?1.1:0.6;
+    dctx.beginPath();
+    dctx.ellipse(ccx,ccy,gr,Math.max(0.1,gr*tiltY),0,0,Math.PI*2);
+    dctx.stroke();
+  }
+
+  /* 3: Broader dust bands — 3-5 soft noise-textured annuli, drawn as stacked
+     faint radial rings with slightly randomized width/position so they read
+     as texture, not perfect circles. */
+  var bandCount=3+Math.floor(rng()*3); /* 3-5 */
+  for(var bi=0;bi<bandCount;bi++){
+    var bt=0.15+rng()*0.75;
+    var bandR=Math.max(0.1,bt*outerR);
+    var bandW=Math.max(0.1,outerR*(0.04+rng()*0.05));
+    var bandA=0.02+rng()*0.025;
+    var bandG=dctx.createRadialGradient(ccx,ccy,Math.max(0.1,bandR-bandW),ccx,ccy,bandR+bandW);
+    bandG.addColorStop(0,  "rgba(0,0,0,0)");
+    bandG.addColorStop(0.5,"rgba(160,150,130,"+bandA.toFixed(4)+")");
+    bandG.addColorStop(1,  "rgba(0,0,0,0)");
+    dctx.fillStyle=bandG;
+    dctx.beginPath();
+    dctx.ellipse(ccx,ccy,bandR+bandW,Math.max(0.1,(bandR+bandW)*tiltY),0,0,Math.PI*2);
+    dctx.fill();
+  }
+
+  /* 4: Seeded debris — tiny bright specks + a few larger chunks scattered
+     along orbit lanes, denser mid-system (weighted toward mid-radius via a
+     simple triangular distribution rather than uniform). */
+  var speckCount=Math.round(outerR*0.9);
+  for(var si=0;si<speckCount;si++){
+    var sAng=rng()*Math.PI*2;
+    /* Triangular-ish density peak around 0.4-0.6 of outerR (mid-system) */
+    var sT=(rng()+rng())/2;
+    var sR=Math.max(0.1,sT*outerR);
+    var sx=ccx+Math.cos(sAng)*sR, sy=ccy+Math.sin(sAng)*sR*tiltY;
+    var isChunk=rng()<0.04; /* ~4% are larger chunks */
+    var speckSz=isChunk?(0.9+rng()*1.4):(0.3+rng()*0.5);
+    var speckA=isChunk?(0.10+rng()*0.10):(0.04+rng()*0.06);
+    var warmT2=1-sT;
+    var spR=Math.floor(160+50*warmT2),spG=Math.floor(150+35*warmT2),spB=Math.floor(150-20*warmT2);
+    dctx.fillStyle="rgba("+spR+","+spG+","+spB+","+speckA.toFixed(3)+")";
+    dctx.beginPath();dctx.arc(sx,sy,speckSz,0,Math.PI*2);dctx.fill();
+  }
+}
+
+/* Draws the baked disc, rebaking first if the zoom regime or canvas size has
+   drifted beyond the 15% threshold. Fullscreen only (gated by caller).
+   zoomBucket: coarse int bucket of _orbZoom so small per-frame zoom-anim
+   jitter doesn't thrash the rebake — only a real regime change (e.g.
+   crossing from mid-zoom to far-zoom) triggers a rebake. */
+function _drawEclipticDisc(ctx,now){
+  var cc=_orbNodes.cc;
+  if(!cc) return;
+  var tiltY=_orbEllipseTiltY();
+  /* Outer extent: cover the farthest star's orbit plus its own gravitational
+     reach, so the disc visibly extends past the outermost planets rather
+     than stopping short. Falls back to a sane default before nodes exist. */
+  var outerR=260;
+  var starIds3=["oracle","deepblue","nexus"];
+  for(var i=0;i<starIds3.length;i++){
+    var s=_orbNodes[starIds3[i]];
+    if(s&&s.orbitRadius) outerR=Math.max(outerR,s.orbitRadius+(s.gravitationalRadius||160)*1.6);
+  }
+  var zoomBucket=Math.round(_orbZoom*6); /* coarse bucket ~ every 0.167 zoom */
+  if(_discNeedsRebake(_orbLW,_orbLH,zoomBucket)||Math.abs(outerR-_discOuterR)/Math.max(1,_discOuterR)>0.15){
+    _bakeEclipticDisc(outerR,tiltY);
+    _discBakeW=_orbLW;_discBakeH=_orbLH;_discBakeZoomBucket=zoomBucket;_discBakeTiltY=tiltY;
+  }
+  if(!_discCanvas) return;
+  ctx.save();
+  ctx.globalAlpha=0.85;
+  ctx.drawImage(_discCanvas,cc.x-_discCanvas.width/2,cc.y-_discCanvas.height/2);
+  ctx.restore();
+}
+
 /* --- Orbit ring — REDESIGN (ROUND 2, 2026-07-30, target 4) ---
    Previously a single flat dashed ellipse: one fixed alpha, one fixed
    color (amber, ignoring the body's own identity color), and — the real
@@ -2519,6 +2837,11 @@ function _drawOrbitPath(ctx,body,frameNow){
   }
   var proximityT=1-Math.min(1,r/parent._maxChildR); /* 0 = farthest child, 1 = closest */
   var baseA=0.10+proximityT*0.30; /* closer rings visibly brighter, farther ones stay subtle */
+  /* Dimmed 12% in fullscreen (2026-07-30, etched-disc pass) — the disc's own
+     grooves now share this exact ellipse geometry underneath every ring, so
+     the combination was reading slightly busy/muddy at full ring brightness.
+     Widget (non-FS) view has no disc under it, so it keeps full brightness. */
+  if(_orbIsFS) baseA*=0.88;
   var col=body.rgb||"201,162,39";
 
   ctx.save();
@@ -3332,6 +3655,14 @@ function _orbRender(timestamp){
     _drawParallaxStars(ctx,_drawNow);
   }
 
+  /* L0c: Etched ecliptic disc — cinematic centerpiece (reference-image pass,
+     2026-07-30). Fullscreen only. Sits above DeepField/parallax (deep
+     background) but below orbit paths (L4) and every body (L13/L14/L15) so
+     grooves visibly pass under bodies and rings draw crisply on top. See
+     _drawEclipticDisc for the bake-gating and shared-tiltY contract with
+     _drawOrbitPath. */
+  if(_orbIsFS&&!_orbFrameBudgetOver) _drawEclipticDisc(ctx,_drawNow);
+
   /* L1: Ambient particles */
   if(!_orbFrameBudgetOver){
     var sunX=cx,sunY=cy;
@@ -3362,6 +3693,12 @@ function _orbRender(timestamp){
     /* Intel Ring removed — access Fleet Intelligence via sun click instead */
     _orbIntelRingRegions=[];
   } /* end if(_orbNodes.cc) */
+
+  /* L2b: Warm key wash — additive gold light radiating from CC, the scene's
+     single dominant light source (reference-image pass). Fullscreen only;
+     drawn right after the sun/CC sprite so it reads as light FROM that
+     source rather than a decoration layered arbitrarily elsewhere. */
+  if(_orbIsFS&&!_orbFrameBudgetOver) _drawWarmKeyWash(ctx,_drawNow);
 
   /* L3: Star system gravity zones */
   var starIds=["oracle","deepblue","nexus"];
@@ -3450,11 +3787,26 @@ function _orbRender(timestamp){
      top even when this layer is fully faded in. */
   if(_orbIsFS&&!_orbFrameBudgetOver) _drawFarZoomOverlay(ctx,_drawNow);
 
+  /* L12c: Body shadow streaks — stars (reference-image pass). Drawn just
+     before each body's own sprite so the shadow reads as being cast BY that
+     body away from CC, not floating independently. Fullscreen only, single
+     cached sprite reused per body (see _drawBodyShadow). */
+  if(_orbIsFS&&!_orbFrameBudgetOver){
+    for(var _ssi=0;_ssi<starIds.length;_ssi++) _drawBodyShadow(ctx,_orbNodes[starIds[_ssi]]);
+  }
+
   /* L13: Stars — ALWAYS render (COSMOS v5 drawPlanet for stars too) */
   for(var si=0;si<starIds.length;si++){
     var star=_orbNodes[starIds[si]];
     if(!star) continue;
-    if(!_orbFrameBudgetOver) _drawStarGlow(ctx,star);
+    /* Depth cue wraps the glow too (brief explicitly calls out stars);
+       _drawNode below applies the same cue internally to the body itself. */
+    if(!_orbFrameBudgetOver){
+      ctx.save();
+      ctx.globalAlpha=star.depthAlpha!=null?star.depthAlpha:1;
+      _drawStarGlow(ctx,star);
+      ctx.restore();
+    }
     _drawNode(ctx,star);
   }
   /* L13b: System labels — drawn AFTER all star glows, using star coords only */
@@ -3493,6 +3845,14 @@ function _orbRender(timestamp){
      widget view always keeps its 2D bodies regardless of Armada's state. */
   var _armadaOwnsTraders=_orbIsFS&&window.Armada&&window.Armada._initialized;
   var planetIds=["confluence","nexusbrain","gridzilla","turtlesue","rubberband","arbitrageur"];
+  /* L13c: Body shadow streaks — planets. Skipped for any body Armada owns
+     (its own WebGL mesh has no 2D sprite here to cast a shadow FOR — the
+     three.js ship supplies its own lighting/shadow via the engine overhaul
+     from the prior session) so a 2D shadow streak never floats under an
+     invisible 2D body. */
+  if(_orbIsFS&&!_orbFrameBudgetOver&&!_armadaOwnsTraders){
+    for(var _psi=0;_psi<planetIds.length;_psi++) _drawBodyShadow(ctx,_orbNodes[planetIds[_psi]]);
+  }
   for(var pi=0;pi<planetIds.length;pi++){
     var planet=_orbNodes[planetIds[pi]];
     if(!planet) continue;
@@ -3553,6 +3913,11 @@ function _orbRender(timestamp){
     if(moon.alive){
       var _mb=findBot(state.bots,moon.id);
       var _mr=(_mb&&_mb.raw)||{};
+      /* DEPTH-OF-PLANE brightness cue — same globalAlpha mechanism as
+         _drawNode/_drawFullscreenEntity, applied around the moon cinema
+         dispatch. moon.depthAlpha defaults to 1 outside fullscreen. */
+      ctx.save();
+      ctx.globalAlpha=moon.depthAlpha!=null?moon.depthAlpha:1;
       if(moon.id==="chronos") _drawMoonChronos(ctx,moon.x,moon.y,moon.currentSize,_drawNow);
       else if(moon.id==="aegis") _drawMoonAegis(ctx,moon.x,moon.y,moon.currentSize,_drawNow,aegisState.score!=null?aegisState.score:0);
       else if(moon.id==="sentinel") _drawMoonSentinel(ctx,moon.x,moon.y,moon.currentSize,_drawNow,_mr.forecasts);
@@ -3561,7 +3926,8 @@ function _orbRender(timestamp){
       else if(moon.id==="contrarian") _drawMoonContrarian(ctx,moon.x,moon.y,moon.currentSize,_drawNow,(_mr.sentiment_state||"").toUpperCase());
       else if(moon.id==="trinity") _drawMoonTrinity(ctx,moon.x,moon.y,moon.currentSize,_drawNow);
       else if(moon.id==="inference") _drawMoonInference(ctx,moon.x,moon.y,moon.currentSize,_drawNow);
-      else { _drawNode(ctx,moon); continue; } /* _drawNode already queues its own label */
+      else { ctx.restore(); _drawNode(ctx,moon); continue; } /* _drawNode already queues its own label + applies its own depth cue */
+      ctx.restore();
       /* Vivarium: persistent growth rings / streak bloom / scar overlay */
       if(typeof _vivDrawOverlay==="function") _vivDrawOverlay(ctx,moon,_drawNow);
       /* Name + status queued — collision-resolved in the end-of-frame pass */
@@ -3586,6 +3952,14 @@ function _orbRender(timestamp){
 
   /* Reset transform for HUD — drawn in screen space, not world space */
   ctx.setTransform(_dpr,0,0,_dpr,0,0);
+
+  /* Cold blue-black vignette bias (reference-image pass) — screen space,
+     drawn here (after the transform reset, before the exposure lift) for
+     the same reason the HUD is drawn after the lift: so this layer isn't
+     itself lifted by the "raise the floor" screen-blend pass below, which
+     would wash out the exact far-corner darkening this is trying to add.
+     Fullscreen only — matches every other cinematic-only layer's gate. */
+  if(_orbIsFS) _drawColdVignette(ctx,W,H);
 
   /* Global exposure lift (SOTA pass, 2026-07-30, finding 7) — the scene was
      confirmed crushed: most alpha values throughout the render (star glows,
@@ -15493,6 +15867,13 @@ function _drawFullscreenEntity(ctx,node,now){
   var sunX=_orbNodes.cc?_orbNodes.cc.x:x;
   var sunY=_orbNodes.cc?_orbNodes.cc.y:y;
 
+  /* DEPTH-OF-PLANE brightness cue — same mechanism as _drawNode: wraps the
+     whole cinema-renderer dispatch below in one globalAlpha multiplier so
+     none of the ~6 individual _draw* functions (_drawShip, _drawCivPlanet,
+     etc.) needed editing. node.depthAlpha defaults to 1 outside fullscreen. */
+  ctx.save();
+  ctx.globalAlpha=node.depthAlpha!=null?node.depthAlpha:1;
+
   if(type==="ship"){
     var targets=["oracle","deepblue","nexus"];
     if(now-vis.lastSwitch>30000){vis.targetIdx=(vis.targetIdx+1)%3;vis.lastSwitch=now;}
@@ -15535,6 +15916,7 @@ function _drawFullscreenEntity(ctx,node,now){
   else if(type==="venus_planet"){
     _drawVenusPlanet(ctx,x,y,s,c,sunX,sunY,now);
   }
+  ctx.restore();
   return true;
 }
 

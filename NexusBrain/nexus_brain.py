@@ -6,6 +6,8 @@ NEXUS BRAIN v1.0 -- Multi-TF Cross-Exchange Signal Scanner
 Multi-timeframe confluence scoring with cross-exchange price validation.
 Kraken primary / CoinGecko secondary.
 6 signal components across 5 timeframes (5m, 15m, 1h, 4h, 1d).
+Bidirectional: LONG and SHORT signals (shorts gated by
+fleet_config.direction_allowed; paper/signal-only — spot cannot short).
 Regime detection, paper trading, SQLite persistence.
 
 Usage:
@@ -35,8 +37,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
-from http.server import HTTPServer, BaseHTTPRequestHandler, ThreadingHTTPServer
-from typing import Dict, List, Optional, Tuple
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import Dict, List, Optional
 
 import requests
 import sys
@@ -94,7 +96,7 @@ except ImportError:
     _fetch_ohlc_canonical = None
 
 from indicators import (
-    Candle, ema, ema_series, sma, rsi, macd, bollinger_bands, atr, adx,
+    Candle, ema, rsi, macd, bollinger_bands, atr, adx,
 )
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -212,7 +214,8 @@ class Config:
     risk_per_trade_pct: float = 1.0
     max_position_pct: float = 0.05   # 5% of capital — raised from 3% on 2026-04-07 to clear 5% pool floor ($500 min)
 
-    # Signal thresholds (raised 2026-04-01: was 0.55, fees eating all edge)
+    # Signal thresholds (raised 2026-04-01 from 0.55; kept post fee-removal
+    # as a signal-quality gate — thresholds are computed gross)
     min_confluence: float = 0.70  # lowered 2026-04-08: 0.80 too conservative, zero trades in 8h
     high_confidence_threshold: float = 0.75
     moderate_confidence_threshold: float = 0.72  # aligned with min_confluence
@@ -224,8 +227,12 @@ class Config:
     max_hold_hours: int = 72
     time_exit_hours: int = 48
 
-    # Fee & slippage
-    fee_rate: float = 0.0040  # Kraken taker 0.40% per side (tier 0, 2026-04)
+    # Slippage (execution realism — kept). Fees removed fleet-wide
+    # 2026-07-30: this is a signal product; subscribers pay their own
+    # exchanges' fees, so P/L is gross price movement. fee_rate stays as
+    # a field at 0.0 only because /api results and dashboard.html expose
+    # config.fee_rate (shape preserved, honestly zeroed).
+    fee_rate: float = 0.0
     slippage_bps: float = 5.0
 
     # Cross-exchange validation
@@ -298,6 +305,7 @@ class Signal:
     exchange_prices: Dict[str, float]
     timestamp: float = 0.0
     atr_value: float = 0.0
+    direction: str = "LONG"
 
     def __post_init__(self):
         if self.timestamp == 0.0:
@@ -306,6 +314,7 @@ class Signal:
     def to_dict(self) -> dict:
         return {
             "pair": PAIR_DISPLAY.get(self.pair, self.pair),
+            "direction": self.direction,
             "confluence_score": round(sf(self.confluence_score), 4),
             "regime": self.regime.value,
             "confidence_label": self.confidence_label.value,
@@ -332,6 +341,7 @@ class Position:
     trailing_stop: float = 0.0
     peak_price: float = 0.0
     reservation_id: str = ""
+    direction: str = "LONG"
 
     def __post_init__(self):
         if self.peak_price == 0.0:
@@ -340,6 +350,7 @@ class Position:
     def to_dict(self) -> dict:
         return {
             "pair": PAIR_DISPLAY.get(self.pair, self.pair),
+            "direction": self.direction,
             "entry_price": round(sf(self.entry_price), 8),
             "size_usd": round(sf(self.size_usd), 2),
             "stop_loss": round(sf(self.stop_loss), 8),
@@ -361,10 +372,12 @@ class Trade:
     entry_time: float
     exit_time: float
     size_usd: float = 0.0
+    direction: str = "LONG"
 
     def to_dict(self) -> dict:
         return {
             "pair": PAIR_DISPLAY.get(self.pair, self.pair),
+            "direction": self.direction,
             "entry_price": round(sf(self.entry_price), 8),
             "exit_price": round(sf(self.exit_price), 8),
             "pnl_usd": round(sf(self.pnl_usd), 2),
@@ -526,8 +539,6 @@ def score_rsi_momentum(closes: List[float]) -> float:
     else:
         # Linear mapping 30-70 -> 0.35-0.65
         return 0.35 + (rsi_val - 30) / 40 * 0.30
-
-    return max(0.0, min(1.0, rsi_val))
 
 
 def score_macd_momentum(closes: List[float], price: float) -> float:
@@ -780,9 +791,49 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
 
     confluence = compute_confluence(combined)
 
-    # Direction-regime mismatch filter: all NexusBrain signals are LONG
-    # (SL below price, TP above). Never go long in a downtrend.
-    if regime in (Regime.TREND_DOWN,):
+    # Short confluence — the mirror of the same evidence, component by
+    # component. The four directional components score bullish > 0.5 and
+    # bearish < 0.5 by construction (bearish EMA stack -> 0.3-band, RSI
+    # overbought -> 0.25-band, negative MACD histogram -> 0.4-band, upper
+    # Bollinger band -> 0.20), so a short reads them as 1 - score. The other
+    # two are NOT directional and are carried over unchanged:
+    #   volume_confirm — high volume validates a move in EITHER direction;
+    #     inverting it would count strong volume as evidence AGAINST a short.
+    #   regime_align — already a regime-consistency measure (in TREND_DOWN it
+    #     scores bearish evidence HIGH, see score_regime_alignment); inverting
+    #     would punish a short for agreeing with a downtrend.
+    short_combined = SignalComponents(
+        ema_alignment=1.0 - combined.ema_alignment,
+        rsi_momentum=1.0 - combined.rsi_momentum,
+        macd_momentum=1.0 - combined.macd_momentum,
+        bollinger_pos=1.0 - combined.bollinger_pos,
+        volume_confirm=combined.volume_confirm,
+        regime_align=combined.regime_align,
+    )
+    short_confluence = compute_confluence(short_combined)
+
+    # Direction: take whichever side the evidence actually supports. Both
+    # sides face the same min_confluence gate (0.70), so a SHORT only fires
+    # on strong bearish agreement — shorts stay rare and high-conviction.
+    # direction_allowed() is checked dynamically (no restart needed when
+    # FLEET_LONG_ONLY flips); without fleet_config we stay LONG-only.
+    direction = "LONG"
+    _shorts_ok = False
+    if _fc and hasattr(_fc, "direction_allowed"):
+        try:
+            _shorts_ok, _ = _fc.direction_allowed("SHORT")
+        except Exception:
+            _shorts_ok = False
+    if _shorts_ok and short_confluence > confluence:
+        direction = "SHORT"
+        confluence = short_confluence
+        combined = short_combined
+
+    # Direction-regime mismatch filter, symmetric: never go long in a
+    # downtrend, never go short in an uptrend.
+    if direction == "LONG" and regime == Regime.TREND_DOWN:
+        confluence = 0.0
+    elif direction == "SHORT" and regime == Regime.TREND_UP:
         confluence = 0.0
 
     confidence = classify_confidence(confluence, cfg)
@@ -793,8 +844,13 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
     if atr_val <= 0:
         atr_val = price * 0.02
 
-    sl = price - cfg.stop_loss_atr_mult * atr_val
-    tp = price + cfg.take_profit_atr_mult * atr_val
+    if direction == "SHORT":
+        # Mirrored risk geometry: stop ABOVE entry, target below.
+        sl = price + cfg.stop_loss_atr_mult * atr_val
+        tp = price - cfg.take_profit_atr_mult * atr_val
+    else:
+        sl = price - cfg.stop_loss_atr_mult * atr_val
+        tp = price + cfg.take_profit_atr_mult * atr_val
 
     # Cross-exchange price validation
     exchange_prices = _get_exchange_prices(pair)
@@ -812,6 +868,7 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
         cross_exchange_valid=cross_valid,
         exchange_prices=exchange_prices,
         atr_value=atr_val,
+        direction=direction,
     )
 
 
@@ -956,7 +1013,11 @@ def fetch_pair_data(pair: str, cfg: Config) -> PairData:
 # ═══════════════════════════════════════════════════════════════════════
 
 class PaperTrader:
-    """Paper trading engine with slippage, fees, and position management."""
+    """Paper trading engine with slippage and position management.
+
+    P/L is GROSS price movement — no fee simulation. The fleet is a signal
+    product; subscribers pay their own exchanges' fees (2026-07-30).
+    """
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
@@ -986,7 +1047,7 @@ class PaperTrader:
         self.peak_equity = cfg.initial_capital
         self.lock = threading.Lock()
         self._last_close: Dict[str, float] = {}  # {pair: timestamp}
-        self._min_reentry_sec = 3600.0  # raised 2026-04-03: was 10s, prevents rapid re-entry (fee ratio was 2646%)
+        self._min_reentry_sec = 3600.0  # raised 2026-04-03: was 10s; churn guard kept post fee-removal (rapid re-entry was noise, not signal)
         self._denial_backoff: Dict[str, Dict] = {}  # {pair: {"until": ts, "delay": float}}
         self._DENIAL_BASE_DELAY = 5.0
         self._DENIAL_MAX_DELAY = 300.0
@@ -1007,6 +1068,10 @@ class PaperTrader:
             # Minimum re-entry cooldown — prevent sub-second open/close cycles
             last = self._last_close.get(signal.pair, 0)
             if time.time() - last < self._min_reentry_sec:
+                return None
+            # Kraken spot cannot short — shorts are paper/signal-only.
+            if signal.direction == "SHORT" and self._kraken:
+                logger.info(f"SKIP LIVE SHORT {PAIR_DISPLAY.get(signal.pair, signal.pair)}: spot account cannot short")
                 return None
 
             # Position sizing: risk-based
@@ -1039,12 +1104,15 @@ class PaperTrader:
                     _conv = self._bus.convergent_signals(signal.pair, max_age=60)
                     if _conv and _conv.get("bot_count", 0) >= 3:
                         _bus_mult *= 1.3
-                    # NEWTON: Force alignment (LONG-only bot)
+                    # NEWTON: Force alignment — BULL corroborates longs,
+                    # BEAR corroborates shorts; the opposing force shrinks size.
                     _newton = self._bus.newton_force(signal.pair, max_age=120)
                     if _newton:
-                        if _newton["direction"] == "BULL":
+                        _with = "BULL" if signal.direction == "LONG" else "BEAR"
+                        _against = "BEAR" if signal.direction == "LONG" else "BULL"
+                        if _newton["direction"] == _with:
                             _bus_mult *= 1 + min(0.3, _newton["inertia"] * 0.4)
-                        elif _newton["direction"] == "BEAR":
+                        elif _newton["direction"] == _against:
                             _bus_mult *= 0.7
                     # NEWTON: Reaction prediction
                     _reactions = self._bus.newton_reactions(signal.pair, max_age=120)
@@ -1053,11 +1121,13 @@ class PaperTrader:
                             if _r["expected_direction"] == "SAME":
                                 _bus_mult *= 1.2
                                 break
-                    # EUCLID: Approaching resistance = reduce long size
+                    # EUCLID: Approaching resistance = reduce long size;
+                    # approaching support = reduce short size (mirror).
                     _euclid = self._bus.euclid_levels(signal.pair, max_age=120)
+                    _lvl_block = "RESISTANCE_APPROACHING" if signal.direction == "LONG" else "SUPPORT_APPROACHING"
                     for _le in _euclid:
                         _ld = _le.get("data", {})
-                        if _ld.get("type") == "RESISTANCE_APPROACHING":
+                        if _ld.get("type") == _lvl_block:
                             _bus_mult *= 0.7
                             break
                     _bus_mult = max(0.3, min(2.0, _bus_mult))
@@ -1069,8 +1139,9 @@ class PaperTrader:
             size_usd = size_usd * _bus_mult
             size_usd = min(size_usd, max_size)  # re-cap after bus multiplier
 
-            # Fee floor: at Kraken 0.40% taker, round-trip = 0.80%.
-            # Need at least $100 trade size so fees (~$0.80) stay < 10% of a $8 min-profit target.
+            # Size floor: $100 minimum trade size. Threshold unchanged after
+            # fee removal — dust positions produce signals too small to be
+            # actionable for subscribers.
             if size_usd < 100:
                 return None
 
@@ -1083,7 +1154,7 @@ class PaperTrader:
                 if _db and time.time() < _db["until"]:
                     return None
                 sl_pct = abs(signal.entry_price - signal.stop_loss) / signal.entry_price * 100 if signal.entry_price > 0 else 2.0
-                ok, result = self._portfolio.reserve(_display_pair, "LONG", size_usd, stop_loss_pct=sl_pct)
+                ok, result = self._portfolio.reserve(_display_pair, signal.direction, size_usd, stop_loss_pct=sl_pct)
                 if not ok:
                     prev = self._denial_backoff.get(signal.pair)
                     delay = min((prev["delay"] * 2) if prev else self._DENIAL_BASE_DELAY, self._DENIAL_MAX_DELAY)
@@ -1111,13 +1182,16 @@ class PaperTrader:
                 entry_price = self._kraken.get_fill_price(txid, signal.entry_price)
                 logger.info(f"LIVE BUY {signal.pair} qty={qty:.6f} @ {entry_price:.4f} txid={txid}")
             else:
-                # Paper fill with slippage
+                # Paper fill with adverse slippage: buys fill higher,
+                # short-sale entries fill lower.
                 slippage = signal.entry_price * (self.cfg.slippage_bps / 10000)
-                entry_price = signal.entry_price + slippage
+                if signal.direction == "SHORT":
+                    entry_price = signal.entry_price - slippage
+                else:
+                    entry_price = signal.entry_price + slippage
 
-            # Deduct fees
-            fee = size_usd * self.cfg.fee_rate
-            self.capital -= fee
+            # No entry fee — P/L is gross (signal product; subscribers pay
+            # their own exchanges' fees).
 
             pos = Position(
                 pair=signal.pair,
@@ -1128,16 +1202,17 @@ class PaperTrader:
                 signal_score=signal.confluence_score,
                 entry_time=time.time(),
                 reservation_id=_rid,
+                direction=signal.direction,
             )
             pos._kraken_pair = _kraken_pair  # store for exit
             self.positions[signal.pair] = pos
             _mode = "LIVE" if self._kraken else "PAPER"
-            logger.info(f"OPEN [{_mode}] {PAIR_DISPLAY.get(signal.pair, signal.pair)} @ {entry_price:.4f} size=${size_usd:.2f} score={signal.confluence_score:.3f}")
+            logger.info(f"OPEN [{_mode}] {signal.direction} {PAIR_DISPLAY.get(signal.pair, signal.pair)} @ {entry_price:.4f} size=${size_usd:.2f} score={signal.confluence_score:.3f}")
             if self._event_pub:
                 try:
                     self._event_pub.emit("TRADE_OPEN", {
                         "pair": PAIR_DISPLAY.get(signal.pair, signal.pair),
-                        "direction": "LONG", "entry": round(entry_price, 4),
+                        "direction": signal.direction, "entry": round(entry_price, 4),
                         "size": round(size_usd, 2), "score": round(signal.confluence_score, 4),
                         "regime": signal.regime.value,
                         "sl": round(signal.stop_loss, 4),
@@ -1156,21 +1231,35 @@ class PaperTrader:
             exit_reason = None
             exit_price = current_price
 
-            # Minimum hold time: prevent exits before fees can be recovered.
-            # NexusBrain PF=1.03 gross but 0-5s holds lose to 0.80% RT fees.
+            # Minimum hold time: churn guard against 0-5s noise exits.
+            # Threshold unchanged after fee removal — sub-minute flips were
+            # noise, not signal, even measured gross.
             MIN_HOLD_SECONDS = 60
             hold_secs = time.time() - pos.entry_time
+            _is_short = pos.direction == "SHORT"
+            # ATR estimate recovered from the stop distance (works both
+            # directions: the stop is above entry for shorts, below for longs).
+            _atr_est = abs(pos.entry_price - pos.stop_loss) / self.cfg.stop_loss_atr_mult
 
-            # Update peak price for trailing stop
-            if current_price > pos.peak_price:
-                pos.peak_price = current_price
-                # Update trailing stop
-                if pos.trailing_stop > 0:
-                    new_trail = current_price - self.cfg.trailing_stop_atr_mult * (pos.entry_price - pos.stop_loss) / self.cfg.stop_loss_atr_mult
-                    pos.trailing_stop = max(pos.trailing_stop, new_trail)
+            # Update peak (best-so-far) price for trailing stop.
+            # Long: best = highest seen, trail sits below and ratchets up.
+            # Short: best = lowest seen, trail sits above and ratchets down.
+            if _is_short:
+                if current_price < pos.peak_price:
+                    pos.peak_price = current_price
+                    if pos.trailing_stop > 0:
+                        new_trail = current_price + self.cfg.trailing_stop_atr_mult * _atr_est
+                        pos.trailing_stop = min(pos.trailing_stop, new_trail)
+            else:
+                if current_price > pos.peak_price:
+                    pos.peak_price = current_price
+                    if pos.trailing_stop > 0:
+                        new_trail = current_price - self.cfg.trailing_stop_atr_mult * _atr_est
+                        pos.trailing_stop = max(pos.trailing_stop, new_trail)
 
-            # Stop loss (always honored regardless of hold time)
-            if current_price <= pos.stop_loss:
+            # Stop loss (always honored regardless of hold time).
+            # Short stop is ABOVE entry and triggers on price rising to it.
+            if (current_price >= pos.stop_loss) if _is_short else (current_price <= pos.stop_loss):
                 exit_reason = ExitReason.STOP_LOSS
                 exit_price = pos.stop_loss
 
@@ -1178,12 +1267,14 @@ class PaperTrader:
             elif hold_secs < MIN_HOLD_SECONDS:
                 return None
 
-            # Take profit
-            elif current_price >= pos.take_profit:
+            # Take profit (below entry for shorts)
+            elif (current_price <= pos.take_profit) if _is_short else (current_price >= pos.take_profit):
                 exit_reason = ExitReason.TAKE_PROFIT
 
             # Trailing stop (activated after 50% of TP distance)
-            elif pos.trailing_stop > 0 and current_price <= pos.trailing_stop:
+            elif pos.trailing_stop > 0 and (
+                (current_price >= pos.trailing_stop) if _is_short else (current_price <= pos.trailing_stop)
+            ):
                 exit_reason = ExitReason.TRAILING_STOP
                 exit_price = pos.trailing_stop
 
@@ -1193,19 +1284,22 @@ class PaperTrader:
 
             # Activate trailing stop if price moved 50%+ toward TP
             if exit_reason is None:
-                tp_dist = pos.take_profit - pos.entry_price
+                tp_dist = (pos.entry_price - pos.take_profit) if _is_short else (pos.take_profit - pos.entry_price)
                 if tp_dist > 0:
-                    progress = (current_price - pos.entry_price) / tp_dist
+                    progress = ((pos.entry_price - current_price) if _is_short else (current_price - pos.entry_price)) / tp_dist
                     if progress >= 0.5 and pos.trailing_stop == 0:
-                        atr_est = (pos.entry_price - pos.stop_loss) / self.cfg.stop_loss_atr_mult
-                        pos.trailing_stop = current_price - self.cfg.trailing_stop_atr_mult * atr_est
+                        if _is_short:
+                            pos.trailing_stop = current_price + self.cfg.trailing_stop_atr_mult * _atr_est
+                        else:
+                            pos.trailing_stop = current_price - self.cfg.trailing_stop_atr_mult * _atr_est
 
             if exit_reason is None:
                 return None
 
-            # Live execution: sell on Kraken spot
+            # Live execution: sell on Kraken spot (longs only — shorts are
+            # never opened live, see open_position guard)
             qty = pos.size_usd / pos.entry_price
-            if self._kraken:
+            if self._kraken and not _is_short:
                 _kp = getattr(pos, '_kraken_pair', pair.replace("/", ""))
                 # LIMIT ONLY (fleet policy) — marketable limit, never market.
                 ok, txid = self._kraken.sell(
@@ -1217,19 +1311,30 @@ class PaperTrader:
                 else:
                     logger.warning(f"LIVE SELL FAILED {pair}: {txid} — using paper price {exit_price}")
             else:
-                # Paper: apply slippage to exit
+                # Paper: apply adverse slippage to exit. Long exit sells
+                # (fills lower); short exit buys back (fills higher).
                 slippage = exit_price * (self.cfg.slippage_bps / 10000)
-                exit_price -= slippage
+                if _is_short:
+                    exit_price += slippage
+                else:
+                    exit_price -= slippage
 
-            # Calculate P&L
-            pnl_usd = qty * (exit_price - pos.entry_price)
-            fee = abs(qty * exit_price) * self.cfg.fee_rate
-            pnl_usd -= fee
-            pnl_pct = (exit_price - pos.entry_price) / pos.entry_price * 100
+            # Calculate P&L — shorts profit when price falls
+            if _is_short:
+                pnl_usd = qty * (pos.entry_price - exit_price)
+                pnl_pct = (pos.entry_price - exit_price) / pos.entry_price * 100
+            else:
+                pnl_usd = qty * (exit_price - pos.entry_price)
+                pnl_pct = (exit_price - pos.entry_price) / pos.entry_price * 100
+            # No exit fee — P/L stays gross (signal product; subscribers
+            # pay their own exchanges' fees).
 
             self.capital += pnl_usd
             self.equity = self.capital + sum(
-                p.size_usd * (1 + (current_price - p.entry_price) / p.entry_price)
+                p.size_usd * (1 + (
+                    (p.entry_price - current_price) if p.direction == "SHORT"
+                    else (current_price - p.entry_price)
+                ) / p.entry_price)
                 for p_name, p in self.positions.items() if p_name != pair
             )
 
@@ -1244,6 +1349,7 @@ class PaperTrader:
                 entry_time=pos.entry_time,
                 exit_time=time.time(),
                 size_usd=pos.size_usd,
+                direction=pos.direction,
             )
             self.trades.append(trade)
 
@@ -1252,7 +1358,7 @@ class PaperTrader:
                     _expectancy.record_trade(
                         bot_id='nexusbrain',
                         pair=PAIR_DISPLAY.get(pair, pair),
-                        direction='LONG',
+                        direction=pos.direction,
                         entry_price=pos.entry_price,
                         exit_price=exit_price,
                         size_usd=pos.size_usd,
@@ -1266,12 +1372,14 @@ class PaperTrader:
                 # Report outcome to signal aggregator for learning
                 try:
                     import urllib.request as urlreq
-                    url = f"{cfg.command_center_url}/api/signals/outcome"
-                    fees = pos.size_usd * 0.0040 * 2  # Kraken taker 0.40% × 2 = 0.80% RT
+                    # was `cfg.command_center_url` — a NameError swallowed by
+                    # this except, so no outcome ever reached the aggregator
+                    url = f"{self.cfg.command_center_url}/api/signals/outcome"
+                    fees = 0.0  # gross P/L reporting — fees removed fleet-wide 2026-07-30; field kept for API shape
                     data = json.dumps({
                         "bot_id": "nexusbrain",
                         "pair": pair,
-                        "direction": "LONG",
+                        "direction": pos.direction,
                         "won": pnl_usd > 0,
                         "pnl": float(pnl_usd),
                         "fees": float(fees)
@@ -1291,14 +1399,14 @@ class PaperTrader:
             self._last_close[pair] = time.time()
 
             self._update_equity()
-            logger.info(f"CLOSE {PAIR_DISPLAY.get(pair, pair)} @ {exit_price:.4f} P/L=${pnl_usd:+.2f} ({pnl_pct:+.2f}%) reason={exit_reason.value}")
+            logger.info(f"CLOSE {pos.direction} {PAIR_DISPLAY.get(pair, pair)} @ {exit_price:.4f} P/L=${pnl_usd:+.2f} ({pnl_pct:+.2f}%) reason={exit_reason.value}")
             if self._event_pub:
                 try:
                     _risk_usd = abs(pos.entry_price - pos.stop_loss) / pos.entry_price * pos.size_usd if pos.entry_price > 0 else 0
                     _r = round(pnl_usd / _risk_usd, 2) if _risk_usd > 0 else 0
                     self._event_pub.emit("TRADE_CLOSE", {
                         "pair": PAIR_DISPLAY.get(pair, pair),
-                        "direction": "LONG", "exit_price": round(exit_price, 4),
+                        "direction": pos.direction, "exit_price": round(exit_price, 4),
                         "pnl": round(pnl_usd, 2), "exit_reason": exit_reason.value,
                         "r": _r,
                     })
@@ -1420,7 +1528,8 @@ class Database:
                 signal_score REAL,
                 entry_time REAL,
                 exit_time REAL,
-                size_usd REAL
+                size_usd REAL,
+                direction TEXT DEFAULT 'LONG'
             )
         """)
         c.execute("""
@@ -1434,7 +1543,8 @@ class Database:
                 stop_loss REAL,
                 take_profit REAL,
                 cross_valid INTEGER,
-                timestamp REAL
+                timestamp REAL,
+                direction TEXT DEFAULT 'LONG'
             )
         """)
         c.execute("""
@@ -1444,6 +1554,13 @@ class Database:
                 timestamp REAL
             )
         """)
+        # Migration: pre-bidirectional databases lack the direction column.
+        # Every row before the migration was a LONG (the DEFAULT is truthful).
+        for _tbl in ("trades", "signals"):
+            try:
+                c.execute(f"ALTER TABLE {_tbl} ADD COLUMN direction TEXT DEFAULT 'LONG'")
+            except sqlite3.OperationalError:
+                pass  # column already exists
         conn.commit()
         conn.close()
 
@@ -1452,9 +1569,10 @@ class Database:
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
             c.execute(
-                "INSERT INTO trades (pair, entry_price, exit_price, pnl_usd, pnl_pct, exit_reason, signal_score, entry_time, exit_time, size_usd) VALUES (?,?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO trades (pair, entry_price, exit_price, pnl_usd, pnl_pct, exit_reason, signal_score, entry_time, exit_time, size_usd, direction) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                 (trade.pair, trade.entry_price, trade.exit_price, trade.pnl_usd, trade.pnl_pct,
-                 trade.exit_reason.value, trade.signal_score, trade.entry_time, trade.exit_time, trade.size_usd),
+                 trade.exit_reason.value, trade.signal_score, trade.entry_time, trade.exit_time, trade.size_usd,
+                 trade.direction),
             )
             conn.commit()
             conn.close()
@@ -1466,9 +1584,10 @@ class Database:
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
             c.execute(
-                "INSERT INTO signals (pair, confluence_score, regime, confidence, entry_price, stop_loss, take_profit, cross_valid, timestamp) VALUES (?,?,?,?,?,?,?,?,?)",
+                "INSERT INTO signals (pair, confluence_score, regime, confidence, entry_price, stop_loss, take_profit, cross_valid, timestamp, direction) VALUES (?,?,?,?,?,?,?,?,?,?)",
                 (signal.pair, signal.confluence_score, signal.regime.value, signal.confidence_label.value,
-                 signal.entry_price, signal.stop_loss, signal.take_profit, int(signal.cross_exchange_valid), signal.timestamp),
+                 signal.entry_price, signal.stop_loss, signal.take_profit, int(signal.cross_exchange_valid), signal.timestamp,
+                 signal.direction),
             )
             conn.commit()
             conn.close()
@@ -1492,7 +1611,7 @@ class Database:
         try:
             conn = sqlite3.connect(self.db_path)
             c = conn.cursor()
-            c.execute("SELECT pair, entry_price, exit_price, pnl_usd, pnl_pct, exit_reason, signal_score, entry_time, exit_time, size_usd FROM trades ORDER BY exit_time DESC LIMIT 500")
+            c.execute("SELECT pair, entry_price, exit_price, pnl_usd, pnl_pct, exit_reason, signal_score, entry_time, exit_time, size_usd, direction FROM trades ORDER BY exit_time DESC LIMIT 500")
             rows = c.fetchall()
             conn.close()
             trades = []
@@ -1504,6 +1623,7 @@ class Database:
                 trades.append(Trade(
                     pair=r[0], entry_price=r[1], exit_price=r[2], pnl_usd=r[3], pnl_pct=r[4],
                     exit_reason=reason, signal_score=r[6], entry_time=r[7], exit_time=r[8], size_usd=r[9] or 0.0,
+                    direction=r[10] or "LONG",
                 ))
             return trades
         except Exception as e:
@@ -1712,7 +1832,8 @@ def cmd_scan(args, cfg: Config):
                     rc = regime_color(signal.regime)
                     cc = confidence_color(signal.confidence_label)
                     xv = f"{ANSI_GREEN}YES{ANSI_RESET}" if signal.cross_exchange_valid else f"{ANSI_RED}NO{ANSI_RESET}"
-                    print(f" score={signal.confluence_score:.3f} {cc}{signal.confidence_label.value}{ANSI_RESET} {rc}{signal.regime.value}{ANSI_RESET} XVal={xv}")
+                    dc = ANSI_RED if signal.direction == "SHORT" else ANSI_GREEN
+                    print(f" {dc}{signal.direction}{ANSI_RESET} score={signal.confluence_score:.3f} {cc}{signal.confidence_label.value}{ANSI_RESET} {rc}{signal.regime.value}{ANSI_RESET} XVal={xv}")
                 else:
                     print(f" {ANSI_DIM}no signal{ANSI_RESET}")
             else:
@@ -1724,16 +1845,17 @@ def cmd_scan(args, cfg: Config):
     # Summary
     all_signals.sort(key=lambda s: s.confluence_score, reverse=True)
     print(f"\n{ANSI_BOLD}  Top Signals:{ANSI_RESET}")
-    print(f"  {'Pair':<14} {'Score':>6} {'Confidence':<12} {'Regime':<12} {'Entry':>12} {'SL':>12} {'TP':>12} {'XVal':>5}")
-    print(f"  {'-'*85}")
+    print(f"  {'Pair':<14} {'Dir':<6} {'Score':>6} {'Confidence':<12} {'Regime':<12} {'Entry':>12} {'SL':>12} {'TP':>12} {'XVal':>5}")
+    print(f"  {'-'*92}")
 
     for sig in all_signals[:10]:
         display = PAIR_DISPLAY.get(sig.pair, sig.pair)
         rc = regime_color(sig.regime)
         cc = confidence_color(sig.confidence_label)
+        dc = ANSI_RED if sig.direction == "SHORT" else ANSI_GREEN
         xv = "Y" if sig.cross_exchange_valid else "N"
         print(
-            f"  {display:<14} {sig.confluence_score:>6.3f} "
+            f"  {display:<14} {dc}{sig.direction:<6}{ANSI_RESET} {sig.confluence_score:>6.3f} "
             f"{cc}{sig.confidence_label.value:<12}{ANSI_RESET} "
             f"{rc}{sig.regime.value:<12}{ANSI_RESET} "
             f"{format_price(sig.entry_price):>12} "
@@ -1907,6 +2029,9 @@ def cmd_run_sim(args, cfg: Config):
         if pair not in _last_signal:
             return True
         prev = _last_signal[pair]
+        # Flipped direction (LONG <-> SHORT) — always meaningful
+        if signal.direction != prev.get("direction", "LONG"):
+            return True
         # Changed confidence tier
         if signal.confidence_label != prev["label"]:
             return True
@@ -1920,6 +2045,7 @@ def cmd_run_sim(args, cfg: Config):
         _last_signal[pair] = {
             "label": signal.confidence_label,
             "score_bucket": int(signal.confluence_score * 10),
+            "direction": signal.direction,
         }
 
     while not shutdown.is_set():
@@ -2030,13 +2156,13 @@ def cmd_report(args, cfg: Config):
 
     # Recent trades
     print(f"  {ANSI_BOLD}Recent Trades:{ANSI_RESET}")
-    print(f"  {'Pair':<14} {'Entry':>10} {'Exit':>10} {'P&L':>10} {'Reason':<15} {'Score':>6}")
-    print(f"  {'-'*70}")
+    print(f"  {'Pair':<14} {'Dir':<6} {'Entry':>10} {'Exit':>10} {'P&L':>10} {'Reason':<15} {'Score':>6}")
+    print(f"  {'-'*77}")
     for t in trades[:20]:
         display = PAIR_DISPLAY.get(t.pair, t.pair)
         pc = ANSI_GREEN if t.pnl_usd >= 0 else ANSI_RED
         print(
-            f"  {display:<14} {format_price(t.entry_price):>10} {format_price(t.exit_price):>10} "
+            f"  {display:<14} {t.direction:<6} {format_price(t.entry_price):>10} {format_price(t.exit_price):>10} "
             f"{pc}${t.pnl_usd:+8.2f}{ANSI_RESET} {t.exit_reason.value:<15} {t.signal_score:>6.3f}"
         )
     print()

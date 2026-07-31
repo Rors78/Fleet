@@ -90,10 +90,34 @@ def _kill_pid(pid: int) -> None:
         print(f"[PORT_GUARD] kill PID {pid} failed: {e}", file=sys.stderr)
 
 
+def _incumbent_responds(port: int) -> bool:
+    """True if whatever holds the port answers HTTP — i.e. it is a healthy
+    serving instance, not a zombie. Any HTTP status counts (404 included);
+    only connection failure/timeout means unresponsive."""
+    import urllib.request
+    import urllib.error
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3):
+            return True
+    except urllib.error.HTTPError:
+        return True  # server answered, just not with 200 — it's alive
+    except Exception:
+        return False
+
+
 def ensure_port(port: int, bot_name: str = "unknown", max_retries: int = 3) -> bool:
     """
     Guarantee port is free before returning.
-    Kills any zombie processes occupying it.
+    Kills any zombie processes occupying it — but if the occupant is a HEALTHY
+    serving instance (answers HTTP), this process exits instead.
+
+    Why: two watchdogs (CC's _health_monitor + launch_fleet's monitor) can each
+    respawn a bot within seconds of each other. Before 2026-07-30 this function
+    unconditionally killed the port holder, so every duplicate spawn
+    assassinated the healthy incumbent, the incumbent's watchdog respawned it,
+    and the fleet ran two copies of a bot indefinitely (observed with Oracle).
+    Yielding to a responsive incumbent breaks the loop; genuine zombies
+    (port held, HTTP dead) are still killed as before.
     Call this BEFORE starting your HTTP server.
     """
     my_pid = os.getpid()
@@ -102,6 +126,11 @@ def ensure_port(port: int, bot_name: str = "unknown", max_retries: int = 3) -> b
         if is_port_free(port):
             print(f"[PORT_GUARD] Port {port} free for {bot_name} (PID {my_pid})")
             return True
+
+        if _incumbent_responds(port):
+            print(f"[PORT_GUARD] Port {port} held by a HEALTHY {bot_name} "
+                  f"instance — duplicate spawn (PID {my_pid}) exiting")
+            sys.exit(0)
 
         zombie_pids = _get_pids_on_port(port)
         # Filter out ourselves

@@ -13,7 +13,6 @@ Reads config from signal_config.json. Stdlib + urllib only.
 
 import json
 import logging
-import os
 import sys
 import time
 import urllib.error

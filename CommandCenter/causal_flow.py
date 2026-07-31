@@ -13,7 +13,6 @@ The fleet can then WEIGHT its intelligence sources by actual
 causal power, not just correlation.
 """
 
-import math
 import time
 
 

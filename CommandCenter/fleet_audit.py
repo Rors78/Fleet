@@ -11,16 +11,13 @@ Usage:  cd D:\\CommandCenter && python fleet_audit.py
 import importlib
 import json
 import math
-import os
 import re
-import subprocess
 import sys
 import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from pathlib import Path
-from urllib.parse import urlencode
 
 # ---------------------------------------------------------------------------
 # HTTP helper — requests with urllib fallback
@@ -41,9 +38,6 @@ CC_DIR = Path(r"D:\CommandCenter")
 NEXUS_DIR = Path(r"D:\Nexus")
 
 PROBE_PATHS = ["/api/snapshot", "/status", "/health", "/"]
-# TrekBot (3-endpoint bot) left the fleet — renamed GoldenEye, now standalone
-# on :18095. Kept as the probe order for any future multi-endpoint bot.
-TREKBOT_PATHS = ["/health", "/status", "/api/snapshot", "/"]
 
 COUNCIL_MODULES = {
     "signal_aggregator":    {"class": "SignalAggregator",           "consumers": ["command_center.py"]},
@@ -96,21 +90,6 @@ def http_get(url, timeout=PROBE_TIMEOUT):
     except Exception as e:
         return {"ok": False, "status": None, "body": None,
                 "elapsed_ms": round((time.time() - t0) * 1000, 1), "error": str(e)[:300]}
-
-
-def http_get_json(url, timeout=PROBE_TIMEOUT):
-    """GET url expecting JSON. Returns {ok, data, status, elapsed_ms, error}."""
-    result = http_get(url, timeout)
-    if not result["ok"]:
-        return {"ok": False, "data": None, "status": result["status"],
-                "elapsed_ms": result["elapsed_ms"], "error": result["error"]}
-    try:
-        data = json.loads(result["body"]) if result["body"] else None
-        return {"ok": True, "data": data, "status": result["status"],
-                "elapsed_ms": result["elapsed_ms"], "error": None}
-    except json.JSONDecodeError as e:
-        return {"ok": True, "data": None, "status": result["status"],
-                "elapsed_ms": result["elapsed_ms"], "error": f"JSON parse error: {e}"}
 
 
 def http_get_json_full(url, timeout=PROBE_TIMEOUT):
@@ -166,10 +145,8 @@ def phase_heartbeat(fleet_config):
     bots = fleet_config.get("bots", {})
     targets = []
     for bot_id, info in bots.items():
-        port = info.get("port")
-        name = bot_id
-        paths = TREKBOT_PATHS if bot_id == "trekbot" else PROBE_PATHS
-        targets.append({"id": bot_id, "name": name, "port": port, "paths": paths})
+        targets.append({"id": bot_id, "name": bot_id, "port": info.get("port"),
+                        "paths": PROBE_PATHS})
 
     # Add CC itself
     targets.append({"id": "command_center", "name": "CommandCenter", "port": 9000,
@@ -493,10 +470,7 @@ def phase_money_audit(fleet_config, heartbeat_results):
             # Try to get bot's own position count from its snapshot
             port = fleet_config.get("bots", {}).get(bot_id, {}).get("port")
             if port:
-                if bot_id == "trekbot":
-                    bot_snap = http_get_json_full(f"http://127.0.0.1:{port}/positions", timeout=5)
-                else:
-                    bot_snap = http_get_json_full(f"http://127.0.0.1:{port}/api/snapshot", timeout=5)
+                bot_snap = http_get_json_full(f"http://127.0.0.1:{port}/api/snapshot", timeout=5)
                 if bot_snap["ok"] and bot_snap["data"]:
                     bd = bot_snap["data"]
                     # Try to extract position count from bot's own report
@@ -998,10 +972,7 @@ def generate_text_report(report):
     fleet_exp = money.get("fleet_expectancy") or {}
     w("  EXPECTANCY:")
     w(f"    Fleet:       ${fleet_exp.get('fleet_expectancy', '?')}/trade ({fleet_exp.get('total_trades', '?')} trades, {fleet_exp.get('win_rate', '?')}% WR)")
-    w(f"    Net PnL:     ${fleet_exp.get('total_net_pnl', '?')}")
     w(f"    Gross PnL:   ${fleet_exp.get('total_gross_pnl', '?')}")
-    w(f"    Total Fees:  ${fleet_exp.get('total_fees', '?')}")
-    w(f"    Fees/Gross:  {fleet_exp.get('fees_ate_pct', '?')}%")
     w("")
 
     bot_rankings = fleet_exp.get("bot_rankings", [])
@@ -1143,10 +1114,6 @@ def generate_text_report(report):
     for d in discs:
         if d.get("type") == "POSITION_COUNT_MISMATCH":
             findings.append(f"POSITION MISMATCH: {d['bot']} — {d['detail']}")
-
-    # Fee problem
-    if fleet_exp.get("fees_ate_pct") and fleet_exp["fees_ate_pct"] > 100:
-        findings.append(f"FEES DESTROYING PROFIT: Fees are {fleet_exp['fees_ate_pct']}% of gross PnL")
 
     # Negative expectancy
     if fleet_exp.get("fleet_expectancy") and fleet_exp["fleet_expectancy"] < 0:

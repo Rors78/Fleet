@@ -153,19 +153,6 @@ class KrakenAPI:
         
         return results
     
-    def get_asset_info(self) -> Optional[Dict[str, Any]]:
-        """Get asset information"""
-        endpoint = "public/Assets"
-        try:
-            response = self.session.get(
-                self._build_url(endpoint),
-                timeout=self.timeout
-            )
-            return self._handle_response(response)
-        except Exception as e:
-            logging.error("Failed to fetch asset info: %s", str(e))
-            return None
-    
     def get_tradable_pairs(self) -> Optional[Dict[str, Any]]:
         """Get list of tradable pairs"""
         endpoint = "public/AssetPairs"

@@ -1,4 +1,3 @@
-import sys
 import time
 import signal
 import threading
@@ -13,8 +12,6 @@ from rich.table import Table
 from rich.text import Text
 from rich.live import Live
 from rich.layout import Layout
-
-from dashboard import run_dashboard
 
 from config import Config
 from kraken_api import KrakenAPI

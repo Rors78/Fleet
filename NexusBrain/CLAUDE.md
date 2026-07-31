@@ -3,7 +3,9 @@
 ## What This Is
 Combined crypto signal bot merging best ideas from Aegis-5 + Sonnet-Brain v4.
 Multi-timeframe confluence scoring, cross-exchange price validation, regime detection,
-paper trading with realistic slippage + fees, SQLite persistence.
+paper trading with realistic slippage (gross P/L — no fee simulation; the
+fleet is a signal product and subscribers pay their own exchanges' fees),
+SQLite persistence.
 Zero external dependencies -- pure Python stdlib.
 
 ## Architecture
@@ -46,7 +48,7 @@ python nexus_brain.py health --port 8074        # HTTP health endpoint
 - 2x ATR stop loss, 3x ATR take profit
 - 3% daily loss limit
 - 1h cooldown after stop loss hit
-- 0.1% taker fee + 5bps slippage simulation
+- 5bps adverse slippage simulation (no fees — gross P/L since 2026-07-30)
 
 ## Port Convention
 - NexusBrain: 8074 (this bot)

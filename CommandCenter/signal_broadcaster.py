@@ -25,7 +25,6 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone, timedelta
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from pathlib import Path
 from typing import Callable, Optional
 
 # ── Bot display names — internal names never shown to subscribers ────────────
@@ -1052,10 +1051,6 @@ def _bar(value: float, total: float = 1.0, width: int = 10) -> str:
     filled = max(0, min(width, round(value / total * width)))
     return "\u2593" * filled + "\u2591" * (width - filled)
 
-def _pct_bar(value: float, width: int = 10) -> str:
-    """For 0-100 pct values."""
-    return _bar(value, 100.0, width)
-
 def _regime_badge(regime: str) -> str:
     """Short regime label with indicator char."""
     r = str(regime).upper()
@@ -1418,8 +1413,8 @@ class CardFormatter:
     def _paid_trade_close(self, etype: str, d: dict) -> str:
         pair = _v(d, 'pair')
         pnl = d.get("pnl")
-        gross_pnl = d.get("gross_pnl")
-        fees = d.get("fees")
+        # No fee line on cards (2026-07-30): P/L is gross price movement \u2014
+        # subscribers pay their own exchange's fees, not ours to preach.
         pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
         pnl_won = isinstance(pnl, (int, float)) and pnl > 0
         result_glyph = "\u2714 WIN" if pnl_won else "\u2716 LOSS"
@@ -1447,7 +1442,6 @@ class CardFormatter:
         entry_s = _price(entry)
         exit_s = _price(exit_p)
         size_s = f"${size:,.2f}" if isinstance(size, (int, float)) else "\u2014"
-        fees_s = f"${fees:,.2f}" if isinstance(fees, (int, float)) else ""
 
         # Duration formatting
         if isinstance(duration_s, (int, float)):
@@ -1487,8 +1481,7 @@ class CardFormatter:
             f"Direction {dir_glyph}\n"
             f"Size      {size_s}\n"
             f"Duration  {dur_s}\n"
-            + (f"Fees      {fees_s}\n" if fees_s else "")
-            + f"Regime    {regime}\n"
+            f"Regime    {regime}\n"
             f"Bot       {bot}"
             f"</code>"
             f"{_footer(_FOOTER_PAID)}"
@@ -2632,21 +2625,20 @@ class EndOfDayJob:
                     continue
                 d = ev.get("data", {}) if isinstance(ev.get("data"), dict) else {}
                 pnl = d.get("pnl")
-                fees = d.get("fees", 0)
                 if not isinstance(pnl, (int, float)):
                     continue
-                if not isinstance(fees, (int, float)):
-                    fees = 0
                 hour = int(time.strftime("%H", time.gmtime(ts_float)))
+                # Gross semantics (2026-07-30): pnl IS the number — no fee
+                # deduction. "net" and "fees" keys kept for card-shape compat.
                 today_trades.append({
                     "bot": ev.get("source") or d.get("bot", ""),
                     "pair": d.get("pair", ""),
                     "side": str(d.get("direction", "")).upper(),
-                    "net": pnl - fees,
+                    "net": pnl,
                     "hour": hour,
                     "exit_reason": d.get("exit_reason", d.get("reason", "")),
                     "gross_pnl": pnl,
-                    "fees": fees,
+                    "fees": 0,
                 })
             if today_trades:
                 source_used = "events_recent"
@@ -2684,12 +2676,11 @@ class EndOfDayJob:
                     if dkey in seen_keys:
                         continue
                     seen_keys.add(dkey)
-                    fees = t.get("fees", 0)
-                    if not isinstance(fees, (int, float)):
-                        fees = 0
-                    gross = t.get("gross_pnl", pnl + fees)
+                    # Gross semantics (2026-07-30): pnl is gross price
+                    # movement — no fee reconstruction.
+                    gross = t.get("gross_pnl", pnl)
                     if not isinstance(gross, (int, float)):
-                        gross = pnl + fees
+                        gross = pnl
                     hour = int(time.strftime("%H", time.gmtime(ts_float)))
                     today_trades.append({
                         "bot": bot,
@@ -2699,7 +2690,7 @@ class EndOfDayJob:
                         "hour": hour,
                         "exit_reason": t.get("exit_reason", ""),
                         "gross_pnl": gross,
-                        "fees": fees,
+                        "fees": 0,
                     })
                 if today_trades:
                     source_used = "api_trades_disk"
@@ -2710,13 +2701,11 @@ class EndOfDayJob:
             except Exception:
                 log.exception("EOD fallback source (api/trades) failed")
 
-        # ── Compute aggregates ──
+        # ── Compute aggregates (gross — signal product, 2026-07-30) ──
         gross = sum(t.get("gross_pnl", 0) or 0 for t in today_trades
                     if isinstance(t.get("gross_pnl"), (int, float)))
-        fees = sum(t.get("fees", 0) or 0 for t in today_trades
-                   if isinstance(t.get("fees"), (int, float)))
-        net = sum(t.get("net", 0) or 0 for t in today_trades
-                  if isinstance(t.get("net"), (int, float)))
+        fees = 0.0   # never computed; key kept for card-shape compatibility
+        net = gross  # net == gross under gross semantics
 
         # Cross-check: pull expectancy stats but don't use them as primary
         # numbers (they're lifetime, not today-only)

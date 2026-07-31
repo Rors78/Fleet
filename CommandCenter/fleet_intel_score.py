@@ -3,7 +3,6 @@ Fleet Intelligence Score — Synthesizes all engine outputs into actionable trad
 Polls Nexus snapshot + event bus to build per-pair intelligence scores.
 """
 
-import math
 import threading
 import time
 

@@ -1,7 +1,7 @@
 import json
 import threading
 import time
-from http.server import HTTPServer, SimpleHTTPRequestHandler, ThreadingHTTPServer
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
 from typing import Dict, Any, List, Optional
 

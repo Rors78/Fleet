@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>ARMADA — Dev Harness</title>
+<style>
+  html, body { margin:0; padding:0; background:#05050a; color:#cfd8ff; font-family: 'Segoe UI', system-ui, sans-serif; overflow:hidden; height:100%; }
+  #stage {
+    position: relative;
+    width: 100vw;
+    height: 78vh;
+    background:
+      radial-gradient(1px 1px at 20% 30%, #ffffff 100%, transparent 100%),
+      radial-gradient(1px 1px at 65% 12%, #ffffff 100%, transparent 100%),
+      radial-gradient(1.5px 1.5px at 80% 60%, #ffffff 100%, transparent 100%),
+      radial-gradient(1px 1px at 40% 80%, #ffffff 100%, transparent 100%),
+      radial-gradient(1px 1px at 90% 85%, #aab 100%, transparent 100%),
+      radial-gradient(1px 1px at 10% 65%, #aab 100%, transparent 100%),
+      radial-gradient(1.5px 1.5px at 55% 45%, #fff 100%, transparent 100%),
+      radial-gradient(1px 1px at 30% 55%, #ffffff 100%, transparent 100%),
+      radial-gradient(circle at 50% 45%, #0d0d20 0%, #05050a 65%, #000 100%);
+    background-repeat: no-repeat;
+    background-size: cover;
+  }
+  #orbitalCanvas2d {
+    position: absolute; inset: 0; width:100%; height:100%;
+  }
+  #hud {
+    position: absolute; top: 8px; left: 8px; z-index: 50;
+    background: rgba(10,10,20,0.75); border: 1px solid #333a55; border-radius: 6px;
+    padding: 8px 12px; font-size: 12px; line-height:1.5; pointer-events:none;
+    min-width: 220px;
+  }
+  #hud b { color:#8fd3ff; }
+  #fps { font-size: 16px; font-weight: 700; color: #6f6; }
+  #fps.warn { color: #fd6; }
+  #fps.bad { color: #f66; }
+  #controls {
+    position: absolute; bottom: 0; left: 0; right: 0; height: 22vh;
+    background: #0a0a12; border-top: 1px solid #2a2a3d;
+    padding: 10px 16px; box-sizing: border-box; overflow-y:auto;
+  }
+  #controls h3 { margin: 4px 0 8px; font-size: 13px; color: #8fd3ff; text-transform: uppercase; letter-spacing: 0.06em; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; align-items:center; }
+  button {
+    background: #171728; color: #cfd8ff; border: 1px solid #3a3a5a; border-radius: 4px;
+    padding: 6px 10px; font-size: 12px; cursor: pointer; font-family: inherit;
+  }
+  button:hover { background: #23233d; border-color: #5a5a8a; }
+  button.danger { border-color: #7a2f2f; }
+  button.danger:hover { background: #3a1a1a; }
+  select, input[type=range] { background:#171728; color:#cfd8ff; border:1px solid #3a3a5a; border-radius:4px; padding:4px; font-family:inherit; }
+  label { font-size: 11px; color: #99a; margin-right: 4px; }
+  #log {
+    font-family: 'Consolas', monospace; font-size: 11px; color: #7a8;
+    max-height: 60px; overflow-y: auto; background: #050508; border: 1px solid #222; border-radius: 4px; padding: 4px 8px;
+    white-space: pre-wrap;
+  }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <canvas id="orbitalCanvas2d"></canvas>
+  <div id="hud">
+    <div><b>ARMADA</b> dev harness</div>
+    <div>fps: <span id="fps">--</span></div>
+    <div>ships: <span id="shipCount">--</span></div>
+    <div>quality: <span id="qualityLabel">--</span></div>
+    <div>zoom: <span id="zoomLabel">1.00</span></div>
+  </div>
+  <!-- Armada.init() will append its own canvas here -->
+</div>
+
+<div id="controls">
+  <h3>Formation / View</h3>
+  <div class="row">
+    <button id="btnFormationCircle">Circle formation</button>
+    <button id="btnFormationLine">Line formation</button>
+    <button id="btnFormationScatter">Scattered orbits</button>
+    <label>Zoom</label>
+    <input type="range" id="zoomSlider" min="0.5" max="2" step="0.05" value="1">
+    <label>Quality</label>
+    <select id="qualitySelect">
+      <option value="high">high</option>
+      <option value="medium">medium</option>
+    </select>
+  </div>
+
+  <h3>Events (per-ship)</h3>
+  <div class="row" id="shipButtons"></div>
+
+  <h3>Scripted sequence</h3>
+  <div class="row">
+    <button id="btnAutoScript">Run auto mining-run script (all ships)</button>
+    <button id="btnKillOne" class="danger">Kill NexusBrain (dormant test)</button>
+    <button id="btnReviveAll">Revive all</button>
+  </div>
+
+  <div id="log"></div>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "./static/vendor/three.module.min.js"
+  }
+}
+</script>
+<script type="module">
+  import Armada from './armada.js';
+
+  const stage = document.getElementById('stage');
+  const canvas2d = document.getElementById('orbitalCanvas2d');
+  const ctx2d = canvas2d.getContext('2d');
+  const logEl = document.getElementById('log');
+
+  function log(msg) {
+    const line = `[${new Date().toISOString().substr(11,8)}] ${msg}`;
+    logEl.textContent = line + '\n' + logEl.textContent;
+    console.log(msg);
+  }
+
+  // ---------------------------------------------------------------
+  // Fake node data — mimics window._orbNodes shape exactly as
+  // documented in the integration research (x,y world px, currentSize,
+  // alive, direction, celestialType, currentParent).
+  // ---------------------------------------------------------------
+  const TRADER_IDS = ['turtlesue', 'nexusbrain', 'gridzilla', 'rubberband', 'arbitrageur', 'confluence'];
+  const COLORS = {
+    turtlesue: '#4ade80', nexusbrain: '#c084fc', gridzilla: '#facc15',
+    rubberband: '#00e5ff', arbitrageur: '#7c4dff', confluence: '#ff6d00',
+  };
+
+  let _orbLW = stage.clientWidth, _orbLH = stage.clientHeight;
+  let view = { zoom: 1, panX: 0, panY: 0, isFS: false };
+  let formationMode = 'circle';
+  let t0 = performance.now();
+  const nodes = {};
+
+  function resizeCanvas2d() {
+    const dpr = window.devicePixelRatio || 1;
+    _orbLW = stage.clientWidth;
+    _orbLH = stage.clientHeight;
+    canvas2d.width = Math.round(_orbLW * dpr);
+    canvas2d.height = Math.round(_orbLH * dpr);
+    ctx2d.setTransform(dpr, 0, 0, dpr, 0, 0);
+  }
+  window.addEventListener('resize', resizeCanvas2d);
+  resizeCanvas2d();
+
+  function initNodes() {
+    for (let i = 0; i < TRADER_IDS.length; i++) {
+      const id = TRADER_IDS[i];
+      nodes[id] = {
+        id, x: 0, y: 0, currentSize: 16 + (i % 3) * 4,
+        alive: true, celestialType: 'planet', currentParent: 'sun',
+        direction: 0, tradeFlash: null, angle: (Math.PI * 2 * i) / TRADER_IDS.length,
+        orbitRadius: 140 + i * 22,
+      };
+    }
+  }
+  initNodes();
+
+  function updateFakePositions(tSec) {
+    const cx = _orbLW / 2, cy = _orbLH * 0.48;
+    TRADER_IDS.forEach((id, i) => {
+      const n = nodes[id];
+      if (formationMode === 'circle') {
+        const speed = 0.15 + i * 0.02;
+        n.angle += 0.006 * speed;
+        n.x = cx + Math.cos(n.angle) * n.orbitRadius;
+        n.y = cy + Math.sin(n.angle) * n.orbitRadius * 0.55;
+      } else if (formationMode === 'line') {
+        n.x = cx - 250 + i * 100;
+        n.y = cy + Math.sin(tSec * 0.6 + i) * 12;
+      } else if (formationMode === 'scatter') {
+        const speed = 0.1 + (i % 4) * 0.05;
+        n.angle += 0.004 * (i % 2 === 0 ? speed : -speed);
+        const r = n.orbitRadius * (1 + 0.3 * Math.sin(tSec * 0.3 + i));
+        n.x = cx + Math.cos(n.angle) * r;
+        n.y = cy + Math.sin(n.angle * 1.3) * r * 0.5;
+      }
+    });
+  }
+
+  function draw2dBodies() {
+    ctx2d.clearRect(0, 0, _orbLW, _orbLH);
+    ctx2d.setTransform(window.devicePixelRatio || 1, 0, 0, window.devicePixelRatio || 1, 0, 0);
+    ctx2d.save();
+    ctx2d.translate(view.panX, view.panY);
+    ctx2d.scale(view.zoom, view.zoom);
+
+    // sun placeholder
+    const cx = _orbLW / 2, cy = _orbLH * 0.48;
+    const sunGrad = ctx2d.createRadialGradient(cx, cy, 2, cx, cy, 30);
+    sunGrad.addColorStop(0, '#fff8e0');
+    sunGrad.addColorStop(1, '#ffb300');
+    ctx2d.fillStyle = sunGrad;
+    ctx2d.beginPath(); ctx2d.arc(cx, cy, 22, 0, Math.PI * 2); ctx2d.fill();
+
+    // orbit rings + 2D body markers (dim, so ships read on top)
+    TRADER_IDS.forEach((id) => {
+      const n = nodes[id];
+      ctx2d.strokeStyle = 'rgba(255,255,255,0.06)';
+      ctx2d.beginPath(); ctx2d.arc(cx, cy, n.orbitRadius, 0, Math.PI * 2); ctx2d.stroke();
+
+      ctx2d.fillStyle = COLORS[id] + '33';
+      ctx2d.beginPath(); ctx2d.arc(n.x, n.y, Math.max(1, n.currentSize * 0.3), 0, Math.PI * 2); ctx2d.fill();
+
+      ctx2d.font = '10px Segoe UI';
+      ctx2d.fillStyle = 'rgba(255,255,255,0.35)';
+      ctx2d.textAlign = 'center';
+      ctx2d.fillText(id, n.x, n.y + n.currentSize + 14);
+    });
+    ctx2d.restore();
+  }
+
+  // ---------------------------------------------------------------
+  // Armada init
+  // ---------------------------------------------------------------
+  const handle = Armada.init(stage, { quality: 'high', canvasId: 'armadaCanvas' });
+  window.__armadaHandle = handle;
+  log('Armada.init() complete — ships: ' + Object.keys(handle.ships).join(', '));
+  document.getElementById('shipCount').textContent = Object.keys(handle.ships).length;
+  document.getElementById('qualityLabel').textContent = Armada.getQuality();
+
+  // ---------------------------------------------------------------
+  // FPS meter
+  // ---------------------------------------------------------------
+  let frames = 0, lastFpsT = performance.now(), fps = 60;
+  function fpsTick() {
+    frames++;
+    const now = performance.now();
+    if (now - lastFpsT >= 500) {
+      fps = Math.round((frames * 1000) / (now - lastFpsT));
+      frames = 0; lastFpsT = now;
+      const el = document.getElementById('fps');
+      el.textContent = fps;
+      el.className = fps >= 55 ? '' : (fps >= 40 ? 'warn' : 'bad');
+    }
+    requestAnimationFrame(fpsTick);
+  }
+  fpsTick();
+
+  // ---------------------------------------------------------------
+  // Main loop: update fake node positions, sync to Armada, draw 2D
+  // ---------------------------------------------------------------
+  window.__armadaPaused = false;
+  window.__armadaNodes = nodes;
+  window.__armadaView = view;
+  function loop() {
+    if (!window.__armadaPaused) {
+      const tSec = (performance.now() - t0) / 1000;
+      updateFakePositions(tSec);
+      draw2dBodies();
+      Armada.syncFromNodes(nodes, view);
+      document.getElementById('zoomLabel').textContent = view.zoom.toFixed(2);
+    }
+    requestAnimationFrame(loop);
+  }
+  requestAnimationFrame(loop);
+
+  // ---------------------------------------------------------------
+  // Controls
+  // ---------------------------------------------------------------
+  document.getElementById('btnFormationCircle').onclick = () => { formationMode = 'circle'; log('formation: circle'); };
+  document.getElementById('btnFormationLine').onclick = () => { formationMode = 'line'; log('formation: line'); };
+  document.getElementById('btnFormationScatter').onclick = () => { formationMode = 'scatter'; log('formation: scatter'); };
+
+  document.getElementById('zoomSlider').oninput = (e) => { view.zoom = parseFloat(e.target.value); };
+  document.getElementById('qualitySelect').onchange = (e) => {
+    Armada.setQuality(e.target.value);
+    document.getElementById('qualityLabel').textContent = Armada.getQuality();
+    log('quality -> ' + e.target.value);
+  };
+
+  const shipButtonsEl = document.getElementById('shipButtons');
+  TRADER_IDS.forEach((id) => {
+    const wrap = document.createElement('span');
+    wrap.style.cssText = 'display:inline-flex;gap:4px;border:1px solid #2a2a3d;border-radius:4px;padding:3px 6px;align-items:center;';
+    const label = document.createElement('span');
+    label.textContent = id;
+    label.style.cssText = `color:${COLORS[id]};font-size:11px;font-weight:600;margin-right:2px;`;
+    wrap.appendChild(label);
+
+    const openBtn = document.createElement('button');
+    openBtn.textContent = 'OPEN long';
+    openBtn.onclick = () => fireEvent(id, 'TRADE_OPEN', { pair: 'BTC/USD', direction: 'LONG' });
+    wrap.appendChild(openBtn);
+
+    const openShortBtn = document.createElement('button');
+    openShortBtn.textContent = 'OPEN short';
+    openShortBtn.onclick = () => fireEvent(id, 'TRADE_OPEN', { pair: 'ETH/USD', direction: 'SHORT' });
+    wrap.appendChild(openShortBtn);
+
+    const closeWinBtn = document.createElement('button');
+    closeWinBtn.textContent = 'CLOSE win';
+    closeWinBtn.onclick = () => fireEvent(id, 'TRADE_CLOSE', { pair: 'BTC/USD', pnl: 42.5 });
+    wrap.appendChild(closeWinBtn);
+
+    const closeLossBtn = document.createElement('button');
+    closeLossBtn.textContent = 'CLOSE loss';
+    closeLossBtn.className = 'danger';
+    closeLossBtn.onclick = () => fireEvent(id, 'TRADE_CLOSE', { pair: 'BTC/USD', pnl: -18.2 });
+    wrap.appendChild(closeLossBtn);
+
+    shipButtonsEl.appendChild(wrap);
+  });
+
+  function fireEvent(botId, type, data) {
+    const evt = { type, bot_id: botId, data, ts: Date.now() / 1000 };
+    Armada.onEvent(evt);
+    log(`${type} ${botId} ${JSON.stringify(data)}`);
+  }
+
+  document.getElementById('btnAutoScript').onclick = async () => {
+    log('--- auto script start ---');
+    for (const id of TRADER_IDS) {
+      fireEvent(id, 'TRADE_OPEN', { pair: 'BTC/USD', direction: Math.random() > 0.5 ? 'LONG' : 'SHORT' });
+      await new Promise(r => setTimeout(r, 300));
+    }
+    await new Promise(r => setTimeout(r, 3000));
+    for (const id of TRADER_IDS) {
+      const win = Math.random() > 0.4;
+      fireEvent(id, 'TRADE_CLOSE', { pair: 'BTC/USD', pnl: win ? (10 + Math.random() * 60) : -(5 + Math.random() * 30) });
+      await new Promise(r => setTimeout(r, 300));
+    }
+    log('--- auto script end ---');
+  };
+
+  document.getElementById('btnKillOne').onclick = () => {
+    nodes.nexusbrain.alive = false;
+    log('nexusbrain marked dormant (alive=false)');
+  };
+  document.getElementById('btnReviveAll').onclick = () => {
+    TRADER_IDS.forEach(id => nodes[id].alive = true);
+    log('all ships revived');
+  };
+</script>
+</body>
+</html>

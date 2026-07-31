@@ -90,10 +90,6 @@ def _today_str():
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _utc_now():
-    return datetime.now(timezone.utc)
-
-
 def _ensure_dirs():
     for d in (LOG_DIR, SNAPSHOT_DIR, EVENT_DIR, DAILY_DIR):
         os.makedirs(d, exist_ok=True)
@@ -174,8 +170,7 @@ class FleetLogger:
         self._journal_pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix="Journal")
 
         # Previous state for diff-based event detection
-        self._prev_bots = {}        # bot_id -> normalized dict
-        self._prev_positions = {}   # bot_id -> set of position keys
+        self._prev_positions = {}   # bot_id -> {position_key: position_info}
         self._prev_regimes = {}     # bot_id -> confirmed regime string
         self._pending_regimes = {}  # bot_id -> {"regime": str, "count": int}
         self._prev_whale_tiers = {} # pair -> tier string
@@ -343,8 +338,14 @@ class FleetLogger:
         _append_jsonl(EVENT_DIR, event)
 
     def log_portfolio_release(self, bot_id, pair, amount, pnl, reservation_id):
-        """Called by command_center when a release happens."""
-        fees = round(amount * 0.0040 * 2, 2)  # Kraken 0.80% RT
+        """Called by command_center when a release happens.
+
+        Gross semantics (2026-07-30): pnl IS gross price movement — the
+        fleet is a signal product and pays no fees. gross_pnl == pnl and
+        fees is 0.0; both keys kept so event-log readers don't break.
+        (Pre-2026-07-30 events on disk carry fabricated fees and inflated
+        gross_pnl — history is not rewritten.)
+        """
         event = {
             "ts": time.time(),
             "type": "PORTFOLIO",
@@ -353,8 +354,8 @@ class FleetLogger:
             "pair": pair,
             "amount": amount,
             "pnl": pnl,
-            "gross_pnl": round(pnl + fees, 2),
-            "fees": fees,
+            "gross_pnl": round(pnl, 2),
+            "fees": 0.0,
             "reservation_id": reservation_id,
         }
         _append_jsonl(EVENT_DIR, event)
@@ -390,7 +391,18 @@ class FleetLogger:
 
             # --- Position changes (trade open/close) ---
             current_positions = self._extract_positions(bid, raw, norm)
-            prev_positions = self._prev_positions.get(bid, {})
+
+            # First observation of this bot since the logger started: seed the
+            # baseline WITHOUT diffing. A fresh logger has no memory, and a
+            # position that was already open is not a new trade — without this
+            # seed, every CC restart emitted one phantom TRADE_OPEN per open
+            # position (5x duplicates on one UNI/USD position, 2026-07-30),
+            # inflating trade counts in expectancy and the subscriber feed.
+            if bid not in self._prev_positions:
+                self._prev_positions[bid] = current_positions
+                continue
+
+            prev_positions = self._prev_positions[bid]
 
             # New positions = TRADE_OPEN
             for key, pos in current_positions.items():
@@ -422,23 +434,23 @@ class FleetLogger:
                             pnl = exit_info["pnl"]
 
                     duration = time.time() - open_time if open_time > 0 else 0
-                    # Fee calculation: Kraken 0.40% taker per side = 0.80% RT
+                    # Gross semantics (2026-07-30): pnl IS gross price
+                    # movement — no fee fabrication. fees kept at 0.0 for
+                    # event-shape compatibility.
                     _size = pos.get("total_size", 0) or pos.get("size_usd", 0) or pos.get("amount", 500)
                     _entry = pos.get("entry_price", 0) or pos.get("avg_entry", 0)
                     if _entry > 0 and _size > 0:
                         _size_usd = _size * _entry if _size < 100 else _size  # handle coin qty vs usd
                     else:
                         _size_usd = 500  # fallback
-                    _fees = round(_size_usd * 0.0040 * 2, 2)  # 0.80% RT
-                    _gross = round(pnl + _fees, 2)
                     ev = {
                         "ts": time.time(),
                         "bot": bid,
                         "type": "TRADE_CLOSE",
                         "pair": pair_name,
                         "pnl": pnl,
-                        "gross_pnl": _gross,
-                        "fees": _fees,
+                        "gross_pnl": round(pnl, 2),
+                        "fees": 0.0,
                         "size_usd": round(_size_usd, 2),
                         "duration_s": duration,
                         "exit_reason": exit_reason,
@@ -509,8 +521,6 @@ class FleetLogger:
                         with self._daily_lock:
                             self._daily["whale_alerts"] += 1
                         self._prev_whale_tiers[pair] = tier
-
-            self._prev_bots[bid] = norm
 
         # Write all events and publish to event bus
         for ev in events:
@@ -837,7 +847,17 @@ class FleetLogger:
         try:
             state = self._get_state()
             portfolio_state = self._get_portfolio()
-        except Exception:
+        except Exception as e:
+            # Loud skip: a silently dropped tick leaves a hole in the snapshot
+            # stream that is indistinguishable from a process restart.
+            try:
+                _append_jsonl(EVENT_DIR, {
+                    "ts": time.time(),
+                    "type": "LOGGER_ERROR",
+                    "error": f"state fetch failed: {e}",
+                })
+            except Exception:
+                pass
             return
 
         bots = state.get("bots", {})

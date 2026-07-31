@@ -183,6 +183,13 @@ class SignalAggregator:
             }
             # Snapshot proposals so record_outcome works after they expire
             self._decision_snapshots[pair] = [p.copy() for p in proposals]
+            # Evict snapshots whose trade never closed (bot crash, denied
+            # reservation) — otherwise this dict grows without bound.
+            stale = time.time() - 86400
+            self._decision_snapshots = {
+                k: v for k, v in self._decision_snapshots.items()
+                if v and max(p['timestamp'] for p in v) > stale
+            }
 
         # Log decision
         self.decision_log.append({

@@ -3271,10 +3271,15 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     "amount": r["amount"],
                     "direction": r.get("direction"),
                     "reserved_at": r["reserved_at"],
+                    # Lease visibility: without these the heartbeat contract is
+                    # unobservable from outside (silent-failure rule).
+                    "last_confirmed_at": r.get("last_confirmed_at"),
+                    "unconfirmed_since": r.get("unconfirmed_since"),
                 }
                 for rid, r in _active_portfolio().reservations.items()
             }
-        self._send_json({"reservations": reservations})
+            bot_confirms = dict(_active_portfolio()._bot_confirms)
+        self._send_json({"reservations": reservations, "bot_confirms": bot_confirms})
 
     def _serve_fleet_daily(self, parsed) -> None:
         if not _fleet_logger:

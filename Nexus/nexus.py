@@ -28,7 +28,7 @@ import math
 import sys
 import threading
 import time
-from collections import deque
+from collections import Counter, deque
 from datetime import datetime, timezone
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
@@ -80,7 +80,6 @@ PORT = 8082
 COMMAND_CENTER = "http://127.0.0.1:9000"
 PHITEX_URL = "http://127.0.0.1:8078"  # PHITEX thermodynamic engine
 SCAN_INTERVAL = 15  # seconds — faster than other bots, it's lightweight
-ACCENT = "#00bfa5"
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +380,6 @@ class NewtonianForceEngine:
                       for i in range(len(closes) - 20, len(closes))]
 
         # Trend direction: +1 (up), -1 (down), 0 (flat)
-        trend_10 = sum(1 if r > 0 else -1 for r in returns_10) / 10
         trend_20 = sum(1 if r > 0 else -1 for r in returns_20) / 20
 
         # Mass = how "heavy" the current trend is
@@ -1211,7 +1209,6 @@ class NexusEngine:
         if fingerprints:
             # Dominant move type
             types = [f["move_type"] for f in fingerprints]
-            from collections import Counter
             dominant = Counter(types).most_common(1)[0][0]
         else:
             dominant = "QUIET"
@@ -2019,29 +2016,27 @@ class NexusHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass
 
+    def _send_json(self, obj):
+        data = json.dumps(obj, default=str)
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(data.encode())
+
     def do_GET(self):
         path = urlparse(self.path).path.rstrip("/") or "/"
 
         if path == "/api/snapshot":
-            data = json.dumps(_engine.snapshot(), default=str)
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode())
+            self._send_json(_engine.snapshot())
 
         elif path == "/health":
-            data = json.dumps({
+            self._send_json({
                 "status": "ok", "bot": "NEXUS", "port": PORT,
                 "cycle": _engine.cycle,
                 "market_character": _engine.state.get("market_character", "?"),
                 "timestamp": time.time(),
             })
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Access-Control-Allow-Origin", "*")
-            self.end_headers()
-            self.wfile.write(data.encode())
 
         else:
             self.send_error(404)
@@ -2075,11 +2070,11 @@ def main():
     except Exception as _e:
         print(f"[PORT_GUARD] Warning: {_e}")
 
-    print(f"\n  NEXUS v1.0 — Market Interferometer")
+    print("\n  NEXUS v1.0 — Market Interferometer")
     print(f"  Port: {PORT}")
     print(f"  Scan: every {SCAN_INTERVAL}s")
     print(f"  http://localhost:{PORT}/api/snapshot")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     threading.Thread(target=_scan_loop, daemon=True, name="NexusScan").start()
 

@@ -12,6 +12,9 @@ cd D:\CommandCenter && python launch_fleet.py
 
 # Or just Command Center (bots started separately)
 python command_center.py
+
+# Cold start / restart: reap stale processes, relaunch, wait for health
+python fleet_restart.py            # also: --status | --stop | --no-browser
 ```
 
 Dashboard: **http://localhost:9000**
@@ -49,17 +52,17 @@ TrekBot and TrekBot SHORT (formerly ports 8080/8087) were removed from the fleet
 
 ## Dashboard
 
-Single-page app (`command_center_v4.html`, ~17.4K lines) with:
+Single-page app (`command_center_v4.html`, ~17.4K lines, plus companion scripts `solar_system.js` and `armada.js`) with:
 
 - **Overview tab** — 12-panel fleet diagnostic: AEGIS gauge, bot scoreboard with expectancy, active positions with closed-trade fallback, regime source disagreement, Gridzilla pair scan, whale intel heatmap, 14-engine council status, signal quality with market microstructure, event stream with type distribution, sentiment with funding rates
 - **Bot detail tabs** — each with 4x2 diagnostic grid tailored to the bot's function. Every panel wired to live API endpoints. Trade history survives bot restarts via persistent event logs.
-- **Solar system visualization** — orbital layout showing bot relationships and health
+- **COSMOS visualization** — canvas solar system (`solar_system.js`: planets, star systems, DeepField) plus a WebGL mining-ship armada (`armada.js`, three.js vendored at repo root) showing bot relationships, health, and live trades, with an ambient soundscape from the `audio/` NASA sample library
 
 ## Architecture
 
 ```
 command_center.py    Backend: polling, normalizers, portfolio, HTTP server, event bus
-command_center_v4.html   Dashboard: single-file, all CSS/JS inline
+command_center_v4.html   Dashboard: inline CSS/JS + solar_system.js / armada.js companions
 fleet_config.py      Bot ports/paths (Python, single source of truth)
 fleet_config.json    Bot registry (read by health monitor for auto-restart)
 event_bus.py         In-process pub/sub with SSE broadcast
@@ -120,8 +123,10 @@ fleet_logger.py      Snapshots, events, daily summaries to logs/
 
 ## Dependencies
 
-- `requests` (only external dependency for Command Center)
+- `requests` (Command Center backend)
+- `Pillow` (`card_renderer.py` only — Telegram PNG signal cards)
 - Bots use stdlib `urllib` only for fleet communication
+- `requirements.txt` is a full machine-environment pip freeze, not a curated list for this project
 
 ## Known Issues (as of 2026-07-30)
 

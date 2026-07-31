@@ -17,6 +17,9 @@ cd D:\CommandCenter && python command_center.py
 # Launch entire fleet + Command Center in one terminal
 cd D:\CommandCenter && python launch_fleet.py
 
+# Full cold restart (reap stale processes, relaunch, wait for health, open dashboard)
+python fleet_restart.py            # also: --status | --stop | --no-browser
+
 # AI inference server (requires Ollama running)
 python inference_server.py
 
@@ -47,9 +50,11 @@ python evolution.py --days 7
 
 ### Core Files
 - `command_center.py` — Single-file backend (~4100 lines): bot polling, 16 normalizers (11 named functions + 5 inline lambdas), portfolio manager, HTTP server (port 9000) with route-table dispatch, universe discovery, market data proxy, event bus integration, Brainiac integration. Imports `signal_aggregator`, `signal_decomposition`, `expectancy`, `signal_decay`, and `fleet_intel_score` directly — these are NOT standalone-only.
-- `command_center_v4.html` — Current active dashboard (single-file, all CSS/JS inline, ~17.4k lines). Served at `/`.
+- `command_center_v4.html` — Current active dashboard (~17.4k lines of inline HTML/CSS/JS). Served at `/`. No longer fully single-file: the COSMOS visualization lives in two companion scripts it loads — `solar_system.js` (canvas solar system: planets, star systems, DeepField) and `armada.js` (WebGL mining-ship armada per `COSMOS_ARMADA_SPEC.md`, a deferred ES module with its own rAF render loop). three.js r178 is vendored as root-level `three.module.min.js` / `three.core.min.js` (NOT under `static/`) because CC's static route rejects subdirectory paths — an importmap maps the bare `"three"` specifier to the root copy. `audio/` holds the NASA sample library for the `_sound` system.
 - `signal_broadcaster.py` — Standalone Telegram signal service on port 9002. Subscribes to CC event bus via SSE, formats alerts, pushes to Telegram. Runs as Phase 2 support bot. Dashboard at `signal_dashboard.html` (served via CC at `/signals`).
 - `bot_responder.py` — Telegram bot command responder (paired with signal_broadcaster). **The fleet owns `@OracleQNTMCoreBot` outright as of 2026-07-30** — `bot_responder` is the sole poller and sender. GoldenEye was made Telegram-silent for this: its `Desktop\launch.bat` token lines were replaced with explicit empty sets (restore instructions are in comments there), and `D:\GoldenEye\subscribers.json` has `fleet_pulse` set `active:false`. GoldenEye's subscriber channel (`-1003615829313`) no longer receives cards. Only one process may hold the token — a second poller causes 409s and duplicate sends.
+- `card_renderer.py` — PNG signal-card generator (PIL/Pillow) for Telegram sendPhoto; paid tier gets images, free tier stays text. Maps internal bot names to subscriber-facing display names (e.g. confluence→Concord, turtlesue→Stalker) — internal names are never shown to subscribers. The card narrative prose is the product voice — don't strip it.
+- `channel_content.py` — CLI to publish/pin channel descriptions and guide posts to both Telegram channels (`--preview`, `--send-all`, `--set-descriptions`). Reads `signal_config.json`.
 - `backups/` — Archived older dashboard versions (v3, etc.).
 
 ### Event Bus System
@@ -75,6 +80,8 @@ Real-time pub/sub replacing 4-second polling for inter-bot communication:
 - `kraken_ohlc.py` — Canonical OHLC fetch (stdlib only). Tries CC proxy first (`/api/market/ohlc`), falls back to direct Kraken REST. Returns `[timestamp, open, high, low, close, volume, count]`. Never raises — returns `[]` on failure.
 - `port_guard.py` — Call `ensure_port(port, bot_name)` on startup; kills zombie processes occupying the port before the HTTP server binds.
 - `notifier.py` — Independent external watchdog (no fleet imports). Monitors CC health via Telegram alerts. Config in `notifier_config.json`. Env vars: `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+- `kraken_client.py` — Shared Kraken spot trading client (stdlib only, no ccxt). Signs private REST requests; long spot only in live mode; refuses market orders. Reads `KRAKEN_API_KEY` / `KRAKEN_API_SECRET` from env.
+- `limit_order.py` — Shared marketable-limit pricing. LIMIT ORDERS ONLY is fleet policy — `limit_price(ref_price, side)` crosses the spread by 15 bps (kept in step with `fleet_config.LIMIT_CROSS_PCT`, with a local fallback) so orders fill like market orders normally but rest instead of eating a gapped book.
 
 ### Advanced Analytics Engines
 Standalone modules that read event logs / live bot data and return structured insights. None are imported by `command_center.py` — they run independently or are called by `evolution.py` / `weekly_analysis.py`.
@@ -105,6 +112,8 @@ Retired analytics (`regime_expectancy.py`, `signal_attribution.py`, `factor_cali
 
 ### Infrastructure
 - `launch_fleet.py` — Two-phase launcher. Imports `BOTS` from `fleet_config.py` (single source of truth). Phase 1: core bots. Phase 2 (after CC is up): CC-dependent bots (Sentinel, PHITEX, AEGIS, Confluence, Inference, NEXUS, Rubberband, Contrarian, Arbitrageur, Chronos, Broadcaster, Bot Responder). Ctrl+C shuts down everything. **Runs CC as a thread inside its own process** — restarting CC means restarting the launcher. Never run two launch_fleet processes: their watchdogs (plus CC's `_health_monitor`) will double-spawn support bots (caused duplicate Telegram sends 2026-07-28).
+- `fleet_restart.py` — State-of-the-art cold start: reap stale processes, verify clean, launch, wait for actual health, open dashboard. Flags: `--status` (report only), `--stop` (reap only), `--no-browser`. Prefer this over ad-hoc taskkill: it identifies the detached launcher by command line (a naive orphan check would kill it), escalates CTRL_BREAK→`/F` (plain `taskkill` sends WM_CLOSE which console Python ignores while reporting success), and knows CC runs as a thread inside the launcher.
+- `morning_briefing.py` — Daily 07:00 mission-briefing digest to Jeremy's PERSONAL Telegram chat (never subscriber channels). Standalone, stdlib only, no fleet imports; runs once and exits via Windows Task Scheduler task "FleetMorningBriefing". Config: `briefing_config.json` (env vars override). Every section degrades gracefully — sends FLEET OFFLINE if CC is down, attempts a minimal failure message if the build itself blows up. `--no-send` builds and prints only. Logs to `briefing.log`.
 - `inference_server.py` — Port 9001. Proxies to Ollama (Tesla P4). Endpoints: `/api/ai/trade-journal`, `/api/ai/post-mortem`, `/api/ai/fleet-assessment`.
 - `fleet_config.json` — Bot registry with ports/dirs/cmds/phases (read by `_health_monitor` for auto-restart). Also documents fleet-wide settings (portfolio limits, event bus, Brainiac intervals, market data) but these sections are **not loaded by code** — the corresponding constants are hardcoded in `command_center.py` and `collector.py`. Keep in sync manually.
 - `universe.json` — Config for auto-discovering top 50 Kraken USD pairs by volume.
@@ -235,7 +244,10 @@ brainiac/
 Retention: snapshots 90d, events 365d, daily 365d. Rotated on startup.
 
 ## Dependencies
-- `requests` (only external dependency — all bot-side clients use stdlib urllib)
+- `requests` (Command Center backend — all bot-side clients use stdlib urllib)
+- `Pillow` (only for `card_renderer.py` signal-card PNGs)
+
+`requirements.txt` is a full machine-environment pip freeze, not a curated list for this project — don't treat everything in it as a fleet dependency.
 
 ## Testing
 No test suite. Validation is runtime only:
@@ -272,7 +284,7 @@ Reaction rules from `reactions.json` spawn in separate daemon threads to avoid b
 Collector threads silently swallow network errors. If data stops flowing, check `brainiac/` folder contents — no errors will appear in the main console.
 
 ### Dashboard v4 Editing Convention
-`command_center_v4.html` is ~17.4k lines of inline HTML/CSS/JS. When adding or upgrading bot panels:
+`command_center_v4.html` is ~17.4k lines of inline HTML/CSS/JS, plus two companion scripts: `solar_system.js` (COSMOS canvas layer — planets, star systems, DeepField) and `armada.js` (WebGL armada). `armada.js` is a deferred ES module with **no access to the inline `<script>` closure** — interop happens through `window.*` globals (`_orbNodes`, `_orbIsFS`, plain-object snapshots stamped for zoom/pan). three.js is vendored at repo root (not `static/`) because the static route rejects subdirectory paths; the importmap maps `"three"` to `./three.module.min.js`. When adding or upgrading bot panels:
 1. Canvas elements must be injected **after** the panel HTML is in the DOM (post-inject pattern — referencing the canvas in the same template string where it's declared will fail because the element doesn't exist yet at script parse time).
 2. After any edit, do a brace-balance check on the `<script>` block — unbalanced braces silently break the whole dashboard with no console error.
 3. Match existing v4 conventions (color palette, panel structure, data-binding pattern) rather than inventing new ones. Copy a working panel and modify it.

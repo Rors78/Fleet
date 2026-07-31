@@ -3612,6 +3612,50 @@ function _orbRender(timestamp){
     _cosmicCanvas.draw(ctx,_drawNow,_cosmicRegime);
   }
 
+  /* L0a: Void field — baked outer-void richness pass (2026-07-30, "upscale
+     the shit out of the vast empty space"). Distant-galaxy field extension,
+     corner nebula filaments, textured star density, and a radial depth
+     gradient — see VoidField class in solar_system.js for the full bake
+     design doc. Drawn AFTER CosmicCanvas (static screen-fixed backdrop) but
+     BEFORE DeepField (the living annulus vivarium immediately around the
+     fleet), so paint order reads back-to-front: static wallpaper -> baked
+     outer void -> living deep-field wilderness -> fleet. Fullscreen-only
+     (the widget view never zooms below 1, so its void is never revealed —
+     baking/drawing this there would be pure waste and would brighten a view
+     the brief says must stay untouched). Baked ONCE per size/reach change
+     (VoidField.prototype.draw's internal >10% drift gate) — never per-frame
+     allocation, matching the ecliptic disc's bake contract. World-space:
+     drawn while the shared zoom/pan setTransform (line ~3558) is active, so
+     it inherits full parallax automatically — no manual scale wrapper
+     needed (unlike CosmicCanvas, which is screen-seeded and needs one). */
+  if(_orbIsFS&&!_orbFrameBudgetOver){
+    if(!window._voidField&&typeof VoidField==="function") window._voidField=new VoidField();
+    if(window._voidField){
+      /* Cover the full max-visible world rect at the zoom floor — same
+         maxVisibleR quantity DeepField uses below, centered on the fleet
+         centroid so pulling back always reveals more of a real baked field
+         rather than a stretched screen-space poster. Falls back to canvas
+         center before the fleet has ever laid out. */
+      var _vfMaxVisibleR=(Math.min(W,H)/2)/_ORB_ZOOM_MIN;
+      var _vfCx=(_orbNodes.cc&&_orbNodes.cc.x)||W/2, _vfCy=(_orbNodes.cc&&_orbNodes.cc.y)||H/2;
+      var _vfSpan=_vfMaxVisibleR*2.3; /* margin past the theoretical max reveal so a diagonal pull-back never shows a raw edge */
+      /* Zoom-out presence boost (2026-07-31): the void field reads right at
+         working zoom but the extreme corners still leaned dark at the floor
+         where "vast empty space" was the complaint. Same curve family as
+         the ecliptic disc: 1.0 at zoom>=1 ramping to 1.0->(drawn twice at
+         0.55 alpha ~= 1.55x) at the floor. Double-draw keeps the bake
+         untouched and costs one extra drawImage only when pulled back. */
+      window._voidField.draw(ctx,_vfCx-_vfSpan/2,_vfCy-_vfSpan/2,_vfSpan,_vfSpan);
+      var _vfZt=Math.max(0,Math.min(1,(1-_orbZoom)/(1-_ORB_ZOOM_MIN)));
+      if(_vfZt>0.25){
+        ctx.save();
+        ctx.globalAlpha=0.55*_vfZt;
+        window._voidField.draw(ctx,_vfCx-_vfSpan/2,_vfCy-_vfSpan/2,_vfSpan,_vfSpan);
+        ctx.restore();
+      }
+    }
+  }
+
   /* L0b: Deep field — living deep-space wilderness in the annulus around the
      fleet (2026-07-30, see DeepField class in solar_system.js for the full
      lifecycle/persistence design doc). Drawn AFTER CosmicCanvas (which is a

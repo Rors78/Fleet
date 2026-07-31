@@ -3182,4 +3182,264 @@ DeepField.prototype.forceSupernova = function (slot) {
     return { x: fx, y: fy, slot: s };
 };
 
+/* ═══════════════════════════════════════════════════════════════════════
+   VOID FIELD — outer-void richness pass (2026-07-30)
+   ───────────────────────────────────────────────────────────────────────
+   Jeremy's directive, verbatim: "upscale the shit out of the vast empty
+   space." At most zooms the majority of a 50" frame is the region OUTSIDE
+   the ecliptic disc/fleet — that region reads as near-black dead margin.
+   This class bakes a single large offscreen sprite covering that outer
+   void with: a distant-galaxy field (extends CosmicCanvas's existing
+   galaxy vocabulary — spiral/elliptical/irregular, warm-core/cool-arm
+   palette — rather than inventing a parallel system), corner-anchored
+   nebula filament complexes, a textured star density field (clumps, gaps,
+   two faint stream arcs instead of uniform scatter), and a radial depth
+   gradient that's richer near the disc rim and fades to extreme-corner
+   black.
+
+   ARCHITECTURE — baked once (see bake() below), never per-frame. World-
+   space: drawn via ctx.drawImage while the caller's zoom/pan setTransform
+   is already active (same contract as DeepField/CosmicCanvas at their L0/
+   L0b call sites in command_center_v4.html), so it inherits full pan/zoom
+   parallax for free — no manual scale wrapper needed, unlike CosmicCanvas
+   which is screen-seeded and needs one. Rebakes only on a real canvas-size
+   change (mirrors _discNeedsRebake's threshold pattern), gated by the
+   caller from command_center_v4.html's L0a. Deterministic (mulberry32,
+   fixed seed) so the field doesn't reshuffle/pop on rebake. */
+function _voidMulberry32(seed){
+    return function(){
+        seed|=0;seed=seed+0x6D2B79F5|0;
+        var t=Math.imul(seed^seed>>>15,1|seed);
+        t=t+Math.imul(t^t>>>7,61|t)^t;
+        return((t^t>>>14)>>>0)/4294967296;
+    };
+}
+
+/* Distinct fixed seed from the ecliptic disc's 0xC05105 so the two baked
+   fields never accidentally correlate in placement. */
+var _VOID_SEED = 0xC0517E;
+
+function VoidField(){
+    this.canvas=null;
+    this.ctx=null;
+    this.bakeW=0;
+    this.bakeH=0;
+}
+
+/* Distant galaxy palette pool — extends CosmicCanvas's existing hue
+   language (warm cores fading to cool/desaturated arms) rather than a new
+   one. Includes two "showpiece" large galaxies per the brief (20-40px)
+   among many small background ones (4-14px). */
+VoidField.prototype._bakeGalaxy = function(ctx,rng,cx,cy,size,showpiece){
+    var kind=['spiral','elliptical','edge-on'][Math.floor(rng()*3)];
+    var coreHue=20+rng()*40;      /* warm amber/gold core, all types */
+    var armHue=190+rng()*90;      /* cool blue/teal/violet arms or halo */
+    var bright=showpiece?(0.14+rng()*0.07):(0.05+rng()*0.05);
+    var angle=rng()*Math.PI*2;
+    var ecc=kind==='edge-on'?(0.12+rng()*0.10):(0.35+rng()*0.45);
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(angle);
+    /* Core bulge */
+    var coreR=Math.max(0.1,size*0.32);
+    var coreG=ctx.createRadialGradient(0,0,0,0,0,coreR);
+    coreG.addColorStop(0,'hsla('+coreHue+',55%,72%,'+(bright*2.2).toFixed(4)+')');
+    coreG.addColorStop(0.5,'hsla('+coreHue+',45%,55%,'+(bright*1.1).toFixed(4)+')');
+    coreG.addColorStop(1,'hsla(0,0%,0%,0)');
+    ctx.fillStyle=coreG;
+    ctx.beginPath();ctx.ellipse(0,0,coreR,Math.max(0.1,coreR*ecc),0,0,Math.PI*2);ctx.fill();
+    /* Outer disk/halo — cool hue */
+    var haloR=Math.max(0.1,size);
+    var haloG=ctx.createRadialGradient(0,0,Math.max(0.1,size*0.18),0,0,haloR);
+    haloG.addColorStop(0,'hsla('+armHue+',40%,55%,'+(bright*0.7).toFixed(4)+')');
+    haloG.addColorStop(0.55,'hsla('+armHue+',35%,40%,'+(bright*0.28).toFixed(4)+')');
+    haloG.addColorStop(1,'hsla(0,0%,0%,0)');
+    ctx.fillStyle=haloG;
+    ctx.beginPath();ctx.ellipse(0,0,haloR,Math.max(0.1,haloR*ecc),0,0,Math.PI*2);ctx.fill();
+    /* Spiral arms — only showpieces and larger galaxies get visible structure,
+       small background ones stay soft smudges (matches CosmicCanvas's own
+       'small ones are just dots' restraint). */
+    if(kind==='spiral'&&size>9){
+        var armCount=showpiece?2:1;
+        for(var a=0;a<armCount;a++){
+            var armOff=a*Math.PI+rng()*0.4;
+            ctx.strokeStyle='hsla('+armHue+',40%,60%,'+(bright*0.5).toFixed(4)+')';
+            ctx.lineWidth=showpiece?0.7:0.4;
+            ctx.beginPath();
+            for(var t=0;t<Math.PI*3;t+=0.15){
+                var sr=Math.max(0.1,t*size*0.09);
+                var ta=t+armOff;
+                var tx=Math.cos(ta)*sr,ty=Math.sin(ta)*sr*ecc;
+                if(t===0) ctx.moveTo(tx,ty); else ctx.lineTo(tx,ty);
+            }
+            ctx.stroke();
+        }
+    }
+    ctx.restore();
+};
+
+/* Corner nebula filament — large, soft, cool-desaturated, offset well past
+   the frame edge so it always reads as bleeding in from outside rather
+   than a centered blob. rot/scale give it an elongated filament shape
+   instead of a perfect circle. */
+VoidField.prototype._bakeFilament = function(ctx,rng,cx,cy,r,hue){
+    ctx.save();
+    ctx.translate(cx,cy);
+    ctx.rotate(rng()*Math.PI);
+    var scX=0.4+rng()*0.5, scY=1.1+rng()*0.9;
+    ctx.scale(scX,scY);
+    var sat=22+rng()*18; /* desaturated per brief — cool/faint, not vivid */
+    var alpha=0.05+rng()*0.05;
+    var rr=Math.max(0.1,r);
+    var g=ctx.createRadialGradient(0,0,0,0,0,rr);
+    g.addColorStop(0,'hsla('+hue+','+sat+'%,20%,'+alpha.toFixed(4)+')');
+    g.addColorStop(0.4,'hsla('+hue+','+sat+'%,16%,'+(alpha*0.55).toFixed(4)+')');
+    g.addColorStop(0.75,'hsla('+hue+','+sat+'%,11%,'+(alpha*0.18).toFixed(4)+')');
+    g.addColorStop(1,'hsla(0,0%,0%,0)');
+    ctx.fillStyle=g;
+    ctx.beginPath();ctx.arc(0,0,rr,0,Math.PI*2);ctx.fill();
+    ctx.restore();
+};
+
+/* Bakes the full void sprite at canvas size (w,h). Called only when a
+   rebake is needed (see command_center_v4.html's L0a gate) — never per-
+   frame. All randomness comes from the seeded rng so repeated bakes at the
+   same size are pixel-identical (no popping/reshuffling on resize-driven
+   rebakes). */
+VoidField.prototype.bake = function(w,h){
+    if(!this.canvas){this.canvas=document.createElement("canvas");}
+    this.canvas.width=Math.max(2,Math.round(w));
+    this.canvas.height=Math.max(2,Math.round(h));
+    this.ctx=this.canvas.getContext("2d");
+    var ctx=this.ctx;
+    this.bakeW=w;this.bakeH=h;
+    var rng=_voidMulberry32(_VOID_SEED);
+    var cx=w/2,cy=h/2;
+    var maxD=Math.sqrt(cx*cx+cy*cy);
+
+    /* 1: DEPTH GRADIENT — richer near the frame's mid-radius (roughly the
+       ecliptic disc's rim once the camera pulls back), fading to near-black
+       at the extreme corners. Drawn first so everything above sits on top
+       of it; kept very subtle (max ~0.05 alpha) so it reads as atmosphere,
+       not a visible vignette shape. */
+    var depthG=ctx.createRadialGradient(cx,cy,maxD*0.28,cx,cy,Math.max(0.1,maxD*1.05));
+    depthG.addColorStop(0,'rgba(18,22,34,0)');
+    depthG.addColorStop(0.35,'rgba(14,17,28,0.020)');
+    depthG.addColorStop(0.7,'rgba(8,10,18,0.038)');
+    depthG.addColorStop(1,'rgba(2,3,6,0.055)');
+    ctx.fillStyle=depthG;
+    ctx.fillRect(0,0,w,h);
+
+    /* 2: NEBULA FILAMENTS — 3-5 large soft complexes anchored at frame
+       edges/corners so corners always hold something, cool desaturated
+       palette (deep blue/teal/faint violet — disjoint from both the fleet
+       faction colors and DeepField's warm-ember hue pool). */
+    var filamentHues=[210,190,255,200,270]; /* deep blue, teal, violet-blue, cyan, violet */
+    var filamentCount=3+Math.floor(rng()*3); /* 3-5 */
+    var corners=[[0,0],[w,0],[0,h],[w,h],[w*0.5,0],[0,h*0.5],[w,h*0.5],[w*0.5,h]];
+    for(var fi=0;fi<filamentCount;fi++){
+        var corner=corners[Math.floor(rng()*corners.length)];
+        /* Offset toward the corner so it bleeds in from outside the frame,
+           not centered on it. */
+        var fx=corner[0]+(rng()-0.5)*w*0.22;
+        var fy=corner[1]+(rng()-0.5)*h*0.22;
+        var fr=maxD*(0.32+rng()*0.30); /* large, per brief */
+        var hue=filamentHues[Math.floor(rng()*filamentHues.length)];
+        this._bakeFilament(ctx,rng,fx,fy,fr,hue);
+    }
+
+    /* 3: STAR DENSITY TEXTURE — not uniform scatter: denser clumps, sparser
+       gaps, and two faint stream arcs. Base layer first (sparse baseline),
+       then clumps add local density, then streams add linear structure. */
+    var baseStarCount=Math.round((w*h)/9000); /* sparse baseline coverage */
+    for(var bs=0;bs<baseStarCount;bs++){
+        var sx=rng()*w,sy=rng()*h;
+        var sSz=0.3+rng()*0.5;
+        var sBr=0.06+rng()*0.10;
+        ctx.fillStyle='rgba(210,218,235,'+sBr.toFixed(3)+')';
+        ctx.beginPath();ctx.arc(sx,sy,sSz,0,Math.PI*2);ctx.fill();
+    }
+    /* Density clumps — 5-8 loose clusters, gaussian-ish falloff */
+    var clumpCount=5+Math.floor(rng()*4);
+    for(var ci=0;ci<clumpCount;ci++){
+        var ccx=rng()*w,ccy=rng()*h;
+        var spread=Math.min(w,h)*(0.05+rng()*0.08);
+        var n=18+Math.floor(rng()*30);
+        for(var cj=0;cj<n;cj++){
+            var ang=rng()*Math.PI*2;
+            /* two-uniform-sum approximates gaussian without a second helper */
+            var d=(rng()+rng())/2*spread;
+            var px=ccx+Math.cos(ang)*d,py=ccy+Math.sin(ang)*d;
+            if(px<0||px>w||py<0||py>h) continue;
+            var pSz=0.3+rng()*0.6;
+            var pBr=0.07+rng()*0.13;
+            ctx.fillStyle='rgba(215,222,240,'+pBr.toFixed(3)+')';
+            ctx.beginPath();ctx.arc(px,py,pSz,0,Math.PI*2);ctx.fill();
+        }
+    }
+    /* Star stream arcs — 1-2 faint curved lanes of stars, like a tidal
+       stream. Parametrized as a gentle arc across a random chord. */
+    var streamCount=1+Math.floor(rng()*2); /* 1-2 */
+    for(var st=0;st<streamCount;st++){
+        var sx0=rng()*w,sy0=rng()*h;
+        var sx1=rng()*w,sy1=rng()*h;
+        var bow=(rng()-0.5)*Math.min(w,h)*0.35;
+        var midx=(sx0+sx1)/2,midy=(sy0+sy1)/2;
+        var dx=sx1-sx0,dy=sy1-sy0;
+        var dlen=Math.sqrt(dx*dx+dy*dy)||1;
+        var perpX=-dy/dlen,perpY=dx/dlen;
+        var cpx=midx+perpX*bow,cpy=midy+perpY*bow;
+        var streamN=40+Math.floor(rng()*40);
+        for(var si=0;si<streamN;si++){
+            var tt=si/streamN;
+            var qx=(1-tt)*(1-tt)*sx0+2*(1-tt)*tt*cpx+tt*tt*sx1;
+            var qy=(1-tt)*(1-tt)*sy0+2*(1-tt)*tt*cpy+tt*tt*sy1;
+            /* jitter perpendicular so it reads as a loose band, not a wire */
+            var jit=(rng()-0.5)*14;
+            qx+=perpX*jit;qy+=perpY*jit;
+            /* fade at both ends of the stream */
+            var edgeFade=Math.min(1,tt*4)*Math.min(1,(1-tt)*4);
+            var stSz=0.25+rng()*0.45;
+            var stBr=(0.05+rng()*0.08)*edgeFade;
+            if(stBr<=0.005) continue;
+            ctx.fillStyle='rgba(200,210,232,'+stBr.toFixed(3)+')';
+            ctx.beginPath();ctx.arc(qx,qy,stSz,0,Math.PI*2);ctx.fill();
+        }
+    }
+
+    /* 4: DISTANT GALAXY FIELD — 15-30 total. Mostly small (4-14px),
+       two-three showpieces (20-40px). Extends CosmicCanvas's own galaxy
+       vocabulary/palette rather than a parallel system, but lives in this
+       baked sprite so a larger count costs nothing per-frame (CosmicCanvas
+       draws its ~16 galaxies live every frame with fresh gradients — fine
+       at its current count, but not a pattern to scale up further without
+       a real perf cost). */
+    var galaxyCount=15+Math.floor(rng()*16); /* 15-30 */
+    var showpieceCount=2+Math.floor(rng()*2); /* 2-3 */
+    for(var gi=0;gi<galaxyCount;gi++){
+        var isShowpiece=gi<showpieceCount;
+        var gx=rng()*w,gy=rng()*h;
+        var gsize=isShowpiece?(20+rng()*20):(4+rng()*10);
+        this._bakeGalaxy(ctx,rng,gx,gy,gsize,isShowpiece);
+    }
+};
+
+/* Redraws the baked sprite, rebaking first only if canvas size drifted
+   >10% (tighter than the ecliptic disc's 15% since this sprite covers the
+   FULL frame, not just the disc — a size mismatch would leave a visible
+   unbaked strip at an edge). World-space draw: caller must already have
+   the zoom/pan setTransform active so this inherits parallax for free,
+   same contract as DeepField.prototype.draw. anchorX/anchorY/w/h describe
+   the world-space rect the sprite should cover — passed by the caller
+   (typically centered on the fleet, sized to the max-visible-radius at the
+   zoom floor) so pulling back always reveals more of a real baked field
+   instead of a stretched screen-space poster. */
+VoidField.prototype.draw = function(ctx,worldX,worldY,worldW,worldH){
+    if(!this.canvas||Math.abs(worldW-this.bakeW)/Math.max(1,this.bakeW)>0.10||Math.abs(worldH-this.bakeH)/Math.max(1,this.bakeH)>0.10){
+        this.bake(worldW,worldH);
+    }
+    if(!this.canvas) return;
+    ctx.drawImage(this.canvas,worldX,worldY,worldW,worldH);
+};
+
 

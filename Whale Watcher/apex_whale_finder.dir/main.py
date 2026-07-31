@@ -144,7 +144,6 @@ class WhaleScannerTUI:
                 self.add_log("Switched to MAIN watchlist")
 
     def scan_pair(self, pair: str) -> ScanResult:
-        # (same as before - unchanged)
         try:
             key = f"{pair}_{self.config.scanner.candle_interval}"
             df = self.ohlc_cache.get(key)

@@ -972,7 +972,7 @@ def main():
         print(f"[PORT_GUARD] Warning: {_e}")
 
     print()
-    print(f"  ARBITRAGEUR v2.0 -- Correlation-Alpha (Leader-Follower Catch-Up)")
+    print("  ARBITRAGEUR v2.0 -- Correlation-Alpha (Leader-Follower Catch-Up)")
     print(f"  Port: {PORT}")
     print(f"  Accent: {ACCENT}")
     print(f"  Equity: ${INITIAL_EQUITY:,.0f} (paper)")
@@ -982,7 +982,7 @@ def main():
     print(f"  Max positions: {MAX_POSITIONS}, {TRADE_SIZE_PCT*100:.0f}% per trade, LONG only")
     print(f"  http://localhost:{PORT}/api/snapshot")
     print(f"  http://localhost:{PORT}/health")
-    print(f"  Press Ctrl+C to stop")
+    print("  Press Ctrl+C to stop")
     print()
 
     # Start scan loop in background

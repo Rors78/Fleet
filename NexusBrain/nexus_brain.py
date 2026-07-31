@@ -1743,7 +1743,7 @@ class Backtester:
             price = current_candle.close
 
             # Check exits every candle (important for stops)
-            trade = self.trader.check_exits(pair, price)
+            self.trader.check_exits(pair, price)
 
             # Generate signals every 4 candles (4h) to keep backtest fast
             if i % 4 != 0:
@@ -1916,7 +1916,7 @@ def cmd_backtest(args, cfg: Config):
             display = PAIR_DISPLAY.get(pair, pair)
             print(f"  [{current+1}/{total}] Backtesting {display}...", flush=True)
         else:
-            print(f"\n  Backtest complete.\n")
+            print("\n  Backtest complete.\n")
 
     bt = Backtester(cfg)
     results = bt.run(pairs, progress_callback=progress)
@@ -2248,7 +2248,7 @@ def cmd_health(args, cfg: Config):
     server = ThreadingHTTPServer(("0.0.0.0", port), HealthHandler)
     server.daemon_threads = True
     print(f"  Listening on http://localhost:{port}/health")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     try:
         server.serve_forever()
@@ -2287,7 +2287,7 @@ def cmd_dashboard(args, cfg: Config):
             return
 
     # Run backtest
-    print(f"  Running backtest...")
+    print("  Running backtest...")
 
     def progress(current, total, pair):
         if current < total:
@@ -2295,7 +2295,7 @@ def cmd_dashboard(args, cfg: Config):
             pct = (current + 1) / total * 100
             print(f"    [{current+1}/{total}] {display}... ({pct:.0f}%)", flush=True)
         else:
-            print(f"  Backtest complete.\n")
+            print("  Backtest complete.\n")
 
     bt = Backtester(cfg)
     results = bt.run(pairs, progress_callback=progress)
@@ -2376,7 +2376,7 @@ def cmd_dashboard(args, cfg: Config):
     print(f"  Dashboard: http://localhost:{port}")
     print(f"  API:       http://localhost:{port}/api/snapshot")
     print(f"  Health:    http://localhost:{port}/health")
-    print(f"  Press Ctrl+C to stop\n")
+    print("  Press Ctrl+C to stop\n")
 
     try:
         server.serve_forever()
@@ -2495,9 +2495,9 @@ def main():
         cmd_dashboard(args, cfg)
     else:
         parser.print_help()
-        print(f"\n  Run with a command: scan, backtest, run-sim, report, health, dashboard")
-        print(f"  Example: python nexus_brain.py scan --pairs BTC,ETH,SOL")
-        print(f"  Example: python nexus_brain.py dashboard --auto\n")
+        print("\n  Run with a command: scan, backtest, run-sim, report, health, dashboard")
+        print("  Example: python nexus_brain.py scan --pairs BTC,ETH,SOL")
+        print("  Example: python nexus_brain.py dashboard --auto\n")
 
 
 if __name__ == "__main__":

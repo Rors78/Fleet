@@ -1218,7 +1218,6 @@ class RubberbandHandler(BaseHTTPRequestHandler):
         try:
             snap = self.engine.snapshot()
         except Exception as e:
-            import traceback
             tb = traceback.format_exc()
             logger.error(f"snapshot() crashed: {e}\n{tb}")
             snap = {"error": str(e), "traceback": tb}

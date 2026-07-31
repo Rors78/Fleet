@@ -838,7 +838,7 @@ class ThreadedServer(ThreadingMixIn, HTTPServer):
 
 def _scan_loop():
     """Background thread: wait for fleet boot, then scan on interval."""
-    log.info(f"Scan thread starting, waiting 20s for fleet boot...")
+    log.info("Scan thread starting, waiting 20s for fleet boot...")
     time.sleep(20)  # let fleet services come up
 
     while True:
@@ -864,8 +864,8 @@ def main():
         print(f"[PORT_GUARD] Warning: {_e}")
 
     print()
-    print(f"  CONTRARIAN v1.0 -- Sentiment Extreme Detection")
-    print(f"  ================================================")
+    print("  CONTRARIAN v1.0 -- Sentiment Extreme Detection")
+    print("  ================================================")
     print(f"  Port:       {PORT}")
     print(f"  Accent:     {ACCENT}")
     print(f"  Interval:   {SCAN_INTERVAL}s")
@@ -874,7 +874,7 @@ def main():
     print(f"  Publisher:  {'active' if EventPublisher else 'UNAVAILABLE'}")
     print(f"  Endpoints:  http://localhost:{PORT}/health")
     print(f"              http://localhost:{PORT}/api/snapshot")
-    print(f"  Press Ctrl+C to stop")
+    print("  Press Ctrl+C to stop")
     print()
 
     # Start scan daemon thread
@@ -890,7 +890,7 @@ def main():
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print(f"\n  Contrarian stopped.")
+        print("\n  Contrarian stopped.")
         log.info("Shutdown requested via Ctrl+C")
         server.server_close()
 

@@ -444,7 +444,6 @@ class ConfluenceEngine:
         # NEXUS market character — a fleet-wide risk posture, not per-pair
         nexus = intel.get("nexus") or {}
         character = (nexus.get("market_character") or "").upper()
-        vol_forecast = nexus.get("volatility_forecast")
 
         # Sentinel forecasts. Sentinel serves a dict keyed by pair
         # ({"HYPE/USD": {...}}), but tolerate a list of records too.

@@ -71,9 +71,6 @@ OVERLAPS = {
 FUNDING_TIMES = [0, 8, 16]
 FUNDING_WARN_MINUTES = 30
 
-# Bias threshold -- if an hour has >65% bullish or >65% bearish, it's anomalous
-BIAS_THRESHOLD = 0.65
-
 # Weekend warning: Friday after this UTC hour
 WEEKEND_WARN_HOUR = 18
 
@@ -510,7 +507,7 @@ def main():
         print(f"[PORT_GUARD] Warning: {_e}")
 
     print()
-    print(f"  CHRONOS v1.0 -- Temporal Market Intelligence")
+    print("  CHRONOS v1.0 -- Temporal Market Intelligence")
     print(f"  Port:     {PORT}")
     print(f"  Accent:   {ACCENT}")
     print(f"  Interval: {SCAN_INTERVAL}s")
@@ -521,7 +518,7 @@ def main():
     print(f"  Log:      {LOG_FILE}")
     print(f"  API:      http://localhost:{PORT}/api/snapshot")
     print(f"  Health:   http://localhost:{PORT}/health")
-    print(f"  Press Ctrl+C to stop")
+    print("  Press Ctrl+C to stop")
     print()
 
     # Start scan thread

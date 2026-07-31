@@ -94,7 +94,6 @@ def detect_regime(returns: np.ndarray, window: int = 60) -> MarketRegime:
     recent = returns[-window:] if len(returns) > window else returns
 
     # Equal-weighted portfolio for market signal
-    n_assets = returns.shape[1]
     eq_returns = np.mean(recent, axis=1)
 
     ann_return = np.mean(eq_returns) * 365
@@ -347,7 +346,6 @@ def run_hive_mind(
     member_labels: List[str] = []
     member_obj_weights: List[float] = []
 
-    run_idx = 0
     for variant in config.variants:
         for objective in config.objectives:
             label = f"{variant.value}/{objective}"
@@ -377,8 +375,6 @@ def run_hive_mind(
             if config.verbose:
                 print(f"Sharpe={result.sharpe_ratio:.2f}  "
                       f"MaxDD={result.max_drawdown*100:.1f}%")
-
-            run_idx += 1
 
     # --- Step 4: Compute voting weights ---
     n_members = len(member_results)
@@ -550,13 +546,10 @@ def hive_mind_walk_forward(
 
     T, N = returns.shape
     # UPGRADE: Account for purge gap in period calculation
-    effective_step = test_window + purge_gap
     n_periods = (T - train_window - purge_gap) // test_window
 
     if n_periods < 2:
         raise ValueError("Insufficient data for walk-forward")
-
-    purge_label = f"  Purge gap: {purge_gap}d" if purge_gap > 0 else ""
 
     print(f"\n{'='*60}")
     print(f"  HIVE MIND Walk-Forward Backtest")

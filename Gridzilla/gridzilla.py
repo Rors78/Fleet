@@ -1235,9 +1235,7 @@ class GridzillaEngine:
         server_thread = threading.Thread(target=self._run_server, daemon=True)
         server_thread.start()
 
-        # Start bus listener (BusListener starts its poll thread in __init__, no .start() needed)
-        if self.bus_listener:
-            pass
+        # BusListener starts its poll thread in __init__ — no explicit .start() needed
 
         logging.info(f"Gridzilla running on port {self.config['port']}")
 

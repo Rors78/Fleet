@@ -71,8 +71,6 @@ OHLC_REFRESH = 45
 DASH_REFRESH = 1.5
 SIGNAL_HISTORY_MAX = 50
 ALERT_LOG_MAX = 20
-WS_RECONNECT_BASE = 1
-WS_RECONNECT_MAX = 60
 CORRELATION_WINDOW = 20
 DASHBOARD_PORT = 8072
 
@@ -1673,12 +1671,12 @@ def start_bot(auto: bool = False):
 
     ws_state["uptime_start"] = time.time()
 
-    print(f"\033[96m")
+    print("\033[96m")
     print("=" * 60)
     print("  TRINITY OVERWATCH v2.0")
     print("  Crypto Signal Intelligence Engine")
     print("=" * 60)
-    print(f"\033[0m")
+    print("\033[0m")
     print(f"  Dashboard: http://localhost:{DASHBOARD_PORT}")
     print(f"  API:       http://localhost:{DASHBOARD_PORT}/api/snapshot")
     print()

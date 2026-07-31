@@ -547,14 +547,33 @@ class PortfolioManager:
             return {"ok": True, "released": res["amount"], "pnl": pnl, "new_total": self.total,
                     "available": self.available(), "reservation": res}
 
-    def force_release_stale(self, max_age_hours: int = 24) -> list:
+    def force_release_stale(self, max_age_hours: int = 24,
+                            active_positions: set | None = None) -> list:
         """Release reservations older than max_age_hours.
-        Returns list of released reservation dicts (each has bot_id, pair, amount, direction, reserved_at).
-        Callers should record these to the expectancy tracker so P&L attribution is not lost.
+
+        active_positions: {(bot_id_lower, PAIRNOSLASH)} of positions alive
+        bots currently self-report. A reservation whose bot still reports the
+        position is a LONG-HELD TRADE, not an orphan — age alone cannot tell
+        them apart (the 48h cutoff released Confluence's reservations out
+        from under two 66h swing positions, 2026-07-30). Pass None to skip
+        the check (legacy behavior).
+
+        Returns list of released reservation dicts (each has bot_id, pair,
+        amount, direction, reserved_at). Callers should record these to the
+        expectancy tracker so P&L attribution is not lost.
         """
         with self._lock:
             cutoff = time.time() - max_age_hours * 3600
-            stale = [rid for rid, r in self.reservations.items() if r["reserved_at"] < cutoff]
+            stale = []
+            for rid, r in self.reservations.items():
+                if r["reserved_at"] >= cutoff:
+                    continue
+                if active_positions is not None:
+                    key = (str(r["bot_id"]).lower(),
+                           str(r["pair"]).replace("/", "").upper())
+                    if key in active_positions:
+                        continue  # bot still holds this position
+                stale.append(rid)
             released = []
             for rid in stale:
                 res = self.reservations.pop(rid)
@@ -2312,6 +2331,33 @@ def _apply_aegis_adjustment():
     _save_cc_state({"last_aegis_adjust": now})
 
 
+def _active_position_keys(bots: dict) -> set:
+    """{(bot_id_lower, PAIRNOSLASH)} for every position an alive bot reports.
+
+    Shape-tolerant: bots expose positions as a dict keyed by pair
+    (TurtleSue, Rubberband) or a list of dicts with pair/symbol fields
+    (NexusBrain, Gridzilla, Confluence). Used to protect long-held trades
+    from the stale-reservation sweep.
+    """
+    keys = set()
+    for bid, bot in bots.items():
+        if not bot.get("alive"):
+            continue
+        raw = bot.get("raw") or {}
+        for field in ("positions", "open_positions"):
+            val = raw.get(field)
+            if isinstance(val, dict):
+                for k in val:
+                    keys.add((str(bid).lower(), str(k).replace("/", "").upper()))
+            elif isinstance(val, list):
+                for it in val:
+                    if isinstance(it, dict):
+                        p = it.get("pair") or it.get("symbol")
+                        if p:
+                            keys.add((str(bid).lower(), str(p).replace("/", "").upper()))
+    return keys
+
+
 def _poll_loop():
     """Continuously fetch, normalize, aggregate, and store state."""
     _last_stale_cleanup = 0
@@ -2326,17 +2372,23 @@ def _poll_loop():
             _fleet_intel.poll()
         except Exception:
             pass
-        # Hourly stale reservation cleanup on BOTH portfolios
+        # Hourly stale reservation cleanup on BOTH portfolios. Reservations
+        # whose bot still self-reports the position are long-held trades,
+        # not orphans — never sweep those.
         if time.time() - _last_stale_cleanup > 3600:
+            with _lock:
+                _bots_now = dict(_state["bots"])
+            _active = _active_position_keys(_bots_now)
             for _pm_label, _pm in [("paper", _portfolio_paper), ("live", _portfolio_live)]:
                 if _pm:
-                    released_list = _pm.force_release_stale(max_age_hours=48)
+                    released_list = _pm.force_release_stale(
+                        max_age_hours=48, active_positions=_active)
                     if released_list:
                         log.info("Auto-released %d stale %s reservation(s) (>48h old)", len(released_list), _pm_label)
                         for _sr in released_list:
                             log.warning(
                                 "Stale reservation force-released: bot=%s pair=%s amount=$%.0f "
-                                "(held %.1fh — bot likely crashed before calling release)",
+                                "(held %.1fh, position no longer reported by bot)",
                                 _sr["bot_id"], _sr["pair"], _sr["amount"],
                                 (time.time() - _sr.get("reserved_at", time.time())) / 3600,
                             )

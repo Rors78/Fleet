@@ -381,3 +381,11 @@ class ExpectancyTracker:
                     self.trades = json.load(f)
         except Exception:
             pass
+
+
+if __name__ == "__main__":
+    # CLAUDE.md promises `python expectancy.py` shows current fleet state.
+    # Loads the persisted trade store (logs/expectancy.json) — the same data
+    # the live tracker in command_center.py serves at /api/expectancy.
+    tracker = ExpectancyTracker()
+    print(json.dumps(tracker.get_fleet_stats(), indent=2, default=str))

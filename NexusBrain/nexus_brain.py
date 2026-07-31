@@ -34,6 +34,7 @@ import signal as signal_mod
 import sqlite3
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -1991,6 +1992,13 @@ def cmd_run_sim(args, cfg: Config):
     _live_snapshot = {"status": "starting", "bot_name": BOT_NAME, "timestamp": time.time()}
     _snap_lock = threading.Lock()
 
+    # NB-1: the dashboard's NexusBrain tab renders raw.recent_signals, but only
+    # the backtest path (_build_results) ever emitted it — the live run-sim
+    # snapshot never did, leaving the panel permanently empty. Same shape as
+    # the backtest field (Signal.to_dict(), chronological), capped at the last
+    # 20 generated signals (REJECTs included — the tab renders reject reasons).
+    _recent_signals: deque = deque(maxlen=20)
+
     def _update_snapshot():
         stats = trader.get_stats()
         snap = {
@@ -2009,6 +2017,8 @@ def cmd_run_sim(args, cfg: Config):
             ],
             "config": {"min_confluence": cfg.min_confluence, "max_positions": cfg.max_positions,
                        "scan_interval": cfg.scan_interval_sec},
+            # NB-1: live counterpart of the backtest-only recent_signals field
+            "recent_signals": list(_recent_signals),
         }
         if _expectancy:
             snap["expectancy"] = _expectancy.bot_snapshot_fields('nexusbrain')
@@ -2104,6 +2114,11 @@ def cmd_run_sim(args, cfg: Config):
 
                 # Generate new signals
                 signal = generate_signal(pair, pd, cfg)
+                if signal:
+                    # NB-1: feed the live snapshot's recent_signals ring
+                    # (every generated signal, REJECT included, so the tab
+                    # reflects the latest scan like the backtest view did)
+                    _recent_signals.append(signal.to_dict())
                 if signal and signal.confidence_label != ConfidenceLabel.REJECT:
                     # Only save/log when signal meaningfully changes
                     if _signal_changed(pair, signal):

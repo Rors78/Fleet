@@ -55,6 +55,17 @@ CC_URL = "http://127.0.0.1:9000"
 
 UNIVERSE_SIZE = 20
 TOP_DISPLAY = 5
+
+# TR-1: fiat/forex/stablecoin pairs must never enter the top_symbols ranking —
+# they were getting full directional treatment (USDT/USD once carried SL/TP
+# 8 bps apart). Trinity builds its OWN candidate list (CC /api/universe first,
+# direct-Kraken fallback second), so it needs a local exclude set; the
+# canonical exclude list lives in D:\CommandCenter\universe.json — keep this
+# in sync when that changes.
+NON_CRYPTO_PAIRS = {
+    "EUR/USD", "GBP/USD", "AUD/USD", "USDT/USD", "USDC/USD", "USDG/USD",
+    "DAI/USD", "PYUSD/USD", "EURT/USD", "TUSD/USD",
+}
 ROLLING_TICKS = 60
 OHLC_REFRESH = 45
 DASH_REFRESH = 1.5
@@ -457,6 +468,10 @@ def compute_rankings() -> List[Tuple[str, float]]:
 
     scored = []
     for sym, sig_r in current_signals.items():
+        # TR-1 belt-and-braces: even if a fiat/stable pair is already streaming
+        # (state predating the universe filter), it must not be ranked.
+        if sym in NON_CRYPTO_PAIRS:
+            continue
         if sig_r.bias == "NEUTRAL":
             bias_bonus = 0
         elif sig_r.bias == "LONG":
@@ -680,6 +695,8 @@ def fetch_universe() -> List[str]:
             for p in cc["pairs"][:UNIVERSE_SIZE]:
                 disp = p.get("display", "")
                 kraken = p.get("kraken", p.get("pair", ""))
+                if disp in NON_CRYPTO_PAIRS:      # TR-1: no fiat/stables
+                    continue
                 if disp and kraken:
                     _pair_map[disp] = kraken
                     symbols.append(disp)
@@ -710,6 +727,8 @@ def fetch_universe() -> List[str]:
                     base_raw = wsname.split("/")[0]
                 clean = _clean_base(base_raw)
                 display = f"{clean}/USD"
+                if display in NON_CRYPTO_PAIRS:   # TR-1: no fiat/stables
+                    continue
                 usd_pairs.append({"kraken_pair": name, "display": display, "base": clean})
 
         # Fetch tickers for volume ranking

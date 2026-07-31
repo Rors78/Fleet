@@ -295,21 +295,28 @@ def compute_aegis(H, C, W, S, phi, rho=0.5):
 
 
 def aegis_regime(score):
-    if score >= 0.65:
+    # Bands aligned 2026-07-31 (Jeremy: hysteresis/mismatch not intended).
+    # These MUST match the enforcing layer (command_center.py's AEGIS
+    # limit mapping, 0.2/0.5/0.8) and the dashboard's published threshold
+    # table. The old 0.10/0.35/0.65 bands made this engine report
+    # CAUTIOUS/60% at scores the portfolio manager was actually enforcing
+    # as DEFENSIVE/30% - three layers, two truths, on-screen contradiction.
+    if score >= 0.8:
         return "DEPLOY"
-    elif score >= 0.35:
+    elif score >= 0.5:
         return "NORMAL"
-    elif score >= 0.10:
+    elif score >= 0.2:
         return "CAUTIOUS"
     return "DEFENSIVE"
 
 
 def recommended_max_deployed(score):
-    if score >= 0.65:
+    # Same canonical bands as aegis_regime — keep in lockstep.
+    if score >= 0.8:
         return 90
-    elif score >= 0.35:
+    elif score >= 0.5:
         return 80
-    elif score >= 0.10:
+    elif score >= 0.2:
         return 60
     return 30
 

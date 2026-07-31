@@ -795,6 +795,16 @@ class TurtleEngine:
                 logging.warning(f"Stale reservation for {pair}, re-reserve failed: {new_rid} - closing")
                 self._execute_exit(pair, {"type": "stale_reservation", "price": pos.avg_entry})
 
+        # Orphan sweep: release pool reservations booked to this bot that no
+        # local position references — capital the pool holds forever otherwise.
+        # (Sweeps the snapshot taken above, so rids created by the re-reserve
+        # loop are never candidates.)
+        local_rids = {rid for pos in self.positions.values() for rid in pos.reservation_ids}
+        for rid, res in reservations.items():
+            if res.get("bot_id") == self._portfolio_client.bot_id and rid not in local_rids:
+                ok, reason = self._portfolio_client.release(rid, pnl=0.0)
+                logging.warning(f"Orphaned reservation {rid}: release {'ok' if ok else f'FAILED ({reason})'}")
+
     # ── Drawdown Adjustment (Original Rule) ──
     def _adjusted_equity(self) -> float:
         """Reduce notional equity by 20% for each 10% drawdown."""
@@ -1187,12 +1197,14 @@ class TurtleEngine:
                 return
 
         # Central portfolio: reserve capital for pyramid unit
+        pyramid_rid = None
         if self._portfolio_client:
             ok, result = self._portfolio_client.reserve(pair, pos.direction, cost)
             if not ok:
                 self.errors.append(f"Portfolio denied pyramid {pair}: {result}")
                 return
-            pos.reservation_ids.append(result)
+            pyramid_rid = result
+            pos.reservation_ids.append(pyramid_rid)
 
         # Live order execution
         fill_price = price
@@ -1202,12 +1214,19 @@ class TurtleEngine:
                 price=_limit_price(price, pos.direction))
             if not ok:
                 self.errors.append(f"LIVE PYRAMID FAILED {pair}: {txid}")
+                if pyramid_rid:
+                    pos.reservation_ids.remove(pyramid_rid)
+                    self._portfolio_client.release(pyramid_rid, pnl=0.0)
                 return
             time.sleep(1.5)
             fill_price = _kraken_client.get_fill_price(txid, price)
             logging.info(f"LIVE PYRAMID {pair} {pos.direction} {unit_coins:.6f} @ {fill_price:.4f} txid={txid}")
 
         pos.add_unit(fill_price, unit_coins, n, int(time.time()))
+        # Persist immediately: a pyramid unit that lives only in memory strands
+        # its reservation in the pool if the bot restarts before the next save
+        # (2026-07-31: turtlesue_UNI/USD_..._o5xs orphaned exactly this way).
+        self._save_positions()
 
     def _execute_exit(self, pair: str, exit_info: dict):
         """Close entire position and log the trade."""

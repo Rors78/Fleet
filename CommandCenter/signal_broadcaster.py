@@ -2253,9 +2253,14 @@ class ChannelOps(Transport):
             with self._stats_lock:
                 self._reset_if_new_day()
                 self._daily_stats["failed"] += 1
-            log.warning("PAID CHANNEL UNSET — dropping %s (%s). "
-                        "Set telegram_paid_chat_id in signal_config.json.",
-                        event_type or "card", event_id or "-")
+                _warn = not getattr(self, "_warned_unset_paid", False)
+                self._warned_unset_paid = True
+            if _warn:
+                log.warning("PAID CHANNEL UNSET — dropping %s (%s) and any "
+                            "further paid cards today. Counted in "
+                            "failed_today. Set telegram_paid_chat_id in "
+                            "signal_config.json.",
+                            event_type or "card", event_id or "-")
             self._log_attempt("paid", event_type, event_id, False)
             return False
         ok = self._send(self._paid_chat, message)
@@ -2297,14 +2302,15 @@ class ChannelOps(Transport):
             with self._stats_lock:
                 self._reset_if_new_day()
                 self._daily_stats["failed"] += 1
-            self._log_attempt("paid", event_type, event_id, False)
-            if not getattr(self, "_warned_unset_paid", False):
+                _warn = not getattr(self, "_warned_unset_paid", False)
                 self._warned_unset_paid = True
+            if _warn:
                 log.warning("PAID CHANNEL UNSET — dropping %s image (%s) and "
-                            "any further paid cards this run. Counted in "
+                            "any further paid cards today. Counted in "
                             "failed_today. Set telegram_paid_chat_id in "
                             "signal_config.json.",
                             event_type or "card", event_id or "-")
+            self._log_attempt("paid", event_type, event_id, False)
             return False
         if copyable_block:
             # Caption carries the copy values in Markdown so backticks
@@ -2404,6 +2410,12 @@ class ChannelOps(Transport):
                 "free_sent": 0, "paid_sent": 0, "failed": 0,
                 "last_free_ts": "", "last_paid_ts": "", "date": today,
             }
+            # Re-arm the once-per-run warnings. Process-scoped flags plus a
+            # daily counter reset means a broadcaster running a week warns on
+            # day one and then increments in silence for six more. One warning
+            # per DAY honors the noise concern without a day passing that says
+            # nothing.
+            self._warned_unset_paid = False
 
     def _send(self, chat_id: str, message: str) -> bool:
         if not self._token:

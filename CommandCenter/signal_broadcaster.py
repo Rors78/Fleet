@@ -2246,6 +2246,13 @@ class ChannelOps(Transport):
             # Was a silent return — 156 paid cards (all 58 TRADE_OPEN + 6
             # TRADE_CLOSE) vanished on 2026-07-28 with no trace. Never drop
             # a send quietly.
+            # ...and count it. The log line alone left failed_today at 0
+            # while cards vanished — a counter that reads healthy because
+            # the failure path returned before reaching it. A drop must move
+            # a number, not just emit a line someone has to be reading.
+            with self._stats_lock:
+                self._reset_if_new_day()
+                self._daily_stats["failed"] += 1
             log.warning("PAID CHANNEL UNSET — dropping %s (%s). "
                         "Set telegram_paid_chat_id in signal_config.json.",
                         event_type or "card", event_id or "-")
@@ -2278,9 +2285,26 @@ class ChannelOps(Transport):
         Uses *text_fallback* for the fallback message.
         """
         if not self._paid_chat:
-            # Unconfigured channel is a routing no-op — attempting the send
-            # would log a scary "sendPhoto failed" warning and inflate the
-            # failed counter on every signal.
+            # An unconfigured channel is NOT a routing no-op — that framing is
+            # what let 156 paid cards (all 58 TRADE_OPEN) vanish on 2026-07-28
+            # with nothing recording it. A card that does not arrive is a
+            # failure regardless of why, so it moves the counter and lands in
+            # signals_sent.log.
+            #
+            # The original concern was noise, and it was fair: warning on
+            # every signal is how a warning gets ignored. So count always,
+            # log once per process.
+            with self._stats_lock:
+                self._reset_if_new_day()
+                self._daily_stats["failed"] += 1
+            self._log_attempt("paid", event_type, event_id, False)
+            if not getattr(self, "_warned_unset_paid", False):
+                self._warned_unset_paid = True
+                log.warning("PAID CHANNEL UNSET — dropping %s image (%s) and "
+                            "any further paid cards this run. Counted in "
+                            "failed_today. Set telegram_paid_chat_id in "
+                            "signal_config.json.",
+                            event_type or "card", event_id or "-")
             return False
         if copyable_block:
             # Caption carries the copy values in Markdown so backticks

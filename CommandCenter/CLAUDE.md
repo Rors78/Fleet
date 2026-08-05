@@ -369,6 +369,23 @@ they die at the channel. **This is unfixed — it needs a real paid chat ID in
 Never let a send path fail silently: an unset channel should log a warning, not
 return False quietly.
 
+### `daily_summary_utc_hour` is inert — confirmed dormant
+The key is **defined in three places and read in none**:
+`signal_broadcaster.py:3272` (defaults), `signal_config.json:14`,
+`signal_config.example.json:14`. `DailySummaryJob` calls
+`_seconds_until(8, 0)` as a literal at both its `start()` and `_loop()` sites,
+so the config value never reaches the scheduler. Changing it does nothing;
+08:00Z is hardcoded.
+
+Verified across **all file types**, not just Python — the reachability lesson
+from the same day (a `failed_today` counter that looked dormant to a `.py`
+grep turned out to be consumed by `command_center_v4.html`). Here there is
+genuinely no reader in any language.
+
+Fix is to pass `config.get("daily_summary_utc_hour", 8)` through to both call
+sites — deliberately NOT done on the eve of a scheduled fire, since it changes
+scheduling behavior and the current literal is already the intended value.
+
 ### Broadcaster counters: the day boundary is UTC
 `ChannelOps._daily_stats` (`free_sent_today` / `paid_sent_today` /
 `failed_today`) resets on a **UTC** day boundary — `_reset_if_new_day()` uses

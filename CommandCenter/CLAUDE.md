@@ -369,6 +369,21 @@ they die at the channel. **This is unfixed — it needs a real paid chat ID in
 Never let a send path fail silently: an unset channel should log a warning, not
 return False quietly.
 
+### Broadcaster counters: the day boundary is UTC
+`ChannelOps._daily_stats` (`free_sent_today` / `paid_sent_today` /
+`failed_today`) resets on a **UTC** day boundary — `_reset_if_new_day()` uses
+`datetime.now(timezone.utc)`, not the bare `datetime.now()` whose local default
+made `%(asctime)s` local and broke a scheduler verification on 2026-08-05.
+Verified, not inferred: at 02:00Z the UTC date has rolled while Mountain local
+has not, and the code reads the UTC one.
+
+This matters beyond bookkeeping. The counters are a **pull** instrument — the
+dashboard KPI (`command_center_v4.html:12402`) reports only when someone opens
+the page, and the numbers wipe at that boundary. So **UTC midnight is the
+deadline for noticing a day's drops**, and the same boundary re-arms the
+once-per-day `PAID CHANNEL UNSET` warning. Any push-based alerting built on
+these counters must fire before it.
+
 ### Subscriber Card Bot Count (fixed 2026-08-05)
 `card_renderer.py` footers print the live fleet size. Until 2026-08-05 both
 footers (`_draw_footer`, `_eod_footer`) hardcoded the literal `"19 bots · live"`

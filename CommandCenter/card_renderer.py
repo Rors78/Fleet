@@ -109,6 +109,28 @@ class CardRenderer:
         # Load fonts at multiple sizes
         self._fonts = {}
         self._load_fonts()
+        # Live fleet count for the card footer. None = unknown, and the footer
+        # then omits the line entirely rather than asserting a number.
+        # Was hardcoded "19 bots · live" until 2026-08-05 — a literal that
+        # claimed 19 live bots on every subscriber card regardless of actual
+        # state (and 19 is unreachable anyway: bot_responder has no port, so
+        # CC can only ever poll 18). No fake stats. Set via set_bots_alive().
+        self._bots_alive: Optional[int] = None
+
+    def set_bots_alive(self, n: Optional[int]) -> None:
+        """Record the live bot count for footers.
+
+        Call with aggregate.bots_alive from /api/master. Pass None when the
+        count is unknown (CC unreachable, stale poll) — the footer omits the
+        line rather than showing a stale or invented number.
+        """
+        self._bots_alive = n if isinstance(n, int) and n >= 0 else None
+
+    def _bot_count_text(self) -> Optional[str]:
+        """Footer bot-count string, or None when unknown (draw nothing)."""
+        if self._bots_alive is None:
+            return None
+        return f"{self._bots_alive} bots · live"
 
     def _load_fonts(self):
         base_sizes = {
@@ -256,8 +278,8 @@ class CardRenderer:
                   fill=_hex(TEXT_SEC), font=tf)
 
         y += 20
-        if show_bot_count:
-            bot_text = "19 bots \u00b7 live"
+        bot_text = self._bot_count_text() if show_bot_count else None
+        if bot_text:
             bf = self._f("sans_11")
             bb = draw.textbbox((0, 0), bot_text, font=bf)
             bw = bb[2] - bb[0]
@@ -1513,7 +1535,9 @@ class CardRenderer:
         draw.text((CR - (tb[2] - tb[0]) - 14*S, y + 2*S), ts_text,
                   fill=_hex(TEXT_SEC), font=tf)
         y += 22 * S
-        bot_text = "19 bots \u00b7 live"
+        bot_text = self._bot_count_text()
+        if not bot_text:
+            return y
         bf = f2("sans_11")
         bb = draw.textbbox((0, 0), bot_text, font=bf)
         draw.text((CR - (bb[2] - bb[0]) - 14*S, y), bot_text,

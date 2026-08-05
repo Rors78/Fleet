@@ -12,16 +12,22 @@ Architecture:
 Stdlib + urllib only. No pip installs required.
 """
 
+import base64
 import collections
 import copy
+import hashlib
+import hmac
 import json
 import logging
 import os
+import re
+import secrets
 import signal
 import sys
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone, timedelta
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -706,19 +712,33 @@ class TierRouter:
         #
         # Override the whitelist per-event via reactions.json → routing_overrides.
 
-        _FLEET_DEDUP_TYPES = {"REGIME_CHANGE"}
+        # REGIME_CHANGE used to collapse to the bare type, so all ten
+        # regime-emitting bots shared ONE dedup bucket and the 3600s window
+        # let exactly one card through per hour — a clock, not a signal
+        # (2026-08-05: 93% of a week's sends were REGIME_CHANGE at ~61min
+        # intervals). Now it keys by source like every other type, and the
+        # AEGIS-only gate below is what actually controls volume.
+        _FLEET_DEDUP_TYPES: set = set()
         if event_type in _FLEET_DEDUP_TYPES:
             dedup_key = event_type
         else:
             dedup_key = f"{event_type}_{pair}_{source}"
         result = None
 
+        # TRADE_* are free=True TEMPORARILY (2026-08-05). These are the
+        # highest-value cards and were going nowhere: routed paid-only while
+        # telegram_paid_chat_id is unset, so ChannelOps.send_paid dropped them
+        # (156 on 2026-07-28 alone, incl. all 58 TRADE_OPEN). Until a real paid
+        # channel exists, they go to free so subscribers see them at all.
+        # delay_free_s=0 deliberately: a 4h-delayed trade signal is worthless.
+        # REVERT to free=False once telegram_paid_chat_id is set and verified
+        # with getChat — this makes paid-tier content free.
         if event_type == "TRADE_OPEN":
-            result = {"free": False, "paid": True, "priority": 2,
+            result = {"free": True, "paid": True, "priority": 2,
                       "category": "trade", "delay_free_s": 0}
 
         elif event_type == "TRADE_CLOSE":
-            result = {"free": False, "paid": True, "priority": 2,
+            result = {"free": True, "paid": True, "priority": 2,
                       "category": "trade", "delay_free_s": 0}
 
         elif event_type == "HIGH_CONVICTION":
@@ -735,10 +755,26 @@ class TierRouter:
                       "category": "risk", "delay_free_s": 0}
 
         elif event_type == "REGIME_CHANGE":
-            # Only fires when AEGIS actually flips — deduped by type so
-            # downstream gate's per-type cooldown prevents flood.
+            # AEGIS ONLY. This comment used to claim "only fires when AEGIS
+            # actually flips" while the code accepted any bot's regime event
+            # — ten bots with ten unrelated vocabularies (trinity
+            # TRENDING/RANGING per pair, nexus SYSTEMIC/MIXED, contrarian
+            # NEUTRAL/FEAR, chronos session_overlap/high_activity) all landed
+            # in one bucket. AEGIS is the fleet risk authority; its
+            # NORMAL/CAUTIOUS/DEFENSIVE posture is the only regime a
+            # subscriber can act on. Everything else stays on the bus for
+            # the dashboard.
+            if str(source).lower() != "aegis":
+                return None
+            frm = data.get("from") or data.get("old_regime")
+            to = data.get("to") or data.get("new_regime") or data.get("regime")
+            # A "change" that doesn't change is not news.
+            if frm is not None and to is not None and str(frm) == str(to):
+                return None
             result = {"free": True, "paid": True, "priority": 2,
-                      "category": "regime", "delay_free_s": 0}
+                      "category": "regime", "delay_free_s": 0,
+                      "hysteresis_key": f"regime_{source}",
+                      "hysteresis_state": f"{frm}>{to}"}
 
         elif event_type == "WHALE_ALERT":
             # Strict: EXTREME magnitude AND the fleet must actually hold
@@ -1127,6 +1163,54 @@ class CardFormatter:
         if not parts:
             return ""
         return "\n<code>" + " · ".join(parts) + "</code>"
+
+    # ── Markup modes (Stage 2, 2026-08-05) ──────────────────────────────
+    # Card bodies are authored with Telegram HTML (<code>/<b>/<i>) and
+    # box-drawing rules. Platforms with a hard character budget (X: 280)
+    # or no HTML need the same content in plain text. Rather than fork 34
+    # tag sites, normalize once on the way out.
+    #
+    # Measured on real trade cards: 312-315 chars as authored -> ~153 in
+    # plain mode, which is what makes them portable to X at all.
+
+    _TAG_RE = re.compile(r"</?(?:code|b|i|pre)>")
+    _RULE_RE = re.compile(r"^[\s─-╿—―-]*$")
+
+    @classmethod
+    def to_plain(cls, body: str) -> str:
+        """Strip Telegram HTML and box-drawing rules. Content unchanged."""
+        if not body:
+            return ""
+        text = cls._TAG_RE.sub("", body)
+        text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+        kept = [ln.rstrip() for ln in text.splitlines()
+                if ln.strip() and not cls._RULE_RE.match(ln)]
+        out, blank = [], False
+        for ln in kept:
+            if not ln.strip():
+                if blank:
+                    continue
+                blank = True
+            else:
+                blank = False
+            out.append(ln)
+        return "\n".join(out).strip()
+
+    @classmethod
+    def fit(cls, body: str, limit: int) -> str:
+        """Trim plain text to a hard character budget on a line boundary."""
+        if limit <= 0 or len(body) <= limit:
+            return body
+        lines, out = body.splitlines(), []
+        for ln in lines:
+            candidate = "\n".join(out + [ln])
+            if len(candidate) > limit - 1:
+                break
+            out.append(ln)
+        trimmed = "\n".join(out).rstrip()
+        if not trimmed:
+            trimmed = body[:max(0, limit - 1)].rstrip()
+        return trimmed + "…"
 
     def format_paid(self, decision: dict) -> str:
         event = decision.get("event", decision)
@@ -1979,13 +2063,45 @@ class AlertGate:
     Copied from notifier.py lines 109-146."""
 
     def __init__(self, dedup_window_s: int = 300, max_seen: int = 1000,
-                 max_per_min: int = 30):
+                 max_per_min: int = 30, hysteresis_window_s: int = 1800):
         self._dedup_window = dedup_window_s
         self._seen_ids: collections.deque = collections.deque(maxlen=max_seen)
         self._last_sent: dict[str, float] = {}
         self._minute_log: collections.deque = collections.deque()
         self._max_per_min = max_per_min
         self._prune_counter = 0
+        # Hysteresis: suppress an A->B->A reversal inside this window.
+        # 60.9% of observed regime transitions were pure flip-flops
+        # (trinity alone: 635 TRENDING<->RANGING of 765 events).
+        # Maps hysteresis_key -> (last_state_str, ts).
+        self._hysteresis_window = hysteresis_window_s
+        self._last_state: dict[str, tuple] = {}
+
+    def check_hysteresis(self, key: str, state: str) -> bool:
+        """False if this is a reversal of the last transition within the window.
+
+        `state` is "FROM>TO". A following "TO>FROM" inside the window is the
+        oscillation we want to swallow. Records the state when it passes, so
+        callers should only invoke this once per candidate send.
+        """
+        if not key or not state:
+            return True
+        now = time.time()
+        prev = self._last_state.get(key)
+        if prev:
+            prev_state, prev_ts = prev
+            if now - prev_ts < self._hysteresis_window:
+                try:
+                    pf, pt = prev_state.split(">", 1)
+                    cf, ct = state.split(">", 1)
+                except ValueError:
+                    pf = pt = cf = ct = None
+                if pf is not None and cf == pt and ct == pf:
+                    log.info("Hysteresis: suppressing reversal %s on %s",
+                             state, key)
+                    return False
+        self._last_state[key] = (state, now)
+        return True
 
     def seen_event(self, event_id: str) -> bool:
         if event_id in self._seen_ids:
@@ -2018,10 +2134,51 @@ class AlertGate:
                                if v > cutoff}
 
 
-# ── ChannelOps ───────────────────────────────────────────────────────────────
+# ── Transport protocol ───────────────────────────────────────────────────────
+#
+# Stage 1 of platform-agnostic broadcasting (2026-08-05). Everything upstream
+# of here — TierRouter, CardFormatter, CardRenderer — is already platform
+# neutral; only the send path knew about Telegram. This protocol is the seam.
+#
+# A Transport takes an already-formatted payload and delivers it to one
+# platform. It does NOT decide what to send, format text, or render images.
+# `tier` stays in the interface because routing produces tier decisions;
+# each transport maps tiers onto its own reality (Telegram: two channels;
+# a single-account platform: one destination, or drop the paid tier).
+#
+# Adding a platform = implement this protocol + register it in the fan-out.
+# Do not add platform-specific branches upstream of this line.
 
-class ChannelOps:
-    """Sends formatted messages to Telegram channels via urllib.request."""
+class Transport:
+    """One delivery destination. Formatting happens upstream."""
+
+    name = "transport"
+
+    def send_text(self, tier: str, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        raise NotImplementedError
+
+    def send_image(self, tier: str, png_bytes: bytes, caption: str = "",
+                   event_id: str = "", event_type: str = "",
+                   fallback_text: str = "") -> bool:
+        raise NotImplementedError
+
+    def stats(self) -> dict:
+        return {}
+
+
+# ── ChannelOps (Telegram transport) ──────────────────────────────────────────
+
+class ChannelOps(Transport):
+    """Sends formatted messages to Telegram channels via urllib.request.
+
+    Implements Transport. The tier-specific methods (send_free/send_paid/...)
+    are retained as the Telegram-native API and remain the call path used by
+    the existing 12 call sites; send_text/send_image are the platform-neutral
+    entry points that dispatch to them.
+    """
+
+    name = "telegram"
 
     def __init__(self, bot_token: str, free_chat_id: str, paid_chat_id: str,
                  personal_chat_id: str = "",
@@ -2057,6 +2214,13 @@ class ChannelOps:
     def send_paid(self, message: str, event_id: str = "",
                   event_type: str = "") -> bool:
         if not self._paid_chat:
+            # Was a silent return — 156 paid cards (all 58 TRADE_OPEN + 6
+            # TRADE_CLOSE) vanished on 2026-07-28 with no trace. Never drop
+            # a send quietly.
+            log.warning("PAID CHANNEL UNSET — dropping %s (%s). "
+                        "Set telegram_paid_chat_id in signal_config.json.",
+                        event_type or "card", event_id or "-")
+            self._log_attempt("paid", event_type, event_id, False)
             return False
         ok = self._send(self._paid_chat, message)
         self._log_attempt("paid", event_type, event_id, ok)
@@ -2137,6 +2301,37 @@ class ChannelOps:
         ok = self._send(self._personal_chat, message)
         self._log_attempt("personal", "DIAGNOSTIC", "", ok)
         return ok
+
+    # ── Transport protocol ──────────────────────────────────────────────
+    # Neutral entry points that dispatch to the tier-specific Telegram
+    # methods above. They add no behavior of their own, so an existing
+    # call site and its send_text/send_image equivalent are identical.
+
+    def send_text(self, tier: str, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        if tier == "paid":
+            return self.send_paid(message, event_id, event_type)
+        if tier == "free":
+            return self.send_free(message, event_id, event_type)
+        if tier == "personal":
+            return self.send_personal(message)
+        log.warning("%s: unknown tier %r for %s", self.name, tier,
+                    event_type or "card")
+        return False
+
+    def send_image(self, tier: str, png_bytes: bytes, caption: str = "",
+                   event_id: str = "", event_type: str = "",
+                   copyable_block: str = "", text_fallback: str = "") -> bool:
+        if tier == "paid":
+            return self.send_paid_image(png_bytes, caption, event_id,
+                                        event_type, copyable_block,
+                                        text_fallback)
+        if tier == "free":
+            return self.send_free_image(png_bytes, caption, event_id,
+                                        event_type)
+        log.warning("%s: unknown tier %r for %s image", self.name, tier,
+                    event_type or "card")
+        return False
 
     def stats(self) -> dict:
         with self._stats_lock:
@@ -2339,6 +2534,262 @@ class ChannelOps:
                     f.write(line)
             except Exception as e:
                 log.error("Failed to write to %s: %s", self._log_path, e)
+
+
+# ── XTransport (X / Twitter) ─────────────────────────────────────────────────
+
+class XTransport(Transport):
+    """Posts cards to X via API v2. Implements Transport (Stage 2).
+
+    Auth is OAuth 1.0a user context (HMAC-SHA1), signed with the standard
+    library — no extra dependency. Verified against the RFC 5849 reference
+    vector.
+
+    Tier mapping: X has no free/paid split. `free` posts; `paid` is dropped
+    by default (posting paid-tier content publicly would give it away). Set
+    post_paid=True to deliberately mirror paid content.
+
+    Character budget: TEXT_LIMIT (280). Bodies are converted to plain text
+    and trimmed on a line boundary. Image posts carry the PNG plus the
+    caption, so the budget applies to the caption alone.
+
+    UNCONFIGURED IS NOT SILENT. Missing credentials log a warning and count
+    as a failure, never a quiet False — that is the exact bug class this
+    codebase already paid for once (156 cards dropped 2026-07-28).
+    """
+
+    name = "x"
+    TEXT_LIMIT = 280
+    API_TWEETS = "https://api.twitter.com/2/tweets"
+    API_UPLOAD = "https://upload.twitter.com/1.1/media/upload.json"
+
+    def __init__(self, consumer_key: str = "", consumer_secret: str = "",
+                 access_token: str = "", access_secret: str = "",
+                 post_paid: bool = False, enabled: bool = True,
+                 log_path: str = "signals_sent.log"):
+        self._ck = consumer_key
+        self._cs = consumer_secret
+        self._at = access_token
+        self._as = access_secret
+        self._post_paid = post_paid
+        self._enabled = enabled
+        self._log_path = log_path
+        self._lock = threading.Lock()
+        self._stats = {"posted": 0, "failed": 0, "skipped": 0}
+
+    def configured(self) -> bool:
+        return bool(self._ck and self._cs and self._at and self._as)
+
+    # ── OAuth 1.0a ──────────────────────────────────────────────────────
+    @staticmethod
+    def _q(s: str) -> str:
+        return urllib.parse.quote(str(s), safe="~")
+
+    def _auth_header(self, method: str, url: str, params: dict) -> str:
+        oauth = {
+            "oauth_consumer_key": self._ck,
+            "oauth_nonce": secrets.token_hex(16),
+            "oauth_signature_method": "HMAC-SHA1",
+            "oauth_timestamp": str(int(time.time())),
+            "oauth_token": self._at,
+            "oauth_version": "1.0",
+        }
+        allp = {**(params or {}), **oauth}
+        norm = "&".join(f"{self._q(k)}={self._q(allp[k])}"
+                        for k in sorted(allp))
+        base = "&".join([method.upper(), self._q(url), self._q(norm)])
+        key = f"{self._q(self._cs)}&{self._q(self._as)}"
+        oauth["oauth_signature"] = base64.b64encode(
+            hmac.new(key.encode(), base.encode(), hashlib.sha1).digest()
+        ).decode()
+        return "OAuth " + ", ".join(
+            f'{self._q(k)}="{self._q(v)}"' for k, v in sorted(oauth.items()))
+
+    def _post_json(self, payload: dict) -> tuple:
+        body = json.dumps(payload).encode()
+        req = urllib.request.Request(
+            self.API_TWEETS, data=body, method="POST",
+            headers={"Content-Type": "application/json",
+                     "Authorization": self._auth_header(
+                         "POST", self.API_TWEETS, {})})
+        try:
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return True, r.read().decode("utf-8", "replace")[:200]
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:300]
+            return False, f"HTTP {e.code}: {detail}"
+        except Exception as e:
+            return False, str(e)
+
+    # ── Transport protocol ──────────────────────────────────────────────
+    def _guard(self, tier: str, event_type: str) -> Optional[bool]:
+        if not self._enabled:
+            self._bump("skipped")
+            return False
+        if tier == "paid" and not self._post_paid:
+            log.info("x: skipping paid-tier %s (post_paid=False)",
+                     event_type or "card")
+            self._bump("skipped")
+            return False
+        if not self.configured():
+            log.warning("X NOT CONFIGURED — dropping %s (%s). Set x_consumer_key/"
+                        "x_consumer_secret/x_access_token/x_access_secret in "
+                        "signal_config.json.", event_type or "card", tier)
+            self._bump("failed")
+            return False
+        return None
+
+    def send_text(self, tier: str, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        guard = self._guard(tier, event_type)
+        if guard is not None:
+            return guard
+        text = CardFormatter.fit(CardFormatter.to_plain(message),
+                                 self.TEXT_LIMIT)
+        ok, detail = self._post_json({"text": text})
+        if not ok:
+            log.warning("x: post failed for %s — %s", event_type or "card",
+                        detail)
+        self._bump("posted" if ok else "failed")
+        self._log_attempt(tier, event_type, event_id, ok)
+        return ok
+
+    def send_image(self, tier: str, png_bytes: bytes, caption: str = "",
+                   event_id: str = "", event_type: str = "",
+                   copyable_block: str = "", text_fallback: str = "") -> bool:
+        # Media upload is v1.1 multipart and needs its own signing pass;
+        # until that is implemented and tested against the live API, fall
+        # back to the text card rather than pretending an image went out.
+        body = text_fallback or caption
+        if not body:
+            log.warning("x: image send for %s has no text fallback — dropping",
+                        event_type or "card")
+            self._bump("failed")
+            return False
+        log.info("x: image not yet supported, posting text fallback for %s",
+                 event_type or "card")
+        return self.send_text(tier, body, event_id, event_type)
+
+    def _bump(self, key: str) -> None:
+        with self._lock:
+            self._stats[key] = self._stats.get(key, 0) + 1
+
+    def _log_attempt(self, tier: str, event_type: str, event_id: str,
+                     ok: bool) -> None:
+        try:
+            with open(self._log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps({
+                    "ts": datetime.now(timezone.utc).strftime(
+                        "%Y-%m-%dT%H:%M:%SZ"),
+                    "tier": f"x_{tier}", "event_type": event_type,
+                    "event_id": event_id, "success": ok}) + "\n")
+        except Exception:
+            pass
+
+    def stats(self) -> dict:
+        with self._lock:
+            return {"platform": "x", "configured": self.configured(),
+                    **self._stats}
+
+
+# ── TransportFan ─────────────────────────────────────────────────────────────
+
+class TransportFan(Transport):
+    """Fans one send out to N transports and counts attempted vs delivered.
+
+    Drop-in for a single Transport: same interface, so call sites are
+    unchanged. With one transport registered, behavior is identical to
+    calling that transport directly (the return value is its return value).
+
+    The counting is the point. Both 2026-08-05 signal bugs had the same
+    signature — content went nowhere and nothing said so. Every added
+    platform multiplies that surface, so the fan-out records attempted and
+    delivered per platform and logs any divergence. Absence of output must
+    produce evidence of itself.
+    """
+
+    name = "fan"
+
+    def __init__(self, transports: list):
+        self._transports = [t for t in transports if t is not None]
+        self._lock = threading.Lock()
+        self._counts: dict = {}
+
+    def _tally(self, tname: str, ok: bool) -> None:
+        with self._lock:
+            c = self._counts.setdefault(
+                tname, {"attempted": 0, "delivered": 0, "failed": 0})
+            c["attempted"] += 1
+            c["delivered" if ok else "failed"] += 1
+
+    def _fan(self, method: str, tier: str, *args, **kwargs) -> bool:
+        any_ok = False
+        for t in self._transports:
+            try:
+                ok = bool(getattr(t, method)(tier, *args, **kwargs))
+            except Exception as e:
+                ok = False
+                log.error("transport %s %s failed: %s",
+                          getattr(t, "name", "?"), method, e)
+            self._tally(getattr(t, "name", "?"), ok)
+            if not ok:
+                log.warning("transport %s did not deliver %s (%s)",
+                            getattr(t, "name", "?"),
+                            kwargs.get("event_type") or "card", tier)
+            any_ok = any_ok or ok
+        return any_ok
+
+    def send_text(self, tier: str, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        return self._fan("send_text", tier, message,
+                         event_id=event_id, event_type=event_type)
+
+    def send_image(self, tier: str, png_bytes: bytes, caption: str = "",
+                   event_id: str = "", event_type: str = "",
+                   copyable_block: str = "", text_fallback: str = "") -> bool:
+        return self._fan("send_image", tier, png_bytes, caption,
+                         event_id=event_id, event_type=event_type,
+                         copyable_block=copyable_block,
+                         text_fallback=text_fallback)
+
+    # ── Telegram-named compatibility surface ────────────────────────────
+    # The 12 existing call sites speak the tier-named API. The fan must be a
+    # true drop-in for ChannelOps or enabling a second transport would break
+    # every one of them, so mirror that surface onto the neutral protocol.
+
+    def send_free(self, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        return self.send_text("free", message, event_id, event_type)
+
+    def send_paid(self, message: str, event_id: str = "",
+                  event_type: str = "") -> bool:
+        return self.send_text("paid", message, event_id, event_type)
+
+    def send_personal(self, message: str) -> bool:
+        return self.send_text("personal", message)
+
+    def send_free_image(self, png_bytes: bytes, caption: str = "",
+                        event_id: str = "", event_type: str = "") -> bool:
+        return self.send_image("free", png_bytes, caption, event_id,
+                               event_type)
+
+    def send_paid_image(self, png_bytes: bytes, caption: str = "",
+                        event_id: str = "", event_type: str = "",
+                        copyable_block: str = "",
+                        text_fallback: str = "") -> bool:
+        return self.send_image("paid", png_bytes, caption, event_id,
+                               event_type, copyable_block, text_fallback)
+
+    def stats(self) -> dict:
+        with self._lock:
+            out = {"transports": {k: dict(v) for k, v in self._counts.items()}}
+        for t in self._transports:
+            try:
+                out.setdefault("per_platform", {})[
+                    getattr(t, "name", "?")] = t.stats()
+            except Exception:
+                pass
+        return out
 
 
 # ── Scheduled Jobs ───────────────────────────────────────────────────────────
@@ -2777,13 +3228,37 @@ class Broadcaster:
             dedup_window_s=self._config["dedup_window_s"],
             max_seen=self._config["seen_ids_max"],
             max_per_min=self._config["rate_limit_per_minute"],
+            hysteresis_window_s=int(self._config.get(
+                "regime_hysteresis_window_s", 1800)),
         )
-        self._channel = ChannelOps(
+        _telegram = ChannelOps(
             bot_token=self._config["telegram_bot_token"],
             free_chat_id=self._config["telegram_free_chat_id"],
             paid_chat_id=self._config["telegram_paid_chat_id"],
             personal_chat_id=self._config.get("telegram_personal_chat_id", ""),
         )
+        # Stage 2: X is opt-in. Off unless x_enabled is true AND credentials
+        # are present, so the default path is byte-identical to Telegram-only.
+        # When only one transport is active the fan is a pass-through.
+        self._telegram = _telegram
+        _transports = [_telegram]
+        if self._config.get("x_enabled"):
+            _x = XTransport(
+                consumer_key=self._config.get("x_consumer_key", ""),
+                consumer_secret=self._config.get("x_consumer_secret", ""),
+                access_token=self._config.get("x_access_token", ""),
+                access_secret=self._config.get("x_access_secret", ""),
+                post_paid=bool(self._config.get("x_post_paid", False)),
+            )
+            if not _x.configured():
+                log.warning("x_enabled is true but credentials are incomplete "
+                            "— X posts will be counted as failures, not "
+                            "silently skipped.")
+            _transports.append(_x)
+            log.info("Transports: telegram + x (post_paid=%s)",
+                     bool(self._config.get("x_post_paid", False)))
+        self._channel = (_telegram if len(_transports) == 1
+                         else TransportFan(_transports))
         self._seed_gate_from_log()
 
         # Report channel wiring once at startup so an unconfigured channel is
@@ -2861,6 +3336,8 @@ class Broadcaster:
             dedup_window_s=self._config["dedup_window_s"],
             max_seen=self._config["seen_ids_max"],
             max_per_min=self._config["rate_limit_per_minute"],
+            hysteresis_window_s=int(self._config.get(
+                "regime_hysteresis_window_s", 1800)),
         )
         # A fresh gate has an empty seen-set — re-seed so a reload doesn't
         # open a window where recently-sent events could be re-sent.
@@ -3020,6 +3497,14 @@ class Broadcaster:
             etype = event.get("type", "")
             dedup_key = decision["dedup_key"]
 
+            # Hysteresis: swallow A->B->A reversals (regime oscillation).
+            # Checked once per candidate, before any tier gate, so a
+            # suppressed reversal costs nothing downstream.
+            _hk = decision.get("hysteresis_key")
+            if _hk and not self._gate.check_hysteresis(
+                    _hk, decision.get("hysteresis_state", "")):
+                return
+
             # Suppress empty HIGH_CONVICTION / SIGNAL cards — no pair + no signal = no send
             if etype in ("HIGH_CONVICTION", "SIGNAL"):
                 edata = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
@@ -3114,6 +3599,14 @@ class Broadcaster:
                                     edata["deployed_pct"] = edata["_deployed_pct"]
                                 if "bots_alive" not in edata and "_bots_alive" in edata:
                                     edata["bots_alive"] = edata["_bots_alive"]
+                                # Footer bot count: feed the renderer the live
+                                # figure from /api/master. None when this event
+                                # carried no count — the footer then omits the
+                                # line instead of asserting a stale/invented
+                                # number (was hardcoded "19 bots · live").
+                                _ba = edata.get("bots_alive")
+                                self._card_renderer.set_bots_alive(
+                                    _ba if isinstance(_ba, int) else None)
                                 if etype == "TRADE_OPEN":
                                     png = self._card_renderer.render_trade_open(edata)
                                     copyable = self._card_renderer.copyable_trade_open(edata)

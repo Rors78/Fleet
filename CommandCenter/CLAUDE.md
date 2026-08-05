@@ -260,6 +260,131 @@ No test suite. Validation is runtime only:
 
 ## Key Patterns & Gotchas
 
+### Broadcast Transport Layer (Stage 1, 2026-08-05)
+`signal_broadcaster.py` now has a platform-agnostic send seam. `TierRouter`,
+`CardFormatter`, and `CardRenderer` were already platform-neutral; only the
+send path knew about Telegram.
+
+- **`Transport`** — protocol: `send_text(tier, ...)`, `send_image(tier, ...)`,
+  `stats()`. `tier` stays in the interface because routing produces tier
+  decisions; each transport maps tiers onto its own reality.
+- **`ChannelOps(Transport)`** — `name = "telegram"`. Its tier-specific methods
+  (`send_free`/`send_paid`/`send_*_image`) remain the Telegram-native API and
+  are still what the 12 existing call sites use; `send_text`/`send_image`
+  dispatch to them and add no behavior.
+- **`TransportFan(Transport)`** — drop-in for a single transport; fans to N and
+  **counts attempted / delivered / failed per platform**, logging any
+  non-delivery. Both 2026-08-05 signal bugs had the signature "content went
+  nowhere and nothing said so"; every added platform multiplies that surface,
+  so absence of output must produce evidence of itself. Exceptions in one
+  transport are contained and counted, never kill the fan.
+
+**Verified no behavior change**: a golden-output harness rendered all 40 event
+types through router + both formatters; pre- and post-refactor digests are
+identical (`093bd7d1…`). Note the cards embed a live wall-clock timestamp
+("Fleet Pulse HH:MM UTC"), so any such harness MUST normalize it or the digest
+changes every minute regardless of code.
+
+**Stage 2 (done 2026-08-05): `XTransport`.** Implements `Transport` for X API
+v2. OAuth 1.0a HMAC-SHA1 signing is **stdlib-only** (verified against the RFC
+5849 reference vector) — no tweepy/requests-oauthlib dependency.
+
+- **Opt-in and off by default.** Activates only when `x_enabled` is true;
+  otherwise `self._channel` is the bare `ChannelOps` and the path is
+  byte-identical to before. Config keys: `x_enabled`, `x_consumer_key`,
+  `x_consumer_secret`, `x_access_token`, `x_access_secret`, `x_post_paid`.
+- **Markup modes**: `CardFormatter.to_plain()` strips Telegram HTML and
+  box-drawing rules; `.fit(text, limit)` trims on a line boundary. Applied at
+  the two format entry points rather than forking 34 tag sites. Measured on
+  real cards: 310–312 chars → **151–153**, inside X's 280.
+- **Tier mapping**: X has no free/paid split. `free` posts; `paid` is skipped
+  unless `x_post_paid=true` (posting paid content publicly gives it away).
+  **`x_post_paid` is TRUE here (set 2026-08-05 by operator decision)** — every
+  paid-tier card is mirrored to the public X timeline. Coherent while the paid
+  Telegram channel does not resolve and trade cards already route free; revisit
+  if a real paid tier is ever stood up, or paid subscribers get nothing X
+  followers don't.
+- **Unconfigured is loud**: missing credentials log a warning and count as
+  `failed`, never a silent skip.
+- **Images not yet supported** — v1.1 multipart upload needs its own signing
+  pass. `send_image` posts the text fallback and says so rather than
+  pretending an image went out.
+
+**`TransportFan` mirrors the Telegram-named API** (`send_free`, `send_paid`,
+`send_*_image`, `send_personal`) on top of the neutral protocol. Without this
+the 12 tier-named call sites break the moment a second transport is enabled —
+the fan must be a true drop-in for `ChannelOps`.
+
+**Untested against the live X API**: no credentials exist on this machine, so
+signing, rate limits, and error shapes are unverified end to end. Supply
+credentials and post one card before trusting it.
+
+Remaining: per-platform rate-limit/backoff — the 429 retry and `_daily_stats`
+are still Telegram-shaped.
+
+**Superseded — original Stage 2 estimate:** Cards are 312–315 chars as
+sent; stripping the Telegram HTML and box-drawing borders brings the same
+content to ~153 chars, inside X's 280 limit. PNG cards are ~16KB against a 5MB
+limit. Remaining work: a `markup` mode on `CardFormatter` (36 hardcoded
+`<code>`/`<b>` sites) and per-platform rate-limit/backoff state — the 429 retry
+and `_daily_stats` are currently Telegram-shaped.
+
+### Telegram Signal Mix (fixed 2026-08-05)
+Two independent bugs made the subscriber feed repetitive — 93% of a week's
+sends were REGIME_CHANGE at a suspiciously regular ~61-minute cadence.
+
+**1. REGIME_CHANGE shared one dedup bucket.** `_FLEET_DEDUP_TYPES` collapsed the
+key to the bare type, so all ten regime-emitting bots competed for one slot and
+`dedup_window_s=3600` released exactly one card per hour — a clock, not a signal.
+Worse, the bots have unrelated vocabularies (trinity `TRENDING/RANGING` per pair,
+nexus `SYSTEMIC/MIXED`, contrarian `NEUTRAL/FEAR`, chronos
+`session_overlap/high_activity`) and **60.9% of transitions were pure A→B→A
+flip-flops** (trinity: 635 of 765). The code comment claimed "only fires when
+AEGIS actually flips" — there was no such check.
+
+Now: **AEGIS only** (the fleet risk authority), no-op changes (`from == to`)
+suppressed, source-scoped dedup key, plus **hysteresis** in `AlertGate`
+(`check_hysteresis`, `regime_hysteresis_window_s`, default 1800s) that swallows a
+reversal of the previous transition. Replay of 1,633 real bus events: 1,633 → 37
+sends; on recent data ≈2 cards/day.
+
+**TEMPORARY (2026-08-05): TRADE_OPEN/TRADE_CLOSE route `free=True`.** They were
+paid-only and therefore going nowhere (see below). Free bodies already redact
+entry/bot behind "🔒 Full details for subscribers", so the tier distinction
+survives; `delay_free_s=0` because a 4h-delayed trade signal is worthless.
+**Revert to `free=False` once `telegram_paid_chat_id` is set and verified with
+`getChat`** — this currently makes paid-tier content free. The supplied ID
+`-1002891043721` returns `Bad Request: chat not found` (token is valid and the
+free channel resolves fine), so it was NOT written to config.
+
+**2. `telegram_paid_chat_id` is empty — all paid cards silently dropped.**
+`ChannelOps.send_paid` returns `False` immediately when the paid chat is unset
+(`if not self._paid_chat: return False`) with **no log line**. 745 paid sends
+succeeded through 2026-04-11; every attempt after failed, and on 2026-07-28 alone
+156 were dropped — including **all 58 TRADE_OPEN and 6 TRADE_CLOSE**. Trade
+events still reach the bus and still route correctly (`paid=True, free=False`);
+they die at the channel. **This is unfixed — it needs a real paid chat ID in
+`signal_config.json`.** Until then the fleet's most valuable cards go nowhere.
+
+Never let a send path fail silently: an unset channel should log a warning, not
+return False quietly.
+
+### Subscriber Card Bot Count (fixed 2026-08-05)
+`card_renderer.py` footers print the live fleet size. Until 2026-08-05 both
+footers (`_draw_footer`, `_eod_footer`) hardcoded the literal `"19 bots · live"`
+— every subscriber card asserted 19 live bots regardless of actual state, and
+19 is unreachable anyway (`bot_responder` has no port, so CC can only ever poll
+18). Direct violation of "No fake stats — ever".
+
+Now: `CardRenderer.set_bots_alive(n)` feeds `aggregate.bots_alive` from
+`/api/master`; `_bot_count_text()` returns `None` when the count is unknown and
+**the footer omits the line entirely** rather than showing a stale or invented
+number. `signal_broadcaster.py` sets it per-card from the already-enriched
+`edata["bots_alive"]`. Non-int/negative input is treated as unknown.
+
+Never reintroduce a literal count here — not `19`, not `18`. If the count isn't
+known, print nothing.
+
 ### Normalizers
 Each bot gets a normalizer function (in `command_center.py`, registered in the normalizer map ~line 1334) that translates its raw API response into a standard schema: `{equity, pnl, pnl_pct, win_rate, drawdown_pct, sharpe, open_positions, total_trades, regime, signals_count, uptime, ...}`. Win rates arrive in different scales (0-1 vs 0-100) — normalizers handle this. All bots use `/api/snapshot`; Inference and Broadcaster use `/health`. NEXUS reports `market_character` instead of `regime`.
 

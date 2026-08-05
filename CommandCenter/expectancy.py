@@ -43,6 +43,35 @@ import json
 import os
 import time
 
+try:
+    from fleet_config import bot_registry_list
+except ImportError:  # pragma: no cover - CC always has it on the path
+    bot_registry_list = None
+
+
+def _fleet_member_ids() -> set:
+    """Current fleet membership, from the ONE source of truth.
+
+    `fleet_config.bot_registry_list()` already defines who is in the fleet
+    (it excludes port-less entries like bot_responder). Expectancy used to
+    iterate whatever had trade history, which kept counting `trekbot` long
+    after it was retired to standalone GoldenEye — its 6 trades polluted both
+    the rankings and the fleet-wide expectancy headline.
+
+    Routing through the registry rather than a skip-list means the next
+    retirement drops out automatically. A second exclusion list would make
+    three answers to "who is in the fleet"; there must be one.
+
+    Returns an empty set if the registry is unavailable, and callers then
+    fall back to unfiltered behavior rather than silently reporting zero.
+    """
+    if bot_registry_list is None:
+        return set()
+    try:
+        return {b["id"] for b in bot_registry_list()}
+    except Exception:
+        return set()
+
 
 class ExpectancyTracker:
     PERSIST_PATH = os.path.join(os.path.dirname(__file__),
@@ -245,7 +274,18 @@ class ExpectancyTracker:
     def get_fleet_stats(self, last_n=None):
         """Aggregate expectancy across all bots."""
         all_trades = []
+        # Only current fleet members count toward fleet-wide numbers.
+        # Retired bots (trekbot -> standalone GoldenEye) keep their trade
+        # history on disk but must not skew the aggregate. Empty set means
+        # the registry was unavailable — fall back to unfiltered rather than
+        # silently reporting zero trades.
+        members = _fleet_member_ids()
+        self._excluded_bots = (sorted(set(self.trades) - members)
+                               if members else [])
+
         for bot_id, trades in self.trades.items():
+            if members and bot_id not in members:
+                continue
             if last_n:
                 trades = trades[-last_n:]
             all_trades.extend(trades)
@@ -262,6 +302,8 @@ class ExpectancyTracker:
         # Per-bot stats
         bot_stats = {}
         for bot_id in self.trades:
+            if members and bot_id not in members:
+                continue
             bot_stats[bot_id] = self.get_bot_stats(bot_id, last_n)
 
         # Fleet aggregate — gross semantics (2026-07-30): classify and
@@ -309,6 +351,26 @@ class ExpectancyTracker:
                 for bid, s in ranked
             ],
             'bot_stats': dict(ranked),
+            # Named, not silent: a bot dropped from the numbers must be
+            # visible in them. Retired members with residual trade history
+            # land here (e.g. trekbot after the GoldenEye split).
+            'excluded_non_members': getattr(self, '_excluded_bots', []),
+            # THE DENOMINATOR. "fleet_expectancy" is named for a population it
+            # does not cover: on 2026-08-05 it was 12 trades from 2 of 18
+            # members, with 16 having produced no closed trades at all. A
+            # reader takes -$35.42/trade as "the fleet is losing money" when it
+            # means "two bots have taken twelve trades between them". Same
+            # class as the membership bug above — a statistic labelled for a
+            # population wider than its sample. Ship the denominator beside
+            # the figure so the label cannot outrun the data.
+            'participating_bots': len(bot_stats),
+            'fleet_members': len(members) if members else None,
+            'silent_members': (len(members) - len(bot_stats)
+                               if members else None),
+            'coverage_note': (
+                f"{len(bot_stats)} of {len(members)} members have closed "
+                f"trades; {len(members) - len(bot_stats)} are silent"
+                if members else "membership registry unavailable"),
         }
 
     # ── Snapshot for Bot API ────────────────────────────────────────

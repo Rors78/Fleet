@@ -1217,6 +1217,10 @@ class CardFormatter:
         etype = event.get("type", "")
         data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
 
+        # Same as format_free: the emitting bot is on the event, not in data.
+        if "source" not in data and event.get("source"):
+            data = {**data, "source": event["source"]}
+
         prefix = ""
         if event.get("aegis_defensive") and etype in ("HIGH_CONVICTION", "SIGNAL", "TRADE_OPEN"):
             prefix = ("<b>\u26a0 FLEET CAUTION \u2014 AEGIS DEFENSIVE</b>\n"
@@ -1235,6 +1239,11 @@ class CardFormatter:
         event = decision.get("event", decision)
         etype = event.get("type", "")
         data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
+        # The emitting bot lives on the event, not in data. Formatters only
+        # receive data, so carry it through — without this every card that
+        # names a bot renders an em-dash (the paid trade card did, silently).
+        if "source" not in data and event.get("source"):
+            data = {**data, "source": event["source"]}
 
         handler = self._FREE_HANDLERS.get(etype)
         if handler:
@@ -1888,7 +1897,9 @@ class CardFormatter:
                 f"Pair      {pair}\n"
                 f"Result    {result_glyph}  {pnl_s}\n"
                 f"Regime    {regime}\n"
-                f"Bot/Entry \U0001f512 Full details for subscribers"
+                f"Entry     {_v(d, 'entry_price')}\n"
+                f"Exit      {_v(d, 'exit_price')}\n"
+                f"Bot       {display_name(_v(d, 'source', _v(d, 'bot')))}"
                 f"</code>"
                 f"{_footer(_FOOTER_FREE)}"
             )
@@ -1899,7 +1910,9 @@ class CardFormatter:
             f"Pair      {pair}\n"
             f"Signal    {dir_glyph}\n"
             f"Regime    {regime}\n"
-            f"Size/Bot  \U0001f512 Full details for subscribers"
+            f"Entry     {_v(d, 'entry_price') or _v(d, 'entry')}\n"
+            f"Size      {_v(d, 'size_usd')}\n"
+            f"Bot       {display_name(_v(d, 'source', _v(d, 'bot')))}"
             f"</code>"
             f"{_footer(_FOOTER_FREE)}"
         )

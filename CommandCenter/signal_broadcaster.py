@@ -1261,6 +1261,12 @@ class CardFormatter:
         wr_s = f"{wr:.0%}" if isinstance(wr, float) and wr <= 1 else ("\u2014" if wr is None else str(wr))
         ev = stats.get("expectancy")
         ev_s = f"${ev:+.2f}" if isinstance(ev, (int, float)) else "\u2014"
+        # Denominator on the CARD. "Avg P/L per trade" computed over 2 of 18
+        # members is not a fleet statistic; name the population it covers.
+        _pb, _fm = stats.get("participating_bots"), stats.get("fleet_members")
+        if (isinstance(_pb, int) and isinstance(_fm, int)
+                and _fm and _pb < _fm):
+            ev_s = f"{ev_s} ({_pb}/{_fm} bots)"
         dep = stats.get("deployed_pct")
         dep_s = f"{dep:.0f}%" if isinstance(dep, (int, float)) else "\u2014"
         regime = _regime_badge(str(stats.get("regime", "\u2014")))
@@ -2874,6 +2880,13 @@ class DailySummaryJob:
                 "total_trades": daily.get("total_trades", "\u2014"),
                 "win_rate": daily.get("win_rate", "\u2014"),
                 "expectancy": expectancy.get("fleet_expectancy", "\u2014"),
+                # Carry the denominator onto the CARD, not just the payload.
+                # A bare "-$35.42/trade" labelled *fleet* reads as "the fleet
+                # is losing money" when it means "two bots took twelve trades
+                # between them". A coverage note sitting in an API nobody
+                # reads protects nobody.
+                "participating_bots": expectancy.get("participating_bots"),
+                "fleet_members": expectancy.get("fleet_members"),
                 "deployed_pct": portfolio.get("deployed_pct", "\u2014"),
                 "regime": daily.get("regime", "\u2014"),
                 "aegis_score": daily.get("aegis_score", "\u2014"),

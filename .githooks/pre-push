@@ -1,0 +1,50 @@
+#!/bin/sh
+# Refuse a push whose remote does not match this working tree.
+#
+# WHY: this checkout is the Fleet monorepo (github.com/Rors78/Fleet). A
+# `goldeneye` remote (github.com/Rors78/GoldenEye) is also configured, and the
+# two repos hold unrelated histories that must never mix. Until now that rule
+# lived only in project docs — protected by a person remembering it at exactly
+# the moment they are least likely to.
+#
+# It is worse than a normal memory rule here: push.default = upstream, so a
+# mistracked branch pushes SILENTLY with no refusal. The config that makes the
+# wrong push feel fine is the one that gives no warning.
+#
+# Same move as portfolio_math (units), bot_registry_list (membership), and the
+# golden-harness tripwire (format): make the rule structural so it holds
+# whether or not anyone recalls it.
+#
+# Bypass deliberately with --no-verify if you genuinely mean it.
+
+remote_name="$1"
+remote_url="$2"
+
+# The path that identifies this working tree, and the repo allowed to receive it.
+tree_marker="CommandCenter/fleet_config.py"
+expected="Rors78/Fleet"
+
+if [ ! -f "$(git rev-parse --show-toplevel)/$tree_marker" ]; then
+    # Not the fleet tree — this hook has nothing to say.
+    exit 0
+fi
+
+case "$remote_url" in
+    *"$expected"*)
+        exit 0
+        ;;
+esac
+
+cat >&2 <<MSG
+
+  PUSH REFUSED — wrong remote for this working tree.
+
+    working tree : Fleet monorepo (found $tree_marker)
+    pushing to   : $remote_name  ->  $remote_url
+    expected     : a $expected URL
+
+  Fleet and GoldenEye hold unrelated histories and must never mix.
+  If this is genuinely intended:  git push --no-verify $remote_name ...
+
+MSG
+exit 1

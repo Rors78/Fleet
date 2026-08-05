@@ -36,6 +36,26 @@ python fleet_restart.py            # full cold start (also: --status | --stop)
 ```
 Dashboard: http://localhost:9000 — fleet health, portfolio, COSMOS display.
 
+## Remote separation is enforced, not remembered
+
+`.githooks/pre-push` refuses any push from this tree to a non-Fleet remote.
+Install it on a fresh clone:
+
+```bash
+git config core.hooksPath .githooks     # or: cp .githooks/pre-push .git/hooks/
+```
+
+`.git/hooks/` is not versioned, so a clone without this step has the rule back
+in documentation only. That matters more here than usual: `push.default` is
+`upstream` on this machine, so a mistracked branch pushes **silently** with no
+refusal — the config that makes a wrong push feel fine is the one that gives no
+warning. Bypass deliberately with `--no-verify`.
+
+Same move as `portfolio_math.notional_usd()` (units), `bot_registry_list()`
+(membership), and the golden-harness timestamp tripwire (format): a rule you
+must remember at the moment you are least likely to becomes a guard that holds
+regardless.
+
 ## Working Rules (fleet-wide)
 
 - NEVER overwrite working code based on assumptions; ALWAYS read existing code first

@@ -753,7 +753,20 @@ class TierRouter:
 
         elif event_type == "HIGH_CONVICTION":
             # Raise the bar: 0.80 was too loose and tripped often.
+            #
+            # Coerce before comparing. Reaction-generated events arrive via
+            # reactions.json template substitution, which stringifies every
+            # value — so confidence can be "1.0", and `"1.0" >= 0.85` raises
+            # TypeError inside the router rather than suppressing the event.
+            # A crash here is worse than the silent drop it replaces: it takes
+            # out the whole routing call for that event.
             conf = data.get("confidence", data.get("conviction", 0)) or 0
+            try:
+                conf = float(conf)
+            except (TypeError, ValueError):
+                log.warning("HIGH_CONVICTION: non-numeric confidence %r from "
+                            "%s — treating as 0", conf, source)
+                conf = 0.0
             if conf >= 0.85:
                 result = {"free": True, "paid": True, "priority": 1,
                           "category": "trade", "delay_free_s": 0}

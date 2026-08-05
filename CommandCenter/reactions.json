@@ -1,85 +1,157 @@
 {
-    "rules": [
-        {
-            "name": "whale_amplifier",
-            "description": "Broadcast EXTREME whale alerts to all bots",
-            "trigger": {"source": "deepblue", "type": "WHALE_ALERT"},
-            "action": "broadcast",
-            "message": {"type": "ATTENTION", "reason": "Whale activity detected", "suggested_action": "check_whale_exposure"}
-        },
-        {
-            "name": "regime_shift_storm",
-            "description": "Alert when 3+ regime changes in 5 minutes (market structure unstable)",
-            "trigger": {"type": "REGIME_CHANGE"},
-            "condition": "count(REGIME_CHANGE, last_5min) >= 3",
-            "action": "broadcast",
-            "message": {"type": "FLEET_ALERT", "reason": "Multiple regime shifts — market structure unstable", "suggested_action": "reduce_exposure"}
-        },
-        {
-            "name": "convergent_signal",
-            "description": "Flag when 3+ bots signal same pair same direction within 60s",
-            "trigger": {"type": "SIGNAL"},
-            "condition": "count(SIGNAL, same_pair, same_direction, last_60s) >= 3",
-            "action": "broadcast",
-            "message": {"type": "HIGH_CONVICTION", "reason": "Fleet convergence on {pair} {direction}", "suggested_action": "increase_conviction"}
-        },
-        {
-            "name": "cascade_stop_warning",
-            "description": "Emergency alert when 3+ stops hit in 5 minutes",
-            "trigger": {"type": "TRADE_CLOSE"},
-            "condition": "count(TRADE_CLOSE.stop_loss, last_5min) >= 3",
-            "action": "broadcast",
-            "message": {"type": "EMERGENCY_REDUCE", "reason": "3+ stops in 5 minutes — cascade risk", "suggested_action": "halt_new_entries"}
-        },
-        {
-            "name": "portfolio_overweight",
-            "description": "Alert when portfolio exceeds 60% deployed",
-            "trigger": {"type": "PORTFOLIO_RESERVE"},
-            "condition": "count(PORTFOLIO_RESERVE, last_5min) >= 5",
-            "action": "broadcast",
-            "message": {"type": "FLEET_ALERT", "reason": "Rapid capital deployment — check concentration", "suggested_action": "review_positions"}
-        },
-        {
-            "name": "manifold_deformation_alert",
-            "description": "Alert when distribution morphing detected — models becoming unreliable",
-            "trigger": {"type": "MANIFOLD_WARNING"},
-            "action": "broadcast",
-            "message": {"type": "FLEET_ALERT", "reason": "Statistical manifold deforming — reduce model confidence", "suggested_action": "widen_stops"}
-        },
-        {
-            "name": "quantum_collapse_convergence",
-            "description": "Signal when quantum state collapses with high confidence",
-            "trigger": {"type": "QUANTUM_COLLAPSE"},
-            "action": "broadcast",
-            "message": {"type": "HIGH_CONVICTION", "reason": "Quantum state collapsed — regime definite", "suggested_action": "increase_conviction"}
-        },
-        {
-            "name": "book_phase_transition",
-            "description": "Alert when order book enters BOILING or PLASMA phase",
-            "trigger": {"type": "BOOK_PHASE"},
-            "action": "broadcast",
-            "message": {"type": "FLEET_ALERT", "reason": "Order book phase transition — liquidity evaporating", "suggested_action": "halt_new_entries"}
-        },
-        {
-            "name": "chaos_attractor_departure",
-            "description": "Alert when market trajectory leaves its attractor — regime change in progress",
-            "trigger": {"type": "CHAOS_STATE"},
-            "action": "broadcast",
-            "message": {"type": "FLEET_ALERT", "reason": "Attractor departure — regime dissolving", "suggested_action": "reduce_exposure"}
-        },
-        {
-            "name": "catastrophe_imminent",
-            "description": "Alert when Thom early warning signals exceed critical threshold",
-            "trigger": {"type": "CATASTROPHE_WARNING"},
-            "action": "broadcast",
-            "message": {"type": "FLEET_ALERT", "reason": "Catastrophe early warning — discontinuous jump imminent", "suggested_action": "tighten_stops"}
-        },
-        {
-            "name": "dissipative_structure_forming",
-            "description": "Signal when Prigogine detects trend or cycle crystallizing",
-            "trigger": {"type": "STRUCTURE_FORMING"},
-            "action": "broadcast",
-            "message": {"type": "SIGNAL", "reason": "Dissipative structure forming — trend/cycle nucleating", "suggested_action": "prepare_entry"}
-        }
-    ]
+  "rules": [
+    {
+      "name": "whale_amplifier",
+      "description": "Broadcast EXTREME whale alerts to all bots",
+      "trigger": {
+        "source": "deepblue",
+        "type": "WHALE_ALERT"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "ATTENTION",
+        "reason": "Whale activity detected",
+        "suggested_action": "check_whale_exposure"
+      }
+    },
+    {
+      "name": "regime_shift_storm",
+      "description": "Alert when 3+ regime changes in 5 minutes (market structure unstable)",
+      "trigger": {
+        "type": "REGIME_CHANGE"
+      },
+      "condition": "count(REGIME_CHANGE, last_5min) >= 3",
+      "action": "broadcast",
+      "message": {
+        "type": "FLEET_ALERT",
+        "reason": "Multiple regime shifts — market structure unstable",
+        "suggested_action": "reduce_exposure"
+      }
+    },
+    {
+      "name": "convergent_signal",
+      "description": "Flag when 3+ bots signal same pair same direction within 60s",
+      "trigger": {
+        "type": "SIGNAL"
+      },
+      "condition": "count(SIGNAL, same_pair, same_direction, last_60s) >= 3",
+      "action": "broadcast",
+      "message": {
+        "type": "HIGH_CONVICTION",
+        "reason": "Fleet convergence on {data.pair} {data.direction}",
+        "pair": "{data.pair}",
+        "direction": "{data.direction}",
+        "suggested_action": "increase_conviction"
+      }
+    },
+    {
+      "name": "cascade_stop_warning",
+      "description": "Emergency alert when 3+ stops hit in 5 minutes",
+      "trigger": {
+        "type": "TRADE_CLOSE"
+      },
+      "condition": "count(TRADE_CLOSE.stop_loss, last_5min) >= 3",
+      "action": "broadcast",
+      "message": {
+        "type": "EMERGENCY_REDUCE",
+        "reason": "3+ stops in 5 minutes — cascade risk",
+        "suggested_action": "halt_new_entries"
+      }
+    },
+    {
+      "name": "portfolio_overweight",
+      "description": "Alert when portfolio exceeds 60% deployed",
+      "trigger": {
+        "type": "PORTFOLIO_RESERVE"
+      },
+      "condition": "count(PORTFOLIO_RESERVE, last_5min) >= 5",
+      "action": "broadcast",
+      "message": {
+        "type": "FLEET_ALERT",
+        "reason": "Rapid capital deployment — check concentration",
+        "suggested_action": "review_positions"
+      }
+    },
+    {
+      "name": "manifold_deformation_alert",
+      "description": "Alert when distribution morphing detected — models becoming unreliable",
+      "trigger": {
+        "type": "MANIFOLD_WARNING"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "FLEET_ALERT",
+        "reason": "Statistical manifold deforming — reduce model confidence",
+        "suggested_action": "widen_stops"
+      }
+    },
+    {
+      "name": "quantum_collapse_convergence",
+      "description": "Repeated quantum collapse on the SAME pair within 5min. Was unconditional: every QUANTUM_COLLAPSE became a HIGH_CONVICTION, a 1:1 relabel producing 83,471 events that were 100% suppressed downstream (2026-08-05 replay). confidence/entropy cannot gate it — the emitter saturates both (confidence median 1.0000, 99.5% >= 0.85; entropy median ~0). Persistence is the only real discriminator available.",
+      "trigger": {
+        "type": "QUANTUM_COLLAPSE"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "HIGH_CONVICTION",
+        "reason": "Quantum state collapsed {data.dominant_state} on {data.pair} — regime definite",
+        "pair": "{data.pair}",
+        "confidence": "{data.confidence}",
+        "suggested_action": "increase_conviction"
+      },
+      "condition": "count(QUANTUM_COLLAPSE, same_pair, last_300s) >= 3"
+    },
+    {
+      "name": "book_phase_transition",
+      "description": "Alert when order book enters BOILING or PLASMA phase",
+      "trigger": {
+        "type": "BOOK_PHASE"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "FLEET_ALERT",
+        "reason": "Order book phase transition — liquidity evaporating",
+        "suggested_action": "halt_new_entries"
+      }
+    },
+    {
+      "name": "chaos_attractor_departure",
+      "description": "Alert when market trajectory leaves its attractor — regime change in progress",
+      "trigger": {
+        "type": "CHAOS_STATE"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "FLEET_ALERT",
+        "reason": "Attractor departure — regime dissolving",
+        "suggested_action": "reduce_exposure"
+      }
+    },
+    {
+      "name": "catastrophe_imminent",
+      "description": "Alert when Thom early warning signals exceed critical threshold",
+      "trigger": {
+        "type": "CATASTROPHE_WARNING"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "FLEET_ALERT",
+        "reason": "Catastrophe early warning — discontinuous jump imminent",
+        "suggested_action": "tighten_stops"
+      }
+    },
+    {
+      "name": "dissipative_structure_forming",
+      "description": "Signal when Prigogine detects trend or cycle crystallizing",
+      "trigger": {
+        "type": "STRUCTURE_FORMING"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "SIGNAL",
+        "reason": "Dissipative structure forming — trend/cycle nucleating",
+        "suggested_action": "prepare_entry"
+      }
+    }
+  ]
 }

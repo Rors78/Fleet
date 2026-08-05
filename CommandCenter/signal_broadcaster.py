@@ -66,9 +66,19 @@ def display_name(internal: str) -> str:
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────
+# Log in UTC with an explicit Z. Python's %(asctime)s defaults to LOCAL time
+# and says so nowhere, which on 2026-08-05 made a scheduler verification read
+# as wrong: "DailySummaryJob started, next in 46650s" logged at 13:02:30 does
+# not reach 08:00 — but 13:02:30 was Mountain, and 19:02:30 UTC + 46650s is
+# exactly 08:00:00. The job was right; the frame was unlabeled.
+#
+# Every timestamp this fleet emits is compared against a UTC schedule, so the
+# log must be in the same frame as the thing it describes. The Z is not
+# decoration — it is what stops the next reader inferring a frame.
+logging.Formatter.converter = time.gmtime
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(name)s] %(levelname)s %(message)s",
+    format="%(asctime)sZ [%(name)s] %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("signal_broadcaster")

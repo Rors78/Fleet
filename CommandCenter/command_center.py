@@ -2308,6 +2308,37 @@ def _poll_all_bots() -> None:
             _rg = normalized.get("regime")
             if isinstance(_rg, str):
                 normalized["regime"] = _rg.upper()
+            # Positions passthrough — the second shared post-step, same
+            # rationale as the regime casing above: do it once here rather
+            # than in 18 separate normalizers.
+            #
+            # No normalizer emitted `positions`, so `normalized.positions` was
+            # undefined for every bot. The dashboard's ACTIVE POSITIONS panel
+            # has a fallback that reads exactly that field to fill its UNRL
+            # P/L column, so the column rendered "—" permanently while the
+            # data sat in the raw snapshot (TurtleSue publishes
+            # unrealized_pnl directly; -67.84 at the time of writing).
+            #
+            # Bots use three different shapes: dict keyed by pair (turtlesue),
+            # list of dicts (confluence), and absent (gridzilla). Normalise to
+            # a list of dicts each carrying `pair`, so one consumer shape
+            # works for all. Nothing is invented — a bot that reports no
+            # unrealized_pnl simply carries None and the panel keeps showing
+            # "—" for it, which is honest.
+            if "positions" not in normalized:
+                _rawpos = raw.get("positions")
+                _plist = None
+                if isinstance(_rawpos, dict):
+                    _plist = []
+                    for _pk, _pv in _rawpos.items():
+                        if isinstance(_pv, dict):
+                            _entry = dict(_pv)
+                            _entry.setdefault("pair", _pv.get("name") or _pk)
+                            _plist.append(_entry)
+                elif isinstance(_rawpos, list):
+                    _plist = [p for p in _rawpos if isinstance(p, dict)]
+                if _plist is not None:
+                    normalized["positions"] = _plist
             stale_age, is_stale = _snapshot_staleness(bid, raw)
             new_bots[bid] = {
                 "id": bid, "name": bot["name"], "port": bot["port"],

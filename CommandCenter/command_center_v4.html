@@ -18769,6 +18769,17 @@ function renderOvPositions(){
             var _fpos = _fbPos[_pIdx];
             var _fPair = _fpos.pair || _fpos.symbol || "";
             if(_fPair === pair || _fPair.replace("/","") === pair.replace("/","")){
+              /* Prefer a directly published unrealized_pnl over recomputing
+                 it. TurtleSue reports it (-68.11 live) but carries no
+                 entry_price/current_price at position level, so the
+                 computation below can never fire for it.
+                 NOTE: this branch was dead until the CC normalizer began
+                 passing `positions` through (2026-08-06) — normalized.positions
+                 was undefined for every bot before that. */
+              if(_fpos.unrealized_pnl != null && !isNaN(parseFloat(_fpos.unrealized_pnl))){
+                unrealPnl = parseFloat(_fpos.unrealized_pnl);
+                break;
+              }
               var _ep = parseFloat(_fpos.entry_price || _fpos.entry || 0);
               var _cp = _tick ? (_tick.price || 0) : parseFloat(_fpos.current_price || _fpos.price || 0);
               if(_ep > 0 && _cp > 0 && r.amount != null){

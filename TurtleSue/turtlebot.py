@@ -778,7 +778,7 @@ class TurtleEngine:
             # equity ledger the drawdown brake measures against. Both are
             # optional so an older state file still loads.
             _tr = data.get("trades")
-            if isinstance(_tr, list) and hasattr(self, "trade_log"):
+            if isinstance(_tr, list) and getattr(self, "trade_log", None) is not None:
                 self.trade_log.trades = [t for t in _tr if isinstance(t, dict)]
             _eq = data.get("equity")
             if isinstance(_eq, (int, float)):
@@ -787,11 +787,16 @@ class TurtleEngine:
             if isinstance(_pk, (int, float)):
                 self.peak_equity = float(_pk)
             if loaded > 0 or _tr or _eq is not None:
+                # Read back through getattr: this log line must never be the
+                # thing that raises, or a perfectly good state file gets
+                # flagged unreadable by the handler below.
                 logging.info(
-                    "Restored %d position(s), %d trade(s), equity $%.2f "
-                    "(peak $%.2f) from %s", loaded,
-                    len(self.trade_log.trades) if hasattr(self, "trade_log") else 0,
-                    self.equity, self.peak_equity, self._positions_file)
+                    "Restored %d position(s), %d trade(s), equity %s "
+                    "(peak %s) from %s", loaded,
+                    len(getattr(getattr(self, "trade_log", None), "trades", []) or []),
+                    getattr(self, "equity", "n/a"),
+                    getattr(self, "peak_equity", "n/a"),
+                    self._positions_file)
         except Exception as e:
             # The file exists and we could not read it. That is NOT "no
             # positions" — treat it as unknown state, loudly.

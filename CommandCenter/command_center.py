@@ -2468,6 +2468,23 @@ def _poll_all_bots() -> None:
             _rg = normalized.get("regime")
             if isinstance(_rg, str):
                 normalized["regime"] = _rg.upper()
+            # win_rate has no canonical scale at the source: turtlesue reports
+            # 0-100, nexusbrain 0-1 (its normalizer multiplies by 100), and
+            # five other normalizers pass through whatever the bot sent. The
+            # dashboard then re-derives the scale ad hoc in three places and
+            # not at all in five others, so a 60% rate can render as "0.6%".
+            #
+            # Publish ONE scale — percent, 0-100 — so no consumer has to
+            # guess. The <=1.01 test is the same heuristic the existing
+            # client-side guards use; it is imperfect for a genuine sub-1%
+            # win rate, but a bot posting 0.008 for 0.8% is not a case that
+            # occurs here and the alternative is five inconsistent guesses.
+            _wr = normalized.get("win_rate")
+            if isinstance(_wr, (int, float)) and 0 < _wr <= 1.01:
+                normalized["win_rate"] = _wr * 100.0
+                normalized["win_rate_scale"] = "pct_from_fraction"
+            elif isinstance(_wr, (int, float)):
+                normalized["win_rate_scale"] = "pct"
             # Zero trades is not a zero win rate — the third shared post-step,
             # same rationale as the two around it: once here rather than in 13
             # normalizers, four of which were already passing this through.

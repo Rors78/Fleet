@@ -117,7 +117,23 @@ CLEAR     = f"{ESC}2J{ESC}H"
 
 CONFIG = {
     # ── Account ──
+    # Fallback only. When use_central_portfolio is on and Command Center is
+    # reachable, the sizing basis is a SHARE of the live pool instead (see
+    # equity_pool_share_pct below) — otherwise this bot sizes a $10k account
+    # while drawing on a pool 100x that, risking $50/unit on $1,000,000.
     "starting_equity": 10000.00,
+
+    # Share of the central pool this bot sizes against, as a percent.
+    # 10% of $1,000,000 = a $100,000 sizing basis, so 0.5% risk/unit = $500
+    # per unit and units land around $8k-20k notional.
+    #
+    # Deliberately a SHARE, not a dollar figure: a hardcoded number goes stale
+    # the moment the pool is resized, which is exactly how the 5%-of-pool size
+    # floor silently blocked gridzilla when the pool went to $1M. This scales
+    # with the pool without letting one bot size off the whole thing — 18 bots
+    # share this capital, and sizing off the full pool would make the 60%
+    # directional cap the binding constraint instead of the Turtle risk rules.
+    "equity_pool_share_pct": 10.0,
     # Crypto adaptation: 0.5% per unit (vs original 1%).
     # Crypto daily ATR is 3-8% vs commodities' 1-3% — halving unit risk
     # keeps dollar exposure comparable to the original system's intent.
@@ -168,8 +184,11 @@ CONFIG = {
 
     # ── Minimum Trade Size ──
     # Signal-quality floor: must clear Kraken order minimums and the pool's
-    # 5% size floor. (No fee modeling — signal product, fees are the subscriber's venue.)
-    "min_trade_size_usd": 500.0,  # raised from 300.0 on 2026-04-07 — must clear 5% pool floor
+    # own floor. (No fee modeling — signal product, fees are the subscriber's venue.)
+    # The pool floor became an absolute $100 on 2026-08-05 (was 5%-of-pool,
+    # which scaled to $50,000 when the pool went to $1M and blocked trades
+    # fleet-wide). This 500 stays above it as a signal-quality bar of its own.
+    "min_trade_size_usd": 500.0,  # raised from 300.0 on 2026-04-07
 
     # ── System Allocation ──
     "system_mode": "BOTH",          # S1 + S2 + S3 all active
@@ -693,10 +712,16 @@ class TurtleEngine:
         self.strength_rank: List[Tuple[str, float]] = []
         self.equity_curve: List[dict] = []  # For dashboard charts
 
+        # Sizing basis cache — refreshed once per scan so every unit-size call
+        # within a cycle uses the same figure.
+        self._pool_basis_cached = None
+        self._pool_basis_warned = False
+
         # Central portfolio client (init before position persistence so reconcile works)
         self._portfolio_client = None
         if CONFIG["use_central_portfolio"]:
             self._portfolio_client = PortfolioClient(CONFIG["command_center_url"], "turtlesue")
+            self._refresh_pool_basis()
 
         # Position persistence for crash recovery
         self._positions_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "turtle_positions.json")
@@ -805,19 +830,74 @@ class TurtleEngine:
                 ok, reason = self._portfolio_client.release(rid, pnl=0.0)
                 logging.warning(f"Orphaned reservation {rid}: release {'ok' if ok else f'FAILED ({reason})'}")
 
+    # ── Sizing basis (share of the central pool) ──
+    def _sizing_basis(self) -> float:
+        """Equity figure that position sizing is calculated FROM.
+
+        Deliberately separate from self.equity, which is this bot's own P/L
+        ledger and must keep tracking realized gains and losses for the
+        drawdown rule, the equity curve and the dashboard. Conflating the two
+        would make a losing streak silently shrink the pool share as well as
+        the ledger — the drawdown reduction below already handles that, and
+        applying it twice is not the original rule.
+
+        Falls back to self.equity whenever the pool is unreachable or the
+        share is not configured, so an unreachable Command Center degrades to
+        the previous behaviour instead of sizing off a guess. Cached per scan:
+        unit sizing is called several times per cycle and must not produce a
+        different basis within one scan.
+        """
+        share = CONFIG.get("equity_pool_share_pct")
+        if not self._portfolio_client or not isinstance(share, (int, float)) or share <= 0:
+            return self.equity
+
+        basis = self._pool_basis_cached
+        if basis is None:
+            return self.equity
+        return basis
+
+    def _refresh_pool_basis(self) -> None:
+        """Fetch the pool total once per scan and cache the derived basis."""
+        share = CONFIG.get("equity_pool_share_pct")
+        if not self._portfolio_client or not isinstance(share, (int, float)) or share <= 0:
+            self._pool_basis_cached = None
+            return
+        try:
+            total = self._portfolio_client.pool_total()
+        except Exception:
+            total = None
+        if not isinstance(total, (int, float)) or total <= 0:
+            # Loud once, not every scan: a silently-degraded sizing basis is
+            # the kind of thing that runs for weeks unnoticed.
+            if not self._pool_basis_warned:
+                self._pool_basis_warned = True
+                self.errors.append(
+                    "pool total unreachable — sizing off local equity "
+                    f"${self.equity:,.2f} instead of {share:.1f}% of pool")
+            self._pool_basis_cached = None
+            return
+        self._pool_basis_warned = False
+        self._pool_basis_cached = total * (share / 100.0)
+
     # ── Drawdown Adjustment (Original Rule) ──
     def _adjusted_equity(self) -> float:
-        """Reduce notional equity by 20% for each 10% drawdown."""
+        """Reduce notional equity by 20% for each 10% drawdown.
+
+        The drawdown is measured on this bot's own P/L (self.equity vs
+        starting_equity) but applied to the sizing basis, so a pool-sized bot
+        still de-risks after losses exactly as the original rule intends.
+        """
+        basis = self._sizing_basis()
         drawdown_pct = 0.0
         if self.starting_equity > 0:
             drawdown_pct = (self.starting_equity - self.equity) / self.starting_equity * 100
 
         reductions = int(drawdown_pct / CONFIG["drawdown_threshold_pct"])
         if reductions <= 0:
-            return self.equity
+            return basis
 
         reduction_factor = (1 - CONFIG["drawdown_reduce_pct"] / 100) ** reductions
-        return self.equity * reduction_factor
+        return basis * reduction_factor
 
     # ── Risk Limit Checks (Original Rules) ──
     def _count_units_for_market(self, pair: str) -> int:
@@ -1120,8 +1200,13 @@ class TurtleEngine:
             self.errors.append(f"Trade too small: ${cost:.2f} < ${min_size:.0f} minimum")
             return
 
-        if cost > self.equity * 0.95:
-            unit_coins = (self.equity * 0.25) / price
+        # Concentration clamp — measured against the SIZING BASIS, not the
+        # local P/L ledger. Against self.equity ($10k) this would have clawed
+        # every pool-sized unit back down to ~$2.5k and silently undone the
+        # pool share entirely.
+        _basis = self._sizing_basis()
+        if cost > _basis * 0.95:
+            unit_coins = (_basis * 0.25) / price
             if unit_coins <= 0:
                 return
 
@@ -1191,8 +1276,11 @@ class TurtleEngine:
         unit_coins = TurtleMath.unit_size(adj_equity, n, CONFIG["risk_per_unit_pct"])
         cost = unit_coins * price
 
-        if cost > self.equity * 0.25:
-            unit_coins = (self.equity * 0.10) / price
+        # Pyramid clamp — same reasoning as the entry clamp: measure against
+        # the sizing basis, not the local ledger.
+        _basis = self._sizing_basis()
+        if cost > _basis * 0.25:
+            unit_coins = (_basis * 0.10) / price
             if unit_coins <= 0:
                 return
 
@@ -1434,6 +1522,15 @@ class TurtleEngine:
             "starting_equity": self.starting_equity,
             "peak_equity": round(self.peak_equity, 2),
             "adjusted_equity": round(self._adjusted_equity(), 2),
+            # What sizing is actually calculated from, and whether it came
+            # from the pool or fell back to the local ledger. Without this the
+            # dashboard shows $10k equity while the bot trades $100k units,
+            # and nobody can tell which number is driving the trades.
+            "sizing_basis": round(self._sizing_basis(), 2),
+            "sizing_basis_source": ("pool_share"
+                                    if self._pool_basis_cached is not None
+                                    else "local_equity"),
+            "equity_pool_share_pct": CONFIG.get("equity_pool_share_pct"),
             "pnl": round(self.equity - self.starting_equity, 2),
             "pnl_pct": round((self.equity - self.starting_equity) / self.starting_equity * 100, 2),
             "drawdown_pct": round(dd_from_peak, 2),
@@ -1495,6 +1592,9 @@ class TurtleEngine:
         if self._portfolio_client:
             self._portfolio_client.confirm_reservations(
                 [rid for pos in self.positions.values() for rid in pos.reservation_ids])
+
+        # One pool read per scan; every unit-size call this cycle uses it.
+        self._refresh_pool_basis()
 
         try:
             self.market_data = self.data.get_all_ohlc(

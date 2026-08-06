@@ -108,6 +108,20 @@ class PortfolioClient:
             return None
         return result.get("available")
 
+    def pool_total(self):
+        """Total pool capital, or None on error.
+
+        Distinct from available(): available() is what is free RIGHT NOW and
+        moves with every other bot's positions. A bot sizing its trades off
+        available() would resize itself because an unrelated bot opened a
+        position. pool_total() is the stable figure to take a share of.
+        """
+        result = self._get("/api/portfolio")
+        if result is None:
+            return None
+        total = result.get("total")
+        return total if isinstance(total, (int, float)) else None
+
     def get_reservations(self) -> dict | None:
         """Get all active reservations. Returns {reservation_id: {...}} or None on error."""
         result = self._get("/api/portfolio/reservations")

@@ -31,6 +31,7 @@ TESTS = [
     "test_eod.py",
     "test_eod2.py",
     "test_rows.py",
+    "test_turtle_sizing.py",
 ]
 
 

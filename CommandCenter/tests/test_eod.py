@@ -62,3 +62,33 @@ if fails:
     for f in fails: print("  FAIL:", f)
     raise SystemExit(1)
 print("EOD DATA VERIFIED — no fabricated zeros")
+
+# ── data_available: "we could not read the fleet" is not "a flat day" ──
+print()
+print("=== unreadable sources must not render as a quiet day ===")
+_f = []
+def _ck(n, c, d=""):
+    print(f"  {'PASS' if c else 'FAIL'}  {n}" + (f"  — {d}" if d else ""))
+    if not c:
+        _f.append(n)
+
+try:
+    from card_renderer import CardRenderer as _CR
+    _r = _CR()
+    _base = {"date": "06 Aug 2026", "timestamp": "23:59 UTC", "source": "none",
+             "trades": [], "gross": None, "fees": None, "net": None,
+             "fleet_expectancy_lifetime": None}
+    _quiet = _r.render_end_of_day({**_base, "data_available": True}, tier="paid")
+    _down = _r.render_end_of_day({**_base, "data_available": False}, tier="paid")
+    _ck("both variants render", len(_quiet) > 0 and len(_down) > 0)
+    _ck("they are NOT the same image", _quiet != _down,
+        "a failed fetch used to produce the identical card as a quiet day")
+    # Default (absent flag) must behave as the quiet day, not the outage.
+    _dflt = _r.render_end_of_day(dict(_base), tier="paid")
+    _ck("absent flag defaults to the quiet-day card", _dflt == _quiet)
+except ImportError as _e:
+    print(f"  SKIP  CardRenderer unavailable ({_e})")
+
+if _f:
+    print(f"{len(_f)} FAILED: {_f}")
+    raise SystemExit(1)

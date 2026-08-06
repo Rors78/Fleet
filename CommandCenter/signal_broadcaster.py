@@ -3288,11 +3288,20 @@ class EndOfDayJob:
 
         today_trades: list[dict] = []
         source_used = "none"
+        # Did either source actually ANSWER? An empty list from a healthy
+        # bus means a quiet day; a failed fetch means we do not know. Both
+        # produced source_used="none" and an identical card reading
+        # "$0.00 / Fleet held cash today — no setups met the threshold",
+        # which asserts a reason the renderer has no basis for.
+        sources_answered = False
 
         # ── Primary source: bus ring buffer ──
         try:
-            events = _http_get_json(
-                f"{self._cc_url}/api/events/recent?n=500&type=TRADE_CLOSE") or []
+            _ev_raw = _http_get_json(
+                f"{self._cc_url}/api/events/recent?n=500&type=TRADE_CLOSE")
+            if _ev_raw is not None:
+                sources_answered = True
+            events = _ev_raw or []
             for ev in events:
                 # Bus events store ts as a float Unix timestamp, not an ISO string
                 ts_raw = ev.get("ts", ev.get("timestamp", 0))
@@ -3329,8 +3338,11 @@ class EndOfDayJob:
         # ── Fallback: /api/trades reads from disk-backed event log ──
         if not today_trades:
             try:
-                trades_resp = _http_get_json(
-                    f"{self._cc_url}/api/trades?limit=500") or {}
+                _tr_raw = _http_get_json(
+                    f"{self._cc_url}/api/trades?limit=500")
+                if _tr_raw is not None:
+                    sources_answered = True
+                trades_resp = _tr_raw or {}
                 trade_list = trades_resp.get("trades", []) if isinstance(
                     trades_resp, dict) else []
                 seen_keys = set()  # dedup the snapshot-diff vs release double-emit
@@ -3405,6 +3417,9 @@ class EndOfDayJob:
             "net": net if today_trades else None,
             "timestamp": f"{self._hour:02d}:{self._minute:02d} UTC",
             "source": source_used,
+            # False means the sources could not be read — NOT that the day
+            # was quiet. The card must say so rather than narrate a reason.
+            "data_available": sources_answered,
             "fleet_expectancy_lifetime": expectancy.get("fleet_expectancy"),
         }
 

@@ -1100,11 +1100,18 @@ class CardRenderer:
         if n_trades == 0:
             # No-trade day — still show stats block with zeros
             y += 10 * S
+            # data_available is False when BOTH the bus and the disk log
+            # failed to answer — a different thing from a day with no trades.
+            # Printing "0" and "$0.00" there states a measurement that was
+            # never taken, and the message below narrates a reason for it.
+            _have = data.get("data_available", True)
+            _z = "0" if _have else "—"
+            _zp = "$0.00" if _have else "—"
             zero_stats = [
-                ("Trades", "0", TEXT_PRI),
-                ("Wins", "0", TEXT_PRI),
-                ("Losses", "0", TEXT_PRI),
-                ("Net P/L", "$0.00", TEXT_PRI),
+                ("Trades", _z, TEXT_PRI),
+                ("Wins", _z, TEXT_PRI),
+                ("Losses", _z, TEXT_PRI),
+                ("Net P/L", _zp, TEXT_PRI),
             ]
             zx = CL + 14 * S
             for label, val, color in zero_stats:
@@ -1112,7 +1119,10 @@ class CardRenderer:
                 draw.text((zx + 110*S, y), val, fill=_hex(color), font=f2("mono_14"))
                 y += 24 * S
             y += 10 * S
-            msg = "Fleet held cash today \u2014 no setups met the threshold."
+            msg = ("Fleet held cash today \u2014 no setups met the threshold."
+                   if _have else
+                   "Today's results could not be retrieved \u2014 this is not "
+                   "a report of a flat day.")
             draw.text((CL + 14*S, y), msg, fill=_hex(TEXT_SEC), font=f2("sans_14"))
             y += 40 * S
             y = sep(y)

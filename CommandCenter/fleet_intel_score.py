@@ -248,18 +248,41 @@ class FleetIntelScore:
     # ── Public API ──
 
     def get_score(self, pair):
-        """Get intelligence score for a single pair."""
+        """Get intelligence score for a single pair.
+
+        An UNSCORED pair is marked `scored: False` rather than being handed a
+        complete, confident-looking record. The old default returned
+        risk_multiplier 1.0 and regime_confidence 0.5 for a pair no engine had
+        ever evaluated — indistinguishable from a pair assessed as safe, and
+        risk_multiplier gates real position size in PortfolioManager.reserve().
+
+        `stale_s` is the age of the last successful poll. poll() swallows a
+        dead Nexus, a non-200 and a malformed body into the same silent no-op
+        and leaves the previous scores in place, so a consumer that does not
+        check this is applying multipliers of unknown age to live capital.
+        """
         with self._lock:
-            return self._pair_scores.get(pair, {
+            _age = (time.time() - self._last_poll) if self._last_poll else None
+            hit = self._pair_scores.get(pair)
+            if hit is not None:
+                out = dict(hit)
+                out["scored"] = True
+                out["stale_s"] = _age
+                return out
+            return {
                 "pair": pair,
-                "regime_confidence": 0.5,
+                "regime_confidence": None,
                 "regime_type": "UNKNOWN",
                 "trade_bias": 0.0,
-                "risk_multiplier": 1.0,
+                # None, not 1.0 — "no opinion" is not "full size approved".
+                # The caller decides what to do with an unscored pair.
+                "risk_multiplier": None,
                 "active_warnings": [],
                 "engine_agreement": 0.0,
                 "contributing_engines": [],
-            })
+                "scored": False,
+                "stale_s": _age,
+            }
 
     def get_all_scores(self):
         """Get all pair scores."""

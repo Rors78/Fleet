@@ -33,6 +33,22 @@ from standards import normalize_pair
 
 log = logging.getLogger("command_center")
 
+# This module makes 53 log.* calls and configured no handler, so Python fell
+# back to lastResort: INFO was DROPPED ENTIRELY and WARNING+ went to stderr
+# bare, with no timestamp or level prefix. The launcher merges stderr into the
+# bot log (stderr=subprocess.STDOUT), so warnings did land in the file — but
+# indistinguishable from a stray print, and every informational line about
+# capital decisions was lost. Verified: zero log records of any level in
+# logs/bots/command_center.log across an entire run.
+if not log.handlers and not logging.getLogger().handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)sZ [%(name)s] %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S"))
+    log.addHandler(_h)
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
 from fleet_logger import FleetLogger
 from event_bus import EventBus
 from collector import start_collector, register_brainiac_endpoints
@@ -548,8 +564,26 @@ class PortfolioManager:
             # 9. Fleet intelligence gate — check engine risk assessment
             try:
                 intel = _fleet_intel.get_score(pair)
-                risk_mult = intel.get("risk_multiplier", 1.0)
+                risk_mult = intel.get("risk_multiplier")
                 warnings = intel.get("active_warnings", [])
+                # An UNSCORED pair now reports None instead of a confident
+                # 1.0. Full size is the correct behaviour — this gate only
+                # ever reduces, and refusing every unscored pair would halt
+                # the fleet whenever Nexus restarts — but it must be a
+                # deliberate pass, not a fabricated multiplier, and it must
+                # be visible.
+                if risk_mult is None:
+                    _age = intel.get("stale_s")
+                    # WARNING, not info: the log runs above INFO, so an
+                    # info-level line here is invisible — which would make
+                    # this deliberate pass indistinguishable from a scored
+                    # one, the exact ambiguity the change removes.
+                    log.warning("Fleet intel has no score for %s (last poll "
+                                "%s) — proceeding at full size, unscaled",
+                                pair,
+                                f"{_age:.0f}s ago" if isinstance(_age, (int, float))
+                                else "never")
+                    risk_mult = 1.0
                 if risk_mult < 0.10:
                     return {"ok": False, "reason": f"Fleet intel BLOCK: risk={risk_mult:.2f} < 0.10, warnings={warnings[:2]}"}
                 if risk_mult < 1.0:

@@ -5042,19 +5042,55 @@ function renderDaily24h(d){
   el.innerHTML=html;
 }
 
+/* Freshness has TWO independent failure modes and they are not the same:
+
+     last_seen   — when Command Center last got an HTTP 200 from the bot
+     stale_age_s — how old the DATA inside that response is, judged against
+                   a PER-BOT budget the backend already computes
+                   (hivemind 2100s, oracle/sentinel/nexus/deepblue 900s,
+                    phitex/chronos 600s, everything else the default)
+
+   A bot whose internal scan loop has died still answers HTTP instantly and
+   serves the same frozen snapshot forever, so last_seen stays at a few
+   seconds and this banner used to report it fresh indefinitely. Measured
+   live: hivemind answering in 5s while its snapshot was 251.9s old.
+
+   The backend's data_stale flag is the authority — it knows each bot's
+   cadence; a flat 60s rule here would flag a healthy 30-minute hivemind
+   cycle as stale ~35x over. Reachability is still checked separately,
+   because a bot CC cannot reach is a different problem from one serving
+   old data. */
 function renderFreshness(bots){
   var now=Date.now()/1000;
-  var stale=[];
+  var unreachable=[], frozen=[];
   for(var i=0;i<bots.length;i++){
-    if(!bots[i].alive) continue;
-    if(bots[i].last_seen){
-      var age=Math.round(now-bots[i].last_seen);
-      if(age>60) stale.push({name:bots[i].name,age:age});
+    var b=bots[i];
+    if(!b.alive) continue;
+    if(b.last_seen){
+      var age=Math.round(now-b.last_seen);
+      if(age>60) unreachable.push({name:b.name,age:age});
+    }
+    /* data_stale is the backend's per-bot verdict. Absent stale_age_s means
+       the bot serves no timestamp — not evidence of staleness, so say
+       nothing rather than guess. */
+    if(b.data_stale===true){
+      frozen.push({name:b.name,
+                   age:(typeof b.stale_age_s==='number')?Math.round(b.stale_age_s):null});
     }
   }
-  $freshness.innerHTML=stale.length===0
-    ?'<span style="color:var(--green)">All data fresh</span>'
-    :stale.map(function(s){return '<div style="color:var(--gold)">'+s.name+': stale ('+s.age+'s)</div>'}).join("");
+  if(!unreachable.length && !frozen.length){
+    $freshness.innerHTML='<span style="color:var(--green)">All data fresh</span>';
+    return;
+  }
+  var h='';
+  h+=frozen.map(function(s){
+    return '<div style="color:#f97316">'+escHtml(s.name)+': data frozen'
+      + (s.age!=null?' ('+s.age+'s old)':'')+'</div>';
+  }).join("");
+  h+=unreachable.map(function(s){
+    return '<div style="color:var(--gold)">'+escHtml(s.name)+': unreachable ('+s.age+'s)</div>';
+  }).join("");
+  $freshness.innerHTML=h;
 }
 
 function renderCorrelation(bots){
@@ -5661,7 +5697,11 @@ function buildPlanetHeroHTML(botId, def, b, snap){
     else if(typeof posArr==="object"&&posArr) hasPositions=Object.keys(posArr).length>0;
   }
   var isSignaling=(snap&&(snap.signals_count>0||(snap.top_signals&&snap.top_signals.length>0)||(snap.top_symbols&&snap.top_symbols.length>0)));
-  var stale=b&&b.last_seen?(Date.now()/1000-b.last_seen)>60:true;
+  /* Trust the backend's per-bot verdict when it has one — a flat 60s rule
+     here calls a healthy 30-minute hivemind cycle stale. Fall back to the
+     reachability clock only when the bot serves no timestamp. */
+  var stale=(b&&b.data_stale===true)
+    || (b&&b.last_seen?(Date.now()/1000-b.last_seen)>60:true);
   var canvasId='ph-'+botId+'-canvas';
 
   /* Evolution bar colors */

@@ -748,6 +748,21 @@ class TierRouter:
                       "category": "trade", "delay_free_s": 0}
 
         elif event_type == "TRADE_CLOSE":
+            # Suppress unpriced closes. A capital release with no entry/exit
+            # renders as "Result ✖ LOSS $+0.00 / Entry 0.0 / Exit 0.0" — a
+            # loss of zero with no prices, which is internally contradictory
+            # and cannot be defended to a subscriber. CC no longer fabricates
+            # 0 for these (it sends None + priced:false), but bots can still
+            # emit their own zero-price closes, so check the values rather
+            # than trusting the flag.
+            _ep = data.get("entry_price")
+            _xp = data.get("exit_price")
+            _priced = data.get("priced")
+            if _priced is False or not _ep or not _xp:
+                log.info("suppressing unpriced TRADE_CLOSE %s (entry=%r "
+                         "exit=%r) — capital movement, not a priced trade",
+                         pair, _ep, _xp)
+                return None
             result = {"free": True, "paid": True, "priority": 2,
                       "category": "trade", "delay_free_s": 0}
 

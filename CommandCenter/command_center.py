@@ -3948,8 +3948,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     "data": {
                         "pair": res_info.get("pair", ""),
                         "direction": res_info.get("direction", "LONG"),
-                        "entry_price": data.get("entry_price", 0),
-                        "exit_price": data.get("exit_price", 0),
+                        # NOT 0 when absent. A release whose bot supplied no
+                        # prices is a capital movement, not a priced trade —
+                        # defaulting to 0 fabricated closes that render as
+                        # "LOSS $+0.00, Entry 0.0, Exit 0.0" on subscriber
+                        # cards. 20 of 31 TRADE_CLOSE events on the bus carried
+                        # zero/missing prices this way (2026-08-06).
+                        # None is honest and lets publishers suppress; the
+                        # event still reaches /api/trades and expectancy.
+                        "entry_price": data.get("entry_price") or None,
+                        "exit_price": data.get("exit_price") or None,
+                        "priced": bool(data.get("entry_price")
+                                       and data.get("exit_price")),
                         "size_usd": _size,
                         "pnl": round(float(pnl), 4),
                         "fees": _fees,

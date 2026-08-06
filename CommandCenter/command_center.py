@@ -68,6 +68,13 @@ MAX_FEED_SIZE = 50
 UNIVERSE_REFRESH_HOURS = _FC_UNIVERSE_REFRESH_HOURS
 KRAKEN_REST = _FC_KRAKEN_REST
 
+# Smallest reservation the pool will accept, in dollars. Deliberately absolute
+# rather than a fraction of the pool — see the size-floor check in
+# PortfolioManager.reserve() for why a percentage silently broke the fleet when
+# the pool was resized. Live positions run $550-$1,003; this filters dust
+# without tracking pool size.
+MIN_TRADE_USD = 100.0
+
 # ---------------------------------------------------------------------------
 # Thread-safe state
 # ---------------------------------------------------------------------------
@@ -452,18 +459,26 @@ class PortfolioManager:
 
             # 7. Hard directional cap — no single direction may exceed 60% of pool
             # Absolute rule regardless of what's on the other side. Prevents fleet herding.
-            # 60% of $9,948 = ~$5,969 max LONG or SHORT across all bots simultaneously.
+            # Scales with the pool by design, unlike the size floor below.
             dir_totals = self.exposure_by_direction()
             dir_after = dir_totals.get(direction, 0) + amount
             if dir_after > self.total * 0.60:
                 return {"ok": False, "reason": f"Directional cap: {direction} would be ${dir_after:.0f} ({dir_after/self.total:.0%} of pool, max 60%)"}
 
-            # 8. Size floor — minimum 5% of pool. Position-sizing hygiene:
-            #    keeps every signal's stake large enough to matter to the
-            #    pool and filters out dust-sized noise entries.
-            min_trade = self.total * 0.05
+            # 8. Size floor — absolute dollars, NOT a fraction of the pool.
+            #    The purpose is to filter dust-sized noise entries, and dust is
+            #    an absolute concept: $50 is dust whether the pool is $10k or
+            #    $1M. As 5%-of-pool this rule silently redefined what counts as
+            #    a real trade every time the pool was resized. Setting the pool
+            #    to $1,000,000 on 2026-08-05 moved the floor from ~$500 to
+            #    $50,000 and blocked gridzilla from every trade it attempted
+            #    (141 denials in one hour, all "size floor"). Live fleet
+            #    positions run $550-$1,003, so that floor was ~90x larger than
+            #    anything any bot actually reserves — the six surviving
+            #    reservations only predate the change.
+            min_trade = MIN_TRADE_USD
             if amount < min_trade:
-                return {"ok": False, "reason": f"Size floor: ${amount:.2f} < 5% of pool (${min_trade:.2f})"}
+                return {"ok": False, "reason": f"Size floor: ${amount:.2f} < ${min_trade:.2f} minimum"}
 
             # 9. Fleet intelligence gate — check engine risk assessment
             try:

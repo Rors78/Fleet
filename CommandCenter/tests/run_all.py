@@ -33,6 +33,7 @@ TESTS = [
     "test_rows.py",
     "test_turtle_sizing.py",
     "test_confluence_sizing.py",
+    "test_reservation_sweep.py",
 ]
 
 

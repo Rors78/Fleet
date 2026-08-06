@@ -585,8 +585,10 @@ class PortfolioManager:
                 if r["reserved_at"] >= cutoff:
                     continue
                 if active_positions is not None:
-                    key = (str(r["bot_id"]).lower(),
-                           str(r["pair"]).replace("/", "").upper())
+                    # Same derivation as _active_position_keys — see
+                    # _position_key. Deriving the two sides differently is
+                    # exactly how a live position loses its reservation.
+                    key = _position_key(r["bot_id"], r["pair"])
                     if key in active_positions:
                         continue  # bot still holds this position
                 stale.append(rid)
@@ -2535,6 +2537,25 @@ def _apply_aegis_adjustment():
     _save_cc_state({"last_aegis_adjust": now})
 
 
+def _position_key(bot_id, pair) -> tuple:
+    """Canonical (bot, pair) key for matching positions to reservations.
+
+    Must be derived the SAME way on both sides or the stale-reservation sweep
+    releases capital out from under a live trade. Normalizing through
+    standards.normalize_pair is what makes that true: bots key positions by
+    whatever their exchange calls the pair, reservations carry the fleet's
+    display form, and "strip the slash and upper-case it" only makes those
+    agree by luck.
+
+    TurtleSue keys XLM as the Kraken pair "XXLMZUSD"; its reservation says
+    "XLM/USD". The old rule produced XXLMZUSD vs XLMUSD — no match, so a live
+    short was one hour of uptime away from having its reservation swept.
+    UNIUSD -> UNIUSD matched only because that pair has no Kraken prefix.
+    """
+    p = normalize_pair(pair) or pair
+    return (str(bot_id).lower(), str(p).replace("/", "").upper())
+
+
 def _active_position_keys(bots: dict) -> set:
     """{(bot_id_lower, PAIRNOSLASH)} for every position an alive bot reports.
 
@@ -2551,14 +2572,20 @@ def _active_position_keys(bots: dict) -> set:
         for field in ("positions", "open_positions"):
             val = raw.get(field)
             if isinstance(val, dict):
-                for k in val:
-                    keys.add((str(bid).lower(), str(k).replace("/", "").upper()))
+                for k, v in val.items():
+                    # Prefer an explicit pair/name field over the dict key —
+                    # TurtleSue keys by Kraken pair but carries "UNI/USD" in
+                    # `name`. Both are normalized, so either route agrees.
+                    p = k
+                    if isinstance(v, dict):
+                        p = v.get("pair") or v.get("name") or k
+                    keys.add(_position_key(bid, p))
             elif isinstance(val, list):
                 for it in val:
                     if isinstance(it, dict):
                         p = it.get("pair") or it.get("symbol")
                         if p:
-                            keys.add((str(bid).lower(), str(p).replace("/", "").upper()))
+                            keys.add(_position_key(bid, p))
     return keys
 
 

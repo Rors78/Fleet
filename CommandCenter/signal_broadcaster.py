@@ -1250,6 +1250,30 @@ class CardFormatter:
             trimmed = body[:max(0, limit - 1)].rstrip()
         return trimmed + "…"
 
+    @staticmethod
+    def _drop_empty_rows(body: str) -> str:
+        """Remove label rows whose only value is a placeholder.
+
+        Cards are built with fixed layouts, so a field the event lacks renders
+        as "Regime    —" or "Stop    None". A row that says nothing is worse
+        than no row: it asserts the fleet measured something and got nothing.
+        Applied once here rather than guarded at every call site — the same
+        approach the markup conversion uses.
+        """
+        if not body:
+            return body
+        out = []
+        for ln in body.splitlines():
+            s = ln.strip()
+            # Only drop "Label    <placeholder>" — never a divider, header,
+            # footer, or a line that merely ends with a dash.
+            if s and len(s.split()) == 2:
+                label, val = s.split()
+                if label.isalpha() and val in ("—", "None", "none", "null"):
+                    continue
+            out.append(ln)
+        return "\n".join(out)
+
     def format_paid(self, decision: dict) -> str:
         event = decision.get("event", decision)
         etype = event.get("type", "")
@@ -1271,7 +1295,7 @@ class CardFormatter:
             body = self._paid_generic(etype, data)
 
         context = self._context_line(event)
-        return prefix + body + context
+        return prefix + self._drop_empty_rows(body) + context
 
     def format_free(self, decision: dict) -> str:
         event = decision.get("event", decision)
@@ -1289,7 +1313,7 @@ class CardFormatter:
         else:
             body = self._free_generic(etype, data)
 
-        return body
+        return self._drop_empty_rows(body)
 
     def format_daily_summary(self, stats: dict) -> str:
         pnl = stats.get("fleet_pnl")
@@ -1962,6 +1986,33 @@ class CardFormatter:
         direction = str(d.get('direction', '')).upper()
         dir_glyph = "\u25b2 LONG" if direction in ("LONG", "BUY") else ("\u25bc SHORT" if direction in ("SHORT", "SELL") else _v(d, 'direction'))
         regime = _regime_badge(_v(d, 'regime'))
+
+        # Build rows from what the event HAS. Bots do not agree on field
+        # names — TurtleSue emits entry/size/sl, Confluence emits
+        # entry_price/size_usd/stop — so a single-key lookup renders "—" for a
+        # value that is present under another name. And `_v(d,'a') or
+        # _v(d,'b')` never falls through, because _v returns "—" (truthy) when
+        # the key is missing: the `or` is dead code. Check the dict directly.
+        def _row(label, *keys, fmt=None):
+            for k in keys:
+                v = d.get(k)
+                if v not in (None, "", 0):
+                    try:
+                        return f"{label:<10}{fmt(v) if fmt else v}\n"
+                    except Exception:
+                        return f"{label:<10}{v}\n"
+            return ""   # omit rather than print a placeholder
+
+        _rg = f"Regime    {regime}\n" if d.get("regime") else ""
+        _close_rows = (_rg
+                       + _row("Entry", "entry_price", "entry", "avg_entry")
+                       + _row("Exit", "exit_price", "exit"))
+        _open_rows = (_rg
+                      + _row("Entry", "entry_price", "entry", "price")
+                      + _row("Size", "size_usd", "size", "amount",
+                             fmt=lambda v: f"${float(v):,.2f}")
+                      + _row("Stop", "stop_loss", "stop", "sl", "current_stop"))
+
         if is_close:
             pnl = d.get("pnl")
             pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
@@ -1973,9 +2024,7 @@ class CardFormatter:
                 f"<code>"
                 f"Pair      {pair}\n"
                 f"Result    {result_glyph}  {pnl_s}\n"
-                f"Regime    {regime}\n"
-                f"Entry     {_v(d, 'entry_price')}\n"
-                f"Exit      {_v(d, 'exit_price')}\n"
+                f"{_close_rows}"
                 f"Bot       {display_name(_v(d, 'source', _v(d, 'bot')))}"
                 f"</code>"
                 f"{_footer(_FOOTER_FREE)}"
@@ -1986,9 +2035,7 @@ class CardFormatter:
             f"<code>"
             f"Pair      {pair}\n"
             f"Signal    {dir_glyph}\n"
-            f"Regime    {regime}\n"
-            f"Entry     {_v(d, 'entry_price') or _v(d, 'entry')}\n"
-            f"Size      {_v(d, 'size_usd')}\n"
+            f"{_open_rows}"
             f"Bot       {display_name(_v(d, 'source', _v(d, 'bot')))}"
             f"</code>"
             f"{_footer(_FOOTER_FREE)}"

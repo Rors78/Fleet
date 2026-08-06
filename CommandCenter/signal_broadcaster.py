@@ -1400,6 +1400,15 @@ class CardFormatter:
         pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
         trades = stats.get("total_trades", 0)
         regime = _regime_badge(str(stats.get("regime", "\u2014")))
+        # Replaced a "\ud83d\udd12 Full stats for subscribers" line. There is no paid
+        # tier behind it, so it was a paywall teaser for a product that does
+        # not exist. Win rate is already in stats \u2014 show the real number, and
+        # omit the line entirely rather than printing a placeholder.
+        _wr = stats.get("win_rate")
+        _wr_line = ""
+        if isinstance(_wr, (int, float)):
+            _wr_pct = _wr * 100 if _wr <= 1.01 else _wr
+            _wr_line = f"Win Rate  {_wr_pct:.0f}%\n"
 
         if isinstance(pnl, (int, float)):
             if pnl > 0:
@@ -1418,8 +1427,8 @@ class CardFormatter:
             f"<code>"
             f"P/L       {pnl_s}\n"
             f"Trades    {trades}\n"
-            f"Regime    {regime}\n"
-            f"Breakdown \U0001f512 Full stats for subscribers"
+            f"{_wr_line}"
+            f"Regime    {regime}"
             f"</code>"
             f"{_footer(_FOOTER_FREE)}"
         )
@@ -1451,8 +1460,7 @@ class CardFormatter:
             f"<code>"
             f"Week P/L  {pnl_s}\n"
             f"Trades    {trades}\n"
-            f"Green Days {days_pos}/{days_total}\n"
-            f"Details   \U0001f512 Full report for subscribers"
+            f"Green Days {days_pos}/{days_total}"
             f"</code>"
             f"{_footer(_FOOTER_FREE)}"
         )
@@ -2073,15 +2081,15 @@ class CardFormatter:
             ews_bar = _bar(ews or 0, 1.0, 10)
             ews_s = f"{ews:.2f}" if isinstance(ews, (int, float)) else "\u2014"
             label = "SUDDEN MOVE WARNING"
-            data_block = f"Pair      {pair}\nRisk      {ews_bar} {ews_s}\nDetail    \U0001f512 Full analysis for subscribers"
+            data_block = f"Pair      {pair}\nRisk      {ews_bar} {ews_s}"
         elif etype == "BOOK_PHASE":
             phase = _v(d, 'phase', _v(d, 'state'))
             phase_str = str(phase).upper()
             label = "LIQUIDITY CRISIS" if phase_str == "PLASMA" else "LIQUIDITY WARNING"
-            data_block = f"Pair      {pair}\nPhase     {phase_str}\nDetail    \U0001f512 Full analysis for subscribers"
+            data_block = f"Pair      {pair}\nPhase     {phase_str}"
         else:
             label = "MARKET SIGNAL"
-            data_block = f"Pair      {pair}\nDetail    \U0001f512 Full analysis for subscribers"
+            data_block = f"Pair      {pair}"
         return (
             f"{_header(label, etype)}\n"
             f"{_divider()}\n"

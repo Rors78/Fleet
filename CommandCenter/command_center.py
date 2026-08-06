@@ -1365,8 +1365,22 @@ def _normalize_gridzilla(raw: dict) -> dict:
     n_grids = raw.get("n_active_grids", len(active_grids))
     net_pnl = raw.get("net_pnl")
     pnl = net_pnl if net_pnl is not None else raw.get("total_pnl")
-    wr = exp.get("win_rate")
-    total_trades = exp.get("total_trades") or raw.get("total_cycles", 0)
+    # Trade count and win rate MUST come from the same source. total_trades
+    # used to fall back to total_cycles while win_rate stayed with the
+    # expectancy block, so a gridzilla with 1 completed cycle and no
+    # expectancy history reported "1 trade, 0.0% win rate" — a winning
+    # +$34.90 cycle rendered as a total loss. Two fields, two sources, shown
+    # as one measurement.
+    _exp_trades = exp.get("total_trades")
+    if _exp_trades:
+        total_trades = _exp_trades
+        wr = exp.get("win_rate")
+    else:
+        # Expectancy has nothing; fall back to the cycle counter for the
+        # count and report the rate as unmeasured rather than borrowing a
+        # zero from an empty block.
+        total_trades = raw.get("total_cycles", 0)
+        wr = None
     return {
         "equity": None,
         "pnl": float(pnl) if pnl is not None else None,
@@ -2325,6 +2339,24 @@ def _poll_all_bots() -> None:
             _rg = normalized.get("regime")
             if isinstance(_rg, str):
                 normalized["regime"] = _rg.upper()
+            # Zero trades is not a zero win rate — the third shared post-step,
+            # same rationale as the two around it: once here rather than in 13
+            # normalizers, four of which were already passing this through.
+            #
+            # turtlesue, rubberband, arbitrageur and nexusbrain all publish
+            # win_rate: 0.0 alongside total_trades: 0. The normalizers were
+            # right to pass that on faithfully, but "0% of nothing" renders on
+            # the dashboard as a bot that loses every trade. None means "not
+            # measured" and the UI already handles it — every other bot with
+            # no trade tracking reports None here.
+            if not normalized.get("total_trades"):
+                if normalized.get("win_rate") == 0:
+                    normalized["win_rate"] = None
+                # Same for the derived ratios: a profit factor or expectancy
+                # of 0.0 from zero samples is a fabricated measurement.
+                for _k in ("profit_factor", "expectancy_r", "sharpe"):
+                    if normalized.get(_k) == 0:
+                        normalized[_k] = None
             # Positions passthrough — the second shared post-step, same
             # rationale as the regime casing above: do it once here rather
             # than in 18 separate normalizers.

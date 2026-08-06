@@ -36,6 +36,7 @@ TESTS = [
     "test_reservation_sweep.py",
     "test_size_units.py",
     "test_grid_cycle_accounting.py",
+    "test_no_fabricated_stats.py",
 ]
 
 

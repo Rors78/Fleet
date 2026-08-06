@@ -412,8 +412,25 @@ class RubberbandEngine:
                 pos.opened_at = pdata.get("opened_at", time.time())
                 self.positions.append(pos)
                 loaded += 1
-            if loaded > 0:
-                self._log(f"Restored {loaded} position(s) from disk")
+            # Restore the safety state written above. All optional, so an
+            # older state file still loads.
+            _cd = data.get("sl_cooldowns")
+            if isinstance(_cd, dict):
+                self._sl_cooldowns = {k: float(v) for k, v in _cd.items()
+                                      if isinstance(v, (int, float))}
+            for _k in ("wins", "losses"):
+                _v = data.get(_k)
+                if isinstance(_v, int):
+                    setattr(self, _k, _v)
+            for _k in ("equity", "peak_equity"):
+                _v = data.get(_k)
+                if isinstance(_v, (int, float)):
+                    setattr(self, _k, float(_v))
+            if loaded > 0 or _cd:
+                self._log(
+                    f"Restored {loaded} position(s), "
+                    f"{len(self._sl_cooldowns)} SL cooldown(s), "
+                    f"{self.wins}W/{self.losses}L from disk")
         except Exception as e:
             self._log(f"Failed to load positions: {e}", "WARNING")
 
@@ -439,6 +456,20 @@ class RubberbandEngine:
                     for p in self.positions
                 ],
                 "saved_at": time.time(),
+                # Safety state that must survive a restart. The 2-hour
+                # stop-loss cooldown lived only in memory, and the gate reads
+                # self._sl_cooldowns.get(pair, 0) — a missing entry is a 1970
+                # timestamp, so sl_elapsed becomes ~1.7 billion seconds and the
+                # cooldown always passes. A restart therefore let the bot
+                # immediately re-enter the pair that had just stopped it out.
+                "sl_cooldowns": dict(self._sl_cooldowns),
+                # wins/losses and peak_equity reset to their initial values on
+                # boot, so the win rate and drawdown restarted from zero while
+                # the positions they describe were restored from this file.
+                "wins": self.wins,
+                "losses": self.losses,
+                "equity": self.equity,
+                "peak_equity": self.peak_equity,
             }
             tmp = self._positions_file + ".tmp"
             with open(tmp, "w") as f:
@@ -1085,6 +1116,11 @@ class RubberbandEngine:
         while not self.shutdown_event.is_set():
             try:
                 self.scan_once()
+                # Checkpoint every scan, not only on trade events. All three
+                # _save_positions call sites are entry/exit, so a bot holding
+                # steady positions never rewrote the file and the safety state
+                # added above never reached disk between trades.
+                self._save_positions()
             except Exception as e:
                 self._log(f"Scan error: {e}\n{traceback.format_exc()}", "ERROR")
 

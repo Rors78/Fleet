@@ -40,6 +40,7 @@ TESTS = [
     "test_unreadable_state.py",
     "test_state_checkpoint.py",
     "test_release_publish.py",
+    "test_nonfinite_guard.py",
 ]
 
 

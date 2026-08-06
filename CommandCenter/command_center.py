@@ -273,8 +273,24 @@ class PortfolioManager:
         try:
             with open(self.filepath, "r") as f:
                 data = json.load(f)
-            self.total = data.get("total", self.total)
-            self.reservations = data.get("reservations", {})
+            _t = data.get("total", self.total)
+            self.total = _t if isinstance(_t, (int, float)) and math.isfinite(_t) \
+                else self.total
+            # Validate every restored reservation. deployed() sums these, so a
+            # single NaN or non-numeric amount makes the sum NaN — and then
+            # every risk gate (all upper-bound comparisons) evaluates False
+            # and the JSON response cannot be encoded at all. A poisoned file
+            # would otherwise survive every restart.
+            _res = data.get("reservations", {})
+            self.reservations = {}
+            if isinstance(_res, dict):
+                for _rid, _r in _res.items():
+                    _a = _r.get("amount") if isinstance(_r, dict) else None
+                    if isinstance(_a, (int, float)) and math.isfinite(_a) and _a > 0:
+                        self.reservations[_rid] = _r
+                    else:
+                        log.error("DROPPED unloadable reservation %s: amount=%r "
+                                  "— not a finite positive number", _rid, _a)
             self.history = data.get("history", [])
             # AEGIS tightens max_deployed_pct when the regime turns defensive
             # (60% at the 0.18 score live on 2026-08-06, vs an 80% default).
@@ -312,7 +328,13 @@ class PortfolioManager:
         }
         tmp = self.filepath + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(data, f, indent=2)
+            # allow_nan=False refuses to WRITE a non-finite value rather than
+            # emitting the bare `NaN` literal, which is invalid JSON. One such
+            # value in history made portfolio.json unreadable by any strict
+            # parser and took /api/portfolio and /api/master offline until it
+            # was removed by hand. Better to fail the save loudly here than to
+            # persist a file that cannot be served.
+            json.dump(data, f, indent=2, allow_nan=False)
         os.replace(tmp, self.filepath)
 
     # ── Computed Properties ──
@@ -853,8 +875,44 @@ def _json_default(obj):
 
 
 def _safe_json(obj: Any) -> str:
-    """Serialize to JSON string, safe for inf/nan/numpy."""
-    return json.dumps(obj, default=_json_default, allow_nan=False)
+    """Serialize to JSON string, safe for inf/nan/numpy.
+
+    allow_nan=False RAISES on a non-finite native float rather than emitting
+    the invalid `NaN` literal — and json.dumps never consults `default` for
+    native floats (see _sanitize), so nothing intercepted them. A single NaN
+    reaching this function therefore produced an exception, an empty response
+    body, and a dead endpoint: /api/portfolio and /api/master both stopped
+    serving on 2026-08-06 for exactly this reason, taking the whole fleet's
+    polling with them.
+
+    Sanitizing on the retry keeps the endpoint alive and makes the bad value
+    visible as a null instead of silently substituting a plausible number.
+    """
+    try:
+        return json.dumps(obj, default=_json_default, allow_nan=False)
+    except ValueError:
+        log.error("Non-finite value in a JSON response — serving sanitized "
+                  "output. This is a data bug upstream, not a display issue.",
+                  exc_info=True)
+        return json.dumps(_nullify_nonfinite(obj), default=_json_default,
+                          allow_nan=False)
+
+
+def _nullify_nonfinite(obj: Any) -> Any:
+    """Replace non-finite floats with None — NOT 0.0.
+
+    _sanitize() substitutes 0.0, which is right at the bot-ingestion boundary
+    where a broken sensor reading should not stall the poll. It is wrong here:
+    a 0.0 on an outbound API reads as a measured zero. None reads as unknown,
+    which is what it is.
+    """
+    if isinstance(obj, dict):
+        return {k: _nullify_nonfinite(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_nullify_nonfinite(v) for v in obj]
+    if isinstance(obj, float) and not math.isfinite(obj):
+        return None
+    return obj
 
 
 def _sanitize(obj: Any) -> Any:
@@ -3204,9 +3262,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         content_length = int(self.headers.get("Content-Length", 0))
         body = self.rfile.read(content_length)
         try:
-            data = json.loads(body) if body else {}
-        except json.JSONDecodeError:
-            self._send_json({"error": "Invalid JSON"}, 400)
+            # parse_constant fires on the bare NaN / Infinity / -Infinity
+            # literals, which Python's json accepts by DEFAULT and standard
+            # JSON does not permit. They are not merely unusual values: NaN
+            # compares False against every bound, so it defeats every risk
+            # gate downstream, and it cannot be re-encoded, which takes the
+            # response with it. Reject at the boundary so no handler in the
+            # process ever holds one.
+            def _no_constants(tok):
+                raise ValueError(f"non-finite JSON literal {tok!r} not accepted")
+            data = json.loads(body, parse_constant=_no_constants) if body else {}
+        except (json.JSONDecodeError, ValueError) as e:
+            self._send_json({"error": f"Invalid JSON: {e}"}, 400)
             return
 
         method_name = self._POST_ROUTES.get(path)
@@ -4013,6 +4080,29 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             amount = float(data["amount"])
         except (ValueError, TypeError):
             self._send_json({"error": "Invalid amount"}, 400)
+            return
+        # float() accepts NaN and ±inf, and Python's json.loads accepts a bare
+        # NaN literal by default. Every risk gate below is a `>` comparison,
+        # and EVERY comparison against NaN is False — so a NaN amount passes
+        # the deployment limit, the per-bot cap, the per-pair cap, the
+        # directional cap, the concentration cap AND the size floor, all at
+        # once. Verified live on 2026-08-06: the reservation was accepted,
+        # deployed() then returned NaN, and /api/portfolio and /api/master
+        # both stopped serving entirely because the response could not be
+        # encoded. One malformed request disabled every capital control in
+        # the fleet and took down the two endpoints every bot polls.
+        if not math.isfinite(amount):
+            log.error("REJECTED non-finite reserve amount %r from bot=%s "
+                      "pair=%s — NaN/inf defeats every risk gate",
+                      data.get("amount"), data.get("bot_id"), data.get("pair"))
+            self._send_json({"ok": False,
+                             "reason": "amount must be a finite number"}, 400)
+            return
+        if amount <= 0:
+            # Every gate is an upper bound, so a negative amount passes all of
+            # them and is caught only by the size floor at the very end.
+            self._send_json({"ok": False,
+                             "reason": f"amount must be positive (got {amount})"}, 400)
             return
 
         mgr = _get_portfolio_for_bot(data["bot_id"])

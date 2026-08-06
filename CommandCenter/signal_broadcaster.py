@@ -2320,6 +2320,12 @@ class ChannelOps(Transport):
         self._stats_lock = threading.Lock()
         self._daily_stats = {
             "free_sent": 0, "paid_sent": 0, "failed": 0,
+            # Cards dropped because a channel is not configured. Kept
+            # SEPARATE from "failed": an unconfigured paid channel is a
+            # config state, not a delivery error, and the dashboard
+            # rendered the combined count in red as "FAILED" while the
+            # free channel was delivering every card.
+            "unconfigured": 0,
             "last_free_ts": "", "last_paid_ts": "",
             "date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
         }
@@ -2351,13 +2357,14 @@ class ChannelOps(Transport):
             # a number, not just emit a line someone has to be reading.
             with self._stats_lock:
                 self._reset_if_new_day()
-                self._daily_stats["failed"] += 1
+                self._daily_stats["unconfigured"] += 1
                 _warn = not getattr(self, "_warned_unset_paid", False)
                 self._warned_unset_paid = True
             if _warn:
                 log.warning("PAID CHANNEL UNSET — dropping %s (%s) and any "
                             "further paid cards today. Counted in "
-                            "failed_today. Set telegram_paid_chat_id in "
+                            "unconfigured_today (not a delivery failure). Set "
+                            "telegram_paid_chat_id in "
                             "signal_config.json.",
                             event_type or "card", event_id or "-")
             self._log_attempt("paid", event_type, event_id, False)
@@ -2400,13 +2407,14 @@ class ChannelOps(Transport):
             # log once per process.
             with self._stats_lock:
                 self._reset_if_new_day()
-                self._daily_stats["failed"] += 1
+                self._daily_stats["unconfigured"] += 1
                 _warn = not getattr(self, "_warned_unset_paid", False)
                 self._warned_unset_paid = True
             if _warn:
                 log.warning("PAID CHANNEL UNSET — dropping %s image (%s) and "
                             "any further paid cards today. Counted in "
-                            "failed_today. Set telegram_paid_chat_id in "
+                            "unconfigured_today (not a delivery failure). Set "
+                            "telegram_paid_chat_id in "
                             "signal_config.json.",
                             event_type or "card", event_id or "-")
             self._log_attempt("paid", event_type, event_id, False)
@@ -2498,6 +2506,10 @@ class ChannelOps(Transport):
                 "free_sent_today": self._daily_stats["free_sent"],
                 "paid_sent_today": self._daily_stats["paid_sent"],
                 "failed_today": self._daily_stats["failed"],
+                # Distinct from failed_today: cards dropped because the
+                # channel is not configured. A config gap must not read
+                # as a delivery failure.
+                "unconfigured_today": self._daily_stats.get("unconfigured", 0),
                 "last_free_ts": self._daily_stats["last_free_ts"],
                 "last_paid_ts": self._daily_stats["last_paid_ts"],
             }
@@ -2507,6 +2519,12 @@ class ChannelOps(Transport):
         if self._daily_stats["date"] != today:
             self._daily_stats = {
                 "free_sent": 0, "paid_sent": 0, "failed": 0,
+            # Cards dropped because a channel is not configured. Kept
+            # SEPARATE from "failed": an unconfigured paid channel is a
+            # config state, not a delivery error, and the dashboard
+            # rendered the combined count in red as "FAILED" while the
+            # free channel was delivering every card.
+            "unconfigured": 0,
                 "last_free_ts": "", "last_paid_ts": "", "date": today,
             }
             # Re-arm the once-per-run warnings. Process-scoped flags plus a

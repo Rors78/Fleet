@@ -12509,6 +12509,12 @@ function buildBroadcasterView(def,b){
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAID SENT</div><div class="dv2-kpi-value cyan">'+(haveLive?(ch.paid_sent_today||0):'--')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">FREE SENT</div><div class="dv2-kpi-value cyan">'+(haveLive?(ch.free_sent_today||0):'--')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">FAILED</div><div class="dv2-kpi-value '+((ch.failed_today||0)>0?'bad':'good')+'">'+(haveLive?(ch.failed_today||0):'--')+'</div></div>';
+  /* Cards dropped for want of a configured channel are a CONFIG state,
+     not a delivery failure. They used to be summed into failed_today and
+     rendered red: the deck read "8 PULSE / 8 FAILED" while the free
+     channel had delivered all 9 cards successfully. */
+  var _unconf=ch.unconfigured_today||0;
+  if(_unconf>0) h+='<div class="dv2-kpi"><div class="dv2-kpi-label">NO CHANNEL</div><div class="dv2-kpi-value warn">'+(haveLive?_unconf:'--')+'</div></div>';
   h+='</div>';
 
   if(!haveLive){
@@ -19045,8 +19051,13 @@ function _renderTgPanel(){
   if(freeEl) freeEl.textContent = freeCount == null ? "--" : freeCount;
   if(failEl){
     var fails = isErr ? "--" : (ch.failed_today || 0);
-    failEl.textContent = fails;
-    failEl.style.color = fails > 0 ? "#ef4444" : "#22c55e";
+    var unconf = isErr ? "--" : (ch.unconfigured_today || 0);
+    /* Show the config gap alongside, in amber rather than red — those cards
+       were not attempted, let alone failed. Red on an unconfigured channel
+       reads as a broken pipeline while the free channel is delivering. */
+    failEl.textContent = (isErr || !unconf) ? fails : (fails + " +" + unconf + " no-ch");
+    failEl.style.color = (fails > 0) ? "#ef4444"
+                       : (unconf > 0) ? "#f59e0b" : "#22c55e";
   }
   /* De-emphasize "nothing sent" boxes. Failed:0 is a good-state signal
      (already colored green for it), not dead data — never dim it. */

@@ -1387,42 +1387,61 @@ class CardFormatter:
     def format_weekly_report(self, report: dict) -> str:
         pnl = report.get("total_pnl")
         pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
-        trades = report.get("total_trades", 0)
+        trades = report.get("total_trades")
+        trades = trades if isinstance(trades, int) else "\u2014"
+        # The job now hands over a fraction or None \u2014 no magnitude-sniffing.
+        # The old `wr <= 1` test silently turned a 0.8% win rate into 1%
+        # and passed a percent through as a bare string.
         wr = report.get("avg_win_rate")
-        wr_s = f"{wr:.0%}" if isinstance(wr, float) and wr <= 1 else ("\u2014" if wr is None else str(wr))
+        wr_s = f"{wr:.0%}" if isinstance(wr, (int, float)) else "\u2014"
         ev = report.get("avg_expectancy")
         ev_s = f"${ev:+.2f}" if isinstance(ev, (int, float)) else "\u2014"
         best_day = report.get("best_day", "\u2014")
         worst_day = report.get("worst_day", "\u2014")
         days_pos = report.get("days_positive", "\u2014")
         days_total = report.get("days_total", 7)
+        # Days the fleet actually traded. "0 of 7 profitable" reads as seven
+        # losing days when it means seven days flat on the sidelines.
+        days_traded = report.get("days_with_trades")
 
         # Coach voice
-        if isinstance(pnl, (int, float)):
-            if pnl > 0:
-                why = f"Positive week. Fleet banked {pnl_s} total across {trades} trades."
-            elif pnl == 0 and trades == 0:
-                why = f"The fleet was mostly on the sidelines this week \u2014 conditions didn't meet our standards for putting capital to work."
-            else:
-                why = f"Down {pnl_s} this week across {trades} trades. Not the result we wanted, but drawdowns are part of the game. No panic."
-        else:
+        if not isinstance(pnl, (int, float)):
             why = "Here's how the fleet performed this week."
+        elif trades == 0:
+            why = ("The fleet stayed on the sidelines this week \u2014 no trades "
+                   "met our standards for putting capital to work.")
+        elif pnl > 0:
+            why = f"Positive week. Fleet banked {pnl_s} total across {trades} trades."
+        else:
+            why = (f"Down {pnl_s} this week across {trades} trades. Not the "
+                   f"result we wanted, but drawdowns are part of the game. No panic.")
 
-        if isinstance(days_pos, (int, float)) and isinstance(days_total, (int, float)):
-            why += f" {int(days_pos)} out of {int(days_total)} days were profitable."
+        # Only claim a green-day ratio when there were trading days to count.
+        if (isinstance(days_pos, (int, float))
+                and isinstance(days_traded, int) and days_traded > 0):
+            why += (f" {int(days_pos)} of {days_traded} trading "
+                    f"{'day was' if days_traded == 1 else 'days were'} profitable.")
+
+        # A row is emitted only when there is something to put in it. Blank
+        # rows are stripped downstream by _drop_empty_rows as a backstop.
+        rows = [f"Week P/L  {pnl_s}", f"Trades    {trades}"]
+        if wr_s != "\u2014":
+            rows.append(f"Win Rate  {wr_s}")
+        if ev_s != "\u2014":
+            rows.append(f"Avg P/L   {ev_s} per trade")
+        if best_day != "\u2014":
+            rows.append(f"Best Day  {best_day}")
+        if worst_day != "\u2014":
+            rows.append(f"Worst Day {worst_day}")
+        if isinstance(days_traded, int) and days_traded > 0:
+            rows.append(f"Green Days {days_pos}/{days_traded}")
 
         return (
             f"{_header('WEEKLY SCORECARD', 'HIGH_CONVICTION')}\n"
             f"<i>{why}</i>"
             f"{_divider()}\n"
             f"<code>"
-            f"Week P/L  {pnl_s}\n"
-            f"Trades    {trades}\n"
-            f"Win Rate  {wr_s}\n"
-            f"Avg P/L   {ev_s} per trade\n"
-            f"Best Day  {best_day}\n"
-            f"Worst Day {worst_day}\n"
-            f"Green Days {days_pos}/{days_total}"
+            + "\n".join(rows) +
             f"</code>"
             f"{_footer(_FOOTER_PAID)}"
         )
@@ -1470,31 +1489,34 @@ class CardFormatter:
     def format_weekly_report_free(self, report: dict) -> str:
         pnl = report.get("total_pnl")
         pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
-        trades = report.get("total_trades", 0)
+        trades = report.get("total_trades")
+        trades = trades if isinstance(trades, int) else "\u2014"
         days_pos = report.get("days_positive", "\u2014")
-        days_total = report.get("days_total", 7)
+        days_traded = report.get("days_with_trades")
 
-        if isinstance(pnl, (int, float)):
-            if pnl > 0:
-                why = f"Winning week \u2014 fleet made {pnl_s} across {trades} trades."
-            elif trades == 0:
-                why = f"Mostly sidelined this week. We don't force trades."
-            else:
-                why = f"Red week at {pnl_s}. Drawdowns happen \u2014 what matters is how we come back."
-        else:
+        if not isinstance(pnl, (int, float)):
             why = "Weekly recap from the fleet."
+        elif trades == 0:
+            why = "Sidelined this week. We don't force trades."
+        elif pnl > 0:
+            why = f"Winning week \u2014 fleet made {pnl_s} across {trades} trades."
+        else:
+            why = f"Red week at {pnl_s}. Drawdowns happen \u2014 what matters is how we come back."
 
-        if isinstance(days_pos, (int, float)):
-            why += f" {int(days_pos)}/{int(days_total)} days in the green."
+        if (isinstance(days_pos, (int, float))
+                and isinstance(days_traded, int) and days_traded > 0):
+            why += f" {int(days_pos)}/{days_traded} trading days in the green."
+
+        rows = [f"Week P/L  {pnl_s}", f"Trades    {trades}"]
+        if isinstance(days_traded, int) and days_traded > 0:
+            rows.append(f"Green Days {days_pos}/{days_traded}")
 
         return (
             f"{_header('WEEKLY SCORECARD', 'HIGH_CONVICTION')}\n"
             f"<i>{why}</i>"
             f"{_divider()}\n"
             f"<code>"
-            f"Week P/L  {pnl_s}\n"
-            f"Trades    {trades}\n"
-            f"Green Days {days_pos}/{days_total}"
+            + "\n".join(rows) +
             f"</code>"
             f"{_footer(_FOOTER_FREE)}"
         )
@@ -3111,6 +3133,16 @@ class WeeklyReportJob:
             days_positive = 0
             days_loaded = 0
 
+            # fleet_logger.py writes {"date","fleet":{...},"per_bot","uptime"}
+            # (see its _write_daily_summary). This job used to read top-level
+            # "fleet_pnl"/"pnl"/"total_trades"/"win_rate" \u2014 keys that have
+            # never existed in those files. Every lookup missed, every default
+            # fired, and the card reported a flat, empty, perfectly healthy
+            # looking week. 2026-04-09/10 held 5 real trades and -$30.55; the
+            # scorecard for that week would have said "$+0.00, 0 trades".
+            # Silent schema drift, not a formatting bug.
+            days_with_trades = 0
+
             for i in range(7):
                 day = today - timedelta(days=i)
                 day_str = day.strftime("%Y-%m-%d")
@@ -3123,40 +3155,69 @@ class WeeklyReportJob:
                 except Exception:
                     continue
 
+                # Accept the real nested shape; tolerate a flat one rather than
+                # silently scoring zero if the writer ever changes again.
+                fleet = data.get("fleet")
+                if not isinstance(fleet, dict):
+                    fleet = data
+
+                dt = fleet.get("total_trades", 0)
+                dt = dt if isinstance(dt, int) else 0
+
+                day_pnl = fleet.get("daily_pnl", fleet.get("fleet_pnl",
+                                                           fleet.get("pnl")))
+
                 days_loaded += 1
-                day_pnl = data.get("fleet_pnl", data.get("pnl", 0))
                 if isinstance(day_pnl, (int, float)):
                     total_pnl += day_pnl
-                    if day_pnl > best_pnl:
-                        best_pnl = day_pnl
-                        best_day = f"{day_str} (${day_pnl:+.2f})"
-                    if day_pnl < worst_pnl:
-                        worst_pnl = day_pnl
-                        worst_day = f"{day_str} (${day_pnl:+.2f})"
-                    if day_pnl > 0:
-                        days_positive += 1
+                    # Rank only days the fleet actually traded. A flat $0.00
+                    # from a day with no trades is not the "best day" of the
+                    # week \u2014 it is the absence of one.
+                    if dt > 0:
+                        if day_pnl > best_pnl:
+                            best_pnl = day_pnl
+                            best_day = f"{day_str} (${day_pnl:+.2f})"
+                        if day_pnl < worst_pnl:
+                            worst_pnl = day_pnl
+                            worst_day = f"{day_str} (${day_pnl:+.2f})"
+                        if day_pnl > 0:
+                            days_positive += 1
 
-                dt = data.get("total_trades", 0)
-                if isinstance(dt, int):
-                    total_trades += dt
-                wr = data.get("win_rate")
-                if isinstance(wr, (int, float)):
-                    win_rates.append(wr)
-                ev = data.get("expectancy")
-                if isinstance(ev, (int, float)):
-                    expectancies.append(ev)
+                total_trades += dt
+                if dt > 0:
+                    days_with_trades += 1
+                    # fleet_logger stores win_rate as a PERCENT (66.7), not a
+                    # fraction. Weight by trade count: a 100% day on 1 trade
+                    # must not outvote a 40% day on 20.
+                    wr = fleet.get("win_rate")
+                    if isinstance(wr, (int, float)):
+                        win_rates.append((wr, dt))
+                    ev = fleet.get("expectancy")
+                    if not isinstance(ev, (int, float)) and day_pnl is not None:
+                        # Not stored by the writer \u2014 derive it honestly.
+                        ev = day_pnl / dt
+                    if isinstance(ev, (int, float)):
+                        expectancies.append((ev, dt))
+
+            _wr_n = sum(n for _, n in win_rates)
+            _ev_n = sum(n for _, n in expectancies)
 
             report = {
-                "total_pnl": total_pnl if days_loaded else "\u2014",
-                "total_trades": total_trades if days_loaded else "\u2014",
-                "avg_win_rate": (f"{sum(win_rates) / len(win_rates):.0%}"
-                                 if win_rates else "\u2014"),
-                "avg_expectancy": (sum(expectancies) / len(expectancies)
-                                   if expectancies else "\u2014"),
+                # Distinguish "no days recorded" from "days recorded, all
+                # flat". Only the first is unknown; the second is a real $0.00.
+                "total_pnl": total_pnl if days_loaded else None,
+                "total_trades": total_trades if days_loaded else None,
+                # Percent in, percent out \u2014 the formatter no longer has to
+                # guess which unit it was handed.
+                "avg_win_rate": (sum(w * n for w, n in win_rates) / _wr_n / 100.0
+                                 if _wr_n else None),
+                "avg_expectancy": (sum(e * n for e, n in expectancies) / _ev_n
+                                   if _ev_n else None),
                 "best_day": best_day or "\u2014",
                 "worst_day": worst_day or "\u2014",
                 "days_positive": days_positive,
                 "days_total": days_loaded or 7,
+                "days_with_trades": days_with_trades,
             }
             msg_paid = self._formatter.format_weekly_report(report)
             msg_free = self._formatter.format_weekly_report_free(report)

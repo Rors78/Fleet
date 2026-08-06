@@ -386,6 +386,35 @@ Fix is to pass `config.get("daily_summary_utc_hour", 8)` through to both call
 sites — deliberately NOT done on the eve of a scheduled fire, since it changes
 scheduling behavior and the current literal is already the intended value.
 
+### COSMOS: the two renderers CO-EXIST — measured 2026-08-06
+
+An earlier audit claimed `_armadaOwnsTraders` meant "~2,000 lines of 2D cinema
+entities never render in fullscreen." **That is overstated.** Measured live in
+fullscreen with `Armada._initialized === true`:
+
+- Armada (WebGL) owns exactly **6 bodies** — the traders: confluence,
+  nexusbrain, gridzilla, turtlesue, rubberband, arbitrageur.
+- The 2D orbital canvas still draws the other **12**: cc, sentinel, trinity,
+  hivemind, oracle, deepblue, phitex, aegis, nexus, contrarian, chronos,
+  inference — plus every label, moon, orbit ring and trade flash for ALL 18,
+  including the six Armada owns. Only the trader *sphere* path is skipped.
+
+Both canvases are live and visible simultaneously (`orbitalCanvas` and
+`armadaCanvas`, both 1707x817 CSS). There is no dead-renderer problem to
+resolve; retiring either would lose real output.
+
+**Pixel-ratio asymmetry is deliberate, not a bug.** orbitalCanvas renders at
+raw `devicePixelRatio` (2.25 here → 3841x1839); Armada clamps to
+`_quality.pixelRatioCap` (high:2, low:1.5 → 3414x1634). Matching them would add
+**26.6%** more pixels to the WebGL layer.
+
+**Do not "upscale" that cap.** The display measures **24-35 FPS** in
+fullscreen, well under the 60 FPS the build spec targets. Dropping Armada to
+`low` recovers only ~4.3 FPS (31.1 → 35.4) and run-to-run variance (26-39 FPS)
+is wider than the effect — so the cap is load-bearing but is NOT the main
+bottleneck. Find the real cost before touching quality tiers; measure with
+several samples, because a single reading is inside the noise.
+
 ### ACTIVE POSITIONS: UNRL P/L is blocked in the normalizer, not the dashboard
 The overview's UNRL P/L column renders "—" for every row. The dashboard has a
 fallback that looks up the owning bot's position via

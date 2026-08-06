@@ -291,11 +291,26 @@ class ExpectancyTracker:
             all_trades.extend(trades)
 
         if not all_trades:
+            # Same SHAPE as the populated return. This branch used to drop
+            # participating_bots / fleet_members / bot_rankings, so a consumer
+            # that reads them got a bare figure with no denominator the moment
+            # history was empty — the daily card rendered "Avg P/L $+0.00 per
+            # trade" from zero trades, asserting a measurement nobody made.
+            # A payload whose keys change with its values is a trap.
+            _members = _fleet_member_ids()
             return {
                 'total_trades': 0,
-                'fleet_expectancy': 0,
+                'fleet_expectancy': None,   # not 0 — nothing was measured
+                'win_rate': None,
                 'total_net_pnl': 0,
+                'total_gross_pnl': 0,
                 'total_fees': 0,
+                'bot_rankings': [],
+                'participating_bots': 0,
+                'fleet_members': len(_members) if _members else None,
+                'silent_members': len(_members) if _members else None,
+                'coverage_note': 'no closed trades yet',
+                'excluded_non_members': [],
                 'bot_stats': {},
             }
 

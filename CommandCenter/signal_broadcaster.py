@@ -1265,12 +1265,18 @@ class CardFormatter:
         out = []
         for ln in body.splitlines():
             s = ln.strip()
-            # Only drop "Label    <placeholder>" — never a divider, header,
-            # footer, or a line that merely ends with a dash.
-            if s and len(s.split()) == 2:
-                label, val = s.split()
-                if label.isalpha() and val in ("—", "None", "none", "null"):
-                    continue
+            if s and not s.startswith("<"):
+                toks = s.split()
+                # "Label    —"  and also "Avg P/L   — per trade": the
+                # placeholder can sit mid-row followed by a unit, so match on
+                # the VALUE token rather than on row length. A row whose value
+                # is a placeholder says nothing regardless of its suffix.
+                if len(toks) >= 2 and any(
+                        t in ("—", "None", "none", "null") for t in toks[1:]):
+                    # Guard: never drop a row that also carries a real number,
+                    # e.g. "Range     — to 1.23".
+                    if not any(any(c.isdigit() for c in t) for t in toks[1:]):
+                        continue
             out.append(ln)
         return "\n".join(out)
 
@@ -1329,6 +1335,10 @@ class CardFormatter:
         if (isinstance(_pb, int) and isinstance(_fm, int)
                 and _fm and _pb < _fm):
             ev_s = f"{ev_s} ({_pb}/{_fm} bots)"
+        # With no closed trades there is no expectancy to report. Omit the row
+        # rather than print "—" or, worse, "$+0.00" — a zero is a measured
+        # result and this is the absence of one.
+        _ev_row = "" if not isinstance(ev, (int, float)) else f"Avg P/L   {ev_s} per trade\n"
         dep = stats.get("deployed_pct")
         dep_s = f"{dep:.0f}%" if isinstance(dep, (int, float)) else "\u2014"
         regime = _regime_badge(str(stats.get("regime", "\u2014")))
@@ -1364,7 +1374,7 @@ class CardFormatter:
             f"P/L Today {pnl_s}\n"
             f"Trades    {trades}\n"
             f"Win Rate  {wr_s}\n"
-            f"Avg P/L   {ev_s} per trade\n"
+            f"{_ev_row}"
             f"Deployed  {dep_s}\n"
             f"Regime    {regime}\n"
             f"Health    {aegis_bar} {aegis_s}\n"

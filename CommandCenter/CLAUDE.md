@@ -411,24 +411,36 @@ raw `devicePixelRatio` (2.25 here → 3841x1839); Armada clamps to
 **Do not "upscale" that cap.** The display measures ~30 FPS in fullscreen
 against the spec's 60 FPS target. Profiled 2026-08-06 by isolating each layer:
 
-| Configuration | FPS | Note |
+| Configuration | FPS | Trust |
 |---|---|---|
-| Both renderers | 30.5 | median frame 40.6ms |
-| Armada disposed (2D only) | 39.4 | Armada costs **8.9 FPS** |
-| 2D buffer halved (3841x1839 → 2716x1300) | 46.8 | fill rate costs **9.4 FPS** |
+| Both renderers | 30.5 | **valid** |
+| Armada disposed (2D only) | 39.4 | **valid** — Armada costs ~8.9 FPS |
+| DPR capped to 2.0 (buffer AND transform) | 31.9 | **valid** — gain only ~1.4 FPS |
+| ~~2D buffer halved → 46.8~~ | — | **INVALID, see below** |
 
-**The bottleneck is 2D canvas fill rate, not Armada and not the WebGL cap.**
-orbitalCanvas pushes **7.06M pixels/frame** at raw DPR 2.25. Halving the
-buffer buys more than removing the entire WebGL armada. Note there are NO long
-tasks (PerformanceObserver longtask count 0) — no single slow function to fix;
-it is steady per-frame fill spread across both loops.
+**The DPR cap is NOT worth taking: ~1.4 FPS for a real sharpness loss.**
 
-The obvious lever is capping orbitalCanvas DPR the way Armada already caps its
-own (`Math.min(devicePixelRatio, 2)` at `command_center_v4.html` ~line 4467 and
-the other `devicePixelRatio` sites). That trades edge sharpness on a 50-inch
-display for frame rate — a product judgment, deliberately NOT taken
-unilaterally. Measure before and after with several samples; single readings
-sit inside the 26-39 FPS noise band.
+**Retracted measurement, and the reason matters.** An earlier profile here
+claimed "halving the 2D buffer → 46.8 FPS, fill rate costs 9.4 FPS." That was
+an artefact. Resizing a canvas **resets its 2D context transform**, but the
+renderer calls `setTransform(dpr,…)` only on its own resize path — so setting
+`canvas.width` directly leaves the transform at 2.25 while the buffer is
+sized for something else. The renderer then draws oversized content into a
+mismatched buffer. That is not a DPR cap; it is a broken canvas, and it
+measured clipping/thrash rather than fill rate. A follow-up test made it
+worse: 21% fewer pixels came out 2.5 FPS SLOWER.
+
+**How to test DPR honestly:** override `window.devicePixelRatio` via
+`Object.defineProperty` BEFORE the renderer sizes the canvas, then enter
+fullscreen so buffer and transform are set together. Verify
+`ctx.getTransform().a === window.devicePixelRatio` before believing any number.
+Do NOT `delete window.devicePixelRatio` to restore — it falls back to 1.0, not
+the native value, and a "59.3 FPS" reading obtained that way was measuring a
+quarter-size buffer.
+
+Armada remains the only measured, valid saving (~8.9 FPS), and it is real
+output — not a candidate for removal. There are NO long tasks
+(PerformanceObserver count 0), so there is no single slow function to fix.
 
 ### ACTIVE POSITIONS: UNRL P/L is blocked in the normalizer, not the dashboard
 The overview's UNRL P/L column renders "—" for every row. The dashboard has a

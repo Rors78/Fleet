@@ -18398,18 +18398,37 @@ function renderOvPortfolioSummary(){
     +'</div>';
   }
 
-  /* Stale reservation count */
+  /* Reservation ages.
+     This used to label anything older than 2h "Stale reservations: N" and tint
+     the panel amber for it. Age is NOT staleness — a long-held reservation
+     backing a live position is healthy. On 2026-08-05 all 5 reservations were
+     verified fully backed (reserved $3,528.21 vs $3,528.43 real notional,
+     0.01% drift) while the panel called every one of them stale, including a
+     157h TurtleSue pyramid that was entirely legitimate.
+     Staleness requires comparing a reservation against its owning bot's
+     positions, which this panel cannot see. So report the fact it CAN
+     establish — the oldest age — and do not imply a fault. */
   var nowP = Date.now()/1000;
   var resAll = p && Array.isArray(p.reservations) ? p.reservations : [];
-  var staleCount = resAll.filter(function(r){ return r.reserved_at && (nowP - r.reserved_at) > 7200; }).length;
+  var _oldestH = 0;
+  for(var _ri=0;_ri<resAll.length;_ri++){
+    var _rr = resAll[_ri];
+    if(_rr && _rr.reserved_at){
+      var _ageH = (nowP - _rr.reserved_at)/3600;
+      if(_ageH > _oldestH) _oldestH = _ageH;
+    }
+  }
 
-  /* State-tint the panel border/header: amber while stale reservations exist */
+  /* No warn-tint on age alone — it flagged healthy capital as a problem. */
   var _portfolioCell = document.getElementById("ovCellPortfolio");
-  if(_portfolioCell) _portfolioCell.classList.toggle("ov-state-warn", staleCount > 0);
+  if(_portfolioCell) _portfolioCell.classList.remove("ov-state-warn");
 
-  h += '<div style="font-size:0.58rem;font-family:var(--font);color:'+(staleCount>0?'#f59e0b':'var(--ov-dim)')+';margin-top:2px;">'
-    +'Stale reservations: <span style="font-weight:700">'+staleCount+'</span>'
-  +'</div>';
+  if(resAll.length){
+    h += '<div style="font-size:0.58rem;font-family:var(--font);color:var(--ov-dim);margin-top:2px;">'
+      +'Reservations: <span style="font-weight:700">'+resAll.length+'</span>'
+      +' · oldest '+(_oldestH>=24 ? (_oldestH/24).toFixed(1)+'d' : _oldestH.toFixed(1)+'h')
+    +'</div>';
+  }
 
   /* Kraken sync health — only render when fleet is in live mode */
   var ks = ovData.krakenSync;

@@ -6622,7 +6622,13 @@ function buildHiveMindView(def,b){
   h+='<div style="flex:1;overflow-y:auto;display:flex;flex-direction:column;gap:4px">';
 
   /* Weight bars */
-  var _hmPoolSize=10000; /* central pool size for dollar amounts */
+  /* Was a hardcoded 10000 with no connection to real capital, so every
+     allocation dollar was ~100x understated against the live $1,000,034.90
+     pool — a 37% weight rendered "$3,700" instead of "$370,013". Read the
+     real pool; when it is unavailable, show the weight percentage alone
+     rather than a dollar figure derived from an invented baseline. */
+  var _hmPool=(state.portfolio&&typeof state.portfolio.total==='number'&&state.portfolio.total>0)
+    ? state.portfolio.total : null;
   var wKeys=Object.keys(weights).sort(function(a,x){return(weights[x]||0)-(weights[a]||0);});
   var maxW=wKeys.length?weights[wKeys[0]]:1;
   for(var wi=0;wi<wKeys.length;wi++){
@@ -6631,14 +6637,14 @@ function buildHiveMindView(def,b){
     if(wv<0.01) continue;
     var _hmIsBlk=isPairBlacklisted(wk,null); /* no live per-pair flag here — fallback only */
     var wPct=fmtNum(wv*100,1);
-    var wDollar=fmt$(_hmPoolSize*wv);
+    var wDollar=(_hmPool!=null)?fmt$(_hmPool*wv):null;
     var _hmBarC=_hmIsBlk?'rgba(248,113,113,0.4)':'rgba(251,191,36,0.5)';
     h+='<div style="display:flex;align-items:center;gap:5px;'+(_hmIsBlk?'opacity:0.5;':'')+'"'+(_hmIsBlk?' title="⊘ BLACKLISTED — 0% WR across fleet. HiveMind should exclude this pair."':'')+'>';
     h+='<span style="font-family:var(--font-mono);font-size:0.65rem;color:'+(_hmIsBlk?'var(--red)':c)+';width:35px;flex-shrink:0;font-weight:500">'+(_hmIsBlk?'⊘ ':'')+escHtml(wk)+'</span>';
     h+='<div style="flex:1;height:8px;background:rgba(0,0,0,0.3);border-radius:3px">';
     h+='<div style="height:8px;width:'+fmtNum(wv/maxW*100,0)+'%;background:'+_hmBarC+';border-radius:3px"></div>';
     h+='</div>';
-    h+='<span style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);width:70px;text-align:right">'+wPct+'% '+wDollar+'</span>';
+    h+='<span style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);width:70px;text-align:right">'+wPct+'%'+(wDollar!=null?' '+wDollar:'')+'</span>';
     h+='</div>';
   }
 

@@ -4129,37 +4129,48 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             # portfolio-flow trades are invisible to /api/trades which filters
             # for type=TRADE_CLOSE. The event also gets durably logged by the
             # bus itself (logs/event_bus/*.jsonl) so it survives reboots.
+            # A release that realized nothing is a capital movement, not a
+            # closed trade — the same rule already applied to the expectancy
+            # recording above. Publishing it as TRADE_CLOSE put
+            # "TRADE_CLOSE ATOM/USD PnL=$0.00" on the live event stream right
+            # after a GRID_KILLED for the same pair: one real event rendered
+            # twice, the second time as a trade that never happened. The
+            # capital movement is already visible as the release itself.
+            if not _priced:
+                log.debug("Release %s realized nothing — not publishing "
+                          "TRADE_CLOSE (capital movement, not a trade)", rid)
             try:
                 _size = float(res_info.get("amount") or 0)
                 # Signal product (2026-07-30): fees always 0 — pnl is gross
                 # price movement. Key kept so TRADE_CLOSE consumers don't break.
                 _fees = 0.0
-                _event_bus.publish({
-                    "source": res_info.get("bot_id", "portfolio"),
-                    "type": "TRADE_CLOSE",
-                    "data": {
-                        "pair": res_info.get("pair", ""),
-                        "direction": res_info.get("direction", "LONG"),
-                        # NOT 0 when absent. A release whose bot supplied no
-                        # prices is a capital movement, not a priced trade —
-                        # defaulting to 0 fabricated closes that render as
-                        # "LOSS $+0.00, Entry 0.0, Exit 0.0" on subscriber
-                        # cards. 20 of 31 TRADE_CLOSE events on the bus carried
-                        # zero/missing prices this way (2026-08-06).
-                        # None is honest and lets publishers suppress; the
-                        # event still reaches /api/trades and expectancy.
-                        "entry_price": data.get("entry_price") or None,
-                        "exit_price": data.get("exit_price") or None,
-                        "priced": bool(data.get("entry_price")
-                                       and data.get("exit_price")),
-                        "size_usd": _size,
-                        "pnl": round(float(pnl), 4),
-                        "fees": _fees,
-                        "duration_s": round(_duration),
-                        "reservation_id": rid,
-                        "via": "portfolio_release",
-                    },
-                })
+                if _priced:
+                    _event_bus.publish({
+                        "source": res_info.get("bot_id", "portfolio"),
+                        "type": "TRADE_CLOSE",
+                        "data": {
+                            "pair": res_info.get("pair", ""),
+                            "direction": res_info.get("direction", "LONG"),
+                            # NOT 0 when absent. A release whose bot supplied no
+                            # prices is a capital movement, not a priced trade —
+                            # defaulting to 0 fabricated closes that render as
+                            # "LOSS $+0.00, Entry 0.0, Exit 0.0" on subscriber
+                            # cards. 20 of 31 TRADE_CLOSE events on the bus carried
+                            # zero/missing prices this way (2026-08-06).
+                            # None is honest and lets publishers suppress; the
+                            # event still reaches /api/trades and expectancy.
+                            "entry_price": data.get("entry_price") or None,
+                            "exit_price": data.get("exit_price") or None,
+                            "priced": bool(data.get("entry_price")
+                                           and data.get("exit_price")),
+                            "size_usd": _size,
+                            "pnl": round(float(pnl), 4),
+                            "fees": _fees,
+                            "duration_s": round(_duration),
+                            "reservation_id": rid,
+                            "via": "portfolio_release",
+                        },
+                    })
             except Exception:
                 pass
 

@@ -19933,24 +19933,36 @@ function renderOvFeeAnalysis(){
     return;
   }
 
-  var exp = ex.fleet_expectancy || ex.expectancy_per_trade || 0;
+  /* `||0` on all three turned an unmeasured fleet into a measured one:
+     a red "0% WR" gauge with a drained bar on the main overview, reading
+     as active failure rather than "nothing has traded yet". Gate on the
+     trade count, which is the only honest denominator here. */
+  var _expRaw = ex.fleet_expectancy != null ? ex.fleet_expectancy
+              : (ex.expectancy_per_trade != null ? ex.expectancy_per_trade : null);
   var trades = ex.total_trades || ex.trades || 0;
-  var winRate = ex.win_rate != null ? ex.win_rate : (ex.fleet_win_rate != null ? ex.fleet_win_rate : 0);
-  if(winRate <= 1.01) winRate = winRate * 100;
+  var _wrRaw = ex.win_rate != null ? ex.win_rate
+             : (ex.fleet_win_rate != null ? ex.fleet_win_rate : null);
+  var expKnown = trades > 0 && typeof _expRaw === "number" && !isNaN(_expRaw);
+  var wrKnownOv = trades > 0 && typeof _wrRaw === "number" && !isNaN(_wrRaw);
+  var exp = expKnown ? _expRaw : null;
+  var winRate = wrKnownOv ? (_wrRaw <= 1.01 ? _wrRaw * 100 : _wrRaw) : null;
 
-  var expSign = exp < 0 ? "-" : "+";
-  var expColor = exp < 0 ? "#ef4444" : "#22c55e";
+  var expSign = !expKnown ? "" : (exp < 0 ? "-" : "+");
+  var expColor = !expKnown ? "#475569" : (exp < 0 ? "#ef4444" : "#22c55e");
   /* Trend display */
   var _prevExp = ovData._prevExpSnap;
   var _prevExpHtml = "";
-  if(_prevExp != null && Math.abs(_prevExp - exp) > 0.005){
+  if(expKnown && _prevExp != null && Math.abs(_prevExp - exp) > 0.005){
     var _prevSign = _prevExp < 0 ? "-" : "+";
     var _prevColor = _prevExp < 0 ? "#ef4444" : "#22c55e";
     var _arrow = exp > _prevExp ? ' <span style="color:#22c55e">\u2191</span>' : ' <span style="color:#ef4444">\u2193</span>';
     _prevExpHtml = ' <span style="font-size:0.55rem;color:var(--ov-dim)">(prev: <span style="color:'+_prevColor+'">'+_prevSign+'$'+Math.abs(_prevExp).toFixed(2)+'</span>)'+_arrow+'</span>';
   }
-  ovFlashIfChanged(bigEl, expSign+Math.abs(exp).toFixed(2));
-  bigEl.innerHTML = '<span style="color:'+expColor+'">'+expSign+'$'+Math.abs(exp).toFixed(2)+'</span> / trade'+_prevExpHtml;
+  /* Math.abs(null) is 0 — an unmeasured expectancy would print "+$0.00". */
+  ovFlashIfChanged(bigEl, expKnown ? expSign+Math.abs(exp).toFixed(2) : "--");
+  bigEl.innerHTML = expKnown
+    ? '<span style="color:'+expColor+'">'+expSign+'$'+Math.abs(exp).toFixed(2)+'</span> / trade'+_prevExpHtml
+    : '<span style="color:#475569">--</span> / trade';
   bigEl.style.color = expColor;
   /* Denominator with the figure. "fleet_expectancy" is named for a population
      it does not cover — 12 trades from 2 of 18 members reads as "the fleet is
@@ -19962,14 +19974,15 @@ function renderOvFeeAnalysis(){
     var _cov = (typeof _pb === "number" && typeof _fm === "number" && _fm > 0 && _pb < _fm)
       ? ' <span style="color:var(--ov-dim)">· ' + _pb + ' of ' + _fm + ' bots trading</span>'
       : '';
-    subEl.innerHTML = trades + " trades" + _cov;
+    subEl.innerHTML = (trades > 0 ? trades + " trades" : "no trades yet") + _cov;
   }
 
-  var wrColor = winRate>=55?"#22c55e":winRate>=45?"#f59e0b":"#ef4444";
+  var wrColor = !wrKnownOv ? "#475569"
+              : (winRate>=55?"#22c55e":winRate>=45?"#f59e0b":"#ef4444");
   /* Win rate trend */
   var _prevWr = ovData._prevRatioSnap;
   var _wrTrendHtml = "";
-  if(_prevWr != null && Math.abs(_prevWr - winRate) > 0.5){
+  if(wrKnownOv && _prevWr != null && Math.abs(_prevWr - winRate) > 0.5){
     var _wrDiff = winRate - _prevWr;
     var _wrArrow = _wrDiff > 0
       ? ' <span style="color:#22c55e">\u2191 improving</span>'
@@ -19977,11 +19990,11 @@ function renderOvFeeAnalysis(){
     _wrTrendHtml = ' <span style="font-size:0.55rem;color:var(--ov-dim)">(prev: '+Math.round(_prevWr)+'%)'+_wrArrow+'</span>';
   }
   if(ratioPctEl){
-    ratioPctEl.innerHTML = Math.round(winRate)+"%"+_wrTrendHtml;
+    ratioPctEl.innerHTML = wrKnownOv ? (Math.round(winRate)+"%"+_wrTrendHtml) : "--";
     ratioPctEl.style.color = wrColor;
   }
   if(gaugeEl){
-    var pct = Math.min(100, Math.max(0, winRate));
+    var pct = wrKnownOv ? Math.min(100, Math.max(0, winRate)) : 0;
     gaugeEl.style.width = pct.toFixed(1)+"%";
     gaugeEl.style.background = wrColor;
   }

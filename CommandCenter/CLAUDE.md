@@ -478,6 +478,34 @@ loop that never executes.
 Do not "fix" this by editing command_center_v4.html; that was attempted and
 reverted.
 
+### Pool reset to $1,000,000 (2026-08-06) — and why reservations were kept
+Pool total was set from $9,719.22 to $1,000,000.00 and `logs/expectancy.json`
+was emptied (18 trades wiped: trekbot 6, turtlesue 7, confluence 5). Both are
+gitignored runtime state, so neither is in version control — backups are in the
+session tmp dir only.
+
+**The 6 live reservations ($4,314.24) were deliberately NOT dropped.** They
+back real open positions, and the bots do not agree on what to do if a
+reservation vanishes:
+
+- `turtlesue`, `rubberband`, `arbitrageur` self-close on reservation loss
+  (`_execute_exit(pair, {"type": "stale_reservation"})`, turtlebot.py:796).
+- **`confluence` has no reservation reconciliation at all** — and it held 3 of
+  the 6 positions. Dropping them would have orphaned those permanently: bot
+  holds the position, pool has no record, nothing ever reconciles.
+
+There is also **no remote close command anywhere in the fleet.** Both traders
+expose only `/api/snapshot` and a read-only `/api/config`. A "close everything
+then reset" flow is not executable via any supported interface; it would mean
+editing bot state files directly.
+
+At $1M the legacy $4,314 is 0.43% of the pool. Positions will close on their
+own exits.
+
+**Procedure, if this is done again:** the pool loads `total` from
+`portfolio.json` at startup (`command_center.py:249`), so a live edit is
+overwritten. Stop the fleet, edit, restart.
+
 ### Broadcaster counters: the day boundary is UTC
 `ChannelOps._daily_stats` (`free_sent_today` / `paid_sent_today` /
 `failed_today`) resets on a **UTC** day boundary — `_reset_if_new_day()` uses

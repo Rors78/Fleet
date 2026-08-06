@@ -17929,7 +17929,12 @@ function renderOvEventStream(el){
     if(/EMERGENCY|ALERT|DENIAL/.test(_dt)) _distAlert++;
     else if(/WARNING|REGIME_CHANGE|CATASTROPHE/.test(_dt)) _distWarn++;
     else if(/TRADE_OPEN|TRADE_CLOSE/.test(_dt)) _distTrade++;
-    else if(/EUCLID|QUANTUM|MANIFOLD|CYCLE|CAUSAL|NEWTON|EINSTEIN|SHANNON|BOLTZMANN|CHAOS|STRUCTURE|CATASTROPHE|BOOK_PHASE|RIEMANN/.test(_dt)) _distCouncil++;
+    /* SCHWARZSCHILD and CURVATURE were missing here while being counted as
+       council chatter everywhere else (_ENGINE_CHATTER_EVENT_RE). At 36 of
+       200 events SCHWARZSCHILD_HORIZON is the third-largest type on the bus
+       and was landing in no bucket at all — the four counters did not sum to
+       the stream they described. */
+    else if(/EUCLID|QUANTUM|MANIFOLD|CYCLE|CAUSAL|NEWTON|EINSTEIN|SHANNON|BOLTZMANN|CHAOS|STRUCTURE|CATASTROPHE|BOOK_PHASE|RIEMANN|SCHWARZSCHILD|CURVATURE/.test(_dt)) _distCouncil++;
     /* Only recent (last 5min) denials/emergencies drive the tint — an
        hour-old denial shouldn't leave the panel red forever. */
     if((_nowTint - _dts) < 300){
@@ -17943,10 +17948,35 @@ function renderOvEventStream(el){
     _eventsCell.classList.toggle("ov-state-alert", _hasEmergency || _hasExtremeWhale);
     _eventsCell.classList.toggle("ov-state-warn", !(_hasEmergency || _hasExtremeWhale) && _hasDenial);
   }
+  /* COUNCIL is by far the largest bucket (≈148 of 200) and lumping 14 engines
+     into one number hides which one is actually talking. Name the top
+     contributor and its share — one engine dominating is a signal in itself
+     (QUANTUM_COLLAPSE flooding at 2,008/hr was found exactly this way). */
+  var _topEng = "", _topEngN = 0;
+  if(_distCouncil > 0){
+    /* Count from _evAll — the SAME array _distCouncil was built from. Using
+       ovEventEntries here would compute a percentage of a different
+       population than the number it sits beside. */
+    var _engCount = {};
+    for(var _ei=0; _ei<_evAll.length; _ei++){
+      var _et = (_evAll[_ei] && _evAll[_ei].type) || "";
+      if(/EUCLID|QUANTUM|MANIFOLD|CYCLE|CAUSAL|NEWTON|EINSTEIN|SHANNON|BOLTZMANN|CHAOS|STRUCTURE|CATASTROPHE|BOOK_PHASE|RIEMANN|SCHWARZSCHILD/.test(_et)){
+        _engCount[_et] = (_engCount[_et]||0) + 1;
+        if(_engCount[_et] > _topEngN){ _topEngN = _engCount[_et]; _topEng = _et; }
+      }
+    }
+  }
+  var _councilDetail = "";
+  if(_topEng && _distCouncil > 0){
+    var _pct = Math.round(_topEngN / _distCouncil * 100);
+    var _short = _topEng.split("_")[0];
+    _councilDetail = ' <span style="color:var(--ov-dim);font-size:0.54rem">('
+      + escHtml(_short) + ' ' + _pct + '%)</span>';
+  }
   var _distHdr = '<div style="font-family:var(--font-mono,monospace);font-size:0.58rem;color:var(--ov-dim);padding:1px 0 3px;flex-shrink:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">'
     +'<span style="color:#ef4444">ALERT:'+_distAlert+'</span>'
     +' <span style="color:#f59e0b">WARN:'+_distWarn+'</span>'
-    +' <span style="color:#06b6d4">COUNCIL:'+_distCouncil+'</span>'
+    +' <span style="color:#06b6d4">COUNCIL:'+_distCouncil+'</span>'+_councilDetail
     +' <span style="color:#22c55e">TRADE:'+_distTrade+'</span>'
     +'</div>';
 

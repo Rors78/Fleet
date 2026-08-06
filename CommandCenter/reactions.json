@@ -86,22 +86,6 @@
       }
     },
     {
-      "name": "quantum_collapse_convergence",
-      "description": "Repeated quantum collapse on the SAME pair within 5min. Was unconditional: every QUANTUM_COLLAPSE became a HIGH_CONVICTION, a 1:1 relabel producing 83,471 events that were 100% suppressed downstream (2026-08-05 replay). confidence/entropy cannot gate it — the emitter saturates both (confidence median 1.0000, 99.5% >= 0.85; entropy median ~0). Persistence is the only real discriminator available.",
-      "trigger": {
-        "type": "QUANTUM_COLLAPSE"
-      },
-      "action": "broadcast",
-      "message": {
-        "type": "HIGH_CONVICTION",
-        "reason": "Quantum state collapsed {data.dominant_state} on {data.pair} — regime definite",
-        "pair": "{data.pair}",
-        "confidence": "{data.confidence}",
-        "suggested_action": "increase_conviction"
-      },
-      "condition": "count(QUANTUM_COLLAPSE, same_pair, last_300s) >= 3"
-    },
-    {
       "name": "book_phase_transition",
       "description": "Alert when order book enters BOILING or PLASMA phase",
       "trigger": {
@@ -153,5 +137,24 @@
         "suggested_action": "prepare_entry"
       }
     }
-  ]
+  ],
+  "disabled_rules": [
+    {
+      "name": "quantum_collapse_convergence",
+      "description": "DISABLED 2026-08-06. Re-enabling requires a threshold derived from LIVE emission rates, not historical logs. The 300s/>=3 condition was sized against a 118-day average of 31.5 QUANTUM_COLLAPSE/hour; live NEXUS fires ~2,008/hour across ~10 pairs (64x), and the dedup key is per-pair, so it produced ~23,000 paid sends/day instead of the predicted 0.2/day.",
+      "trigger": {
+        "type": "QUANTUM_COLLAPSE"
+      },
+      "action": "broadcast",
+      "message": {
+        "type": "HIGH_CONVICTION",
+        "reason": "Quantum state collapsed {data.dominant_state} on {data.pair} — regime definite",
+        "pair": "{data.pair}",
+        "confidence": "{data.confidence}",
+        "suggested_action": "increase_conviction"
+      },
+      "condition": "count(QUANTUM_COLLAPSE, same_pair, last_300s) >= 3"
+    }
+  ],
+  "_disabled_note": "Rules here are NOT loaded — event_bus.load_reactions() reads 'rules' only, and has no 'enabled' flag support. quantum_collapse_convergence was parked 2026-08-06: its 300s/>=3 condition was sized against a 118-day historical average of 31.5 QUANTUM_COLLAPSE/hour, but live NEXUS emits ~2,008/hour across ~10 pairs (64x). Because the dedup key is per-pair, that produced ~23,000 paid sends/day against the predicted 0.2/day. Re-derive any threshold from LIVE rates before re-enabling."
 }

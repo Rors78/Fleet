@@ -19806,7 +19806,18 @@ function renderOvFeeAnalysis(){
   ovFlashIfChanged(bigEl, expSign+Math.abs(exp).toFixed(2));
   bigEl.innerHTML = '<span style="color:'+expColor+'">'+expSign+'$'+Math.abs(exp).toFixed(2)+'</span> / trade'+_prevExpHtml;
   bigEl.style.color = expColor;
-  if(subEl) subEl.textContent = trades + " trades";
+  /* Denominator with the figure. "fleet_expectancy" is named for a population
+     it does not cover — 12 trades from 2 of 18 members reads as "the fleet is
+     losing money" when it means "two bots took twelve trades between them".
+     Fields ship from /api/expectancy; omitted when participation is full or
+     the API predates them. */
+  if(subEl){
+    var _pb = ex.participating_bots, _fm = ex.fleet_members;
+    var _cov = (typeof _pb === "number" && typeof _fm === "number" && _fm > 0 && _pb < _fm)
+      ? ' <span style="color:var(--ov-dim)">· ' + _pb + ' of ' + _fm + ' bots trading</span>'
+      : '';
+    subEl.innerHTML = trades + " trades" + _cov;
+  }
 
   var wrColor = winRate>=55?"#22c55e":winRate>=45?"#f59e0b":"#ef4444";
   /* Win rate trend */

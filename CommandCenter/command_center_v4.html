@@ -8125,12 +8125,15 @@ function buildOracleView(def,b){
   var raw=(_botDataCache.oracle)||{};
   var sigs=raw.top_signals||[];
   var ranked=(raw.raw||{}).ranked||[];
-  var fg=raw.fear_greed||0;
+  /* `||0` put a missing feed in the fg<=10 bucket — "EXTREME FEAR" in red.
+     Absence of a sentiment reading is not the most alarming reading. */
+  var fgKnown=typeof raw.fear_greed==="number"&&!isNaN(raw.fear_greed);
+  var fg=fgKnown?raw.fear_greed:null;
   var regime=raw.regime||"--";
 
   /* Fear/Greed label + color */
-  var fgLabel=fg<=10?"EXTREME FEAR":fg<=25?"FEAR":fg<=45?"BEARISH":fg<=55?"NEUTRAL":fg<=75?"BULLISH":fg<=90?"GREED":"EXTREME GREED";
-  var fgC=fg<=10?"#ef4444":fg<=25?"#f97316":fg<=45?"#f59e0b":fg<=55?"rgba(138,133,120,0.7)":fg<=75?"#86efac":fg<=90?"#22c55e":"#16a34a";
+  var fgLabel=!fgKnown?"--":fg<=10?"EXTREME FEAR":fg<=25?"FEAR":fg<=45?"BEARISH":fg<=55?"NEUTRAL":fg<=75?"BULLISH":fg<=90?"GREED":"EXTREME GREED";
+  var fgC=!fgKnown?"#64748b":fg<=10?"#ef4444":fg<=25?"#f97316":fg<=45?"#f59e0b":fg<=55?"rgba(138,133,120,0.7)":fg<=75?"#86efac":fg<=90?"#22c55e":"#16a34a";
 
   /* Sector + quant analysis from raw.ranked */
   var sectors={}, macdBull=0, macdBear=0, rsiOs=0, rsiOb=0, rsiNeutral=0, emaStackBull=0, emaStackBear=0;
@@ -8160,7 +8163,7 @@ function buildOracleView(def,b){
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value" style="color:'+c+'">'+(raw.pairs_scanned||93)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SIGNALS</div><div class="dv2-kpi-value cyan">'+(raw.signals_count||sigs.length)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value warn">'+escHtml(regime.substring(0,8))+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">F&G</div><div class="dv2-kpi-value" style="color:'+fgC+'">'+fg+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">F&G</div><div class="dv2-kpi-value" style="color:'+fgC+'">'+(fgKnown?fg:'--')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCAN</div><div class="dv2-kpi-value">'+fmtNum(raw.scan_duration_s||0,1)+'s</div></div>';
   h+='</div>';
 
@@ -8168,12 +8171,13 @@ function buildOracleView(def,b){
   var _orBearPct=ranked.length?Math.round(macdBear/(macdBull+macdBear||1)*100):0;
   var _orEmaBearPct=ranked.length?Math.round(emaStackBear/(emaStackBull+emaStackBear||1)*100):0;
   h+='<div style="flex-shrink:0;margin:0 5px 4px;padding:6px 10px;background:linear-gradient(90deg,'+fgC+'20,transparent 70%);border:1px solid '+fgC+'30;display:flex;align-items:center;gap:14px">';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.8rem;color:'+fgC+';font-weight:bold;line-height:1">'+fg+'</div>';
+  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.8rem;color:'+fgC+';font-weight:bold;line-height:1">'+(fgKnown?fg:'--')+'</div>';
   h+='<div>';
   h+='<div style="font-family:var(--font-mono);font-size:0.75rem;color:'+fgC+';letter-spacing:0.1em">'+fgLabel+'</div>';
   /* Market verdict synthesis */
   var _orVerdict='';
-  if(fg<=15&&_orBearPct>=75) _orVerdict='Extreme fear + '+_orBearPct+'% bearish — capitulation or contrarian opportunity';
+  if(!fgKnown) _orVerdict='Sentiment feed unavailable — no Fear/Greed reading';
+  else if(fg<=15&&_orBearPct>=75) _orVerdict='Extreme fear + '+_orBearPct+'% bearish — capitulation or contrarian opportunity';
   else if(fg<=25&&_orBearPct>=60) _orVerdict='High fear + bearish technicals — caution, watch for reversal signals';
   else if(fg>=80&&_orBearPct<=30) _orVerdict='Extreme greed + bullish technicals — momentum or blow-off top risk';
   else if(fg<=45) _orVerdict='Bearish sentiment — MACD '+_orBearPct+'% bear, EMA '+_orEmaBearPct+'% bear';
@@ -8183,7 +8187,7 @@ function buildOracleView(def,b){
   h+='</div>';
   /* F&G bar */
   h+='<div style="flex:1;height:8px;background:linear-gradient(90deg,#ef4444,#f97316,#f59e0b,rgba(138,133,120,0.5),#86efac,#22c55e,#16a34a);border-radius:4px;position:relative;min-width:100px">';
-  h+='<div style="position:absolute;left:'+fg+'%;top:-2px;width:3px;height:12px;background:white;border-radius:1px;transform:translateX(-50%)"></div>';
+  if(fgKnown) h+='<div style="position:absolute;left:'+fg+'%;top:-2px;width:3px;height:12px;background:white;border-radius:1px;transform:translateX(-50%)"></div>';
   h+='</div>';
   h+='</div>';
 
@@ -10700,7 +10704,11 @@ function buildContrarianView(def,b){
   var c=def.color; /* #ff1744 red */
   var raw=(_botDataCache.contrarian)||{};
   var ss=raw.sentiment_state||"NEUTRAL";
-  var sc=raw.sentiment_score||raw.fear_greed||50;
+  /* `||50` fabricated a confident "NEUTRAL" from a feed that said nothing.
+     A plausible middle is harder to spot than a wrong extreme. */
+  var scKnown=(typeof raw.sentiment_score==="number"&&!isNaN(raw.sentiment_score))
+            ||(typeof raw.fear_greed==="number"&&!isNaN(raw.fear_greed));
+  var sc=scKnown?(typeof raw.sentiment_score==="number"?raw.sentiment_score:raw.fear_greed):null;
   /* Fix 6: Standard F&G colors — red=fear, green=greed */
   var ssC=ss.indexOf("FEAR")>=0?"#f87171":ss.indexOf("GREED")>=0?"#34d399":c;
   var alerts=raw.recent_alerts||[];
@@ -10732,7 +10740,7 @@ function buildContrarianView(def,b){
 
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SENTIMENT</div><div class="dv2-kpi-value" style="color:'+ssC+'">'+escHtml(ss)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">F&amp;G</div><div class="dv2-kpi-value" style="color:'+ssC+'">'+sc+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">F&amp;G</div><div class="dv2-kpi-value" style="color:'+(scKnown?ssC:'#64748b')+'">'+(scKnown?sc:'--')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ALERTS'+(_ctAlertsEverKnown?' (EVER)':'')+'</div><div class="dv2-kpi-value" title="'+(_ctAlertsCapped&&_ctAlertsEverKnown?'ring buffer caps display at 100; true lifetime count shown':'ring-buffer length, caps at 100')+'">'+(_ctAlertsEverKnown?raw.total_alerts_ever:(_ctAlertsCapped?"100+ (buffer)":(raw.total_alerts||0)))+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regimeC+'">'+escHtml(regime)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATUS</div><div class="dv2-kpi-value '+(raw.status==="idle"?'':'good')+'">'+escHtml(raw.status||"--")+'</div></div>';
@@ -10740,7 +10748,10 @@ function buildContrarianView(def,b){
 
   /* Fix 1: CONTRARIAN OUTLOOK BANNER — large, impossible to miss */
   var _ctOutlook='', _ctOutlookC='var(--text-muted)', _ctOutlookBg='transparent', _ctIcon='', _ctBold=false;
-  if(sc<=20){_ctOutlook='CONTRARIAN OUTLOOK: BULLISH \u2014 Extreme fear detected, reversal probability elevated';_ctOutlookC='#34d399';_ctOutlookBg='rgba(52,211,153,0.12)';_ctIcon='\u25b2';_ctBold=true;}
+  /* null<=20 is TRUE in JS, so a missing feed used to assert a BOLD
+     'Extreme fear detected' contrarian BUY verdict from no data at all. */
+  if(!scKnown){_ctOutlook='Sentiment feed unavailable — no contrarian read';}
+  else if(sc<=20){_ctOutlook='CONTRARIAN OUTLOOK: BULLISH \u2014 Extreme fear detected, reversal probability elevated';_ctOutlookC='#34d399';_ctOutlookBg='rgba(52,211,153,0.12)';_ctIcon='\u25b2';_ctBold=true;}
   else if(sc<=40){_ctOutlook='Contrarian leaning BULLISH \u2014 Crowd fearful, opportunity may be forming';_ctOutlookC='rgba(52,211,153,0.85)';_ctOutlookBg='rgba(52,211,153,0.05)';_ctIcon='\u25b3';}
   else if(sc>=80){_ctOutlook='CONTRARIAN OUTLOOK: BEARISH \u2014 Extreme greed detected, correction risk high';_ctOutlookC='#f87171';_ctOutlookBg='rgba(248,113,113,0.12)';_ctIcon='\u25bc';_ctBold=true;}
   else if(sc>=60){_ctOutlook='Contrarian leaning BEARISH \u2014 Crowd euphoric, caution warranted';_ctOutlookC='rgba(248,113,113,0.85)';_ctOutlookBg='rgba(248,113,113,0.05)';_ctIcon='\u25bd';}
@@ -10751,7 +10762,7 @@ function buildContrarianView(def,b){
   h+='</div>';
 
   /* Fix 7: Trade blocker — why not trading despite extreme sentiment */
-  if(sc<=20||sc>=80){
+  if(scKnown&&(sc<=20||sc>=80)){
     var _tbReason='';
     if(raw.status==="idle"||raw.status==="scanning"){
       /* Check fleet intel for blockers */

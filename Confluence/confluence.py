@@ -1053,6 +1053,18 @@ class ConfluenceEngine:
             self.last_scan = _utc()
             self.last_scan_duration = round(_now() - t0, 3)
 
+            # Checkpoint every scan, not only on entry/exit. _save_state was
+            # called from two places, both trade events, so a bot holding
+            # steady positions never rewrote the file — the live one was 880
+            # minutes stale. That meant the legacy-fee restatement in
+            # _load_state recomputed from unchanged disk on every boot
+            # instead of being written once: live pnl read -14.89 while disk
+            # still held the pre-restatement -23.69, forever.
+            try:
+                self._save_state()
+            except Exception as e:
+                self._log(f"Scan checkpoint save failed: {e}", "WARNING")
+
     def run_forever(self):
         self._log(f"{BOT_NAME} online — intel-driven, bidirectional (LONG+SHORT), "
                   f"mode={'LIVE' if self.is_live() else 'paper'}", "INFO")

@@ -1780,6 +1780,20 @@ class TurtleEngine:
 
         self.last_scan_time = int(time.time())
 
+        # Checkpoint safety state every scan, not only on trade events.
+        # _save_positions was called from four places, all of them entry /
+        # pyramid / exit — so a bot holding steady positions never rewrote
+        # the file. The equity ledger and trade history added for the
+        # drawdown brake and the System 1 whipsaw filter therefore never
+        # reached disk between trades, and the brake kept re-anchoring to
+        # starting_equity on every restart. The unit test could not catch
+        # this: it calls _save_positions() directly, so it exercises the
+        # writer while the live path never fires it.
+        try:
+            self._save_positions()
+        except Exception as e:
+            logging.warning(f"Scan checkpoint save failed: {e}")
+
 
 # ═══════════════════════════════════════════════════════════════
 # TERMINAL DISPLAY ENGINE

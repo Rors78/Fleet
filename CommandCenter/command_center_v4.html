@@ -18236,6 +18236,17 @@ function renderOvSentiment(){
     numEl.style.color = color;
     lblEl.textContent = label;
     lblEl.style.color = color;
+    /* Contrarian publishes total_alerts (72 at time of writing) and
+       recent_alerts; neither was displayed anywhere. Show the lifetime count
+       beside the label so the panel reports activity, not just a score.
+       Omitted rather than zero-filled when the field is absent. */
+    var _cs = ovData.contrarian || {};
+    var _ta = _cs.total_alerts != null ? _cs.total_alerts : _cs.total_alerts_ever;
+    if(typeof _ta === "number"){
+      lblEl.innerHTML = escHtml(label)
+        + ' <span style="color:var(--ov-dim);font-size:0.55rem;letter-spacing:0">· '
+        + escHtml(String(_ta)) + ' alerts</span>';
+    }
   }
 
   /* Funding rate extremes — prefer brainiac, fall back to Contrarian */

@@ -9433,7 +9433,13 @@ function buildAegisView(def,b){
   var c=def.color; /* #94a3b8 slate blue */
   var raw=(_botDataCache.aegis)||{};
   var score=raw.score!=null?+raw.score:(aegisState.score!=null?+aegisState.score:null);
-  var scoreN=score!=null?score:0;
+  /* A missing score used to become 0, which lands in the <0.2 tier and
+     renders DEFENSIVE-red — absence of data reading as MAXIMUM danger, on
+     the one bot that throttles real capital deployment. Keep it null so the
+     formatters' existing "--" path fires, and only fall back to 0 for the
+     tier/progress arithmetic that cannot take null. */
+  var scoreKnown=score!=null;
+  var scoreN=scoreKnown?score:0;
   var regime=raw.regime||aegisState.regime||"--";
   var maxDeploy=raw.recommended_max_deployed!=null?raw.recommended_max_deployed:(aegisState.recommended_deploy!=null?aegisState.recommended_deploy:"--");
   var comps=raw.components||aegisState.components||{};
@@ -9530,7 +9536,13 @@ function buildAegisView(def,b){
   var corr_penalty=rho_val*0.15;
   var safety=(1-S_val)*(1-phi_penalty)*(1-corr_penalty);
 
-  var throttlePct=typeof maxDeploy==="number"?maxDeploy:30;
+  /* Was `:30` — a plausible-looking default that then produced a real dollar
+     CAP LIMIT with no sign it was invented, and fed the enforcement-mismatch
+     check below, where a fabricated number can hide a genuine mismatch or
+     manufacture a false one. Null means unknown; the arithmetic below is
+     gated on throttleKnown. */
+  var throttleKnown=typeof maxDeploy==="number";
+  var throttlePct=throttleKnown?maxDeploy:null;
 
   /* Score history for sparkline */
   var sparkHist=window.aegisScoreHistory.slice();
@@ -9547,9 +9559,12 @@ function buildAegisView(def,b){
 
   /* Portfolio data */
   var _port=ovData&&ovData.portfolio?ovData.portfolio:{};
-  var _portTotal=_port.total||10000;
+  /* Was ||10000 — a fabricated pool baseline that propagated into every
+     FLEET IMPACT dollar figure. */
+  var _portKnown=typeof _port.total==='number'&&_port.total>0;
+  var _portTotal=_portKnown?_port.total:0;
   var _portDeployed=_port.deployed||_port.total_reserved||0;
-  var _aegisCap=_portTotal*(throttlePct/100);
+  var _aegisCap=(throttleKnown&&_portKnown)?_portTotal*(throttlePct/100):null;
 
   /* ENFORCEMENT MISMATCH cross-check (audit 2026-07-31 directive):
      the engine-side band bug (dashboard showing CAUTIOUS while portfolio
@@ -9585,20 +9600,20 @@ function buildAegisView(def,b){
      actually-enforced cap ever disagree again. */
   if(_enforcementMismatch){
     h+='<div style="padding:5px 12px;background:rgba(245,158,11,0.14);border-top:1px solid #f59e0b;border-bottom:1px solid #f59e0b;font-family:Courier New,monospace;font-size:10px;font-weight:700;color:#f59e0b;letter-spacing:0.5px">';
-    h+='⚠ ENFORCEMENT MISMATCH: engine says '+fmtNum(throttlePct,0)+'%, portfolio enforcing '+fmtNum(_enforcedPct,0)+'%';
+    h+='⚠ ENFORCEMENT MISMATCH: engine says '+(throttleKnown?fmtNum(throttlePct,0):'--')+'%, portfolio enforcing '+fmtNum(_enforcedPct,0)+'%';
     h+='</div>';
   }
 
   /* KPI strip */
   h+='<div class="dv2-stats-strip">';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCORE</div><div class="dv2-kpi-value" style="color:'+regC+'">'+ fmtNum(scoreN,4)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCORE</div><div class="dv2-kpi-value" style="color:'+(scoreKnown?regC:'#64748b')+'">'+ (scoreKnown?fmtNum(scoreN,4):'--')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC+'">'+ escHtml(regime)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">MAX DEPLOY</div><div class="dv2-kpi-value">'+(typeof maxDeploy==="number"?maxDeploy+'%':maxDeploy)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SOURCES</div><div class="dv2-kpi-value cyan">'+rsKeys.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">TRADABILITY</div><div class="dv2-kpi-value" style="color:'+(tradability>0.25?'#f39c12':'#e74c3c')+'">'+fmtNum(tradability,3)+(tradability<=0.25?' <span style="font-size:9px;color:#e74c3c">(floored)</span>':'')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SAFETY</div><div class="dv2-kpi-value" style="color:'+(safety>0.7?'#2ecc71':safety>0.4?'#f39c12':'#e74c3c')+'">'+ fmtNum(safety,3)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">DEPLOYED</div><div class="dv2-kpi-value cyan">'+fmt$(_portDeployed)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CAP LIMIT</div><div class="dv2-kpi-value" style="color:'+regC+'">'+ fmt$(_aegisCap)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CAP LIMIT</div><div class="dv2-kpi-value" style="color:'+(_aegisCap!=null?regC:'#64748b')+'">'+ (_aegisCap!=null?fmt$(_aegisCap):'--')+'</div></div>';
   h+='</div>';
 
   /* 4x2 BODY GRID */
@@ -9613,7 +9628,7 @@ function buildAegisView(def,b){
   h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+regC+'"></div>SCORE DEEP DIVE</div>';
   h+='<div class="dv2-scroll">';
   h+='<div style="text-align:center;padding:6px 0 8px">';
-  h+='<div style="font-family:Orbitron,monospace;font-size:22px;font-weight:700;color:'+regC+';line-height:1">'+ fmtNum(scoreN,4)+'</div>';
+  h+='<div style="font-family:Orbitron,monospace;font-size:22px;font-weight:700;color:'+(scoreKnown?regC:'#64748b')+';line-height:1">'+ (scoreKnown?fmtNum(scoreN,4):'--')+'</div>';
   h+='<div style="font-size:10px;color:'+regC+';letter-spacing:2px;margin-top:2px">'+ escHtml(regime)+'</div>';
   h+='<div style="font-size:9px;color:#475569;margin-top:2px">Max deploy: <b style="color:'+regC+'">'+(typeof maxDeploy==="number"?maxDeploy+'%':maxDeploy)+'</b></div>';
   h+='</div>';
@@ -9920,14 +9935,15 @@ function buildAegisView(def,b){
      the same cross-check driving the ENFORCEMENT MISMATCH banner above,
      visible here even when they agree (so the honest source is never hidden,
      not just surfaced during a mismatch). */
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Engine says</span><span class="dv2-kv-v" style="color:'+regC+'">'+fmtNum(throttlePct,0)+'% = '+fmt$(_aegisCap)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Engine says</span><span class="dv2-kv-v" style="color:'+(throttleKnown&&_aegisCap!=null?regC:'#64748b')+'">'+(throttleKnown&&_aegisCap!=null?fmtNum(throttlePct,0)+'% = '+fmt$(_aegisCap):'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Portfolio enforcing</span><span class="dv2-kv-v" style="color:'+(_enforcementMismatch?'#f59e0b':'#2ecc71')+'">'+(_enforcedPct!=null?fmtNum(_enforcedPct,0)+'%':'--')+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Deployed</span><span class="dv2-kv-v" style="color:'+(_portDeployed>_aegisCap?'#e74c3c':'#e2e8f0')+'">'+fmt$(_portDeployed)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Buffer</span><span class="dv2-kv-v" style="color:#2ecc71">'+fmt$(Math.max(0,_aegisCap-_portDeployed))+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Deployed</span><span class="dv2-kv-v" style="color:'+(_aegisCap!=null&&_portDeployed>_aegisCap?'#e74c3c':'#e2e8f0')+'">'+fmt$(_portDeployed)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Buffer</span><span class="dv2-kv-v" style="color:#2ecc71">'+(_aegisCap!=null?fmt$(Math.max(0,_aegisCap-_portDeployed)):'--')+'</span></div>';
   h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin:6px 0 4px;border-top:1px solid #1e293b;padding-top:6px">AT CAUTIOUS (60%)</div>';
-  var _cautiousCap=_portTotal*0.60,_delta60=_cautiousCap-_aegisCap;
+  var _cautiousCap=_portKnown?_portTotal*0.60:null;
+  var _delta60=(_cautiousCap!=null&&_aegisCap!=null)?_cautiousCap-_aegisCap:null;
   h+='<div class="dv2-kv"><span class="dv2-kv-k">New cap</span><span class="dv2-kv-v" style="color:#f39c12">'+fmt$(_cautiousCap)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Unlocked</span><span class="dv2-kv-v" style="color:#2ecc71">+'+fmt$(_delta60)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Unlocked</span><span class="dv2-kv-v" style="color:'+(_delta60!=null?'#2ecc71':'#64748b')+'">'+(_delta60!=null?'+'+fmt$(_delta60):'--')+'</span></div>';
   h+='<div style="font-size:9px;color:#475569;letter-spacing:0.8px;text-transform:uppercase;margin:6px 0 4px;border-top:1px solid #1e293b;padding-top:6px">RECENT DENIALS</div>';
   if(_denials.length>0){
     _denials.slice(-5).reverse().forEach(function(_den){
@@ -10003,8 +10019,8 @@ function buildAegisView(def,b){
   /* Bottom status bar */
   h+='<div style="flex-shrink:0;padding:4px 10px;background:#000000;border-top:1px solid #1e293b;display:flex;align-items:center;gap:12px;font-family:Courier New,monospace;font-size:10px;color:#475569">';
   h+='<span style="color:'+regC+'">'+escHtml(regime)+'</span>';
-  h+='<span>score '+fmtNum(scoreN,4)+'</span>';
-  h+='<span>max '+throttlePct+'%</span>';
+  h+='<span>score '+(scoreKnown?fmtNum(scoreN,4):'--')+'</span>';
+  h+='<span>max '+(throttleKnown?throttlePct+'%':'--')+'</span>';
   h+='<span>H='+fmtNum(H_val,3)+'</span>';
   h+='<span>'+rsKeys.length+' sources</span>';
   h+='<span>cycle '+cycle+'</span>';

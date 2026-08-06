@@ -434,6 +434,7 @@
         <div class="ov-sq-row"><span class="ov-sq-label">PHITEX Sig</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPhitex" style="width:0%;background:var(--ov-purple);"></div></div><span class="ov-sq-val" id="ovSqPhitexVal">--</span></div>
         <div class="ov-sq-row"><span class="ov-sq-label">Whale Div</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqWhaleDv" style="width:0%;background:var(--ov-amber);"></div></div><span class="ov-sq-val" id="ovSqWhaleDvVal">--</span></div>
         <div class="ov-sq-row"><span class="ov-sq-label">Port Stress</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqPortStress" style="width:0%;background:var(--ov-red);"></div></div><span class="ov-sq-val" id="ovSqPortStressVal">--</span></div>
+        <div class="ov-sq-row"><span class="ov-sq-label">Correlation</span><div class="ov-sq-bar"><div class="ov-sq-fill" id="ovSqCorrelation" style="width:0%;background:var(--ov-green);"></div></div><span class="ov-sq-val" id="ovSqCorrelationVal">--</span></div>
         <div id="ovMarketMicro" style="overflow:hidden;"></div>
       </div>
     </div>
@@ -19346,12 +19347,16 @@ function renderOvSignalQuality(){
   var whaleDv    = c.whale_divergence   || c.whale_div;
   var portStress = c.portfolio_stress   || c.port_stress;
   var phitexSig  = c.phitex_signal      || c.phitex_sig;
+  /* AEGIS publishes `correlation` (0.4947 live) as a sixth component; the
+     panel showed five and dropped it. Real data, no display. */
+  var correl     = c.correlation != null ? c.correlation : c.corr;
 
   setSQ("ovSqConsensus",  "ovSqConsensusVal",  consensus);
   setSQ("ovSqCoherence",  "ovSqCoherenceVal",  coherence);
   setSQ("ovSqPhitex",     "ovSqPhitexVal",     phitexSig);
   setSQ("ovSqWhaleDv",    "ovSqWhaleDvVal",    whaleDv);
   setSQ("ovSqPortStress", "ovSqPortStressVal", portStress);
+  setSQ("ovSqCorrelation","ovSqCorrelationVal",correl);
 
   /* Also keep legacy signal bar IDs in sync (hidden bar, but referenced elsewhere) */
   function setSig(barId, valId, val, max, decimals){

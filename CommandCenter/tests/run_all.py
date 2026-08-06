@@ -32,6 +32,7 @@ TESTS = [
     "test_eod2.py",
     "test_rows.py",
     "test_turtle_sizing.py",
+    "test_confluence_sizing.py",
 ]
 
 

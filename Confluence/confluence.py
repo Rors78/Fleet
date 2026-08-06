@@ -115,10 +115,40 @@ W_SENTINEL = 0.12
 
 # Risk
 MAX_OPEN_POSITIONS = 3
-# CC's portfolio manager enforces a size floor of 5% of the pool (~$498 at a
-# $9,970 pool) and rejects anything under it. Sized above that floor with
-# headroom so pool drift doesn't start silently failing reservations.
-POSITION_SIZE_USD = 550.0
+
+# ── Position sizing ──────────────────────────────────────────────────────
+# Was a flat POSITION_SIZE_USD = 550.0, justified by CC's old size floor of
+# 5% of a $9,970 pool. Both halves of that justification are gone: the pool is
+# $1,000,000 and the floor became an absolute $100 on 2026-08-05.
+#
+# The deeper problem with a flat size is that it makes RISK a function of stop
+# distance rather than conviction. Measured live on 2026-08-05, risk per
+# position ranged $3.37 to $12.65 — nearly 4x — purely because stops ranged
+# 0.61% to 2.30%. That is backwards: the tight-stop setup is usually the
+# higher-confidence one, and it was taking the smallest risk.
+#
+# Sizing is now risk-first, the same principle TurtleSue uses (risk/N), just
+# expressed through the stop Oracle already provides:
+#
+#     size = (pool_share * risk_pct) / stop_distance_pct
+#
+# so every position risks the same dollars regardless of where the stop sits.
+RISK_POOL_SHARE_PCT = 10.0     # share of the CC pool this bot sizes against
+RISK_PER_TRADE_PCT = 0.5       # of that share — $500 at a $100k basis
+FALLBACK_EQUITY_USD = 10000.0  # basis when CC is unreachable
+
+# Guard rails on the derived size. A near-zero stop would otherwise divide its
+# way to an enormous position; a huge stop would produce dust.
+#
+# MIN_STOP_PCT_FOR_SIZING, not MAX_POSITION_USD, is the real defence against a
+# tiny stop: capping the notional silently breaks the equal-risk property for
+# exactly the tightest-stop trades, which are usually the best setups. At a
+# 0.4% denominator floor and a $500 risk budget the derived size tops out
+# around $125k, so the ceiling below only ever catches genuinely absurd input
+# and is set above that natural maximum rather than inside it.
+MIN_POSITION_USD = 500.0        # also clears CC's $100 floor with headroom
+MIN_STOP_PCT_FOR_SIZING = 0.004  # 0.4% — floor on the sizing denominator
+MAX_POSITION_USD = 150000.0     # backstop only; 15% of a $1M pool
 STOP_LOSS_PCT = 0.025          # 2.5% hard floor if Oracle gives no stop
 MAX_POSITION_AGE_H = 36
 # Signal-worthiness floor: the projected entry→target move must be at least
@@ -223,8 +253,51 @@ class ConfluenceEngine:
         self._portfolio = None
         self._events = None
         self._bus = None
+        self._pool_basis_warned = False
         self._init_fleet()
         self._load_state()
+
+    # ── position sizing ──
+    def _sizing_basis(self) -> float:
+        """Capital this bot sizes against: a share of the CC pool.
+
+        Falls back to FALLBACK_EQUITY_USD when the pool is unreachable, and
+        says so once rather than every scan. Never sizes off a guess.
+        """
+        if not self._portfolio or RISK_POOL_SHARE_PCT <= 0:
+            return FALLBACK_EQUITY_USD
+        total = None
+        try:
+            total = self._portfolio.pool_total()
+        except Exception:
+            total = None
+        if not isinstance(total, (int, float)) or total <= 0:
+            if not self._pool_basis_warned:
+                self._pool_basis_warned = True
+                self._log(
+                    f"Pool total unreachable — sizing off ${FALLBACK_EQUITY_USD:,.0f} "
+                    f"instead of {RISK_POOL_SHARE_PCT:.0f}% of pool", "WARNING")
+            return FALLBACK_EQUITY_USD
+        self._pool_basis_warned = False
+        return total * (RISK_POOL_SHARE_PCT / 100.0)
+
+    def _position_size(self, entry: float, stop: float) -> tuple:
+        """Risk-normalized size in USD. Returns (size, basis, risk_usd, stop_pct).
+
+        Every position risks the same dollars; the stop distance decides the
+        notional, not the other way round.
+        """
+        basis = self._sizing_basis()
+        risk_usd = basis * (RISK_PER_TRADE_PCT / 100.0)
+
+        stop_pct = abs(entry - stop) / entry if entry else STOP_LOSS_PCT
+        # Floor the denominator: a 0.05% stop would otherwise divide its way
+        # to a position many times the pool.
+        stop_pct_eff = max(stop_pct, MIN_STOP_PCT_FOR_SIZING)
+
+        size = risk_usd / stop_pct_eff
+        size = max(MIN_POSITION_USD, min(size, MAX_POSITION_USD))
+        return size, basis, risk_usd, stop_pct
 
     # ── fleet wiring ──
     def _init_fleet(self):
@@ -328,6 +401,30 @@ class ConfluenceEngine:
             self.wins = d.get("wins", 0)
             self.losses = d.get("losses", 0)
             self.closed_trades = d.get("closed_trades", [])
+
+            # Legacy rows: trades closed before the gross-only rule (2026-07-30)
+            # recorded net_pnl = gross_pnl - fees. realized_pnl accumulated the
+            # NET figure, so those fees rode forward forever — the bot reported
+            # -$23.69 when its gross P/L was -$14.90, an $8.80 phantom loss on
+            # a signal product that never pays fees. Restate to gross on load
+            # rather than editing history: the rows keep their original numbers
+            # and gain a marker, and the running total is corrected once.
+            _drift = 0.0
+            for t in self.closed_trades:
+                _fees = t.get("fees") or 0
+                if _fees and not t.get("restated_gross"):
+                    _gross = t.get("gross_pnl")
+                    if isinstance(_gross, (int, float)):
+                        _drift += _gross - (t.get("net_pnl") or 0)
+                        t["net_pnl"] = round(_gross, 2)
+                        t["fees"] = 0.0
+                        t["restated_gross"] = True
+            if _drift:
+                self.realized_pnl += _drift
+                self._log(
+                    f"Restated {_drift:+.2f} of legacy fee drag to gross — "
+                    f"P/L is gross fleet-wide (subscribers pay their own fees)",
+                    "INFO")
             self.pair_cooldowns = d.get("pair_cooldowns", {})
             for pair, pd in (d.get("positions") or {}).items():
                 # Direction restored from state; legacy state files predate
@@ -761,7 +858,11 @@ class ConfluenceEngine:
         else:
             stop = cand.get("stop") or entry * (1 - STOP_LOSS_PCT)
             target = cand.get("target") or entry * (1 + STOP_LOSS_PCT * 2)
-        size = POSITION_SIZE_USD
+        size, _basis, _risk_usd, _stop_pct = self._position_size(entry, stop)
+        self._log(
+            f"SIZE {pair}: ${size:,.0f} — risking ${_risk_usd:,.0f} "
+            f"({RISK_PER_TRADE_PCT}% of ${_basis:,.0f}) on a {_stop_pct * 100:.2f}% stop",
+            "INFO")
 
         # CHRONOS: temporal bias — soft influence only, never a hard block.
         # A fresh (<1h) statistically-gated TIME_ANOMALY opposing this
@@ -970,6 +1071,9 @@ class ConfluenceEngine:
             total = self.wins + self.losses
             wr = (self.wins / total * 100.0) if total else 0.0
             equity = 10000.0 + self.realized_pnl
+            # Cheap: _sizing_basis does one CC call, and snapshot is polled
+            # once per CC cycle, not per candidate.
+            _basis_now = self._sizing_basis()
             return {
                 "timestamp": _now(),
                 "bot_name": BOT_NAME,
@@ -987,6 +1091,14 @@ class ConfluenceEngine:
                     "min_sources": MIN_SOURCES,
                 },
                 "equity": round(equity, 2),
+                # What sizing is actually calculated from, and where it came
+                # from. Without this the dashboard shows ~$10k equity while
+                # the bot opens $25k positions and nothing says why.
+                "sizing_basis": round(_basis_now, 2),
+                "sizing_basis_source": ("pool_share" if not self._pool_basis_warned
+                                        and self._portfolio else "local_equity"),
+                "risk_per_trade_usd": round(_basis_now * RISK_PER_TRADE_PCT / 100.0, 2),
+                "risk_per_trade_pct": RISK_PER_TRADE_PCT,
                 "pnl": round(self.realized_pnl, 2),
                 "pnl_pct": round(self.realized_pnl / 10000.0 * 100.0, 3),
                 "win_rate": round(wr, 1),

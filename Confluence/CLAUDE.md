@@ -68,9 +68,35 @@ the strongest of a mediocre field. A stronger tape (Oracle 70+, NEXUS TRENDING,
 whale present) clears 0.70+ comfortably. **Raise after the first 20-30 closed
 trades** give a real win rate to calibrate against.
 
-`POSITION_SIZE_USD = 550.0` — CC enforces a size floor of 5% of pool (~$498 at
-a $9,970 pool). Sized above it with headroom so pool drift doesn't silently
-start failing reservations.
+**Position sizing (rewritten 2026-08-05).** Was a flat `POSITION_SIZE_USD =
+550.0`, justified by CC's size floor of 5% of a $9,970 pool. Both halves of
+that justification are gone — the pool is $1,000,000 and the floor became an
+absolute $100.
+
+A flat size also made *risk* a function of stop distance rather than
+conviction. Measured live: risk per position ranged $3.37–$12.65 (nearly 4×)
+purely because stops ranged 0.61%–2.30%. Backwards — the tight-stop setup is
+usually the higher-confidence one and was taking the smallest risk.
+
+Sizing is now risk-first:
+
+```
+basis = pool_total × RISK_POOL_SHARE_PCT      (10% → $100,000)
+risk  = basis × RISK_PER_TRADE_PCT            (0.5% → $500)
+size  = risk / max(stop_pct, MIN_STOP_PCT_FOR_SIZING)
+size  = clamp(size, MIN_POSITION_USD, MAX_POSITION_USD)
+```
+
+Every position risks the same $500; the stop decides the notional. Clamps stop
+a near-zero stop dividing its way to an enormous position and a huge stop
+producing dust. If CC is unreachable, sizing falls back to
+`FALLBACK_EQUITY_USD` and says so in `sizing_basis_source` — it never sizes
+off a guess.
+
+**P/L is gross.** Trades closed before 2026-07-30 recorded `net = gross − fees`,
+and `realized_pnl` accumulated the net, so that fee drag rode forward forever
+— the bot reported −$23.69 when its gross P/L was −$14.90. `_load_state` now
+restates legacy rows to gross once and marks them `restated_gross`.
 
 ## Safety Invariants
 

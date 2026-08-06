@@ -309,8 +309,15 @@ class FleetLogger:
 
     # ── Event logging (called externally for portfolio events) ──
 
-    def log_portfolio_denial(self, bot_id, reason):
-        """Called by command_center when a reserve is denied."""
+    def log_portfolio_denial(self, bot_id, reason, pair=None, direction=None,
+                             amount=None):
+        """Called by command_center when a reserve is denied.
+
+        pair/direction/amount were missing for the life of this method while
+        log_portfolio_reserve (below) recorded all three. denial_cost.py needs
+        them to price what a denial cost — its `if pair and amount` guard
+        dropped every row this wrote. Optional so older callers still work.
+        """
         event = {
             "ts": time.time(),
             "type": "PORTFOLIO",
@@ -318,6 +325,14 @@ class FleetLogger:
             "bot": bot_id,
             "reason": reason,
         }
+        # Only record what was actually supplied — a null pair is worse than
+        # an absent one, since it looks like a measurement that came back empty.
+        if pair:
+            event["pair"] = pair
+        if direction:
+            event["direction"] = direction
+        if isinstance(amount, (int, float)):
+            event["amount"] = amount
         _append_jsonl(EVENT_DIR, event)
         with self._daily_lock:
             self._daily["portfolio_denials"] += 1

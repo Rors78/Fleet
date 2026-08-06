@@ -25,9 +25,11 @@ from datetime import datetime, timedelta, timezone
 
 CC_URL = "http://localhost:9000"
 _LOG_ROOT = os.path.join(os.path.dirname(__file__), "logs")
-# FleetLogger's events/ denial rows carry only bot+reason; the bus log's
-# PORTFOLIO_DENIAL rows carry pair+amount (what the cost model needs).
-# Scan both — the pair/amount guard below drops the info-less rows.
+# Both dirs carry denials: FleetLogger writes logs/events, the bus writes
+# logs/event_bus. Until 2026-08-06 FleetLogger's rows had only bot+reason, so
+# every one was dropped unpriced and unreported; it now records pair/amount
+# too. Scan both and dedup — historical rows remain unpriceable and are
+# counted as skipped rather than silently discarded.
 EVENT_DIRS = [os.path.join(_LOG_ROOT, "events"),
               os.path.join(_LOG_ROOT, "event_bus")]
 DEFAULT_HOLD_MINUTES = 240  # fleet avg ~3-4 hours
@@ -43,8 +45,18 @@ def _parse_args():
 
 
 def _load_denial_events(days):
+    """Returns (denials, skipped) — skipped rows are denials that happened but
+    cannot be priced because the log row has no pair/amount.
+
+    Reporting len(denials) alone understates reality: FleetLogger wrote
+    bot+reason only (fixed 2026-08-06, but every historical row is still
+    unpriceable), so a run over older data silently dropped hundreds of real
+    denials and reported a confident, too-small dollar figure.
+    """
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     denials = []
+    skipped = 0
+    seen = set()
     files = []
     for d in EVENT_DIRS:
         if os.path.exists(d):
@@ -87,12 +99,22 @@ def _load_denial_events(days):
                 # Skip config errors (arbitrageur not a trading bot)
                 if "not a trading bot" in str(reason).lower():
                     continue
+                # The same denial is written to BOTH logs/events (FleetLogger)
+                # and logs/event_bus (the bus publish). Collapse them so the
+                # newly-priceable rows are not double-counted.
+                dkey = (bot, pair or "", round(float(amount or 0), 2),
+                        int(ts.timestamp()))
+                if dkey in seen:
+                    continue
+                seen.add(dkey)
                 if pair and amount:
                     denials.append({
                         "ts": ts, "pair": pair, "direction": direction,
                         "amount": float(amount), "reason": reason, "bot": bot,
                     })
-    return denials
+                else:
+                    skipped += 1
+    return denials, skipped
 
 
 def _fetch_ohlc(pair, ts_start, hold_minutes):
@@ -139,14 +161,32 @@ def _simulate_pnl(direction, entry, exit_price, amount_usd):
 def main():
     args = _parse_args()
     print(f"Loading denial events from last {args.days} days...")
-    denials = _load_denial_events(args.days)
+    denials, skipped = _load_denial_events(args.days)
 
     if not denials:
-        print("No denial events found. Either no denials occurred or event logs are empty.")
-        print(f"Expected PORTFOLIO_DENIAL / RESERVE_DENIED events in {' or '.join(EVENT_DIRS)}")
+        if skipped:
+            # Do not say "no denials occurred" when we just read hundreds and
+            # threw them away for lack of a pair/amount to price them with.
+            print(f"Found {skipped} denial events, but NONE carry the pair and "
+                  f"amount needed to price them.")
+            print("Those rows predate the 2026-08-06 fix to "
+                  "FleetLogger.log_portfolio_denial. Denials logged from now "
+                  "on are priceable; the history is not recoverable.")
+        else:
+            print("No denial events found. Either no denials occurred or event logs are empty.")
+            print(f"Expected PORTFOLIO_DENIAL / RESERVE_DENIED events in {' or '.join(EVENT_DIRS)}")
         sys.exit(0)
 
-    print(f"Found {len(denials)} denials (excluding config errors). Simulating outcomes...\n")
+    print(f"Found {len(denials)} priceable denials (excluding config errors). "
+          f"Simulating outcomes...")
+    if skipped:
+        # The headline dollar figure covers only the priceable rows. Saying so
+        # is the difference between a measurement and a guess.
+        _tot = len(denials) + skipped
+        print(f"NOTE: {skipped} of {_tot} denials ({skipped / _tot:.0%}) lack "
+              f"pair/amount and are NOT included in the cost below — the real "
+              f"cost is higher by an unmeasured amount.")
+    print()
 
     results = []
     fetch_errors = 0

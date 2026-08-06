@@ -3865,7 +3865,13 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                     data["bot_id"], data["pair"], data["direction"],
                     amount, result.get("reservation_id", ""))
             else:
-                _fleet_logger.log_portfolio_denial(data["bot_id"], result.get("reason", ""))
+                # pair/direction/amount are right here in scope and the bus
+                # publish below already carries them — the disk log did not,
+                # so denial_cost.py discarded every row it wrote.
+                _fleet_logger.log_portfolio_denial(
+                    data["bot_id"], result.get("reason", ""),
+                    pair=data.get("pair"), direction=data.get("direction"),
+                    amount=amount)
 
         if result["ok"]:
             _event_bus.publish({

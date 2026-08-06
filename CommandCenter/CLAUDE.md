@@ -386,6 +386,23 @@ Fix is to pass `config.get("daily_summary_utc_hour", 8)` through to both call
 sites — deliberately NOT done on the eve of a scheduled fire, since it changes
 scheduling behavior and the current literal is already the intended value.
 
+### ACTIVE POSITIONS: UNRL P/L is blocked in the normalizer, not the dashboard
+The overview's UNRL P/L column renders "—" for every row. The dashboard has a
+fallback that looks up the owning bot's position via
+`bot.normalized.positions` — but **the normalizer does not pass `positions`
+through at all**, so `normalized.positions` is undefined for every bot and
+that entire branch is dead code. Verified 2026-08-06 against /api/master.
+
+The data exists upstream: TurtleSue publishes `unrealized_pnl: -56.71` on its
+own snapshot. Confluence genuinely has none (its positions carry no
+current_price). So the fix belongs in the CC normalizer (`command_center.py`,
+normalizer map ~line 1334) — pass positions (or a computed unrealized) into
+the normalized schema — NOT in the dashboard, where any edit sits inside a
+loop that never executes.
+
+Do not "fix" this by editing command_center_v4.html; that was attempted and
+reverted.
+
 ### Broadcaster counters: the day boundary is UTC
 `ChannelOps._daily_stats` (`free_sent_today` / `paid_sent_today` /
 `failed_today`) resets on a **UTC** day boundary — `_reset_if_new_day()` uses

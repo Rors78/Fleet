@@ -20031,7 +20031,13 @@ function renderOvFeeAnalysis(){
     var _cov = (typeof _pb === "number" && typeof _fm === "number" && _fm > 0 && _pb < _fm)
       ? ' <span style="color:var(--ov-dim)">· ' + _pb + ' of ' + _fm + ' bots trading</span>'
       : '';
-    subEl.innerHTML = (trades > 0 ? trades + " trades" : "no trades yet") + _cov;
+    /* Label the SOURCE. This panel reads /api/expectancy — trades CC has
+       durably recorded — while the header WR chip and the scoreboard read
+       each bot's self-reported count from /api/master. Both are
+       legitimate and they answer different questions, but shown side by
+       side with no label they read as one number contradicting itself
+       (17 vs 12 on 2026-08-06). */
+    subEl.innerHTML = (trades > 0 ? trades + " trades recorded" : "no trades recorded") + _cov;
   }
 
   var wrColor = !wrKnownOv ? "#475569"

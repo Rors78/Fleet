@@ -358,11 +358,17 @@ class ExpectancyTracker:
             # the shape so dashboard fee panels render zeros, not 500s.
             'total_fees': 0.0,
             'fees_ate_pct': 0.0,
+            # A bot with no closed trades has not been judged. Calling it
+            # LOSING is a verdict from zero measurements — it read as a
+            # failing bot beside bots that had actually traded.
             'bot_rankings': [
-                {'bot': bid, 'expectancy': s['expectancy_per_trade'],
-                 'trades': s['total_trades'], 'verdict': (
-                     'PROFITABLE' if s['expectancy_per_trade'] > 0
-                     else 'LOSING')}
+                {'bot': bid,
+                 'expectancy': (s['expectancy_per_trade']
+                                if s['total_trades'] else None),
+                 'trades': s['total_trades'],
+                 'verdict': ('UNMEASURED' if not s['total_trades']
+                             else 'PROFITABLE' if s['expectancy_per_trade'] > 0
+                             else 'LOSING')}
                 for bid, s in ranked
             ],
             'bot_stats': dict(ranked),

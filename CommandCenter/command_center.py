@@ -4096,7 +4096,17 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             # dedups against the snapshot-diff bridge so the same close
             # can't be recorded twice.
             _duration = time.time() - res_info.get("reserved_at", time.time())
-            if _expectancy_tracker:
+            # A release that realized nothing is not a trade. Grid teardowns,
+            # cancelled entries and re-reservations all release capital with
+            # pnl=0, and recording each as a closed trade poisons the
+            # denominator of every statistic computed from this store: on
+            # 2026-08-06 gridzilla read "17 trades, 5.9% win rate" from ONE
+            # real +$34.90 cycle and sixteen zero-P/L releases, while the bot
+            # itself reported 2 trades at 50%. Same class as the grid
+            # half-cycles suppressed in gridzilla.py — this was the other
+            # path recording them.
+            _priced = isinstance(pnl, (int, float)) and pnl != 0
+            if _expectancy_tracker and _priced:
                 try:
                     _expectancy_tracker.record_trade(
                         bot_id=res_info["bot_id"],

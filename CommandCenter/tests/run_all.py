@@ -35,6 +35,7 @@ TESTS = [
     "test_confluence_sizing.py",
     "test_reservation_sweep.py",
     "test_size_units.py",
+    "test_grid_cycle_accounting.py",
 ]
 
 

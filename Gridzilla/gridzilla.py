@@ -610,10 +610,14 @@ class GridArchitect:
 class GridExecutor:
     """Manages live grid execution, fills, and P/L tracking."""
 
-    def __init__(self, config, kraken, publisher):
+    def __init__(self, config, kraken, publisher, expectancy=None):
         self.config = config
         self.kraken = kraken
         self.publisher = publisher
+        # Completed cycles are recorded here as they happen. Without it the
+        # snapshot's expectancy block is queried but never fed, so every
+        # field reads 0 while total_pnl shows real money.
+        self.expectancy = expectancy
         self.active_grids = {}  # {pair: grid_state}
         self.trade_history = []
         self.total_pnl = 0
@@ -886,14 +890,80 @@ class GridExecutor:
                     if matching_buy:
                         # Grid cycle P/L — GROSS price movement only.
                         # Signal product: subscribers pay their own exchanges' fees.
+                        #
+                        # Price the SAME quantity through both legs. The old
+                        # formula was
+                        #     sell_revenue = level["size_usd"] * (current/level_price)
+                        #     pnl = sell_revenue - matching_buy["size_usd"]
+                        # which subtracts the BUY's dollar size from the SELL
+                        # LEVEL's dollar size. Those are different amounts, so
+                        # the size mismatch was booked as profit: a live ETH
+                        # cycle (buy $9,895.80 @ 1894.01, sell @ 1900.69)
+                        # recorded $1,414.54 against a true gain of $34.90 —
+                        # a 40x overstatement — because the sell level was
+                        # sized $11,309.48. It also meant a sell landing
+                        # exactly on its level scored $0.00 no matter how far
+                        # the price had climbed from the buy.
                         buy_cost = matching_buy["size_usd"]
-                        sell_revenue = level["size_usd"] * (
-                            current_price / level["price"]
-                        )
+                        buy_price = matching_buy.get("price") or 0
+                        if buy_price > 0:
+                            # Coins bought, revalued at the sell price.
+                            qty = buy_cost / buy_price
+                            sell_revenue = qty * current_price
+                        else:
+                            # No buy price recorded — cannot price the cycle.
+                            # Record nothing rather than a fabricated figure.
+                            sell_revenue = buy_cost
                         pnl = sell_revenue - buy_cost
                         matching_buy["closed"] = True
                         grid["cycles_completed"] += 1
                         self.total_cycles += 1
+
+                        # Record the COMPLETED CYCLE here, where the P/L is
+                        # actually realized. trade_history was only appended
+                        # in remove_grid(), i.e. on teardown — but a completed
+                        # cycle RESETS the grid and keeps it running, so a
+                        # grid could cycle profitably for days and never
+                        # appear in trade history. That is why the dashboard
+                        # showed Net P&L +$1414.54 next to Wins/Losses 0/0 and
+                        # a 0.0% win rate on a winning trade: total_cycles
+                        # counts cycles, trade_history counted teardowns, and
+                        # the win-rate panel reads the latter.
+                        self.trade_history.append({
+                            "pair": pair,
+                            "started": matching_buy.get("time", 0),
+                            "ended": time.time(),
+                            "status": "CYCLE",
+                            "pnl": round(pnl, 4),
+                            "fees": 0.0,  # gross accounting (signal product)
+                            "cycles": 1,
+                            "fills": 2,   # the buy and this sell
+                            "reservation_id": grid.get("reservation_id", ""),
+                            "won": pnl > 0,
+                        })
+
+                        # ...and into the expectancy tracker, which the
+                        # snapshot reports via get_bot_stats(). Nothing ever
+                        # called record_trade, so that block was queried and
+                        # never fed — every field read 0 (win_rate 0.0%,
+                        # wins/losses 0/0) beside a real +$1414.54.
+                        if self.expectancy is not None:
+                            try:
+                                self.expectancy.record_trade(
+                                    bot_id="gridzilla",
+                                    pair=pair,
+                                    direction="LONG",
+                                    entry_price=matching_buy.get("price", 0),
+                                    exit_price=current_price,
+                                    size_usd=matching_buy.get("size_usd", 0),
+                                    duration=time.time() - matching_buy.get("time", time.time()),
+                                    realized_pnl=pnl,
+                                    trade_id=f"gridzilla_{pair}_{int(time.time() * 1000)}",
+                                )
+                            except Exception as e:
+                                logging.warning(
+                                    f"expectancy.record_trade failed for "
+                                    f"{pair} cycle: {e}")
 
                     fill = {
                         "pair": pair,
@@ -1076,7 +1146,16 @@ class GridExecutor:
                     "fills": len(grid["fills"]),
                     "reservation_id": grid.get("reservation_id", ""),
                 }
-                self.trade_history.append(summary)
+                # Completed cycles are recorded as they happen (see
+                # check_fills). Appending this teardown summary too would
+                # double-count their P/L — grid_pnl is the SUM of the cycles
+                # already in trade_history. Only record a teardown that
+                # carries P/L no cycle claimed, i.e. a grid torn down with
+                # zero completed cycles.
+                if not grid.get("cycles_completed"):
+                    summary["status"] = grid["status"]
+                    summary["won"] = (grid["grid_pnl"] or 0) > 0
+                    self.trade_history.append(summary)
         if summary is not None:
             self._save_state()  # persist after removal (outside lock — _save_state takes its own lock)
         return summary
@@ -1234,7 +1313,8 @@ class GridzillaEngine:
 
         self.regime_detector = RegimeDetector(config)
         self.grid_architect = GridArchitect(config)
-        self.executor = GridExecutor(config, self.kraken, self.publisher)
+        self.executor = GridExecutor(config, self.kraken, self.publisher,
+                                     expectancy=self.expectancy)
         self.executor._kraken_spot = self._kraken_spot  # live spot execution
         self.intel = BusIntelligence(self.bus_listener)
 

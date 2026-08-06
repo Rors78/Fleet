@@ -131,8 +131,30 @@ class InformationGeometryEngine:
                 'kurtosis': round(params_b['kurtosis'], 4),
             },
             'interpretation': interpretation,
-            'model_reliability': round(max(0, 1 - fisher_total * 10), 3),
-            'regime_change_probability': round(min(1, fisher_total * 5), 3),
+            'measured': True,
+            # Calibration note (2026-07-30): empirical fisher_total on live 5m
+            # candles (300-limit fetch, window=50/step=10) spreads roughly
+            # 0.08 (calm) to 0.55-0.6 (elevated) across BTC/ETH/XRP/ADA/EUR/HYPE/SUI.
+            # The old `* 5` scale saturated prob=1.0 at fisher_total=0.2 -- below
+            # the p50 of already-elevated readings (~0.28) -- so nearly every
+            # pair railed to a false "certain" regime change every scan. `* 1.8`
+            # keeps prob=1.0 reserved for fisher_total >= ~0.556, near the
+            # observed live ceiling, so probability actually spreads across
+            # (0,1) instead of clipping. Re-derive if the candle interval,
+            # window, or step change -- this is fit to the current live range,
+            # not a universal constant.
+            # Calibration (2026-08-06): the old `1 - fisher_total * 10` hit 0
+            # at fisher_total 0.10 — below the calm end (~0.08) of the live
+            # range and far below the 0.24-0.46 observed on live warning
+            # pairs. model_reliability was therefore a constant 0.000 in
+            # production: a dead field that read as "model completely
+            # unreliable" on every pair, always. This is the same saturation
+            # bug the `* 1.8` note below records fixing for probability; the
+            # reliability scale was simply left behind. `* 1.6` puts 0 at
+            # fisher_total ~0.625, just past the observed ceiling, so the
+            # figure spreads across (0,1) like probability does.
+            'model_reliability': round(max(0, 1 - fisher_total * 1.6), 3),
+            'regime_change_probability': round(min(1, fisher_total * 1.8), 3),
         }
 
     def _estimate_distribution(self, data):
@@ -196,11 +218,17 @@ class InformationGeometryEngine:
             return "NORMAL_CURVATURE"
 
     def _default(self):
+        # INSUFFICIENT_DATA is the one case where the model is provably
+        # unreliable, so it must not claim reliability. This previously
+        # returned model_reliability 1.0 — the MAXIMUM value — meaning the
+        # only branch that knows it failed was the branch asserting a
+        # perfect fit. None says "not measured"; consumers decide.
         return {
             'fisher_metric': 0, 'geodesic_velocity': 0,
             'curvature_acceleration': 0, 'kl_divergence': 0,
             'entropy': 0, 'entropy_change': 0,
             'distribution': {'mean': 0, 'std': 0, 'skew': 0, 'kurtosis': 0},
             'interpretation': 'INSUFFICIENT_DATA',
-            'model_reliability': 1.0, 'regime_change_probability': 0,
+            'model_reliability': None, 'regime_change_probability': 0,
+            'measured': False,
         }

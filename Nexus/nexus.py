@@ -634,6 +634,16 @@ class EuclideanStructureEngine:
         }
 
 
+def _mean_or_none(vals):
+    """Mean of measured values, or None when nothing was measured.
+
+    Deliberately not `sum(...)/max(len(...), 1)`: that yields 0.0 for an
+    empty set, which downstream reads as "measured, and the answer is zero"
+    rather than "never measured".
+    """
+    return round(sum(vals) / len(vals), 3) if vals else None
+
+
 # ---------------------------------------------------------------------------
 # Engine 4: Pythagorean Harmonic Resonance
 # ---------------------------------------------------------------------------
@@ -648,12 +658,36 @@ class PythagoreanResonance:
         tf_scores = {"5m": 0.72, "15m": 0.68, "1h": 0.71, "4h": 0.35, "1d": 0.65}
         Each score: >0.5=bullish, <0.5=bearish, 0.5=neutral.
         """
-        scores = [tf_scores.get(tf, 0.5) for tf in self.TF_ORDER]
+        # Only timeframes PHITEX actually measured take part. The old
+        # `.get(tf, 0.5)` was doubly wrong: 0.5 is not neutral under the
+        # `s > 0.5` test below, it is BEARISH, so an absent timeframe cast a
+        # silent bear vote AND was counted as an agreeing voice in
+        # `consonance`. With no measurements at all that yielded
+        # BEAR @ consonance 1.0 — the strongest possible reading, from
+        # five timeframes that were never measured.
+        present = [(tf, tf_scores.get(tf)) for tf in self.TF_ORDER]
+        present = [(tf, s) for tf, s in present if isinstance(s, (int, float))]
+        if len(present) < 2:
+            # One timeframe cannot resonate with anything. Say so.
+            return {
+                "pair": pair,
+                "consonance": None,
+                "dissonant_tf": [],
+                "harmonic_power": None,
+                "resolution_bias": "UNMEASURED",
+                "octave_ratio": None,
+                "intervals": [],
+                "tf_measured": [tf for tf, _ in present],
+                "measured": False,
+            }
+
+        tfs = [tf for tf, _ in present]
+        scores = [s for _, s in present]
         directions = [1 if s > 0.5 else -1 for s in scores]
         majority = 1 if sum(directions) > 0 else -1
 
         consonance = sum(1 for d in directions if d == majority) / len(directions)
-        dissonant = [self.TF_ORDER[i] for i, d in enumerate(directions) if d != majority]
+        dissonant = [tfs[i] for i, d in enumerate(directions) if d != majority]
 
         # Adjacent intervals (Pythagorean ratios)
         intervals = []
@@ -679,6 +713,8 @@ class PythagoreanResonance:
             "resolution_bias": "BULL" if majority > 0 else "BEAR",
             "octave_ratio": round(octave, 3),
             "intervals": intervals,
+            "tf_measured": tfs,
+            "measured": True,
         }
 
 
@@ -1237,17 +1273,71 @@ class NexusEngine:
             phitex_resp = requests.get(f"{PHITEX_URL}/api/snapshot", timeout=3)
             if phitex_resp.status_code == 200:
                 phitex_data = phitex_resp.json()
-                for pair, pdata in phitex_data.get("pairs", {}).items():
-                    # Use T, chi_norm, C_norm, FCI_norm, phi_tex as proxy TF scores
-                    # (PHITEX computes from 1h candles, but we can approximate TF alignment
-                    #  from the state variable trajectory)
-                    tf_proxy = {
-                        "5m": pdata.get("chi_norm", 0.5),     # fastest-responding
-                        "15m": pdata.get("C_norm", 0.5),      # mid-fast
-                        "1h": pdata.get("temperature", 0.5),   # base TF
-                        "4h": pdata.get("FCI_norm", 0.5),     # structural
-                        "1d": pdata.get("phi_tex", 0.5),       # slowest composite
+                _phx_pairs = phitex_data.get("pairs")
+                if not isinstance(_phx_pairs, dict):
+                    _phx_pairs = {}
+                for pair, pdata in _phx_pairs.items():
+                    # PHITEX state variables are normalized MAGNITUDES, not
+                    # directional trend scores. Feeding them straight into
+                    # PythagoreanResonance was a category error: that engine
+                    # reads >0.5 as bullish and <=0.5 as bearish, but
+                    # `temperature` is >0.5 on 56/56 live pairs (min 0.837)
+                    # while `chi_norm` and `phi_tex` are >0.5 on 3 and 2 of 56.
+                    # The direction pattern was therefore a fixed artefact of
+                    # each variable's distribution, not of the market — every
+                    # top pair reported an identical confident BEAR, and the
+                    # derived bias agreed with PHITEX's own `direction` on
+                    # 1 of 8 pairs, i.e. worse than chance.
+                    #
+                    # Direction comes from PHITEX's `direction` field, which is
+                    # what actually carries it. Magnitude supplies only the
+                    # CONVICTION away from neutral. A NEUTRAL pair — 48 of 56
+                    # live, PHITEX reporting an honest EQUILIBRIUM — yields no
+                    # timeframe votes at all rather than a manufactured bias.
+                    _dir = str(pdata.get("direction") or "").upper()
+                    if _dir in ("LONG", "BULL", "UP"):
+                        _sign = 1.0
+                    elif _dir in ("SHORT", "BEAR", "DOWN"):
+                        _sign = -1.0
+                    else:
+                        _sign = None  # NEUTRAL / absent — no directional claim
+
+                    _proxy_src = {
+                        "5m": "chi_norm",       # fastest-responding
+                        "15m": "C_norm",        # mid-fast
+                        "1h": "temperature",    # base TF
+                        "4h": "FCI_norm",       # structural
+                        "1d": "phi_tex",        # slowest composite
                     }
+                    tf_proxy = {}
+                    if _sign is not None:
+                        for _tf, _k in _proxy_src.items():
+                            _v = pdata.get(_k)
+                            # A magnitude of ~0 is ZERO CONVICTION on that
+                            # timeframe, not a bearish opinion. It maps to
+                            # exactly 0.5, and `0.5 > 0.5` is False, so
+                            # including it cast a silent bear vote: live
+                            # LTC/USD and PUMP/USD each had three 0.0000
+                            # readings outvote two genuine bullish ones and
+                            # invert a PHITEX LONG into a BEAR. Timeframes
+                            # with no conviction abstain.
+                            if isinstance(_v, (int, float)) and abs(_v) > 1e-9:
+                                # magnitude -> signed score around the 0.5
+                                # neutral point, clamped to [0, 1]
+                                tf_proxy[_tf] = max(0.0, min(
+                                    1.0, 0.5 + _sign * abs(_v) * 0.5))
+                    # With no direction, tf_proxy stays empty and compute()
+                    # returns resolution_bias UNMEASURED — which is the truth.
+                    #
+                    # KNOWN LIMIT (2026-08-06): every timeframe now inherits
+                    # its sign from the single PHITEX `direction` field, so
+                    # they cannot disagree and consonance is 1.0 whenever a
+                    # direction exists. This is an honest conviction-weighted
+                    # reading, NOT independent cross-timeframe confirmation —
+                    # do not read consonance here as agreement between
+                    # separately-derived timeframe opinions. Genuine
+                    # multi-TF resonance needs per-timeframe directional
+                    # inputs, which PHITEX does not currently publish.
                     pythagorean_results[pair] = self.pythagorean.compute(pair, tf_proxy)
         except Exception:
             pass
@@ -1528,14 +1618,24 @@ class NexusEngine:
                 "interpretation": interpretation,
                 # New engines
                 "pythagorean": {
+                    # Unmeasured pairs carry harmonic_power/consonance None.
+                    # They sort last (not as 0, which would rank them against
+                    # measured pairs) and are excluded from the fleet mean
+                    # rather than dragging it toward zero.
                     "top_pairs": sorted(
                         [{**v, "blacklisted": _is_blacklisted(v.get("pair", ""))}
                          for v in pythagorean_results.values()],
-                        key=lambda x: x.get("harmonic_power", 0),
+                        key=lambda x: (
+                            1 if isinstance(x.get("harmonic_power"), (int, float)) else 0,
+                            x.get("harmonic_power") if isinstance(
+                                x.get("harmonic_power"), (int, float)) else 0.0),
                         reverse=True)[:5] if pythagorean_results else [],
-                    "fleet_consonance": round(
-                        sum(r["consonance"] for r in pythagorean_results.values()) /
-                        max(len(pythagorean_results), 1), 3) if pythagorean_results else 0,
+                    "fleet_consonance": _mean_or_none([
+                        r["consonance"] for r in pythagorean_results.values()
+                        if isinstance(r.get("consonance"), (int, float))]),
+                    "pairs_measured": sum(
+                        1 for r in pythagorean_results.values()
+                        if isinstance(r.get("consonance"), (int, float))),
                 },
                 "gaussian_fusion": gaussian_result,
                 "archimedean": archimedean,
@@ -1569,6 +1669,12 @@ class NexusEngine:
                         {"pair": p, "regime_change_prob": r["regime_change_probability"],
                          "fisher_metric": r["fisher_metric"],
                          "geodesic_velocity": r["geodesic_velocity"],
+                         # Surface the model's own reliability alongside the
+                         # warning. A regime-change probability published
+                         # without it invites the reader to treat every
+                         # warning as equally trustworthy.
+                         "model_reliability": r.get("model_reliability"),
+                         "interpretation": r.get("interpretation"),
                          "blacklisted": _is_blacklisted(p)}
                         for p, r in info_geo_results.items()
                         if r.get("regime_change_probability", 0) > 0.4
@@ -1855,7 +1961,11 @@ class NexusEngine:
                                 "regime_change_probability": prob,
                                 "fisher_metric": ig["fisher_metric"],
                                 "geodesic_velocity": ig["geodesic_velocity"],
-                                "model_reliability": ig.get("model_reliability", 1.0),
+                                # None, not 1.0. info_geometry does not compute
+                                # this, so the old default published "perfectly
+                                # reliable" on every MANIFOLD_WARNING the fleet
+                                # has ever emitted.
+                                "model_reliability": ig.get("model_reliability"),
                                 "interpretation": interp,
                             })
 

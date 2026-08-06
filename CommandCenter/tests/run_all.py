@@ -42,6 +42,7 @@ TESTS = [
     "test_release_publish.py",
     "test_nonfinite_guard.py",
     "test_lease_sweep_guard.py",
+    "test_harmonic_absent.py",
 ]
 
 

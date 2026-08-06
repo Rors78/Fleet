@@ -283,6 +283,13 @@ class CardRenderer:
         bot_alignment = data.get("bot_alignment", [])
         regime = data.get("regime", "\u2014")
         aegis_score = data.get("aegis_score")
+        # Deep Blue publishes a real 0-100 whaleScore. The Whale Risk bar
+        # below used to be derived from a two-valued literal keyed on the
+        # magnitude LABEL (0.9 for EXTREME, else 0.6), and since the routing
+        # gate only admits EXTREME, every whale card ever sent drew a
+        # 90%-full red bar reading HIGH. A subscriber read a quantified risk
+        # score; there was no score.
+        whale_score = data.get("score", data.get("whaleScore"))
         adx = data.get("adx")
         hurst = data.get("hurst")
         council_active = data.get("council_active", [])
@@ -426,18 +433,21 @@ class CardRenderer:
         y = self._draw_kv(draw, y, "Deployed", dep_s)
 
         # Whale Risk bar
-        risk_val = 0.9 if str(magnitude).upper() == "EXTREME" else 0.6
-        y += 4
-        draw.text((COL_LEFT + 14, y - 2), "Whale Risk",
-                  fill=_hex(TEXT_SEC), font=self._f("mono_13"))
-        bar_x = COL_LEFT + 14 + 180
-        self._draw_bar(draw, bar_x, y + 4, 300, risk_val, 1.0, height=6,
-                       fill_color=TEXT_DANGER if risk_val > 0.7 else ACCENT)
-        risk_label = "HIGH" if risk_val > 0.7 else "MODERATE"
-        draw.text((bar_x + 310 + 10, y - 2), risk_label,
-                  fill=_hex(TEXT_DANGER if risk_val > 0.7 else TEXT_SEC),
-                  font=self._f("mono_13"))
-        y += 28
+        # Draw the bar ONLY from a measured score. No score, no gauge — an
+        # omitted row is honest; an invented one is not.
+        if isinstance(whale_score, (int, float)):
+            risk_val = max(0.0, min(1.0, float(whale_score) / 100.0))
+            y += 4
+            draw.text((COL_LEFT + 14, y - 2), "Whale Score",
+                      fill=_hex(TEXT_SEC), font=self._f("mono_13"))
+            bar_x = COL_LEFT + 14 + 180
+            self._draw_bar(draw, bar_x, y + 4, 300, risk_val, 1.0, height=6,
+                           fill_color=TEXT_DANGER if risk_val > 0.7 else ACCENT)
+            risk_label = f"{float(whale_score):.0f}/100"
+            draw.text((bar_x + 310 + 10, y - 2), risk_label,
+                      fill=_hex(TEXT_DANGER if risk_val > 0.7 else TEXT_SEC),
+                      font=self._f("mono_13"))
+            y += 28
 
         y += 6
         y = self._draw_footer(draw, y, timestamp)
@@ -745,11 +755,12 @@ class CardRenderer:
         """GoldenEye narrator voice for TRADE_CLOSE image cards.
         Returns a 1-2 sentence paragraph in plain language. Max ~180 chars.
         """
-        try:
-            pnl_val = float(pnl or 0)
-        except Exception:
-            pnl_val = 0
-        won = pnl_val > 0
+        # float(pnl or 0) turned an absent P/L into a measured 0.00, so the
+        # narrator line read "Closed BTC/USD at a $0.00 loss" — a sentence
+        # asserting both a direction and a magnitude from nothing.
+        _known = isinstance(pnl, (int, float))
+        pnl_val = float(pnl) if _known else None
+        won = _known and pnl_val > 0
 
         # Exit reason in plain language
         exit_reasons_human = {
@@ -780,7 +791,10 @@ class CardRenderer:
 
         # Outcome line
         pair_label = pair or "this trade"
-        if won:
+        if not _known:
+            # No figure was recorded — state the close, claim no direction.
+            outcome = f"Closed {pair_label} — result not recorded"
+        elif won:
             outcome = f"Profitable exit on {pair_label} — earned ${abs(pnl_val):.2f} net"
         else:
             outcome = f"Closed {pair_label} at a ${abs(pnl_val):.2f} loss"
@@ -805,9 +819,15 @@ class CardRenderer:
         stop = data.get("stop_loss", data.get("stop"))
 
         pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
-        pnl_won = isinstance(pnl, (int, float)) and pnl > 0
-        result = "WIN" if pnl_won else "LOSS"
-        result_color = TEXT_POS if pnl_won else TEXT_DANGER
+        # An UNMEASURED P/L is not a loss. `pnl_won` is False for None, so a
+        # null used to render the card title as "POSITION CLOSED — LOSS" in
+        # red with "P/L —" beneath it: a losing trade published from a figure
+        # nobody recorded.
+        _pnl_known = isinstance(pnl, (int, float))
+        pnl_won = _pnl_known and pnl > 0
+        result = ("WIN" if pnl_won else "LOSS") if _pnl_known else "CLOSED"
+        result_color = (TEXT_POS if pnl_won else TEXT_DANGER) if _pnl_known \
+            else TEXT_SEC
         entry_s = self._smart_price(entry)
         exit_s = self._smart_price(exit_p)
         size_s = f"${size:,.2f}" if isinstance(size, (int, float)) else "\u2014"
@@ -1033,16 +1053,35 @@ class CardRenderer:
         losses = [t for t in trades if isinstance(t.get("net"), (int, float)) and t["net"] <= 0]
         n_wins = len(wins)
         n_losses = len(losses)
-        win_rate = (n_wins / n_trades * 100) if n_trades > 0 else 0.0
+        # Divide by the DECIDED trades, not every row. wins/losses filter on a
+        # numeric `net`, so a trade whose P/L failed to parse landed in
+        # neither — yet n_trades counted it, dragging the rate down. Ten
+        # trades of which four were unparseable and five of the remaining six
+        # won reported 50%, not the true 83.3%. None when nothing was decided:
+        # a 0% ring drawn from unparseable data asserts the fleet lost
+        # everything.
+        _decided = n_wins + n_losses
+        win_rate = (n_wins / _decided * 100) if _decided > 0 else None
 
-        best_trade = max(trades, key=lambda t: t.get("net", 0)) if trades else None
-        worst_trade = min(trades, key=lambda t: t.get("net", 0)) if trades else None
+        # Rank only trades with a real P/L. `.get("net", 0)` returns None for a
+        # present-but-null key — the default never fires — so max()/min() raised
+        # "'>' not supported between NoneType and float" on any batch containing
+        # an unpriced close. A trade with no P/L is also not a candidate for
+        # "best" or "worst": it was never measured.
+        _priced = [t for t in trades if isinstance(t.get("net"), (int, float))]
+        best_trade = max(_priced, key=lambda t: t["net"]) if _priced else None
+        worst_trade = min(_priced, key=lambda t: t["net"]) if _priced else None
 
         # Cumulative P/L series
+        # Only priced trades move the curve. `.get("net", 0)` let an
+        # unpriced close append a point without changing the running total,
+        # so the sparkline had the right number of vertices and the wrong
+        # shape — and an all-unpriced batch drew a flat green break-even line
+        # labelled "Start: $0.00 / Close: +$0.00".
         cum_pnl = []
         running = 0.0
-        for t in trades:
-            running += t.get("net", 0)
+        for t in _priced:
+            running += t["net"]
             cum_pnl.append(running)
 
         # Estimate total height at 2x
@@ -1233,17 +1272,23 @@ class CardRenderer:
         # Background ring
         draw.arc(bbox, 0, 360, fill=_hex(BAR_BG), width=stroke)
 
-        # Win arc (green, from top = -90 degrees)
-        if win_rate > 0:
-            win_angle = win_rate / 100 * 360
-            draw.arc(bbox, -90, -90 + win_angle, fill=_hex(TEXT_POS), width=stroke)
-        # Loss arc (red, from where win ends)
-        if win_rate < 100:
-            loss_start = -90 + (win_rate / 100 * 360)
-            draw.arc(bbox, loss_start, 270, fill=_hex(TEXT_DANGER), width=stroke)
+        # A None win_rate means no trade was DECIDED — every P/L was
+        # unparseable. Leaving the background ring bare and printing "—" is
+        # honest; a fully red ring reading "0.0%" asserts the fleet lost every
+        # trade, which is the strongest possible claim from no data.
+        _known = isinstance(win_rate, (int, float))
+        if _known:
+            # Win arc (green, from top = -90 degrees)
+            if win_rate > 0:
+                win_angle = win_rate / 100 * 360
+                draw.arc(bbox, -90, -90 + win_angle, fill=_hex(TEXT_POS), width=stroke)
+            # Loss arc (red, from where win ends)
+            if win_rate < 100:
+                loss_start = -90 + (win_rate / 100 * 360)
+                draw.arc(bbox, loss_start, 270, fill=_hex(TEXT_DANGER), width=stroke)
 
         # Center text — win rate
-        wr_s = f"{win_rate:.1f}%"
+        wr_s = f"{win_rate:.1f}%" if _known else "—"
         wrf = f2("sans_18")
         wb = draw.textbbox((0, 0), wr_s, font=wrf)
         ww = wb[2] - wb[0]
@@ -1318,7 +1363,11 @@ class CardRenderer:
             return
 
         n = len(trades)
-        pnl_values = [t.get("net", 0) for t in trades]
+        # Unpriced trades are excluded, not counted as 0 — including them
+        # collapsed max_abs toward zero and relabelled the axis "+$1 / -$1",
+        # rendering every bar at full scale against an invented range.
+        pnl_values = [t["net"] for t in trades
+                      if isinstance(t.get("net"), (int, float))]
         max_abs = max(abs(v) for v in pnl_values) if pnl_values else 1
         if max_abs == 0:
             max_abs = 1
@@ -1420,8 +1469,9 @@ class CardRenderer:
             y += 24 * S
 
             pair = trade.get("pair", "\u2014")
-            net_v = trade.get("net", 0)
-            net_s = f"{'+'if net_v>=0 else '-'}${abs(net_v):.2f}"
+            net_v = trade.get("net")
+            net_s = (f"{'+' if net_v >= 0 else '-'}${abs(net_v):.2f}"
+                     if isinstance(net_v, (int, float)) else "—")
             side = str(trade.get("side", "\u2014")).upper()
 
             if tier == "paid":

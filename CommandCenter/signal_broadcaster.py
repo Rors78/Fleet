@@ -892,9 +892,17 @@ def format_whale_narrator(data: dict):
     volume = data.get("volume", 0) or 0
     price = data.get("price", 0) or 0
     regime = data.get("regime", "")
-    risk_level = data.get("risk_level", "GREEN")
-    deployed_pct = data.get("deployed_pct", 0) or 0
-    bot_count = data.get("bot_count", 0) or 0
+    # None, not a plausible default. risk_level defaulted to "GREEN", so a
+    # missing assessment published an all-clear; deployed_pct and bot_count
+    # became 0, so the card asserted "0 bots online, 0% of capital deployed"
+    # about a fleet it simply could not read. These are enrichment fields,
+    # absent whenever /api/master was unreachable.
+    _rl = data.get("risk_level")
+    risk_level = _rl if isinstance(_rl, str) and _rl else None
+    _dp = data.get("deployed_pct")
+    deployed_pct = _dp if isinstance(_dp, (int, float)) else None
+    _bc = data.get("bot_count")
+    bot_count = _bc if isinstance(_bc, int) else None
 
     # Volume formatter
     if volume >= 1_000_000:
@@ -905,7 +913,12 @@ def format_whale_narrator(data: dict):
         vol_str = "significant volume"
 
     # Risk word
-    risk_word = {"GREEN": "low", "YELLOW": "elevated", "RED": "high"}.get(risk_level, "unknown")
+    # None when the level is absent, so the sentences below omit the clause
+    # rather than publishing "risk is unknown" — which reads as an assessed
+    # state. The old default was the truthy string "unknown", which passed
+    # every `if risk_word` guard.
+    risk_word = ({"GREEN": "low", "YELLOW": "elevated", "RED": "high"}
+                 .get(risk_level) if risk_level else None)
 
     # Magnitude-specific narrator
     if tier == "EXTREME":
@@ -920,7 +933,9 @@ def format_whale_narrator(data: dict):
             narrator += " In a ranging market, moves this size can trigger breakouts. Worth watching closely."
         else:
             narrator += " The fleet is tracking this for potential impact."
-        narrator += f"\n\nFleet status: risk is {risk_word}, {deployed_pct:.0f}% of capital deployed."
+        if risk_word and deployed_pct is not None:
+            narrator += (f"\n\nFleet status: risk is {risk_word}, "
+                         f"{deployed_pct:.0f}% of capital deployed.")
     else:  # HIGH or fallback
         header = f"\U0001f40b Whale Activity \u2014 {pair}"
         narrator = f"Large players are moving {vol_str} in {pair}"
@@ -936,7 +951,9 @@ def format_whale_narrator(data: dict):
             narrator += " In this range-bound market, whale activity often precedes direction."
         else:
             narrator += " The fleet is monitoring for follow-through."
-        narrator += f"\n\n{bot_count} bots online, risk {risk_word}. No action needed."
+        if bot_count is not None and risk_word:
+            narrator += (f"\n\n{bot_count} bots online, risk {risk_word}. "
+                         f"No action needed.")
 
     ts = datetime.now(timezone.utc).strftime("%H:%M UTC \u00b7 %d %b %Y")
 
@@ -944,11 +961,16 @@ def format_whale_narrator(data: dict):
 
     # Intelligence detail block
     risk_emoji = {"GREEN": "\u2705", "YELLOW": "\u26a0\ufe0f", "RED": "\U0001f534"}.get(risk_level, "")
-    available = data.get("available_capital", 0) or 0
+    _av = data.get("available_capital")
+    available = _av if isinstance(_av, (int, float)) else None
     intel_details = [
         f"\u25b8 Regime: {_human_regime(regime)}",
-        f"\u25b8 Risk: {risk_level} {risk_emoji}",
-        f"\u25b8 Fleet: {bot_count} bots \u00b7 {deployed_pct:.0f}% deployed \u00b7 ${available:,.0f} available",
+        (f"\u25b8 Risk: {risk_level} {risk_emoji}" if risk_level
+         else "\u25b8 Risk: not assessed"),
+        (f"\u25b8 Fleet: {bot_count} bots \u00b7 {deployed_pct:.0f}% deployed"
+         f" \u00b7 ${available:,.0f} available"
+         if None not in (bot_count, deployed_pct, available)
+         else "\u25b8 Fleet: status unavailable"),
         f"\u25b8 Magnitude: {tier} \u00b7 Volume: {vol_str}",
     ]
     intel_text = (f"{header}\n\n{narrator}\n\n"
@@ -966,11 +988,24 @@ def format_regime_or_aegis_narrator(data: dict, event_type: str):
     REGIME_CHANGE: both channels receive a message.
     """
     ts = datetime.now(timezone.utc).strftime("%H:%M UTC \u00b7 %d %b %Y")
-    risk_level = data.get("risk_level", "GREEN")
-    deployed_pct = data.get("deployed_pct", 0) or 0
-    bot_count = data.get("bot_count", 0) or 0
+    # None, not a plausible default. risk_level defaulted to "GREEN", so a
+    # missing assessment published an all-clear; deployed_pct and bot_count
+    # became 0, so the card asserted "0 bots online, 0% of capital deployed"
+    # about a fleet it simply could not read. These are enrichment fields,
+    # absent whenever /api/master was unreachable.
+    _rl = data.get("risk_level")
+    risk_level = _rl if isinstance(_rl, str) and _rl else None
+    _dp = data.get("deployed_pct")
+    deployed_pct = _dp if isinstance(_dp, (int, float)) else None
+    _bc = data.get("bot_count")
+    bot_count = _bc if isinstance(_bc, int) else None
     risk_emoji = {"GREEN": "\u2705", "YELLOW": "\u26a0\ufe0f", "RED": "\U0001f534"}.get(risk_level, "")
-    risk_word = {"GREEN": "low", "YELLOW": "elevated", "RED": "high"}.get(risk_level, "unknown")
+    # None when the level is absent, so the sentences below omit the clause
+    # rather than publishing "risk is unknown" — which reads as an assessed
+    # state. The old default was the truthy string "unknown", which passed
+    # every `if risk_word` guard.
+    risk_word = ({"GREEN": "low", "YELLOW": "elevated", "RED": "high"}
+                 .get(risk_level) if risk_level else None)
 
     if event_type == "AEGIS_UPDATE":
         # AEGIS health update — Intelligence only
@@ -1040,7 +1075,8 @@ def format_regime_or_aegis_narrator(data: dict, event_type: str):
         else:
             narrator += f" {source_bot} detected the shift \u2014 the fleet is adjusting."
 
-        narrator += f"\n\nRisk {risk_word}, {deployed_pct:.0f}% deployed."
+        if risk_word and deployed_pct is not None:
+            narrator += f"\n\nRisk {risk_word}, {deployed_pct:.0f}% deployed."
 
         pulse_text = f"{header}\n\n{narrator}\n\nFleet Pulse \u00b7 {ts}"
 
@@ -1048,7 +1084,10 @@ def format_regime_or_aegis_narrator(data: dict, event_type: str):
             f"\u25b8 Detected by: {source_bot}",
             f"\u25b8 Shift: {old_regime} \u2192 {new_regime}",
             f"\u25b8 Confidence: {confidence:.0%}",
-            f"\u25b8 Fleet: {bot_count} bots \u00b7 {deployed_pct:.0f}% deployed \u00b7 Risk {risk_level} {risk_emoji}",
+            (f"\u25b8 Fleet: {bot_count} bots \u00b7 {deployed_pct:.0f}% deployed"
+             f" \u00b7 Risk {risk_level} {risk_emoji}"
+             if None not in (bot_count, deployed_pct, risk_level)
+             else "\u25b8 Fleet: status unavailable"),
         ]
         intel_text = (f"{header}\n\n{narrator}\n\n"
                       + "\n".join(intel_details)
@@ -1076,6 +1115,23 @@ _TYPE_EMOJI = {
     "CAUSAL_FLOW":         "\U0001f7e2",  # 🟢
     "EUCLID_LEVEL":        "\U0001f7e1",  # 🟡
 }
+
+def _pct_to_fraction(v):
+    """A win rate stored as a PERCENT (66.7) -> a fraction (0.667).
+
+    fleet_logger writes percent; the card formatters want a fraction so they
+    can use `{wr:.0%}` unconditionally. Returns None for anything that is not
+    a number, so an absent rate stays absent rather than becoming 0.
+
+    Values already <= 1.0 are passed through: a fleet win rate of exactly 1.0
+    is 100%, and 0.667 from a producer that already normalized is 66.7%. The
+    ambiguity only bites a genuine sub-1% fleet win rate, which would require
+    ~200 consecutive losses.
+    """
+    if not isinstance(v, (int, float)) or isinstance(v, bool):
+        return None
+    return float(v) / 100.0 if v > 1.0 else float(v)
+
 
 def _bar(value: float, total: float = 1.0, width: int = 10) -> str:
     """Render a mini progress bar: ▓▓▓▓▓░░░░░"""
@@ -1284,8 +1340,14 @@ class CardFormatter:
         pnl = stats.get("fleet_pnl")
         pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
         trades = stats.get("total_trades", 0)
+        # The job normalizes to a fraction (see _pct_to_fraction), so no
+        # magnitude sniffing is needed here. The old guard fell through to
+        # str(wr) for a percent input and printed a bare "66.7" with no unit.
         wr = stats.get("win_rate")
-        wr_s = f"{wr:.0%}" if isinstance(wr, float) and wr <= 1 else ("\u2014" if wr is None else str(wr))
+        # Disclose n. "Win Rate 100%" on one trade is true and misleading.
+        _wr_n = trades if isinstance(trades, int) and trades > 0 else None
+        wr_s = (f"{wr:.0%}" + (f" (n={_wr_n})" if _wr_n else "")
+                if isinstance(wr, (int, float)) else "\u2014")
         ev = stats.get("expectancy")
         ev_s = f"${ev:+.2f}" if isinstance(ev, (int, float)) else "\u2014"
         # Denominator on the CARD. "Avg P/L per trade" computed over 2 of 18
@@ -1303,7 +1365,7 @@ class CardFormatter:
         regime = _regime_badge(str(stats.get("regime", "\u2014")))
         aegis = stats.get("aegis_score")
         aegis_s = f"{aegis:.2f}" if isinstance(aegis, (int, float)) else "\u2014"
-        aegis_bar = _bar(aegis or 0, 1.0, 10) if isinstance(aegis, (int, float)) else ""
+        aegis_bar = _bar(aegis, 1.0, 10) if isinstance(aegis, (int, float)) else ""
         top_bot = display_name(stats.get("top_bot", "\u2014"))
         top_pair = stats.get("top_pair", "\u2014")
 
@@ -1419,8 +1481,12 @@ class CardFormatter:
         _wr = stats.get("win_rate")
         _wr_line = ""
         if isinstance(_wr, (int, float)):
-            _wr_pct = _wr * 100 if _wr <= 1.01 else _wr
-            _wr_line = f"Win Rate  {_wr_pct:.0f}%\n"
+            # Fraction in (the job normalizes), percent out. The old
+            # `_wr * 100 if _wr <= 1.01 else _wr` sniff turned a genuine 0.8%
+            # win rate into "80%".
+            _n = trades if isinstance(trades, int) and trades > 0 else None
+            _wr_line = (f"Win Rate  {_wr:.0%}"
+                        + (f" (n={_n})" if _n else "") + "\n")
 
         if isinstance(pnl, (int, float)):
             if pnl > 0:
@@ -1489,7 +1555,7 @@ class CardFormatter:
         regime = _regime_badge(_v(d, 'regime'))
         conf = d.get("confidence", d.get("score"))
         conf_s = f"{conf:.2f}" if isinstance(conf, (int, float)) else "\u2014"
-        conf_bar = _bar(conf or 0, 1.0, 12)
+        conf_bar = _bar(conf, 1.0, 12)
         bots = d.get("bots", d.get("sources", []))
         bots_list = bots if isinstance(bots, list) else []
         bots_s = " \u00b7 ".join(display_name(b) for b in bots_list) if bots_list else "Fleet consensus"
@@ -1655,7 +1721,7 @@ class CardFormatter:
         regime = _regime_badge(_v(d, 'regime'))
         conf = d.get("confidence")
         conf_s = f"{conf:.2f}" if isinstance(conf, (int, float)) else "\u2014"
-        conf_bar = _bar(conf or 0, 1.0, 10)
+        conf_bar = _bar(conf, 1.0, 10)
         reason = d.get("reason", d.get("signal_reason", d.get("suggested_action", d.get("description", ""))))
         reason_s = str(reason).replace("_", " ") if reason else "\u2014"
 
@@ -1695,7 +1761,7 @@ class CardFormatter:
     def _paid_aegis_update(self, etype: str, d: dict) -> str:
         score = d.get("score")
         score_s = f"{score:.3f}" if isinstance(score, (int, float)) else "\u2014"
-        score_bar = _bar(score or 0, 1.0, 12)
+        score_bar = _bar(score, 1.0, 12)
         regime = _regime_badge(_v(d, 'regime'))
         deploy_cap = d.get("recommended_max_deployed", d.get("deploy_limit"))
         cap_s = f"{int(deploy_cap)}%" if isinstance(deploy_cap, (int, float)) else "\u2014"
@@ -1783,7 +1849,7 @@ class CardFormatter:
         vol_s = f"${volume:,.0f}" if isinstance(volume, (int, float)) else "\u2014"
         score = d.get("score")
         score_s = f"{score:.1f}" if isinstance(score, (int, float)) else "\u2014"
-        score_bar = _bar(score or 0, 100.0, 10) if isinstance(score, (int, float)) else ""
+        score_bar = _bar(score, 100.0, 10) if isinstance(score, (int, float)) else ""
         reliability = d.get("reliability")
         rel_s = f"{reliability:.0f}%" if isinstance(reliability, (int, float)) else "\u2014"
         side_str = str(side).upper()
@@ -1807,7 +1873,7 @@ class CardFormatter:
         if etype == "CATASTROPHE_WARNING":
             ews = d.get("ews_score")
             ews_s = f"{ews:.2f}" if isinstance(ews, (int, float)) else "\u2014"
-            ews_bar = _bar(ews or 0, 1.0, 10)
+            ews_bar = _bar(ews, 1.0, 10)
             severity = _v(d, 'severity')
             label = "SUDDEN MOVE WARNING"
             data = (f"Pair      {pair}\n"
@@ -1817,7 +1883,7 @@ class CardFormatter:
         elif etype == "CYCLE_DETECTED":
             cyclicality = d.get("cyclicality")
             cyc_s = f"{cyclicality:.2f}" if isinstance(cyclicality, (int, float)) else "\u2014"
-            cyc_bar = _bar(cyclicality or 0, 1.0, 10)
+            cyc_bar = _bar(cyclicality, 1.0, 10)
             label = "REPEATING PATTERN"
             data = (f"Pair      {pair}\n"
                     f"Pattern   {cyc_bar} {cyc_s}")
@@ -1828,7 +1894,7 @@ class CardFormatter:
             temp_s = f"{temp:,.0f}" if isinstance(temp, (int, float)) else "\u2014"
             entropy = d.get("entropy")
             ent_s = f"{entropy:.2f}" if isinstance(entropy, (int, float)) else "\u2014"
-            ent_bar = _bar(entropy or 0, 1.0, 10)
+            ent_bar = _bar(entropy, 1.0, 10)
             phase_str = str(phase).upper()
             if phase_str == "PLASMA":
                 label = "LIQUIDITY CRISIS"
@@ -1844,7 +1910,7 @@ class CardFormatter:
         elif etype == "STRUCTURE_FORMING":
             score = d.get("formation_score", d.get("structure_formation_score", d.get("score")))
             score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "\u2014"
-            score_bar = _bar(score or 0, 1.0, 10)
+            score_bar = _bar(score, 1.0, 10)
             label = "NEW TREND FORMING"
             data = (f"Pair      {pair}\n"
                     f"Strength  {score_bar} {score_s}")
@@ -1852,7 +1918,7 @@ class CardFormatter:
         elif etype == "CHAOS_STATE":
             departure = d.get("attractor_departure")
             dep_s = f"{departure:.2f}" if isinstance(departure, (int, float)) else "\u2014"
-            dep_bar = _bar(departure or 0, 1.0, 10)
+            dep_bar = _bar(departure, 1.0, 10)
             horizon = d.get("predictability_horizon")
             hor_s = f"{horizon:.0f}h" if isinstance(horizon, (int, float)) else _v(d, 'predictability_horizon')
             label = "UNPREDICTABLE MARKET"
@@ -1863,7 +1929,7 @@ class CardFormatter:
         elif etype == "MANIFOLD_WARNING":
             prob = d.get("regime_change_probability")
             prob_s = f"{prob:.0%}" if isinstance(prob, float) and prob <= 1 else str(prob) if prob else "\u2014"
-            prob_bar = _bar((prob or 0), 1.0, 10)
+            prob_bar = _bar(prob, 1.0, 10)
             label = "REGIME SHIFT WARNING"
             data = (f"Pair        {pair}\n"
                     f"Probability {prob_bar} {prob_s}")
@@ -1873,7 +1939,7 @@ class CardFormatter:
             target_node = d.get("target", d.get("effect", d.get("to", "\u2014")))
             strength = d.get("strength")
             str_s = f"{strength:.2f}" if isinstance(strength, (int, float)) else "\u2014"
-            str_bar = _bar(strength or 0, 1.0, 10) if isinstance(strength, (int, float)) else ""
+            str_bar = _bar(strength, 1.0, 10) if isinstance(strength, (int, float)) else ""
             lag = d.get("lag")
             lag_s = f"{lag}" if isinstance(lag, (int, float)) else "\u2014"
             label = "LEAD-LAG DETECTED"
@@ -1890,7 +1956,7 @@ class CardFormatter:
             ltype = _v(d, 'type', _v(d, 'level_type'))
             strength = d.get("strength")
             str_s = f"{strength:.2f}" if isinstance(strength, (int, float)) else "\u2014"
-            str_bar = _bar(strength or 0, 1.0, 10) if isinstance(strength, (int, float)) else ""
+            str_bar = _bar(strength, 1.0, 10) if isinstance(strength, (int, float)) else ""
             dist = d.get("distance_pct")
             dist_s = f"{dist*100:.1f}%" if isinstance(dist, (int, float)) else "\u2014"
             ltype_clean = str(ltype).replace("_", " ").lower()
@@ -2097,7 +2163,7 @@ class CardFormatter:
     def _free_aegis(self, etype: str, d: dict) -> str:
         score = d.get("score")
         score_s = f"{score:.2f}" if isinstance(score, (int, float)) else "\u2014"
-        score_bar = _bar(score or 0, 1.0, 12)
+        score_bar = _bar(score, 1.0, 12)
         regime = _regime_badge(_v(d, 'regime'))
         deploy_cap = d.get("recommended_max_deployed")
         cap_s = f"{int(deploy_cap)}%" if isinstance(deploy_cap, (int, float)) else "\u2014"
@@ -2116,7 +2182,7 @@ class CardFormatter:
         pair = _v(d, 'pair')
         if etype == "CATASTROPHE_WARNING":
             ews = d.get("ews_score")
-            ews_bar = _bar(ews or 0, 1.0, 10)
+            ews_bar = _bar(ews, 1.0, 10)
             ews_s = f"{ews:.2f}" if isinstance(ews, (int, float)) else "\u2014"
             label = "SUDDEN MOVE WARNING"
             data_block = f"Pair      {pair}\nRisk      {ews_bar} {ews_s}"
@@ -3041,7 +3107,14 @@ class DailySummaryJob:
             stats = {
                 "fleet_pnl": daily.get("fleet_pnl", daily.get("pnl", "\u2014")),
                 "total_trades": daily.get("total_trades", "\u2014"),
-                "win_rate": daily.get("win_rate", "\u2014"),
+                # fleet_logger stores win_rate as a PERCENT (66.7), not a
+                # fraction \u2014 the WeeklyReportJob divides by 100 for exactly
+                # this reason and the DailySummaryJob did not. The paid card's
+                # `wr <= 1` guard then fell through to str(wr) and printed a
+                # bare "66.7" with no unit, while the free card's magnitude
+                # sniff turned a genuine 0.8% into "80%". Normalize here so
+                # both formatters receive one unit.
+                "win_rate": _pct_to_fraction(daily.get("win_rate")),
                 "expectancy": expectancy.get("fleet_expectancy", "\u2014"),
                 # Carry the denominator onto the CARD, not just the payload.
                 # A bare "-$35.42/trade" labelled *fleet* reads as "the fleet

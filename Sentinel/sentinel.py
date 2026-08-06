@@ -402,7 +402,12 @@ def get_fleet_context():
     """Gather fleet intelligence for forecast conditioning."""
     ctx = {
         "regime": "RANGING",
-        "regime_confidence": 0.5,
+        # None, not 0.5. A dead upstream produced a confident-looking
+        # RANGING/0.5 context indistinguishable from a measured one, and
+        # regime_confidence feeds base_drift -> total_drift -> the Monte
+        # Carlo -> direction_probability -> high_conviction, which
+        # Confluence consumes as a confirming source.
+        "regime_confidence": None,
         "phitex_fleet": 0.0,
         "phitex_pairs": {},
         "whale_pairs": {},
@@ -418,7 +423,10 @@ def get_fleet_context():
         gf = nexus.get("gaussian_fusion", {})
         if gf.get("fused_regime"):
             ctx["regime"] = gf["fused_regime"]
-            ctx["regime_confidence"] = gf.get("fused_confidence", 0.5)
+            # Double fabrication: a None response already leaves the seed
+            # above, and a present-but-incomplete response re-invented it
+            # here. Neither layer alone could close the hole.
+            ctx["regime_confidence"] = gf.get("fused_confidence")
 
     # PHITEX (via CC proxy)
     phitex_bot = fetch_json(f"{CC_URL}/api/bot/phitex")
@@ -494,12 +502,15 @@ def forecast_pair(pair, candles, ctx, horizons=HORIZONS):
 
     # Regime-conditioned drift
     regime = ctx.get("regime", "RANGING")
-    regime_conf = ctx.get("regime_confidence", 0.5)
+    # No confidence reading means no regime-conditioned drift. Assuming a
+    # mid 0.5 injected a directional bias the fleet never measured.
+    regime_conf = ctx.get("regime_confidence")
     base_drift = 0.0
-    if "BULL" in regime:
-        base_drift = 0.00001 * regime_conf  # slight upward drift
-    elif "BEAR" in regime:
-        base_drift = -0.00001 * regime_conf
+    if isinstance(regime_conf, (int, float)):
+        if "BULL" in regime:
+            base_drift = 0.00001 * regime_conf  # slight upward drift
+        elif "BEAR" in regime:
+            base_drift = -0.00001 * regime_conf
 
     # PHITEX phase adjustment: if pre-critical/critical, widen distribution
     phitex_score = ctx.get("phitex_pairs", {}).get(pair, ctx.get("phitex_fleet", 0))

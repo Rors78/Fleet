@@ -3658,10 +3658,43 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         if new_mode == "live":
             live_total = data.get("live_total")
             if live_total is not None and _portfolio_live:
-                _portfolio_live.total = float(live_total)
-                _portfolio_live.reservations.clear()
+                _lt = float(live_total)
+                if not math.isfinite(_lt) or _lt <= 0:
+                    self._send_json({"ok": False,
+                                     "reason": "live_total must be a finite "
+                                               "positive number"}, 400)
+                    return
+                # Was three unlocked statements. reservations.clear() discarded
+                # every reservation WITHOUT releasing it — no history entry, no
+                # PORTFOLIO_LEASE_SWEEP event, no P/L — while the positions
+                # behind them stayed open on the venue. And a concurrent
+                # reserve() holding the lock could interleave, so a bot could
+                # be handed a rid that the clear then dropped, leaving it
+                # trading against capital the pool no longer tracks.
+                with _portfolio_live._lock:
+                    _dropped = list(_portfolio_live.reservations.items())
+                    for _rid, _r in _dropped:
+                        _portfolio_live.history.append({
+                            "action": "mode_switch_discard",
+                            "reservation_id": _rid,
+                            "bot_id": _r.get("bot_id"),
+                            "pair": _r.get("pair"),
+                            "amount": _r.get("amount"),
+                            "reason": "live balance manually set — reservation "
+                                      "discarded, position NOT closed",
+                            "timestamp": time.time(),
+                        })
+                    _portfolio_live.reservations.clear()
+                    _portfolio_live.total = _lt
                 _portfolio_live._save()
-                log.info("Live portfolio balance manually set to $%.2f", float(live_total))
+                if _dropped:
+                    log.warning(
+                        "MODE SWITCH discarded %d live reservation(s) totalling "
+                        "$%.2f — the positions behind them are NOT closed and "
+                        "are now untracked. Reconcile against the venue.",
+                        len(_dropped),
+                        sum(float(r.get("amount") or 0) for _, r in _dropped))
+                log.info("Live portfolio balance manually set to $%.2f", _lt)
             elif _portfolio_live:
                 sync_result = _sync_kraken_balance()
                 if sync_result.get("ok"):

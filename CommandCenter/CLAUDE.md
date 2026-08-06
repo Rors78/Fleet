@@ -302,17 +302,27 @@ v2. OAuth 1.0a HMAC-SHA1 signing is **stdlib-only** (verified against the RFC
   **Both `x_enabled` and `x_post_paid` are FALSE. X credentials are unset.
   Nothing has ever been posted.**
 
-  History, because the rationale changed twice and the second change voids the
-  first: `x_post_paid` was set TRUE on 2026-08-05 by operator request, then
-  reverted to FALSE the same day on the reasoning that "the fleet is private;
-  X belongs to ROOKERY." **ROOKERY was discontinued 2026-08-06, so that
-  reasoning no longer holds.**
+  **X belongs to SpiltMilk (@JeremiahGo46102). The bot builds are GUESTS on
+  that account.** (`x_post_paid` was briefly TRUE on 2026-08-05, then reverted;
+  a middle rationale that X was "ROOKERY's channel" is void — ROOKERY was
+  discontinued 2026-08-06. Do not revive it.)
 
-  **X now has no owning product.** With ROOKERY gone, the fleet is the only
-  thing left to publish, so any X broadcast means publishing the private
-  flagship to a public timeline. That is an unresolved operator decision, not
-  a setting to inherit. Do not flip either flag on the strength of the old
-  rationale — surface the consequence and let the operator choose.
+  The guest framing is the operative rule, not a metaphor:
+  - The account's voice is SpiltMilk's. Telegram card text is not
+    automatically appropriate there.
+  - **Never expose internal bot names.** `card_renderer.py` /
+    `BOT_DISPLAY_NAMES` map them (confluence→Concord, turtlesue→Stalker,
+    nexusbrain→Prism, gridzilla→Ironweb, aegis→Sovereign). Verified
+    2026-08-06 against real cards through the X plain-text path: 0 leaks,
+    max 166 chars.
+  - **Volume is a guest's debt.** Default to under-posting; the burden of
+    proof is on each post, not on the silence.
+  - Reach decisions (`x_enabled`, `x_post_paid`) are the operator's, never
+    inherited from a setting.
+
+  **Blocker before go-live:** some TRADE_CLOSE cards render
+  `Result ✖ LOSS $+0.00` with `Entry 0.0 / Exit 0.0` — internally
+  contradictory. Fix or suppress before anything posts publicly.
 - **Unconfigured is loud**: missing credentials log a warning and count as
   `failed`, never a silent skip.
 - **Images not yet supported** — v1.1 multipart upload needs its own signing

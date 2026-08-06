@@ -3869,6 +3869,35 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             direction = edata.get("direction", "LONG").upper()
             won = pnl > 0
             _signal_aggregator.record_outcome(pair, direction, won, pnl)
+
+            # Expectancy only ever heard about trades closed through the
+            # reservation-release path. A bot that emits TRADE_CLOSE straight
+            # to the bus (Gridzilla's completed grid cycles) reached
+            # /api/trades and the aggregator but never the expectancy tracker
+            # — so gridzilla booked a real $1,414.54 cycle while
+            # /api/expectancy reported "no closed trades yet". The fleet's
+            # headline signal-quality number silently excluded a whole class
+            # of trade.
+            #
+            # trade_id is the event id, which the release path never uses
+            # (it keys on the reservation id), and record_trade dedups on it —
+            # so a close that arrives by both routes is counted once.
+            if _expectancy_tracker and isinstance(pnl, (int, float)):
+                try:
+                    _expectancy_tracker.record_trade(
+                        bot_id=source,
+                        pair=pair,
+                        direction=direction,
+                        entry_price=edata.get("entry_price", 0),
+                        exit_price=edata.get("exit_price", edata.get("price", 0)),
+                        size_usd=edata.get("size_usd", 0),
+                        duration=edata.get("duration_s", 0),
+                        realized_pnl=pnl,
+                        trade_id=data.get("id") or f"{source}:{pair}:{pnl}",
+                    )
+                except Exception:
+                    log.warning("expectancy.record_trade failed for bus "
+                                "TRADE_CLOSE %s:%s", source, pair, exc_info=True)
             if open_info and open_info.get("signals"):
                 sigs = open_info["signals"]
                 contrib = [f"{source}:{s}" for s in sigs] if isinstance(sigs, list) else [source]

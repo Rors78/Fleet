@@ -927,7 +927,26 @@ class GridExecutor:
             # Publish fills
             if fills and self.publisher:
                 for fill in fills:
-                    event_type = "TRADE_OPEN" if fill["side"] == "BUY" else "TRADE_CLOSE"
+                    # A grid SELL is only a closed trade when it completed a
+                    # round-trip. Every sell used to emit TRADE_CLOSE, so
+                    # half-cycles landed in /api/trades carrying pnl=0 — rows
+                    # that look like flat trades but measure nothing. They
+                    # inflate the win-rate denominator (3 unrealized fills +
+                    # 1 real win reads 25%, not 100%) and are exactly the
+                    # unpriced-close class the broadcaster already suppresses.
+                    #
+                    # GRID_FILL keeps the fill visible on the bus without
+                    # claiming a trade closed.
+                    _realized = fill.get("pnl")
+                    _closed = (fill["side"] != "BUY"
+                               and isinstance(_realized, (int, float))
+                               and _realized != 0)
+                    if fill["side"] == "BUY":
+                        event_type = "TRADE_OPEN"
+                    elif _closed:
+                        event_type = "TRADE_CLOSE"
+                    else:
+                        event_type = "GRID_FILL"
                     try:
                         self.publisher.emit(event_type, {
                             "bot": "gridzilla",
@@ -938,6 +957,9 @@ class GridExecutor:
                             "pnl": fill.get("pnl", 0),
                             "fee": fill["fee"],
                             "grid_cycle": grid["cycles_completed"],
+                            # Explicit: downstream can tell a measured result
+                            # from a leg that simply hasn't resolved yet.
+                            "realized": bool(_closed),
                         })
                     except Exception:
                         pass

@@ -34,14 +34,15 @@ ULTRON_DIR = os.path.join(LOG_DIR, "ultron")
 EVOLUTION_DIR = os.path.join(LOG_DIR, "evolution")
 CC_URL = "http://localhost:9000"
 
-# Bot ports — mirrors BOTS in fleet_config.py.
-# Keep in sync manually when adding/removing bots.
-BOT_PORTS = {
-    "turtlesue": 8070, "sentinel": 8071, "trinity": 8072, "hivemind": 8073,
-    "nexusbrain": 8074, "oracle": 8075, "deepblue": 8076, "gridzilla": 8077,
-    "phitex": 8078, "aegis": 8079, "nexus": 8082, "rubberband": 8083,
-    "contrarian": 8084, "arbitrageur": 8085, "chronos": 8086, "confluence": 8088,
-}
+# Bot ports, derived from fleet_config — the registry is the only source of
+# truth. This was a hand-maintained copy with a "keep in sync manually"
+# comment, and it was not in sync: it missed inference (9001),
+# signal_broadcaster (9002) and bot_responder, so the liveness sweep reported
+# "16 bots" as its denominator while 18 services were running. A dead
+# broadcaster read as a fully-healthy fleet.
+from fleet_config import BOTS as _FC_BOTS
+
+BOT_PORTS = {bid: b["port"] for bid, b in _FC_BOTS.items() if b.get("port")}
 
 
 class EvolutionEngine:

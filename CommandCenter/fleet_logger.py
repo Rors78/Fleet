@@ -22,6 +22,15 @@ from datetime import datetime, timedelta, timezone
 
 import urllib.request as _urlreq
 
+# Per-bot size-field semantics. turtlesue.total_size is COINS; every other
+# trader's size_usd is DOLLARS. Guessing from magnitude is how the same
+# coins-vs-dollars error happened three times on this project — route sizes
+# through this instead of reading the field directly.
+try:
+    from portfolio_math import notional_usd as _notional_usd
+except Exception:  # module missing — degrade, never guess
+    _notional_usd = None
+
 INFERENCE_URL = "http://localhost:9001"
 
 # ---------------------------------------------------------------------------
@@ -452,12 +461,30 @@ class FleetLogger:
                     # Gross semantics (2026-07-30): pnl IS gross price
                     # movement — no fee fabrication. fees kept at 0.0 for
                     # event-shape compatibility.
-                    _size = pos.get("total_size", 0) or pos.get("size_usd", 0) or pos.get("amount", 500)
-                    _entry = pos.get("entry_price", 0) or pos.get("avg_entry", 0)
-                    if _entry > 0 and _size > 0:
-                        _size_usd = _size * _entry if _size < 100 else _size  # handle coin qty vs usd
-                    else:
-                        _size_usd = 500  # fallback
+                    # Size fields do NOT share units across the fleet:
+                    # turtlesue.total_size is COINS, everyone else's size_usd
+                    # is DOLLARS. The old rule here guessed by magnitude
+                    # (`_size * _entry if _size < 100 else _size`), which is
+                    # not a unit check — it cannot recover units a producer
+                    # never declared, and it was wrong in BOTH directions on
+                    # live data: UNI 446.90 coins x $4.20 recorded as $446.90
+                    # (4.2x under) and XLM 6158.32 coins x $0.16 recorded as
+                    # $6158.32 (6.3x over). Every downstream P/L, expectancy
+                    # and card figure is computed from this field.
+                    _size_usd = None
+                    try:
+                        if _notional_usd is None:
+                            raise RuntimeError("portfolio_math unavailable")
+                        _size_usd = _notional_usd(bid, pos)
+                    except Exception:
+                        # Unregistered bot or missing fields: fall back to a
+                        # declared-USD field only. Never re-guess from
+                        # magnitude — an absent number beats a wrong one.
+                        _declared = pos.get("size_usd") or pos.get("notional_usd")
+                        if isinstance(_declared, (int, float)) and _declared > 0:
+                            _size_usd = float(_declared)
+                    if not _size_usd or _size_usd <= 0:
+                        _size_usd = None
                     ev = {
                         "ts": time.time(),
                         "bot": bid,
@@ -466,7 +493,12 @@ class FleetLogger:
                         "pnl": pnl,
                         "gross_pnl": round(pnl, 2),
                         "fees": 0.0,
-                        "size_usd": round(_size_usd, 2),
+                        # None when the notional could not be established.
+                        # A null reads as "not measured" downstream; the old
+                        # $500 fallback read as a real position size.
+                        "size_usd": (round(_size_usd, 2)
+                                     if _size_usd is not None else None),
+                        "size_usd_known": _size_usd is not None,
                         "duration_s": duration,
                         "exit_reason": exit_reason,
                         "direction": pos.get("direction", exit_info.get("direction", "") if exit_info else ""),
@@ -589,19 +621,10 @@ class FleetLogger:
                     "open_time": pos.get("open_time", time.time()),
                 }
 
-        elif bid == "trekbot":
-            for pos in (raw.get("positions") or []):
-                pair = pos.get("symbol", pos.get("pair", ""))
-                opened = pos.get("opened_at", pos.get("open_time", 0))
-                key = f"{pair}_{int(opened)}"
-                positions[key] = {
-                    "pair": pair,
-                    "direction": pos.get("direction", "LONG").upper(),
-                    "entry": pos.get("entry_price", pos.get("entry", 0)),
-                    "size": pos.get("size", pos.get("size_usd", 0)),
-                    "unrealized_pnl": pos.get("unrealized_pnl", pos.get("pnl", 0)),
-                    "open_time": opened,
-                }
+        # trekbot branch removed 2026-08-06: bid is iterated from
+        # BOT_REGISTRY (fleet_config.bot_registry_list()) and trekbot left the
+        # fleet when it was renamed GoldenEye and moved standalone, so this
+        # was unreachable. Kept in git history, not in the read path.
 
         elif bid == "gridzilla":
             for pos in (raw.get("open_positions") or []):
@@ -658,19 +681,11 @@ class FleetLogger:
         """
         trade_log = None
 
-        if bid == "trekbot":
-            # TrekBot: raw = {"health": {}, "positions": [], "analytics": {}}
-            analytics = raw.get("analytics") or {}
-            trade_log = analytics.get("trade_log") or []
-            for tr in reversed(trade_log):
-                sym = tr.get("sym", tr.get("pair", ""))
-                if sym == pair:
-                    return {
-                        "exit_reason": tr.get("exit", "unknown"),
-                        "pnl": tr.get("pnl"),
-                    }
+        # trekbot branch removed 2026-08-06 — retired bot, unreachable. It was
+        # the FIRST branch of this chain, so every live bot's lookup evaluated
+        # a permanently-false comparison before reaching its own case.
 
-        elif bid == "turtlesue":
+        if bid == "turtlesue":
             # TurtleSue: raw.trades = list of dicts with pair, exit_reason, pnl
             trade_log = raw.get("trades") or []
             for tr in reversed(trade_log):

@@ -17,34 +17,10 @@ from PIL import Image, ImageDraw, ImageFont
 
 # ── Bot display names — internal names never shown to subscribers ────────────
 
-BOT_DISPLAY_NAMES = {
-    'confluence':    'Concord',
-    'turtlesue':     'Stalker',
-    'turtlebot':     'Stalker',
-    'nexusbrain':    'Prism',
-    'nexus_brain':   'Prism',
-    'oracle':        'Atlas',
-    'deepblue':      'Leviathan',
-    'deep_blue':     'Leviathan',
-    'gridzilla':     'Ironweb',
-    'nexus':         'The Council',
-    'aegis':         'Sovereign',
-    'sentinel':      'Watcher',
-    'trinity':       'Trident',
-    'hivemind':      'Chorus',
-    'hive_mind':     'Chorus',
-    'phitex':        'Pulse',
-    'rubberband':    'Slingshot',
-    'contrarian':    'Heretic',
-    'arbitrageur':   'Ghost',
-    'chronos':       'Meridian',
-    'inference':     'Inference',
-}
-
-
-def display_name(internal: str) -> str:
-    """Map internal bot name to public display name."""
-    return BOT_DISPLAY_NAMES.get(internal.lower().replace('-', '_'), internal.title())
+# Shared with signal_broadcaster via bot_names (stdlib-only). Was a
+# byte-identical copy in both files, each telling the reader the other
+# was the source of truth.
+from bot_names import BOT_DISPLAY_NAMES, display_name  # noqa: F401
 
 
 # ── Design tokens ────────────────────────────────────────────────────────────
@@ -82,24 +58,7 @@ def _hex(color: str) -> Tuple[int, int, int]:
     return (int(c[0:2], 16), int(c[2:4], 16), int(c[4:6], 16))
 
 
-def _human_regime(regime) -> str:
-    """Translate internal regime labels to human-readable prose. Single source of truth."""
-    return {
-        "TRENDING":       "Trending (bullish bias)",
-        "TRENDING_UP":    "Strong uptrend",
-        "TRENDING_DOWN":  "Downtrend",
-        "BULL":           "Bullish",
-        "BEAR":           "Bearish",
-        "RANGING":        "Range-bound (sideways)",
-        "NORMAL":         "Neutral",
-        "DEFENSIVE":      "Defensive (risk-off)",
-        "CAUTIOUS":       "Cautious",
-        "EQUILIBRIUM":    "Balanced",
-        "MIXED":          "Mixed signals",
-        "EXTREME_FEAR":   "Extreme fear",
-        "EXTREME_GREED":  "Extreme greed",
-        "HIGH_ACTIVITY":  "High activity",
-    }.get((regime or "").upper().replace(" ", "_"), (regime or "Unknown").replace("_", " ").title())
+from bot_names import human_regime as _human_regime  # noqa: F401
 
 
 class CardRenderer:

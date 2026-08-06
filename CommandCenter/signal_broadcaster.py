@@ -35,34 +35,11 @@ from typing import Callable, Optional
 
 # ── Bot display names — internal names never shown to subscribers ────────────
 
-BOT_DISPLAY_NAMES = {
-    'confluence':    'Concord',
-    'turtlesue':     'Stalker',
-    'turtlebot':     'Stalker',
-    'nexusbrain':    'Prism',
-    'nexus_brain':   'Prism',
-    'oracle':        'Atlas',
-    'deepblue':      'Leviathan',
-    'deep_blue':     'Leviathan',
-    'gridzilla':     'Ironweb',
-    'nexus':         'The Council',
-    'aegis':         'Sovereign',
-    'sentinel':      'Watcher',
-    'trinity':       'Trident',
-    'hivemind':      'Chorus',
-    'hive_mind':     'Chorus',
-    'phitex':        'Pulse',
-    'rubberband':    'Slingshot',
-    'contrarian':    'Heretic',
-    'arbitrageur':   'Ghost',
-    'chronos':       'Meridian',
-    'inference':     'Inference',
-}
-
-
-def display_name(internal: str) -> str:
-    """Map internal bot name to public display name."""
-    return BOT_DISPLAY_NAMES.get(internal.lower().replace('-', '_'), internal.title())
+# Shared with card_renderer via bot_names (stdlib-only, so importing it does
+# not drag Pillow into the text-only broadcast path). Was a byte-identical
+# copy of card_renderer's table carrying a "keep in sync" comment.
+from bot_names import (BOT_DISPLAY_NAMES, display_name,  # noqa: F401
+                       human_regime)
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -900,26 +877,8 @@ _LINE  = "\u2501" * 32   # ━━━━━━━━━━━━━━━━━�
 _LINE2 = "\u2500" * 32   # ────────────────────────────────  (thin divider)
 
 
-def _human_regime(regime) -> str:
-    """Translate internal regime labels to human-readable prose.
-    Source of truth is card_renderer._human_regime — keep in sync.
-    """
-    return {
-        "TRENDING":       "Trending (bullish bias)",
-        "TRENDING_UP":    "Strong uptrend",
-        "TRENDING_DOWN":  "Downtrend",
-        "BULL":           "Bullish",
-        "BEAR":           "Bearish",
-        "RANGING":        "Range-bound (sideways)",
-        "NORMAL":         "Neutral",
-        "DEFENSIVE":      "Defensive (risk-off)",
-        "CAUTIOUS":       "Cautious",
-        "EQUILIBRIUM":    "Balanced",
-        "MIXED":          "Mixed signals",
-        "EXTREME_FEAR":   "Extreme fear",
-        "EXTREME_GREED":  "Extreme greed",
-        "HIGH_ACTIVITY":  "High activity",
-    }.get((regime or "").upper().replace(" ", "_"), (regime or "Unknown").replace("_", " ").title())
+# Shared with card_renderer via bot_names — see the import at the top.
+_human_regime = human_regime
 
 
 def format_whale_narrator(data: dict):

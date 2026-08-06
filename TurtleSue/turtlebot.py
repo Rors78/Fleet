@@ -32,6 +32,7 @@ License: MIT
 import json
 import time
 import os
+import shutil
 import sys
 import logging
 import threading
@@ -744,7 +745,20 @@ class TurtleEngine:
 
     # ── Position Persistence ──
     def _load_positions(self):
-        """Load positions from disk on startup."""
+        """Load positions from disk on startup.
+
+        Sets self._state_unreadable when the file EXISTS but could not be
+        parsed. Absent, empty and corrupt all used to produce the same empty
+        self.positions, so a truncated write was indistinguishable from a
+        first run — and the orphan sweep in _reconcile_positions releases
+        every reservation whose rid no local position references. With an
+        empty positions dict that is ALL of them, while the positions
+        themselves remain open on the venue with no capital behind them.
+
+        Unreadable therefore fails toward ARMED: the sweep is skipped and the
+        bot refuses to open new positions until a human looks.
+        """
+        self._state_unreadable = False
         if not os.path.exists(self._positions_file):
             return
         try:
@@ -760,10 +774,42 @@ class TurtleEngine:
                     pos.add_unit(udata["entry_price"], udata["size"], udata["n"], udata["timestamp"])
                 self.positions[pair] = pos
                 loaded += 1
-            if loaded > 0:
-                logging.info(f"Restored {loaded} position(s) from {self._positions_file}")
+            # Restore the trade history the System 1 filter reads, and the
+            # equity ledger the drawdown brake measures against. Both are
+            # optional so an older state file still loads.
+            _tr = data.get("trades")
+            if isinstance(_tr, list) and hasattr(self, "trade_log"):
+                self.trade_log.trades = [t for t in _tr if isinstance(t, dict)]
+            _eq = data.get("equity")
+            if isinstance(_eq, (int, float)):
+                self.equity = float(_eq)
+            _pk = data.get("peak_equity")
+            if isinstance(_pk, (int, float)):
+                self.peak_equity = float(_pk)
+            if loaded > 0 or _tr or _eq is not None:
+                logging.info(
+                    "Restored %d position(s), %d trade(s), equity $%.2f "
+                    "(peak $%.2f) from %s", loaded,
+                    len(self.trade_log.trades) if hasattr(self, "trade_log") else 0,
+                    self.equity, self.peak_equity, self._positions_file)
         except Exception as e:
-            logging.warning(f"Failed to load positions from {self._positions_file}: {e}")
+            # The file exists and we could not read it. That is NOT "no
+            # positions" — treat it as unknown state, loudly.
+            self._state_unreadable = True
+            self.positions = {}
+            logging.error(
+                "UNREADABLE POSITION STATE %s: %s — treating open positions as "
+                "UNKNOWN. Orphan sweep disabled and new entries blocked until "
+                "this is resolved; the file is not overwritten.",
+                self._positions_file, e)
+            try:
+                # Preserve the unparseable bytes for diagnosis before anything
+                # else can overwrite them.
+                _q = self._positions_file + ".corrupt_%d" % int(time.time())
+                shutil.copy2(self._positions_file, _q)
+                logging.error("Quarantined unreadable state to %s", _q)
+            except Exception:
+                pass
 
     def _save_positions(self):
         """Atomic save of positions to disk."""
@@ -779,6 +825,19 @@ class TurtleEngine:
                     "reservation_ids": pos.reservation_ids,
                     "units": [{"entry_price": u.entry_price, "size": u.size, "n": u.n, "timestamp": u.timestamp} for u in pos.units],
                 }
+            # Trade history drives the System 1 whipsaw filter ("skip a
+            # breakout whose previous breakout on this pair won"). It lived
+            # only in memory, so last_breakout_result() returned None for
+            # every pair after a restart and the filter never fired — the bot
+            # took breakouts the 1983 rules explicitly forbid. Persisted here
+            # for the same reason Confluence persists wins/losses.
+            data["trades"] = self.trade_log.trades[-200:]
+            # Equity ledger: the drawdown rule reduces the sizing basis 20%
+            # per 10% drawdown, measured as (starting_equity - equity). Both
+            # reset to CONFIG["starting_equity"] on boot, so a restart
+            # forgave the entire drawdown and restored full size.
+            data["equity"] = self.equity
+            data["peak_equity"] = self.peak_equity
             tmp = self._positions_file + ".tmp"
             with open(tmp, "w") as f:
                 json.dump(data, f)
@@ -824,6 +883,17 @@ class TurtleEngine:
         # local position references — capital the pool holds forever otherwise.
         # (Sweeps the snapshot taken above, so rids created by the re-reserve
         # loop are never candidates.)
+        #
+        # NEVER sweep on unknown state. An unreadable position file leaves
+        # self.positions empty, which makes every reservation look orphaned —
+        # the sweep would release all of them while the positions stay open.
+        # Held capital is recoverable; capital released out from under a live
+        # position is not.
+        if getattr(self, "_state_unreadable", False):
+            logging.error(
+                "Orphan sweep SKIPPED — position state unreadable, so an empty "
+                "position set is not evidence that any reservation is orphaned.")
+            return
         local_rids = {rid for pos in self.positions.values() for rid in pos.reservation_ids}
         for rid, res in reservations.items():
             if res.get("bot_id") == self._portfolio_client.bot_id and rid not in local_rids:
@@ -932,6 +1002,15 @@ class TurtleEngine:
 
     def _can_add_unit(self, pair: str, direction: str, group: str) -> bool:
         """Check ALL risk limit levels before adding a unit."""
+        # Every limit below counts units in self.positions. If the position
+        # state was unreadable that dict is empty, so all of them read as
+        # "plenty of room" — the bot would pyramid into positions it cannot
+        # see. Unknown exposure means no new exposure.
+        if getattr(self, "_state_unreadable", False):
+            self.errors.append(
+                "Entries blocked: position state unreadable — risk limits "
+                "cannot be evaluated against unknown exposure")
+            return False
         if self._count_units_for_market(pair) >= CONFIG["max_units_single_market"]:
             return False
         closely = self._count_units_correlated(group, direction, "closely")

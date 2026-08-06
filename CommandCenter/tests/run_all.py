@@ -37,6 +37,7 @@ TESTS = [
     "test_size_units.py",
     "test_grid_cycle_accounting.py",
     "test_no_fabricated_stats.py",
+    "test_unreadable_state.py",
 ]
 
 

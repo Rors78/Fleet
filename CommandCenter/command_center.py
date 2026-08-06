@@ -153,16 +153,36 @@ _CC_STATE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
 _cc_state_lock = threading.Lock()
 
 
+_cc_state_unreadable = False
+
+
 def _load_cc_state() -> dict:
-    """Load the small-state dict from disk. Returns {} on any failure."""
+    """Load the small-state dict from disk. Returns {} when absent OR broken.
+
+    Sets the module-level _cc_state_unreadable when the file EXISTS but could
+    not be read, because the two are not the same thing and the callers below
+    treat "no entry" as "cooldown long expired". A file truncated by a restart
+    landing mid-write therefore used to disarm every restart cooldown and the
+    AEGIS adjustment hold at once — silently, on the boot most likely to have
+    caused it.
+    """
+    global _cc_state_unreadable
+    _cc_state_unreadable = False
+    if not os.path.exists(_CC_STATE_PATH):
+        return {}
     try:
-        if os.path.exists(_CC_STATE_PATH):
-            with open(_CC_STATE_PATH, "r", encoding="utf-8") as fh:
-                data = json.load(fh)
-            if isinstance(data, dict):
-                return data
-    except Exception:
-        pass
+        with open(_CC_STATE_PATH, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        if isinstance(data, dict):
+            return data
+        _cc_state_unreadable = True
+        log.error("CC state %s is not a dict (%s) — treating cooldowns as "
+                  "UNKNOWN, not expired.", _CC_STATE_PATH, type(data).__name__)
+    except Exception as e:
+        _cc_state_unreadable = True
+        log.error("UNREADABLE CC state %s: %s — restart cooldowns and the "
+                  "AEGIS hold will be treated as JUST SET, not expired.",
+                  _CC_STATE_PATH, e)
     return {}
 
 
@@ -256,6 +276,27 @@ class PortfolioManager:
             self.total = data.get("total", self.total)
             self.reservations = data.get("reservations", {})
             self.history = data.get("history", [])
+            # AEGIS tightens max_deployed_pct when the regime turns defensive
+            # (60% at the 0.18 score live on 2026-08-06, vs an 80% default).
+            # That mutation was in-memory only, so every restart handed back
+            # the difference — $200,000 of deployment headroom on a $1M pool,
+            # in the regime AEGIS had just scored as defensive. A de-risking
+            # brake must not be undone by the most common event in the fleet.
+            _saved = data.get("limits")
+            if isinstance(_saved, dict):
+                _restored = {k: v for k, v in _saved.items()
+                             if isinstance(v, (int, float))}
+                if _restored:
+                    # Only the AEGIS-controlled key is dynamic; the rest come
+                    # from config so a stale file cannot loosen them.
+                    _md = _restored.get("max_deployed_pct")
+                    if isinstance(_md, (int, float)) and 0 < _md <= 100:
+                        _default = self.limits.get("max_deployed_pct")
+                        self.limits = dict(self.limits)
+                        self.limits["max_deployed_pct"] = _md
+                        if _default is not None and _md < _default:
+                            log.info("Restored AEGIS-tightened deployment cap "
+                                     "%s%% (config default %s%%)", _md, _default)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
@@ -266,6 +307,8 @@ class PortfolioManager:
             "updated_at": time.time(),
             "reservations": self.reservations,
             "history": self.history[-200:],
+            # Durable so an AEGIS-tightened cap survives a restart — see _load.
+            "limits": dict(self.limits) if isinstance(self.limits, dict) else {},
         }
         tmp = self.filepath + ".tmp"
         with open(tmp, "w") as f:
@@ -2461,6 +2504,14 @@ try:
     _last_aegis_adjust = float(_load_cc_state().get("last_aegis_adjust", 0) or 0)
 except Exception:
     _last_aegis_adjust = 0
+# Unreadable state must not read as "never adjusted". A 0 satisfies the
+# cooldown check below immediately, so a truncated file lets AEGIS re-adjust
+# the fleet deployment cap on boot — including applying a RAISE without
+# serving its hold. Unknown means just-adjusted.
+if _cc_state_unreadable:
+    _last_aegis_adjust = time.time()
+    log.error("CC state unreadable — treating AEGIS as just-adjusted so a "
+              "deployment-cap change cannot skip its cooldown.")
 
 
 def _apply_aegis_adjustment():
@@ -2543,12 +2594,23 @@ def _apply_aegis_adjustment():
     for _pm in [_portfolio_paper, _portfolio_live]:
         if not _pm:
             continue
+        _changed = False
         with _pm._lock:
             _pm_old = _pm.limits.get("max_deployed_pct", 80)
             if _pm_old != new_limit:
                 old_limit = _pm_old
                 _pm.limits["max_deployed_pct"] = new_limit
+                _changed = True
             _pm.aegis_score = float(score)
+        # Persist OUTSIDE the lock (_save takes its own). An in-memory-only cap
+        # is undone by the next restart, which is how a defensive tightening
+        # kept being handed back as deployment headroom.
+        if _changed:
+            try:
+                _pm._save()
+            except Exception:
+                log.warning("Failed to persist AEGIS deployment cap %s%%",
+                            new_limit, exc_info=True)
 
     if old_limit != new_limit:
         _event_bus.publish({
@@ -4226,6 +4288,18 @@ try:
                               if isinstance(v, (int, float, str))}
 except Exception:
     _restart_cooldowns = {}
+# An unreadable state file is not "no bot was recently restarted". The lookup
+# below defaults a missing entry to 0 — a 1970 timestamp, i.e. maximally
+# stale — so every bot reads as eligible for restart immediately. That turns a
+# truncated file into a fleet-wide restart storm, on exactly the boot most
+# likely to have truncated it. Unknown means recently-restarted: arm the
+# cooldown for every registered bot rather than disarming it for all of them.
+if _cc_state_unreadable:
+    _now_boot = time.time()
+    _restart_cooldowns = {b["id"]: _now_boot for b in BOT_REGISTRY}
+    log.error("CC state unreadable — arming restart cooldowns for all %d bots "
+              "(unknown restart history must not read as 'never restarted').",
+              len(_restart_cooldowns))
 _RESTART_COOLDOWN_S = _FC_WATCHDOG_COOLDOWN
 
 

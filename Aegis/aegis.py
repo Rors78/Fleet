@@ -228,8 +228,16 @@ def portfolio_stress(curr: dict, prev: dict) -> float:
     if not curr or not prev:
         return 0.0
 
-    total = max(curr.get("total", 10000), 1)
-    prev_total = max(prev.get("total", 10000), 1)
+    # A missing pool total is UNKNOWN, not $10,000. That literal predates the
+    # $1,000,000 pool by 100x: with the real pool the deployed ratio is 0.0967,
+    # with the fallback it is 9.6747 — and d_deployed feeds portfolio_stress,
+    # S, compute_aegis and finally recommended_max_deployed, the fleet-wide
+    # capital ceiling. A fabricated stress reading moves real limits.
+    _t, _pt = curr.get("total"), prev.get("total")
+    if not isinstance(_t, (int, float)) or not isinstance(_pt, (int, float)) \
+            or _t <= 0 or _pt <= 0:
+        return 0.0          # no stress claim without a real denominator
+    total, prev_total = _t, _pt
 
     d_deployed = abs(curr.get("deployed", 0) / total - prev.get("deployed", 0) / prev_total)
     # Direction: long vs short exposure ratio from portfolio state
@@ -401,7 +409,13 @@ class AegisEngine:
 
         # Step 2: portfolio exposure map (fraction of total)
         by_pair = portfolio_exposure.get("by_pair", {}) if portfolio_exposure else {}
-        total = max(portfolio_total, 1.0)  # avoid div by zero
+        # max(x, 1.0) turns a missing/zero total into a $1 denominator, so
+        # every exposure ratio becomes astronomically large and w_position
+        # saturates. Refuse to compute an overlap without a real pool size.
+        if not isinstance(portfolio_total, (int, float)) or portfolio_total <= 0:
+            return 0.0, {"overlapping": [], "w_position": 0.0,
+                         "unavailable": "no portfolio total"}
+        total = float(portfolio_total)
         portfolio_pairs = {}
         for pair, info in by_pair.items():
             amount = info.get("amount", 0) if isinstance(info, dict) else float(info)
@@ -544,7 +558,10 @@ class AegisEngine:
         exposure = self._fetch_json("/api/portfolio/exposure") or {}
         port_full = self._fetch_json("/api/portfolio") or {}
         w_pos, overlap_data = self.compute_exposure_whale_overlap(
-            events, exposure, port_full.get("total", 10000)
+            # None, not 10000 — the callee refuses to compute an overlap
+            # against a fabricated pool rather than saturating on a $1
+            # denominator. That literal predated the $1M pool by 100x.
+            events, exposure, port_full.get("total")
         )
         throttle_pct = w_pos * MAX_THROTTLE_PCT
         overlap_data["throttle_pct"] = round(throttle_pct, 4)

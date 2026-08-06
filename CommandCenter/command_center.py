@@ -686,8 +686,23 @@ class PortfolioManager:
     LEASE_OPEN_GRACE_SEC = 300   # never judge a reservation younger than this (reserve→store in flight)
     LEASE_MISS_GRACE_SEC = 600   # must stay undeclared this long before release (rides out transient races)
 
-    def confirm(self, bot_id: str, reservation_ids: list) -> dict:
+    def confirm(self, bot_id: str, reservation_ids: list,
+                active_positions: set | None = None) -> dict:
         """Refresh leases on declared rids; sweep persistently-undeclared ones.
+
+        active_positions: {(bot_id_lower, PAIRNOSLASH)} of positions the fleet
+        currently reports, exactly as force_release_stale takes. A reservation
+        whose bot STILL REPORTS the position is not an orphan no matter what
+        the bot declared — the declaration can be empty because the bot's own
+        position store failed to load, which is indistinguishable from a bot
+        that genuinely closed everything.
+
+        Without this, an empty confirm from a healthy bot released all of its
+        capital after LEASE_MISS_GRACE_SEC while the positions stayed open on
+        the venue — verified in isolation: two live reservations totalling
+        $2,664.24 swept by a single confirm([]). That is a double-spend, and
+        this 10-minute path was the more aggressive of the two sweeps while
+        being the only one without the check.
 
         Returns {ok, confirmed: <owned rids stamped>, swept: [reservation dicts]}.
         """
@@ -695,6 +710,7 @@ class PortfolioManager:
         now = time.time()
         confirmed = 0
         swept = []
+        protected = 0
         with self._lock:
             self._bot_confirms[bot_id] = now
             for rid, r in list(self.reservations.items()):
@@ -712,6 +728,18 @@ class PortfolioManager:
                     continue
                 if now - r["unconfirmed_since"] < self.LEASE_MISS_GRACE_SEC:
                     continue
+                # Last gate: never sweep a reservation whose bot still reports
+                # the position. Held capital is recoverable; capital released
+                # out from under a live position is not.
+                if active_positions is not None:
+                    if _position_key(r["bot_id"], r["pair"]) in active_positions:
+                        protected += 1
+                        log.warning(
+                            "Lease sweep SKIPPED %s (%s %s $%.2f) — bot still "
+                            "reports this position; an undeclared rid is not "
+                            "evidence the position is gone",
+                            rid, r["bot_id"], r["pair"], r.get("amount") or 0)
+                        continue
                 res = self.reservations.pop(rid)
                 self.history.append({
                     "action": "lease_sweep",
@@ -4280,11 +4308,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         if not isinstance(rids, list):
             self._send_json({"error": "reservation_ids must be a list"}, 400)
             return
+        # Positions the fleet currently reports, same source the 48h sweep
+        # uses. A reservation whose bot still reports the position is never an
+        # orphan, whatever the declaration said — an empty declaration is
+        # exactly what a bot whose position store failed to load will send.
+        with _lock:
+            _bots_now = dict(_state["bots"])
+        _active = _active_position_keys(_bots_now)
         result = {"ok": True, "confirmed": 0, "swept": []}
         for mgr in [_portfolio_paper, _portfolio_live]:
             if not mgr:
                 continue
-            r = mgr.confirm(bot_id, rids)
+            r = mgr.confirm(bot_id, rids, active_positions=_active)
             result["confirmed"] += r["confirmed"]
             result["swept"].extend(r["swept"])
         for _sw in result["swept"]:

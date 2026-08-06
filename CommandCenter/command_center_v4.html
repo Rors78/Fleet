@@ -13040,7 +13040,15 @@ function renderSidebar(botId){
   var statusDot = alive ? '<span style="color:#16a085">&#9679;</span> healthy' : '<span style="color:#ef4444">&#9679;</span> offline';
 
   /* Uptime */
-  var uptimeStr = norm.uptime || (rawH.uptime ? rawH.uptime : null);
+  /* A NUMERIC uptime is seconds and must be formatted; only a pre-formatted
+     string passes through. Trinity reports uptime as a float, so the raw
+     value reached the panel and rendered "299.36459970474243" where every
+     other bot shows a duration. The uptime_s/uptime_seconds branches below
+     already knew this — this line did not. */
+  var _upRaw = (norm.uptime != null) ? norm.uptime : rawH.uptime;
+  var uptimeStr = (typeof _upRaw === "number" && !isNaN(_upRaw))
+    ? fmtUptime(_upRaw)
+    : (_upRaw || null);
   if(!uptimeStr && rawH.uptime_s != null) uptimeStr = fmtUptime(rawH.uptime_s);
   if(!uptimeStr && rawH.uptime_seconds != null) uptimeStr = fmtUptime(rawH.uptime_seconds);
   if(!uptimeStr) uptimeStr = "--";
@@ -13120,7 +13128,13 @@ function renderSidebar(botId){
       h2 += sbRow("Components", compCount || "--");
     } else if(botId==="phitex"){
       h2 += sbRow("Pairs tracked", phitexData.pairs.length || "--");
-      h2 += sbRow("Last update", phitexData.last_update ? ago(phitexData.last_update/1000) : "--");
+      /* last_update is stored in SECONDS by both writers — line ~1037 uses
+         Date.now()/1000 explicitly, and the PHITEX_UPDATE handler stores the
+         bus event ts, which is also seconds. Dividing by 1000 here treated it
+         as milliseconds and turned a 0-second-old snapshot into
+         "495624h ago" — 56.6 years, i.e. the Unix epoch rendered as a real
+         measurement. ago() already takes seconds. */
+      h2 += sbRow("Last update", phitexData.last_update ? ago(phitexData.last_update) : "--");
     } else if(botId==="nexus"){
       var mc = rawH.market_character || norm.regime || norm.market_character || "--";
       h2 += sbRow("Market char.", orDash(mc));

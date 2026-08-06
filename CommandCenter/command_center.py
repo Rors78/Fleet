@@ -3245,6 +3245,9 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/signals/propose":    "_handle_signals_propose",
         "/api/signals/outcome":    "_handle_signals_outcome",
         "/api/expectancy/record":  "_handle_expectancy_record",
+        # Test-support: evict rows whose pair carries a test marker. Scoped
+        # to a prefix so it cannot remove real history.
+        "/api/expectancy/evict":   "_handle_expectancy_evict",
         "/api/fleet/mode":         "_handle_fleet_mode",
     }
 
@@ -4402,6 +4405,22 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             pnl=data.get("pnl", 0),
         )
         self._send_json({"status": "recorded"})
+
+    def _handle_expectancy_evict(self, data: dict) -> None:
+        """POST /api/expectancy/evict {pair_prefix} — drop in-memory test rows.
+
+        A test that exercises the live release path creates a real trade in
+        the tracker. Cleaning only the disk file left Command Center serving
+        the phantom from memory, so a probe showed up as a real turtlesue
+        result on /api/expectancy and the BOT SCOREBOARD.
+        """
+        prefix = data.get("pair_prefix") or ""
+        if not prefix or len(prefix) < 4:
+            self._send_json({"error": "pair_prefix required (min 4 chars)"}, 400)
+            return
+        removed = _expectancy_tracker.evict_by_pair_prefix(prefix)
+        log.info("Expectancy evict: removed %d row(s) matching %r", removed, prefix)
+        self._send_json({"ok": True, "removed": removed})
 
     def _handle_expectancy_record(self, data: dict) -> None:
         _expectancy_tracker.record_trade(

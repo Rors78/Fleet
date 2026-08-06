@@ -115,6 +115,17 @@ if r2.get("ok"):
 
 print()
 print("=== CLEANUP — the test must leave no trace ===")
+# Evict from Command Center's IN-MEMORY tracker. Case 2 releases with a real
+# +12.34 P/L to prove priced releases still publish — which records a genuine
+# trade against turtlesue. Cleaning only the disk file left CC serving that
+# probe from memory, so it appeared as a real turtlesue result on
+# /api/expectancy and the BOT SCOREBOARD. This must run AFTER case 2, not
+# before, or the row is written back after the eviction.
+try:
+    post("/api/expectancy/evict", {"pair_prefix": PROBE})
+except Exception as _ev:
+    print(f"  note: in-memory evict failed ({str(_ev)[:60]})")
+
 # The bus logs are held open by the running Command Center; rewriting them
 # raises WinError 5. Probe rows there are harmless — they carry a ZZPROBE pair
 # that matches no real market and is filtered by the assertions below — so
@@ -155,6 +166,16 @@ print(f"  {removed} inert bus row(s), {exp_removed} expectancy row(s) removed, "
       f"pool drift {drift:+.4f} reverted")
 check("pool restored to its prior total",
       abs(json.load(open(pf, encoding="utf-8"))["total"] - _pool_before) < 0.001)
+# The probe created a REAL trade in the tracker; confirm the evict removed it
+# from the live API, not just from the disk file.
+try:
+    _live = urllib.request.urlopen(CC + "/api/expectancy", timeout=25).read()
+    check("no probe row served by /api/expectancy",
+          PROBE not in _live.decode("utf-8", "replace").upper(),
+          "the tracker was still serving the probe from memory")
+except Exception as _ee:
+    print(f"  note: live expectancy check skipped ({str(_ee)[:50]})")
+
 check("probe rows carry no real pair", True,
       f"{removed} ZZPROBE row(s) left in the bus log — inert, no real market "
       f"uses that symbol")

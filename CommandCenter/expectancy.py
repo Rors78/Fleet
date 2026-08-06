@@ -339,12 +339,18 @@ class ExpectancyTracker:
         total_net = total_gross  # key kept for consumers; equals gross now
         total_fees = 0.0         # signal product — no fees tracked
 
-        # Rank bots by expectancy
-        ranked = sorted(
-            bot_stats.items(),
-            key=lambda x: x[1].get('expectancy_per_trade', 0),
-            reverse=True,
-        )
+        # Rank bots by expectancy. An UNMEASURED bot sorts last rather than
+        # being treated as a 0 — it has not underperformed, it has not been
+        # measured. The two-key sort keeps measured bots ordered among
+        # themselves and cannot raise on a None (which the old
+        # `.get(..., 0)` did once expectancy stopped fabricating zeros:
+        # TypeError: '<' not supported between NoneType and float).
+        def _rank_key(item):
+            ev = item[1].get('expectancy_per_trade')
+            measured = isinstance(ev, (int, float))
+            return (1 if measured else 0, ev if measured else 0.0)
+
+        ranked = sorted(bot_stats.items(), key=_rank_key, reverse=True)
 
         return {
             'total_trades': total,
@@ -431,18 +437,62 @@ class ExpectancyTracker:
                 current_run = 0
         return max_run
 
+    def evict_by_pair_prefix(self, prefix: str) -> int:
+        """Drop in-memory trades whose pair starts with `prefix`. Returns count.
+
+        Exists so a test that exercises the live release path can remove what
+        it created. Without it the disk store could be cleaned while Command
+        Center kept serving the phantom from memory — a probe trade appeared
+        as a real turtlesue result on /api/expectancy and the BOT SCOREBOARD
+        for exactly that reason.
+
+        Deliberately prefix-scoped: it cannot be used to delete real history,
+        only rows whose pair carries a test marker no real market uses.
+        """
+        if not prefix:
+            return 0
+        removed = 0
+        for bot_id, rows in list(self.trades.items()):
+            if not isinstance(rows, list):
+                continue
+            keep = [t for t in rows if not str(t.get("pair", "")).startswith(prefix)]
+            removed += len(rows) - len(keep)
+            self.trades[bot_id] = keep
+        if removed:
+            try:
+                self._save()
+            except Exception:
+                pass
+        return removed
+
     def _empty_stats(self, bot_id):
+        """Stats for a bot with no closed trades.
+
+        Counts are genuinely 0 — nothing closed, and that IS the measurement.
+        Every RATE and RATIO is None, because a rate over zero samples was
+        never measured: a 0 there renders as "loses every trade" beside bots
+        that have actually traded. The BOT SCOREBOARD read win_rate from here
+        in preference to the normalized value, so it printed "0%" for
+        TurtleSue even after the normalizer was fixed to send null.
+
+        is_profitable is None for the same reason — False is a verdict, and
+        no verdict was reached.
+        """
         return {
             'bot_id': bot_id,
+            # Real counts: nothing closed.
             'total_trades': 0, 'wins': 0, 'losses': 0,
-            'win_rate': 0, 'expectancy_per_trade': 0,
-            'avg_win': 0, 'avg_loss': 0, 'profit_factor': 0,
-            'avg_r': None, 'best_trade': 0, 'worst_trade': 0,
             'max_consecutive_losses': 0,
-            'avg_win_duration_hours': 0, 'avg_loss_duration_hours': 0,
-            'total_net_pnl': 0, 'total_gross_pnl': 0,
-            'total_fees': 0, 'fees_pct_of_gross': 0,
-            'is_profitable': False,
+            # Never measured — not zero.
+            'win_rate': None, 'expectancy_per_trade': None,
+            'avg_win': None, 'avg_loss': None, 'profit_factor': None,
+            'avg_r': None, 'best_trade': None, 'worst_trade': None,
+            'avg_win_duration_hours': None, 'avg_loss_duration_hours': None,
+            'total_net_pnl': None, 'total_gross_pnl': None,
+            'fees_pct_of_gross': None,
+            # Fees are structurally 0 fleet-wide (signal product), not absent.
+            'total_fees': 0,
+            'is_profitable': None,
         }
 
     # ── Persistence ─────────────────────────────────────────────────

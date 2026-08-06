@@ -146,7 +146,7 @@
       "action": "broadcast",
       "message": {
         "type": "HIGH_CONVICTION",
-        "reason": "Quantum collapse {data.pair}: {data.previous_state} -> {data.dominant_state}",
+        "reason": "Quantum collapse {data.pair}: now {data.dominant_state}",
         "pair": "{data.pair}",
         "confidence": "{data.confidence}",
         "suggested_action": "increase_conviction"

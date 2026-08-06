@@ -1911,14 +1911,39 @@ class CardFormatter:
         regime = _regime_badge(_v(d, 'regime'))
         bots = d.get("bots", d.get("sources", []))
         count = len(bots) if isinstance(bots, list) else "Multiple"
+        # Render what the event ACTUALLY carries. Reaction-generated
+        # HIGH_CONVICTION (quantum collapse, convergent signal) has no
+        # direction and no regime — it has a `reason` describing the state
+        # transition and a confidence. The card rendered direction/regime
+        # anyway, so both showed "—" and the only real content was dropped:
+        # subscribers got "HIGH CONVICTION SIGNAL / Signal — / Regime —"
+        # plus a paywall teaser, which says nothing at all.
+        # Lock line removed for the same reason it was removed from trade
+        # cards — there is no paid tier behind it.
+        _lines = [f"Pair      {pair}"]
+        _reason = d.get("reason")
+        if _reason:
+            # Reason text is bot-authored and lands inside a <code> block with
+            # parse_mode=HTML — escape it rather than trusting the source.
+            _safe = (str(_reason).replace("&", "&amp;")
+                     .replace("<", "&lt;").replace(">", "&gt;"))
+            _lines.append(f"Detail    {_safe}")
+        if direction:
+            _lines.append(f"Signal    {dir_glyph}")
+        _rg = d.get("regime")
+        if _rg:
+            _lines.append(f"Regime    {regime}")
+        _conf = d.get("confidence", d.get("conviction"))
+        try:
+            if _conf is not None:
+                _lines.append(f"Conviction {float(_conf):.0%}")
+        except (TypeError, ValueError):
+            pass
         return (
             f"{_header('HIGH CONVICTION SIGNAL', 'HIGH_CONVICTION')}\n"
             f"{_divider()}\n"
             f"<code>"
-            f"Pair      {pair}\n"
-            f"Signal    {dir_glyph}\n"
-            f"Regime    {regime}\n"
-            f"Detail    \U0001f512 Full analysis for subscribers"
+            + "\n".join(_lines) +
             f"</code>"
             f"{_footer(_FOOTER_FREE)}"
         )

@@ -75,6 +75,44 @@ for p in ("APE/USD", "ETHFI/USD", "PEPE/USD"):
     check(f"{p} protected", cc._position_key("confluence", p) in keys)
 
 print()
+print("=== CASE 4b: Gridzilla holds capital as active_grids, not positions ===")
+# Its 4 grids were the largest holdings in the pool ($170,134 on 2026-08-06)
+# and matched no key at all — the sweep would have released every one.
+bots = {
+    "gridzilla": {
+        "alive": True,
+        "raw": {"active_grids": {
+            "AVAX/USD": {"pair": "AVAX/USD", "status": "active"},
+            "ATOM/USD": {"pair": "ATOM/USD", "status": "active"},
+            "ETH/USD": {"pair": "ETH/USD", "status": "active"},
+            "LINK/USD": {"pair": "LINK/USD", "status": "active"},
+        }},
+    },
+}
+keys = cc._active_position_keys(bots)
+for p in ("AVAX/USD", "ATOM/USD", "ETH/USD", "LINK/USD"):
+    check(f"grid {p} protected", cc._position_key("gridzilla", p) in keys)
+
+print()
+print("=== CASE 4c: an int 'open_positions' count must not crash or match ===")
+bots = {"x": {"alive": True, "raw": {"open_positions": 3, "positions": []}}}
+try:
+    keys = cc._active_position_keys(bots)
+    check("int open_positions handled", keys == set(), f"keys={keys}")
+except Exception as e:
+    check("int open_positions handled", False, f"raised {type(e).__name__}: {e}")
+
+print()
+print("=== CASE 4d: falls back to `normalized` when `raw` is absent ===")
+# /api/master strips `raw`, so a caller reading the API rather than _state
+# would otherwise build an empty set and protect nothing.
+bots = {"turtlesue": {"alive": True,
+                      "normalized": {"positions": [{"pair": "UNI/USD"}]}}}
+keys = cc._active_position_keys(bots)
+check("normalized path works", cc._position_key("turtlesue", "UNI/USD") in keys,
+      f"keys={sorted(keys)}")
+
+print()
 print("=== CASE 5: dead bots do not protect anything ===")
 bots = {"turtlesue": {"alive": False,
                       "raw": {"positions": {"XXLMZUSD": {"name": "XLM/USD"}}}}}

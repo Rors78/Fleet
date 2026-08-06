@@ -2559,17 +2559,28 @@ def _position_key(bot_id, pair) -> tuple:
 def _active_position_keys(bots: dict) -> set:
     """{(bot_id_lower, PAIRNOSLASH)} for every position an alive bot reports.
 
-    Shape-tolerant: bots expose positions as a dict keyed by pair
-    (TurtleSue, Rubberband) or a list of dicts with pair/symbol fields
-    (NexusBrain, Gridzilla, Confluence). Used to protect long-held trades
-    from the stale-reservation sweep.
+    Shape-tolerant, because bots disagree on all three of: the FIELD holding
+    open exposure (positions / active_grids), the CONTAINER (dict keyed by
+    pair, or list of dicts), and the PAIR FORMAT (Kraken code vs display).
+    Getting any of the three wrong silently yields fewer keys, and a missing
+    key means the stale sweep releases capital under a live trade — it fails
+    open, with no error.
+
+    Used to protect long-held trades from the stale-reservation sweep.
     """
     keys = set()
     for bid, bot in bots.items():
         if not bot.get("alive"):
             continue
-        raw = bot.get("raw") or {}
-        for field in ("positions", "open_positions"):
+        # Fall back to `normalized` when `raw` is absent: /api/master strips
+        # raw from its response, so any caller working from the API rather
+        # than _state would otherwise silently protect nothing.
+        raw = bot.get("raw") or bot.get("normalized") or {}
+        # active_grids: Gridzilla holds capital as grids, not positions. Its 4
+        # reservations ($170,134 on 2026-08-06 — the largest holdings in the
+        # pool) matched no key here and were sweepable. `open_positions` is an
+        # int count on several bots, which the isinstance checks below skip.
+        for field in ("positions", "open_positions", "active_grids", "grids"):
             val = raw.get(field)
             if isinstance(val, dict):
                 for k, v in val.items():

@@ -299,11 +299,20 @@ v2. OAuth 1.0a HMAC-SHA1 signing is **stdlib-only** (verified against the RFC
   real cards: 310–312 chars → **151–153**, inside X's 280.
 - **Tier mapping**: X has no free/paid split. `free` posts; `paid` is skipped
   unless `x_post_paid=true` (posting paid content publicly gives it away).
-  **`x_post_paid` is TRUE here (set 2026-08-05 by operator decision)** — every
-  paid-tier card is mirrored to the public X timeline. Coherent while the paid
-  Telegram channel does not resolve and trade cards already route free; revisit
-  if a real paid tier is ever stood up, or paid subscribers get nothing X
-  followers don't.
+  **Both `x_enabled` and `x_post_paid` are FALSE. X credentials are unset.
+  Nothing has ever been posted.**
+
+  History, because the rationale changed twice and the second change voids the
+  first: `x_post_paid` was set TRUE on 2026-08-05 by operator request, then
+  reverted to FALSE the same day on the reasoning that "the fleet is private;
+  X belongs to ROOKERY." **ROOKERY was discontinued 2026-08-06, so that
+  reasoning no longer holds.**
+
+  **X now has no owning product.** With ROOKERY gone, the fleet is the only
+  thing left to publish, so any X broadcast means publishing the private
+  flagship to a public timeline. That is an unresolved operator decision, not
+  a setting to inherit. Do not flip either flag on the strength of the old
+  rationale — surface the consequence and let the operator choose.
 - **Unconfigured is loud**: missing credentials log a warning and count as
   `failed`, never a silent skip.
 - **Images not yet supported** — v1.1 multipart upload needs its own signing

@@ -19137,14 +19137,27 @@ function renderOvWhaleIntel(){
     var _allScores = [];
     if(_snap){
       /* Try to pull all pair scores regardless of alert threshold */
-      var _pairScores = _snap.pair_scores || _snap.all_pair_scores || _snap.monitored_pairs || _snap.whale_scores || null;
+      /* Deep Blue publishes `whales` (list, whaleScore 0-100) and `pairs`
+         (dict of scanned pairs with adx/chopiness/volumeSurge). It has NEVER
+         published pair_scores/all_pair_scores/monitored_pairs/whale_scores —
+         the panel queried four names the bot does not emit, so it always fell
+         through to "monitoring ? pairs" while real data sat in the snapshot. */
+      var _pairScores = _snap.pair_scores || _snap.all_pair_scores || _snap.monitored_pairs || _snap.whale_scores || _snap.whales || null;
       if(_pairScores && typeof _pairScores === 'object'){
         var _psArr = Array.isArray(_pairScores) ? _pairScores : Object.keys(_pairScores).map(function(k){
           var v = _pairScores[k];
           return typeof v === 'object' ? Object.assign({pair:k},v) : {pair:k,score:v};
         });
-        _allScores = _psArr.filter(function(p){ return (p.score||p.whale_score||0) > 0; })
-          .sort(function(a,b){ return (b.score||b.whale_score||0) - (a.score||a.whale_score||0); })
+        _allScores = _psArr.map(function(p){
+          /* whaleScore is 0-100; the bar/threshold code below expects 0-1. */
+          var _raw = (p.whaleScore != null) ? p.whaleScore
+                   : (p.score != null) ? p.score
+                   : (p.whale_score != null) ? p.whale_score : 0;
+          var _norm = _raw > 1 ? _raw/100 : _raw;
+          return {pair:p.pair||p.symbol||"?", score:_norm,
+                  reliability:p.reliability, explanation:p.explanation};
+        }).filter(function(p){ return p.score > 0; })
+          .sort(function(a,b){ return b.score - a.score; })
           .slice(0,5);
       }
     }
@@ -19166,6 +19179,12 @@ function renderOvWhaleIntel(){
           +'<span style="color:#3b82f6;font-size:0.55rem;letter-spacing:-0.5px">'+_bar+'</span>'
           +'<span style="color:'+_apColor+';font-size:0.55rem">'+_approach+'</span>'
           +'</div>';
+      }
+      /* Provenance for the numbers above: how many pairs produced them. */
+      var _scanN = _snap && _snap.pairs_scanned != null ? _snap.pairs_scanned : null;
+      if(_scanN != null){
+        _heatH += '<div style="font-size:0.55rem;color:var(--ov-dim);font-family:var(--font);margin-top:3px;">'
+          + escHtml(String(_allScores.length)) + ' scored of ' + escHtml(String(_scanN)) + ' pairs scanned</div>';
       }
     } else {
       /* pairs_scanned is the real Deep Blue field; monitored_count/monitored_pairs do not exist */

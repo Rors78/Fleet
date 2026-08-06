@@ -1877,17 +1877,41 @@ class NexusEngine:
                     except Exception:
                         pass
 
-                # Council: QUANTUM_COLLAPSE when superposition entropy < 0.3
+                # Council: QUANTUM_COLLAPSE — emit on STATE CHANGE, not on a
+                # level check.
+                #
+                # This was `if superposition_entropy < 0.3`, which is a level,
+                # not an event. Entropy sits near zero essentially always
+                # (median ~0, 88% below 0.05), so it fired every scan for every
+                # pair forever: measured 2026-08-06 at 2,383/hour across 10
+                # pairs, one per pair every 16.6s like clockwork, and 100% of
+                # emissions repeated the previous dominant_state — 0 actual
+                # changes in 88 consecutive comparisons. A "collapse" event
+                # that never reported a collapse.
+                #
+                # A collapse is a TRANSITION into a definite state. Emit only
+                # when dominant_state actually differs from the last one seen
+                # for that pair; the entropy gate still applies so we only
+                # report transitions into a definite state.
+                if not hasattr(self, "_last_quantum_state"):
+                    self._last_quantum_state = {}
                 for pair_name, qr in quantum_results.items():
                     try:
-                        if qr.get("superposition_entropy", 1) < 0.3:
-                            self._event_pub.emit("QUANTUM_COLLAPSE", {
-                                "pair": pair_name,
-                                "dominant_state": qr["dominant_state"],
-                                "confidence": qr["confidence"],
-                                "superposition_entropy": qr["superposition_entropy"],
-                                "interpretation": qr.get("interpretation", ""),
-                            })
+                        if qr.get("superposition_entropy", 1) >= 0.3:
+                            continue
+                        _state = qr["dominant_state"]
+                        _prev = self._last_quantum_state.get(pair_name)
+                        self._last_quantum_state[pair_name] = _state
+                        if _prev == _state:
+                            continue  # same state as last scan — not a collapse
+                        self._event_pub.emit("QUANTUM_COLLAPSE", {
+                            "pair": pair_name,
+                            "dominant_state": _state,
+                            "previous_state": _prev,
+                            "confidence": qr["confidence"],
+                            "superposition_entropy": qr["superposition_entropy"],
+                            "interpretation": qr.get("interpretation", ""),
+                        })
                     except Exception:
                         pass
 

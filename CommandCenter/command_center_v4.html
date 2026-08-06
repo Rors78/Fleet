@@ -5248,14 +5248,20 @@ function getDurableTradeStats(botId, botStats) {
   var trades = getBotTrades(botId);
   botStats = botStats || {};
   if (!_tradeCacheLoaded || !trades.length) {
-    /* Nothing durable yet — pass the bot's own numbers through untouched. */
+    /* Nothing durable yet — pass the bot's own numbers through untouched.
+       `|| 0` used to turn every unmeasured field into a measured zero before
+       any formatter could guard it, which is how six trader tabs rendered
+       "0.0% win rate" in red for bots that had never traded. Pass null
+       through instead; fmtNum/fmt$/fmtPct already print "--" for null. */
+    var _n = function (v) { return (typeof v === 'number' && !isNaN(v)) ? v : null; };
+    var _tot = _n(botStats.total);
     return {
-      total:        botStats.total || 0,
-      win_rate:     botStats.win_rate || 0,
-      profit_factor:botStats.profit_factor || 0,
-      avg_win:      botStats.avg_win || 0,
-      avg_loss:     botStats.avg_loss || 0,
-      total_pnl:    botStats.total_pnl || 0,
+      total:        _tot === null ? 0 : _tot,
+      win_rate:     _tot ? _n(botStats.win_rate)      : null,
+      profit_factor:_tot ? _n(botStats.profit_factor) : null,
+      avg_win:      _tot ? _n(botStats.avg_win)       : null,
+      avg_loss:     _tot ? _n(botStats.avg_loss)      : null,
+      total_pnl:    _n(botStats.total_pnl),
       source:       _tradeCacheLoaded ? 'bot' : 'loading'
     };
   }
@@ -5271,11 +5277,13 @@ function getDurableTradeStats(botId, botStats) {
   var decided = wins + losses;
   return {
     total:         trades.length,
-    win_rate:      decided > 0 ? (wins / decided) : 0,   /* 0-1, as panels expect */
+    /* null, not 0, when nothing was decided — every close was a scratch exit,
+       so there is no win rate to report. A 0 here reads as "lost them all". */
+    win_rate:      decided > 0 ? (wins / decided) : null,   /* 0-1, as panels expect */
     profit_factor: gross_loss > 0 ? (gross_win / gross_loss)
-                                  : (gross_win > 0 ? Infinity : 0),
-    avg_win:       wins   > 0 ? (gross_win  / wins)   : 0,
-    avg_loss:      losses > 0 ? (gross_loss / losses) : 0,
+                                  : (gross_win > 0 ? Infinity : null),
+    avg_win:       wins   > 0 ? (gross_win  / wins)   : null,
+    avg_loss:      losses > 0 ? (gross_loss / losses) : null,
     total_pnl:     total_pnl,
     wins:          wins,
     losses:        losses,
@@ -5295,10 +5303,22 @@ function getDurableTradeStats(botId, botStats) {
    rather than silently substituting numbers. */
 function amnesiaGuard(botId, rawEq, rawPnl, rawDd, startEq, botStats) {
   var stats = getDurableTradeStats(botId, botStats || {});
-  var eq = rawEq || 0, pnl = rawPnl || 0, dd = rawDd || 0;
+  /* Preserve null: a bot that reports no pnl has not reported a zero pnl.
+     The amnesia arithmetic below needs numbers, so it uses the coerced
+     locals, but the returned values keep the distinction for the caller. */
+  var _eqKnown = typeof rawEq === 'number' && !isNaN(rawEq);
+  var _pnlKnown = typeof rawPnl === 'number' && !isNaN(rawPnl);
+  var _ddKnown = typeof rawDd === 'number' && !isNaN(rawDd);
+  var eq = _eqKnown ? rawEq : null, pnl = _pnlKnown ? rawPnl : null,
+      dd = _ddKnown ? rawDd : null;
   var start = startEq || 10000;
-  var amnesia = (stats.source === 'log' && stats.total > 0 &&
-                 Math.abs(pnl) < 0.005 && Math.abs(stats.total_pnl) >= 0.01);
+  /* Math.abs(null) is 0, so an UNREPORTED pnl used to satisfy the
+     "bot claims flat" test as readily as a genuine 0.00. Require the bot to
+     have actually reported a flat figure before overriding it. */
+  var amnesia = (stats.source === 'log' && stats.total > 0 && _pnlKnown &&
+                 Math.abs(pnl) < 0.005 &&
+                 typeof stats.total_pnl === 'number' &&
+                 Math.abs(stats.total_pnl) >= 0.01);
   if (amnesia) {
     pnl = stats.total_pnl;
     eq  = start + pnl;
@@ -7746,7 +7766,8 @@ function buildNexusBrainView(def,b){
   var cfg=raw.config||{};
   var equity=perf.final_equity||perf.initial_capital||10000;
   var totalPnl=perf.total_pnl||0;
-  var wrPct=(perf.win_rate||0)*100;
+  var wrKnown=typeof perf.win_rate==='number'&&!isNaN(perf.win_rate);
+  var wrPct=wrKnown?perf.win_rate*100:null;
   /* Restart-amnesia guard — see amnesiaGuard(). */
   var _nbRawEq=equity;
   var _nbG=amnesiaGuard('nexusbrain',equity,totalPnl,0,perf.initial_capital||10000,{});
@@ -7767,7 +7788,7 @@ function buildNexusBrainView(def,b){
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_nbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmt$(equity)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_nbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value" style="color:'+pnlC+'">'+(totalPnl>=0?"+":"")+fmtNum(totalPnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_nbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wrPct>=50?'good':'bad')+'">'+fmtNum(wrPct,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_nbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wrPct==null?'':wrPct>=50?'good':'bad')+'">'+fmtNum(wrPct,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SHARPE</div><div class="dv2-kpi-value" style="color:'+c+'">'+fmtNum(perf.sharpe_ratio||0,3)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">POSITIONS</div><div class="dv2-kpi-value '+(positions.length?'good':'')+'">'+positions.length+'/'+(cfg.max_positions||5)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SIGNALS</div><div class="dv2-kpi-value cyan">'+sigs.length+'</div></div>';
@@ -8391,14 +8412,16 @@ function buildGridzillaView(def,b){
   var curPa=pairAnalysis[_gzActivePair]||{};
 
   /* ── Summary values used across panels ── */
-  var np=raw.net_pnl||0;
+  /* null-preserving: an unreported net_pnl is not a $0.00 result. */
+  var npKnown=typeof raw.net_pnl==='number'&&!isNaN(raw.net_pnl);
+  var np=npKnown?raw.net_pnl:null;
   /* Restart-amnesia guard — see amnesiaGuard(). Gridzilla has no equity tile,
      so only NET PNL is corrected. Its logged closes are currently $0.00 each,
      so this is a no-op today; it exists so a future realized loss can't be
      hidden by a restart the way TurtleSue's was. */
   var _gzG=amnesiaGuard('gridzilla',0,np,0,10000,{});
   if(_gzG.amnesia) np=_gzG.pnl;
-  var npc=np>=0?'#16a085':'#ef4444';
+  var npc=!npKnown?'#64748b':(np>=0?'#16a085':'#ef4444');
   var grossPnl=exp.total_gross_pnl;
   var minSpacing=raw.min_spacing_pct||raw.config&&raw.config.min_spacing_pct||1.2;
   var spacingFloor=1.2; /* pct — CLAUDE.md: Gridzilla spacing floor, no longer fee-derived (fees removed fleet-wide) */
@@ -8436,7 +8459,7 @@ function buildGridzillaView(def,b){
   /* KPI strip */
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+monsterState+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">NET PNL'+(_gzG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(np>=0?'good':'bad')+'">'+(np>=0?'+':'')+fmtNum(np,4)+'</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">NET PNL'+(_gzG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(!npKnown?'':np>=0?'good':'bad')+'">'+(npKnown&&np>=0?'+':'')+fmtNum(np,4)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CYCLES</div><div class="dv2-kpi-value cyan">'+(raw.total_cycles||0)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ACTIVE GRIDS</div><div class="dv2-kpi-value">'+(raw.n_active_grids||0)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">UPTIME</div><div class="dv2-kpi-value">'+fmtNum(raw.uptime_hours||0,1)+'h</div></div>';
@@ -8623,7 +8646,7 @@ function buildGridzillaView(def,b){
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Total cycles</span><span class="dv2-kv-v cyan">'+(raw.total_cycles||0)+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Win rate</span><span class="dv2-kv-v '+wrC2+'">'+(wr2!=null?fmtNum(wr2,1)+'%':'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Wins / Losses</span><span class="dv2-kv-v">'+(exp.wins||0)+' / '+(exp.losses||0)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Net P&amp;L</span><span class="dv2-kv-v '+(np>=0?'good':'bad')+'">'+(np>=0?'+':'')+fmtNum(np,4)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Net P&amp;L</span><span class="dv2-kv-v '+(!npKnown?'':np>=0?'good':'bad')+'">'+(npKnown&&np>=0?'+':'')+fmtNum(np,4)+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Profit factor</span><span class="dv2-kv-v '+(exp.profit_factor!=null&&exp.profit_factor>=1?'good':'bad')+'">'+(exp.profit_factor!=null?fmtNum(exp.profit_factor,2):'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Exp/trade</span><span class="dv2-kv-v '+(exp.expectancy_per_trade!=null&&exp.expectancy_per_trade>=0?'good':'bad')+'">'+(exp.expectancy_per_trade!=null?(exp.expectancy_per_trade>=0?'+':'')+fmtNum(exp.expectancy_per_trade,4):'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Avg win</span><span class="dv2-kv-v">'+(exp.avg_win!=null?(exp.avg_win>=0?'+':'')+fmtNum(exp.avg_win,4):'--')+'</span></div>';
@@ -8785,7 +8808,7 @@ function buildGridzillaView(def,b){
   h+='</div>';
   /* Raw totals */
   h+='<div style="margin-top:6px;border-top:1px solid #1e293b;padding-top:5px">';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Total net</span><span class="dv2-kv-v '+(np>=0?'good':'bad')+'">'+(np>=0?'+':'')+fmtNum(np,4)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Total net</span><span class="dv2-kv-v '+(!npKnown?'':np>=0?'good':'bad')+'">'+(npKnown&&np>=0?'+':'')+fmtNum(np,4)+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Trades</span><span class="dv2-kv-v cyan">'+_gzTotalTrades+'</span></div>';
   h+='</div>';
   h+='</div>'; /* /dv2-scroll */
@@ -9179,24 +9202,27 @@ function buildTurtleSueView(def,b){
   h+='<div style="background:var(--card);border:1px solid rgba(201,162,39,0.06);padding:10px 12px;margin-top:4px">';
   h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:6px">TRADE STATS</div>';
   var _tsNoTrades=(tradeStats.total||0)===0;
-  var wr2=tradeStats.win_rate||0;
-  var wrFill=_tsNoTrades?0:Math.min(100,wr2*100);
-  var wrC=_tsNoTrades?'var(--text-muted)':(wrFill>=50?'var(--green)':wrFill>=30?'#f97316':'var(--red)');
+  /* win_rate is null when nothing was DECIDED — trades happened but every one
+     was a scratch exit. That is not a 0% win rate. */
+  var _tsWrKnown=typeof tradeStats.win_rate==='number'&&!isNaN(tradeStats.win_rate);
+  var wr2=_tsWrKnown?tradeStats.win_rate:0;
+  var wrFill=(_tsNoTrades||!_tsWrKnown)?0:Math.min(100,wr2*100);
+  var wrC=(_tsNoTrades||!_tsWrKnown)?'var(--text-muted)':(wrFill>=50?'var(--green)':wrFill>=30?'#f97316':'var(--red)');
   h+='<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:4px">';
   h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted)">WIN RATE</div>';
-  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:'+(_tsNoTrades?'0.8':'1.1')+'rem;color:'+wrC+'">'+(_tsNoTrades?'NO TRADES YET':fmtNum(wr2*100,1)+'%')+'</div>';
+  h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:'+(_tsNoTrades?'0.8':'1.1')+'rem;color:'+wrC+'">'+(_tsNoTrades?'NO TRADES YET':(_tsWrKnown?fmtNum(wr2*100,1)+'%':'NO DECIDED TRADES'))+'</div>';
   h+='</div>';
   h+='<div style="height:3px;background:rgba(255,255,255,0.05);border-radius:2px;margin-bottom:8px"><div style="height:100%;width:'+wrFill+'%;background:'+wrC+';border-radius:2px"></div></div>';
   /* profit_factor is Infinity when there are wins but no losses yet — render
      that as ∞ rather than the literal string "Infinity". */
   var _pf=tradeStats.profit_factor;
-  var _pfStr=(_pf===Infinity)?'∞':fmtNum(_pf||0,2);
+  var _pfStr=(_pf===Infinity)?'∞':fmtNum(_pf,2);   /* fmtNum guards null -> -- */
   var _tsPnlV=tradeStats.total_pnl||0;
   var statsRows=[
     ['profit factor',_pfStr],
     ['expectancy R',expectancy.avg_r!=null?fmtNum(expectancy.avg_r,3)+'R':'--'],
-    ['avg win',fmt$(tradeStats.avg_win||0)],
-    ['avg loss',fmt$(tradeStats.avg_loss||0)],
+    ['avg win',fmt$(tradeStats.avg_win)],
+    ['avg loss',fmt$(tradeStats.avg_loss)],
     ['total trades',tradeStats.total||0],
     ['total PnL',fmt$(_tsPnlV)]
   ];
@@ -10107,7 +10133,10 @@ function buildRubberbandView(def,b){
   var eq=raw.equity||raw.paper_balance||0;
   var pnl=raw.pnl||0;
   var pnlPct=raw.pnl_pct||0;
-  var wr=raw.win_rate||0;
+  /* Backend now sends null when total_trades is 0; `||0` re-fabricated
+     the very zero that fix removed, and wr<45 paints it red. */
+  var wrKnown=typeof raw.win_rate==='number'&&!isNaN(raw.win_rate);
+  var wr=wrKnown?raw.win_rate:null;
   var openP=raw.open_positions||0;
   var maxP=strat.max_positions||8;
   var dd=raw.drawdown_pct||0;
@@ -10174,7 +10203,7 @@ function buildRubberbandView(def,b){
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">STATE</div><div class="dv2-kpi-value" style="color:'+stateColor+'">'+botState+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_rbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_rbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?'+':'')+fmtNum(pnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_rbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_rbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(!wrKnown?'':wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value">'+openP+'/'+maxP+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regC2+'">'+escHtml(busRegime)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">SCANS</div><div class="dv2-kpi-value">'+(raw.scan_count||0)+'</div></div>';
@@ -11000,7 +11029,10 @@ function buildArbitrageurView(def,b){
   var raw=(_botDataCache.arbitrageur)||{};
   var eq=raw.equity||0;
   var pnl=raw.pnl||0;
-  var wr=raw.win_rate||0;
+  /* Backend now sends null when total_trades is 0; `||0` re-fabricated
+     the very zero that fix removed, and wr<45 paints it red. */
+  var wrKnown=typeof raw.win_rate==='number'&&!isNaN(raw.win_rate);
+  var wr=wrKnown?raw.win_rate:null;
   /* Restart-amnesia guard — see amnesiaGuard(). Arbitrageur self-reports
      0 trades / 0.0 while the event log holds a closed +3.26 trade. */
   var _arbRawEq=eq;
@@ -11061,7 +11093,7 @@ function buildArbitrageurView(def,b){
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_arbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_arbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_arbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_arbG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(!wrKnown?'':wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value '+(posKeys.length?'good':'')+'">'+posKeys.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">HIGH CORR</div><div class="dv2-kpi-value">'+highCorr+'/'+totalCorr+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+arbRegimeC+'">'+escHtml(arbRegime)+'</div></div>';
@@ -12059,7 +12091,10 @@ function buildConfluenceView(def,b){
   var raw=(_botDataCache.confluence)||{};
   var eq=raw.equity||0;
   var pnl=raw.pnl||0;
-  var wr=raw.win_rate||0;
+  /* Backend now sends null when total_trades is 0; `||0` re-fabricated
+     the very zero that fix removed, and wr<45 paints it red. */
+  var wrKnown=typeof raw.win_rate==='number'&&!isNaN(raw.win_rate);
+  var wr=wrKnown?raw.win_rate:null;
   var _cfRawEq=eq;
   var _cfG=amnesiaGuard('confluence',eq,pnl,0,10000,{});
   eq=_cfG.eq; pnl=_cfG.pnl;
@@ -12088,7 +12123,7 @@ function buildConfluenceView(def,b){
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(!wrKnown?'':wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value '+(positions.length?'good':'')+'">'+positions.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CANDIDATES</div><div class="dv2-kpi-value">'+candidates.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regimeC+'">'+escHtml(regime)+'</div></div>';

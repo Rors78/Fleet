@@ -408,12 +408,27 @@ raw `devicePixelRatio` (2.25 here → 3841x1839); Armada clamps to
 `_quality.pixelRatioCap` (high:2, low:1.5 → 3414x1634). Matching them would add
 **26.6%** more pixels to the WebGL layer.
 
-**Do not "upscale" that cap.** The display measures **24-35 FPS** in
-fullscreen, well under the 60 FPS the build spec targets. Dropping Armada to
-`low` recovers only ~4.3 FPS (31.1 → 35.4) and run-to-run variance (26-39 FPS)
-is wider than the effect — so the cap is load-bearing but is NOT the main
-bottleneck. Find the real cost before touching quality tiers; measure with
-several samples, because a single reading is inside the noise.
+**Do not "upscale" that cap.** The display measures ~30 FPS in fullscreen
+against the spec's 60 FPS target. Profiled 2026-08-06 by isolating each layer:
+
+| Configuration | FPS | Note |
+|---|---|---|
+| Both renderers | 30.5 | median frame 40.6ms |
+| Armada disposed (2D only) | 39.4 | Armada costs **8.9 FPS** |
+| 2D buffer halved (3841x1839 → 2716x1300) | 46.8 | fill rate costs **9.4 FPS** |
+
+**The bottleneck is 2D canvas fill rate, not Armada and not the WebGL cap.**
+orbitalCanvas pushes **7.06M pixels/frame** at raw DPR 2.25. Halving the
+buffer buys more than removing the entire WebGL armada. Note there are NO long
+tasks (PerformanceObserver longtask count 0) — no single slow function to fix;
+it is steady per-frame fill spread across both loops.
+
+The obvious lever is capping orbitalCanvas DPR the way Armada already caps its
+own (`Math.min(devicePixelRatio, 2)` at `command_center_v4.html` ~line 4467 and
+the other `devicePixelRatio` sites). That trades edge sharpness on a 50-inch
+display for frame rate — a product judgment, deliberately NOT taken
+unilaterally. Measure before and after with several samples; single readings
+sit inside the 26-39 FPS noise band.
 
 ### ACTIVE POSITIONS: UNRL P/L is blocked in the normalizer, not the dashboard
 The overview's UNRL P/L column renders "—" for every row. The dashboard has a

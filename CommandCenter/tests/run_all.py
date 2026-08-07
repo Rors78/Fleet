@@ -50,6 +50,7 @@ TESTS = [
     "test_intel_gates.py",
     "test_signal_log_dedupe.py",
     "test_recorded_prices.py",
+    "test_trade_attribution.py",
 ]
 
 

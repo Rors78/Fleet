@@ -4122,19 +4122,35 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 }
             _save_open_trade_signals()
             # Also submit each signal to the aggregator
-            for sig in edata["signals"]:
-                _signal_aggregator.submit_proposal(
-                    source=f"{source}:{sig}",
-                    pair=pair,
-                    direction=edata.get("direction", "LONG").upper(),
-                    confidence=edata.get("confidence", 0.5),
-                )
-                _signal_decomposition.log_signal(
-                    source=f"{source}:{sig}",
-                    pair=pair,
-                    direction=edata.get("direction", "LONG").upper(),
-                    confidence=edata.get("confidence", 0.5),
-                )
+            # A TRADE_OPEN that states no direction is not a long, and one
+            # that states no confidence has not stated 0.5. Both were
+            # fabricated here and then fed straight into a
+            # confidence-weighted vote and the signal-decomposition record.
+            _edir = edata.get("direction")
+            _edir = _edir.upper() if isinstance(_edir, str) and _edir else None
+            _econf = edata.get("confidence")
+            _econf = _econf if isinstance(_econf, (int, float)) else None
+            if _edir is None or _econf is None:
+                log.warning(
+                    "TRADE_OPEN from %r for %r has no %s -- not submitting to "
+                    "the weighted vote (direction=%r confidence=%r)",
+                    source, pair,
+                    "direction" if _edir is None else "confidence",
+                    edata.get("direction"), edata.get("confidence"))
+            else:
+                for sig in edata["signals"]:
+                    _signal_aggregator.submit_proposal(
+                        source=f"{source}:{sig}",
+                        pair=pair,
+                        direction=_edir,
+                        confidence=_econf,
+                    )
+                    _signal_decomposition.log_signal(
+                        source=f"{source}:{sig}",
+                        pair=pair,
+                        direction=_edir,
+                        confidence=_econf,
+                    )
         elif etype == "TRADE_CLOSE" and pair:
             key = f"{source}:{pair}"
             with _open_trade_signals_lock:
@@ -4142,9 +4158,18 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             if open_info is not None:
                 _save_open_trade_signals()
             pnl = edata.get("pnl", 0)
-            direction = edata.get("direction", "LONG").upper()
+            # An unlabelled close is not a long. record_outcome credits or
+            # debits the per-direction hit rate, so defaulting here silently
+            # attributed every unlabelled trade to the long side and skewed
+            # any later long/short comparison.
+            _cdir = edata.get("direction")
+            direction = _cdir.upper() if isinstance(_cdir, str) and _cdir else None
             won = pnl > 0
-            _signal_aggregator.record_outcome(pair, direction, won, pnl)
+            if direction:
+                _signal_aggregator.record_outcome(pair, direction, won, pnl)
+            else:
+                log.warning("TRADE_CLOSE from %r for %r has no direction -- "
+                            "outcome not attributed to either side", source, pair)
 
             # Expectancy only ever heard about trades closed through the
             # reservation-release path. A bot that emits TRADE_CLOSE straight
@@ -4313,12 +4338,24 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             _priced = isinstance(pnl, (int, float)) and pnl != 0
             if _expectancy_tracker and _priced:
                 try:
+                    # None, not 0 / not "LONG". This writes to the DURABLE
+                    # expectancy store, where a fabricated value outlives the
+                    # process and cannot be told apart from a measurement.
+                    # This is the path that put entry_price 0.0 / exit_price
+                    # 0.0 on gridzilla's real +$34.90 ETH/USD record.
+                    # record_trade has an explicit PNL-DRIVEN mode for bots
+                    # that report P/L without prices, so None is the intended
+                    # value here. A missing direction is likewise unknown, not
+                    # LONG -- silently calling every unlabelled close a long
+                    # corrupts any later long/short attribution.
+                    _ep = data.get("entry_price")
+                    _xp = data.get("exit_price")
                     _expectancy_tracker.record_trade(
                         bot_id=res_info["bot_id"],
                         pair=res_info["pair"],
-                        direction=res_info.get("direction", "LONG"),
-                        entry_price=data.get("entry_price", 0),
-                        exit_price=data.get("exit_price", 0),
+                        direction=res_info.get("direction"),
+                        entry_price=_ep if isinstance(_ep, (int, float)) and _ep > 0 else None,
+                        exit_price=_xp if isinstance(_xp, (int, float)) and _xp > 0 else None,
                         size_usd=res_info["amount"],
                         duration=_duration,
                         realized_pnl=pnl,
@@ -4455,13 +4492,26 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self._send_json(state)
 
     def _handle_signals_propose(self, data: dict) -> None:
-        _signal_aggregator.submit_proposal(
+        # A proposal that states no confidence has not stated 0.5 — that is a
+        # fabricated mid-conviction, and it is weighed against proposals whose
+        # confidence was actually computed. None lets the aggregator treat it
+        # as unweighted rather than averaging in a number nobody sent.
+        _conf = data.get("confidence")
+        _ok = _signal_aggregator.submit_proposal(
             source=data.get("source", "unknown"),
             pair=data.get("pair", ""),
             direction=data.get("direction", "NEUTRAL"),
-            confidence=data.get("confidence", 0.5),
+            confidence=_conf if isinstance(_conf, (int, float)) else None,
             metadata=data.get("metadata", {}),
         )
+        if _ok is False:
+            log.warning("Signal proposal from %r for %r rejected: no numeric "
+                        "confidence supplied (got %r)",
+                        data.get("source"), data.get("pair"), _conf)
+            self._send_json({"status": "rejected",
+                             "reason": "confidence must be a number 0.0-1.0"},
+                            400)
+            return
         self._send_json({"status": "accepted"})
 
     def _handle_signals_outcome(self, data: dict) -> None:
@@ -4490,14 +4540,39 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self._send_json({"ok": True, "removed": removed})
 
     def _handle_expectancy_record(self, data: dict) -> None:
+        # The public write path into the DURABLE store: any bot can POST here,
+        # so it is the most exposed way for a fabricated value to become
+        # permanent. A caller that omits prices or direction has not stated
+        # 0/LONG. record_trade takes the PNL-DRIVEN branch when realized_pnl
+        # is supplied and only reads direction on the price-driven branch, so
+        # None is both safe and honest.
+        _ep = data.get("entry_price")
+        _xp = data.get("exit_price")
+        _ep = _ep if isinstance(_ep, (int, float)) and _ep > 0 else None
+        _xp = _xp if isinstance(_xp, (int, float)) and _xp > 0 else None
+        _rp = data.get("realized_pnl")
+        _rp = _rp if isinstance(_rp, (int, float)) else None
+
+        # realized_pnl was never forwarded, so a caller that reported P/L
+        # without prices had it silently dropped and booked $0.00 into the
+        # durable store. With neither prices nor P/L there is nothing to
+        # record at all — refuse rather than persist a zero that will be
+        # averaged into every statistic computed from this store.
+        if _rp is None and (_ep is None or _xp is None):
+            self._send_json({"status": "rejected",
+                             "reason": "need realized_pnl, or both "
+                                       "entry_price and exit_price"}, 400)
+            return
+
         _expectancy_tracker.record_trade(
             bot_id=data.get("bot_id", "unknown"),
             pair=data.get("pair", ""),
-            direction=data.get("direction", "LONG"),
-            entry_price=data.get("entry_price", 0),
-            exit_price=data.get("exit_price", 0),
+            direction=data.get("direction"),
+            entry_price=_ep,
+            exit_price=_xp,
             size_usd=data.get("size_usd", 0),
             duration=data.get("duration", 0),
+            realized_pnl=_rp,
             # fee_rate intentionally not forwarded — expectancy is gross
             # (signal product, 2026-07-30); record_trade ignores fees.
         )

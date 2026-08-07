@@ -61,6 +61,14 @@ class SignalAggregator:
         direction: 'LONG', 'SHORT', or 'NEUTRAL'
         confidence: 0.0 to 1.0
         """
+        # A proposal with no stated confidence cannot take part in a
+        # CONFIDENCE-WEIGHTED vote (see decide(): weighted = confidence *
+        # weight * freshness). Substituting 0.5 would let an unmeasured
+        # proposal outvote a genuinely low-conviction one. Reject it and say
+        # so, rather than inventing the number that decides the outcome.
+        if not isinstance(confidence, (int, float)):
+            return False
+
         if pair not in self.proposals:
             self.proposals[pair] = []
 
@@ -77,6 +85,7 @@ class SignalAggregator:
         self.proposals[pair] = [
             p for p in self.proposals[pair] if p['timestamp'] > cutoff
         ]
+        return True
 
     # ── Decision Engine ─────────────────────────────────────────────
 

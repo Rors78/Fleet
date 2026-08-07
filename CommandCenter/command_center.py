@@ -4185,16 +4185,35 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             # so a close that arrives by both routes is counted once.
             if _expectancy_tracker and isinstance(pnl, (int, float)):
                 try:
+                    # None, not 0 — same contract as the other two writers.
+                    # This is the THIRD record_trade call site in this file and
+                    # the one that was still fabricating: after the 2026-08-07
+                    # relaunch it wrote four fresh gridzilla rows carrying
+                    # entry_price 0 beside real P/L (POL/USD +$162.98,
+                    # ETH/USD +$30.34 / +$47.74).
+                    _bp = edata.get("entry_price")
+                    _sp = edata.get("exit_price")
+                    if not isinstance(_sp, (int, float)) or _sp <= 0:
+                        _sp = edata.get("price")
                     _expectancy_tracker.record_trade(
                         bot_id=source,
                         pair=pair,
                         direction=direction,
-                        entry_price=edata.get("entry_price", 0),
-                        exit_price=edata.get("exit_price", edata.get("price", 0)),
+                        entry_price=_bp if isinstance(_bp, (int, float)) and _bp > 0 else None,
+                        exit_price=_sp if isinstance(_sp, (int, float)) and _sp > 0 else None,
                         size_usd=edata.get("size_usd", 0),
                         duration=edata.get("duration_s", 0),
                         realized_pnl=pnl,
-                        trade_id=data.get("id") or f"{source}:{pair}:{pnl}",
+                        # Dedup key. The release path keys on the RESERVATION
+                        # id and this path on the EVENT id, so a close arriving
+                        # by both routes was stored twice under different keys —
+                        # live proof: two POL/USD rows, identical gross_pnl
+                        # 162.9797, one with a real exit price and one zeroed.
+                        # Key on the reservation id when the emitting bot
+                        # supplies it, so both routes collide as intended.
+                        trade_id=(edata.get("reservation_id")
+                                  or data.get("id")
+                                  or f"{source}:{pair}:{pnl}"),
                     )
                 except Exception:
                     log.warning("expectancy.record_trade failed for bus "

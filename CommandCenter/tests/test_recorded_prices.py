@@ -88,6 +88,50 @@ check(s.get('win_rate') == 100.0,
       'win rate is derived from P/L, not price, and must be unaffected; got %r'
       % s.get('win_rate'))
 
+# ── The THIRD writer: the TRADE_CLOSE bus path in command_center.py ──
+# Two record_trade sites were fixed on 2026-08-06; this one was missed, and
+# after the 2026-08-07 relaunch it wrote four fresh gridzilla rows carrying
+# entry_price 0 beside genuine P/L (POL/USD +$162.98, ETH +$30.34 / +$47.74).
+cc = open('D:/CommandCenter/command_center.py', encoding='utf-8',
+          errors='replace').read()
+check('entry_price=edata.get("entry_price", 0)' not in cc,
+      'the TRADE_CLOSE bus path still defaults entry_price to 0 when writing '
+      'to the durable store — this is the THIRD writer, missed by the first '
+      'two fixes')
+check('edata.get("reservation_id")' in cc,
+      'the bus path must key its dedup on the reservation id so a close '
+      'arriving by BOTH routes collides — the release path keys on the same '
+      'id, and keying on the event id instead stored POL/USD twice with '
+      'identical gross_pnl 162.9797')
+
+# ── Gridzilla must SUPPLY the prices, not merely avoid faking them ──
+gz = open('D:/Gridzilla/gridzilla.py', encoding='utf-8', errors='replace').read()
+check('"entry_price": fill.get("entry_price")' in gz,
+      'gridzilla must publish the cycle entry price on TRADE_CLOSE — without '
+      'it Command Center has nothing real to record')
+check('"reservation_id": fill.get("reservation_id")' in gz,
+      'gridzilla must publish the reservation id so the two writers dedup')
+
+# ── Behavioural: the same close by both routes must store ONE row ──
+t2 = ex.ExpectancyTracker()
+t2.PERSIST_PATH = os.path.join(tempfile.mkdtemp(), 'e2.json')
+t2.trades = {}
+_rid = 'gridzilla_POL/USD_1786100000_abcd'
+t2.record_trade(bot_id='gridzilla', pair='POL/USD', direction='LONG',
+                entry_price=0.07185, exit_price=0.07574, size_usd=41857.0,
+                duration=900, realized_pnl=162.9797, trade_id=_rid)
+t2.record_trade(bot_id='gridzilla', pair='POL/USD', direction='LONG',
+                entry_price=None, exit_price=None, size_usd=41857.0,
+                duration=900, realized_pnl=162.9797, trade_id=_rid)
+_rows = t2.trades.get('gridzilla', [])
+check(len(_rows) == 1,
+      'a close arriving by both the bus and release routes must be stored '
+      'ONCE, got %d rows' % len(_rows))
+if _rows:
+    check(_rows[0].get('entry_price') == 0.07185,
+          'the deduped row must keep the REAL entry price, got %r'
+          % _rows[0].get('entry_price'))
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

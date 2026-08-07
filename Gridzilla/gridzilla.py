@@ -986,6 +986,14 @@ class GridExecutor:
                         "fee": 0.0,  # legacy field — gross accounting (signal product)
                         "pnl": round(pnl, 4),
                         "time": time.time(),
+                        # The cycle's buy price, so the TRADE_CLOSE event can
+                        # report a real entry instead of leaving Command
+                        # Center to default it to 0. None when the matching
+                        # buy carried no price — absent, not zero.
+                        "entry_price": buy_price if buy_price > 0 else None,
+                        # Lets Command Center dedup this close against the
+                        # reservation-release path, which keys on the same id.
+                        "reservation_id": grid.get("reservation_id") or None,
                     }
 
                     grid["fills"].append(fill)
@@ -1035,9 +1043,22 @@ class GridExecutor:
                             "pair": pair,
                             "direction": "LONG",  # grids are always long-side cycles
                             "price": fill["price"],
+                            # Real prices for the round-trip. Without these
+                            # Command Center defaulted entry_price to 0 and
+                            # wrote it into the DURABLE expectancy store: four
+                            # gridzilla rows after the 2026-08-07 relaunch
+                            # carried entry 0 beside genuine P/L, and
+                            # r_multiple is null for exactly that reason.
+                            "entry_price": fill.get("entry_price"),
+                            "exit_price": fill["price"] if _closed else None,
                             "size_usd": fill["size_usd"],
                             "pnl": fill.get("pnl", 0),
                             "fee": fill["fee"],
+                            # Dedup key shared with the reservation-release
+                            # path, which recorded the SAME close under a
+                            # different id — live proof was two POL/USD rows
+                            # with identical gross_pnl 162.9797.
+                            "reservation_id": fill.get("reservation_id"),
                             "grid_cycle": grid["cycles_completed"],
                             # Explicit: downstream can tell a measured result
                             # from a leg that simply hasn't resolved yet.

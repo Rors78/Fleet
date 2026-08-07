@@ -17,6 +17,11 @@ import sys
 from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
+import re as _re
+
+# Probe pairs look like NF138587OK/USD — a marker prefix plus a timestamp.
+_NF_PROBE = _re.compile(r"^NF\d+")
+
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 # See the note in evolution.py: `logs/events` is legacy and contains no
 # TRADE_CLOSE at all. Reading it made every weekly report say "0 closes" and
@@ -147,6 +152,22 @@ def main():
         v = d.get("pnl", t.get("pnl"))
         return v if isinstance(v, (int, float)) else None
 
+    def _is_probe(t):
+        """Synthetic closes created by test harnesses exercising the live path.
+
+        Nothing in the payload marks these, so the pair name is the only
+        signal — every probe uses a marker prefix no real market carries.
+        They are NOT a rounding error: on 2026-08-07, 55 of 79 closes were
+        probes contributing 55W/0L and +$678.70, which flipped the weekly
+        headline from a real -$119.27 to a reported +$559.43. A report whose
+        sign depends on test data is worse than no report.
+        """
+        pair = str(((t.get("data") or {}).get("pair")) or "").upper()
+        return pair.startswith(("ZZPROBE", "ZZ", "NFNOK")) or _NF_PROBE.match(pair)
+
+    _probes = [t for t in trade_closes if _is_probe(t)]
+    trade_closes = [t for t in trade_closes if not _is_probe(t)]
+
     _pnls = [_pnl(t) for t in trade_closes]
     _decided = [p for p in _pnls if p is not None]
     _unpriced = len(_pnls) - len(_decided)
@@ -164,6 +185,11 @@ def main():
 
     print(f"\n  TRADE SUMMARY:")
     print(f"    Trades closed: {len(trade_closes)}")
+    if _probes:
+        _ppnl = sum(p for p in (_pnl(t) for t in _probes)
+                    if isinstance(p, (int, float)))
+        print(f"    Excluded:      {len(_probes)} synthetic probe close(s) "
+              f"worth ${_ppnl:+,.2f} — test-harness rows, not fleet results")
     _wr_s = f"{wr:.0f}% WR" if wr is not None else "WR n/a"
     print(f"    Wins/Losses:   {wins}W / {losses}L ({_wr_s}, n={_resolved})")
     if _flat:

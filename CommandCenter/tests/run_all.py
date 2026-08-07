@@ -55,6 +55,7 @@ TESTS = [
     "test_bus_listener_absence.py",
     "test_direction_restore.py",
     "test_store_repair.py",
+    "test_weekly_probes.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

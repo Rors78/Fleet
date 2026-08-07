@@ -692,7 +692,39 @@ class ConfluenceEngine:
                 # Risk-on characters add conviction; risk-off subtracts it.
                 # MIXED/NEUTRAL are explicitly half-weight rather than unmapped:
                 # an unrecognised character must never silently vanish.
-                if any(k in character for k in ("TRENDING", "EXPANSION", "STABLE", "ORDERED")):
+                # NEXUS._classify() emits exactly five values: SYSTEMIC,
+                # INSTITUTIONAL, RETAIL_NOISE, STRUCTURAL_SHIFT, MIXED.
+                # Before 2026-08-06 only SYSTEMIC and MIXED matched a branch,
+                # so three of the five silently vanished (208 "not mapped"
+                # warnings in one log window, all INSTITUTIONAL) and the
+                # risk-on keywords TRENDING/EXPANSION/STABLE/ORDERED matched
+                # NOTHING nexus can produce. The NEXUS component of the
+                # confluence score was therefore incapable of ever being
+                # positive: its only reachable outcomes were a penalty and a
+                # half-weight neutral. Semantics below are taken from
+                # nexus._interpret(), the producer.
+                if "INSTITUTIONAL" in character:
+                    # "Whale-driven move — likely to continue": a
+                    # continuation signal, so it confirms a well-formed
+                    # thesis in either direction.
+                    weighted += W_NEXUS * 0.85
+                    contributed_w += W_NEXUS
+                    sources.append("nexus")
+                    reasons.append("NEXUS Institutional (whale-led)")
+                elif "RETAIL_NOISE" in character:
+                    # "Retail noise — likely to revert". A move expected to
+                    # revert does not support a continuation thesis; penalise
+                    # without enlarging the denominator, as with risk-off.
+                    weighted -= W_NEXUS * 0.5
+                    reasons.append("NEXUS Retail Noise (penalty)")
+                elif "STRUCTURAL_SHIFT" in character:
+                    # "Slow bots leading" — real but slow-forming, and
+                    # direction-agnostic. Half weight, like MIXED.
+                    weighted += W_NEXUS * 0.45
+                    contributed_w += W_NEXUS
+                    sources.append("nexus")
+                    reasons.append("NEXUS Structural Shift")
+                elif any(k in character for k in ("TRENDING", "EXPANSION", "STABLE", "ORDERED")):
                     weighted += W_NEXUS * 0.85
                     contributed_w += W_NEXUS
                     sources.append("nexus")

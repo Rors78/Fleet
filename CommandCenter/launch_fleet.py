@@ -108,11 +108,29 @@ class BotProcess:
         self.state = "starting"
 
         try:
+            # PYTHONUNBUFFERED is required, not cosmetic. Python block-buffers
+            # stdout (~8KB) whenever it is a file rather than a console, and
+            # nothing flushes it for a long-lived process. Quiet bots therefore
+            # wrote the launcher's banner and then nothing for hours: on
+            # 2026-08-06, 11 of 18 bots had logs frozen at the launch line for
+            # 8.3h while every one of them was alive and scanning normally
+            # (aegis scan_count=996, nexus=1591). Chatty bots looked fine only
+            # because they generate enough output to force a flush.
+            #
+            # The real cost is diagnostic: every check against those files was
+            # reading a log the process was not writing to, so "no errors in
+            # the log" meant nothing. Measured with the launcher's exact
+            # wiring — 4 printed lines over 3s, read after 6s: without this
+            # env, 0 lines captured; with it, 4.
+            _env = dict(os.environ)
+            _env["PYTHONUNBUFFERED"] = "1"
+
             self.proc = subprocess.Popen(
                 self.cmd,
                 cwd=self.dir,
                 stdout=self._log_file,
                 stderr=subprocess.STDOUT,
+                env=_env,
                 creationflags=(subprocess.CREATE_NEW_PROCESS_GROUP
                                if sys.platform == "win32" else 0),
             )

@@ -43,6 +43,8 @@ TESTS = [
     "test_nonfinite_guard.py",
     "test_lease_sweep_guard.py",
     "test_harmonic_absent.py",
+    "test_nexus_character_map.py",
+    "test_log_capture.py",
 ]
 
 

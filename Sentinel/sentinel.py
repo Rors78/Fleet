@@ -527,8 +527,14 @@ def forecast_pair(pair, candles, ctx, horizons=HORIZONS):
     whale = ctx.get("whale_pairs", {}).get(pair)
     drift_whale = 0.0
     if whale and whale.get("tier") in ("EXTREME", "HIGH"):
-        # High whale score = accumulation = bullish bias
-        drift_whale = 0.000005 * (whale.get("score", 50) / 100)
+        # High whale score = accumulation = bullish bias.
+        # A MISSING score contributes no drift. Defaulting it to 50 injected
+        # a half-strength bullish push into the simulated path on the basis
+        # of a number nobody measured — indistinguishable in the output from
+        # a genuine mid-strength whale reading.
+        _ws = whale.get("score")
+        if isinstance(_ws, (int, float)):
+            drift_whale = 0.000005 * (_ws / 100)
 
     # Mean reversion anchor: how far is price from recent mean?
     closes = [c[4] for c in candles[-50:]]

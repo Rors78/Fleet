@@ -47,6 +47,7 @@ TESTS = [
     "test_log_capture.py",
     "test_error_visibility.py",
     "test_fusion_accuracy.py",
+    "test_intel_gates.py",
 ]
 
 

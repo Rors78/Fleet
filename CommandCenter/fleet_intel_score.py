@@ -108,37 +108,60 @@ class FleetIntelScore:
         q = d.get("quantum", {})
         for item in q.get("collapsed", []):
             if item.get("pair") == pair:
-                score["regime_confidence"] = min(1.0,
-                                                  item.get("confidence", 0.5))
-                score["risk_multiplier"] *= 1.4  # high conviction moment
-                score["contributing_engines"].append("quantum_state")
+                # This branch INCREASES position size (*1.4), so it must fire
+                # only on a measured conviction. Defaulting a missing
+                # confidence to 0.5 and then upsizing anyway would enlarge
+                # real capital exposure on the strength of a number nobody
+                # produced. No confidence -> no conviction bonus.
+                _conf = item.get("confidence")
+                if isinstance(_conf, (int, float)):
+                    score["regime_confidence"] = min(1.0, _conf)
+                    score["risk_multiplier"] *= 1.4  # high conviction moment
+                    score["contributing_engines"].append("quantum_state")
                 break
         else:
             for item in q.get("superposed", []):
                 if item.get("pair") == pair:
-                    entropy = item.get("entropy", 0.5)
-                    if entropy > 0.9:
-                        score["regime_type"] = "UNCERTAIN"
-                        score["risk_multiplier"] *= 0.7
-                    score["contributing_engines"].append("quantum_state")
+                    # entropy > 0.9 is a RISK-REDUCING gate. Defaulting a
+                    # missing entropy to 0.5 silently passes that gate, so an
+                    # unmeasured pair skips the de-risking a genuinely
+                    # uncertain one would get. Absent measurement must not
+                    # read as "measured, and fine".
+                    entropy = item.get("entropy")
+                    if isinstance(entropy, (int, float)):
+                        if entropy > 0.9:
+                            score["regime_type"] = "UNCERTAIN"
+                            score["risk_multiplier"] *= 0.7
+                        score["contributing_engines"].append("quantum_state")
                     break
 
         # --- LORENZ: chaos analysis ---
         lo = d.get("lorenz", {})
         for item in lo.get("chaotic", []):
             if item.get("pair") == pair:
-                lyap = item.get("lyapunov", 0)
-                depart = item.get("attractor_departure", 0)
-                pred = item.get("predictability", 50)
-                if depart > 0.5:
+                # Both branches below REDUCE risk, so a missing value must not
+                # be allowed to satisfy them. `predictability` defaulting to
+                # 50 against a `< 15` test was the clearest case: an unmeasured
+                # pair sailed through the low-predictability check exactly as
+                # a genuinely predictable one would. Same for a departure
+                # defaulting to 0 against `> 0.5`. Unmeasured means the gate
+                # does not fire AND the engine does not claim to have
+                # contributed.
+                depart = item.get("attractor_departure")
+                pred = item.get("predictability")
+                _used = False
+                if isinstance(depart, (int, float)) and depart > 0.5:
                     score["risk_multiplier"] *= 0.5
                     score["active_warnings"].append(
                         f"CHAOS: departure {depart:.2f}")
-                if pred < 15:
+                if isinstance(pred, (int, float)) and pred < 15:
                     score["risk_multiplier"] *= 0.6
                     score["active_warnings"].append(
                         f"CHAOS: low predictability {pred:.0f} bars")
-                score["contributing_engines"].append("lorenz")
+                if isinstance(depart, (int, float)) or isinstance(pred, (int, float)):
+                    _used = True
+                if _used:
+                    score["contributing_engines"].append("lorenz")
                 break
 
         # --- BOLTZMANN: order book phase ---

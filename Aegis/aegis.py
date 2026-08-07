@@ -173,7 +173,15 @@ def whale_flow_divergence(whale_events: list, trade_events: list) -> float:
         pair = data.get("pair", "")
         tier = data.get("tier", "")
         if pair and tier in ("EXTREME", "HIGH"):
-            whale_pairs[pair] = data.get("score", 50)
+            # The score scales this pair's contribution directly
+            # (whale_conf = score/100 below), so defaulting a MISSING score
+            # to 50 would feed a mid-strength reading into fleet risk as
+            # though it had been measured. Every live WHALE_ALERT does carry
+            # a score, so an alert without one is malformed: skip it rather
+            # than assign it an invented confidence.
+            _score = data.get("score")
+            if isinstance(_score, (int, float)):
+                whale_pairs[pair] = _score
 
     if not whale_pairs:
         return 0.0

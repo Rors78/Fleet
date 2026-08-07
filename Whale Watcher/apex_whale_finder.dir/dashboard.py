@@ -59,9 +59,21 @@ class ScannerBackend:
 
     def add_log(self, message: str) -> None:
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.logs.append(f"[{timestamp}] {message}")
+        line = f"[{timestamp}] {message}"
+        self.logs.append(line)
         if len(self.logs) > 100:
             self.logs = self.logs[-100:]
+        # This list is capped at 100 and nothing persists it, so before
+        # 2026-08-06 a Deep Blue error existed only in RAM. main.py's
+        # add_log() does call self.logger.info(), but the headless scanner
+        # runs on THIS class's thread, so its output was the half that went
+        # nowhere: logs/bots/deepblue.log held 7MB of history and had not
+        # gained a byte while the scan cycle advanced 35 -> 41.
+        _up = str(message).upper()
+        if any(k in _up for k in ("ERROR", "WARN", "FAIL", "CRITICAL",
+                                  "DEGRADED", "EXCEPTION", "TIMEOUT",
+                                  "UNREACHABLE", "STALE")):
+            print(line, flush=True)
     
     def scan_pair(self, pair: str) -> Optional[Dict[str, Any]]:
         try:

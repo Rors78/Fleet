@@ -404,8 +404,16 @@ class PhiTexScanner:
         # was visible only via the live API and lost on restart — nothing
         # reached logs/bots/phitex.log. Mirror errors to stdout, which the
         # launcher captures to the per-bot log file.
+        # Deliberately broader than ERROR/WARN/FAIL. PhiTex's most severe
+        # output is "CRITICAL:" and "PRE_CRITICAL:", which the original
+        # three-word gate did NOT match — so this bot's critical signals were
+        # precisely the ones still missing from disk (PRE_CRITICAL: ALGO/USD
+        # was live in RAM and absent from the log). A gate that catches
+        # warnings but drops criticals is worse than no gate.
         up = str(msg).upper()
-        if "ERROR" in up or "WARN" in up or "FAIL" in up:
+        if any(k in up for k in ("ERROR", "WARN", "FAIL", "CRITICAL",
+                                 "DEGRADED", "EXCEPTION", "TIMEOUT",
+                                 "UNREACHABLE", "STALE")):
             print(line, flush=True)
 
     def _fetch_ohlc(self, pair):

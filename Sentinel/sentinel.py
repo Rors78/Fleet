@@ -603,8 +603,13 @@ class SentinelEngine:
         # was visible only via the live API and lost on restart — nothing
         # reached logs/bots/sentinel.log. Mirror errors to stdout, which the
         # launcher captures to the per-bot log file.
+        # Broader than ERROR/WARN/FAIL: Sentinel logs "Degraded cycle ...",
+        # which the original three-word gate did not match, so a
+        # permanently-degraded Sentinel looked silent on disk.
         up = str(msg).upper()
-        if "ERROR" in up or "WARN" in up or "FAIL" in up:
+        if any(k in up for k in ("ERROR", "WARN", "FAIL", "CRITICAL",
+                                 "DEGRADED", "EXCEPTION", "TIMEOUT",
+                                 "UNREACHABLE", "STALE")):
             print(line, flush=True)
 
     def compute(self):

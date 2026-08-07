@@ -953,7 +953,19 @@ class GridExecutor:
                                     bot_id="gridzilla",
                                     pair=pair,
                                     direction="LONG",
-                                    entry_price=matching_buy.get("price", 0),
+                                    # None, not 0. A recorded entry_price of
+                                    # 0.0 is not a price anybody measured, and
+                                    # it lands in the DURABLE expectancy store
+                                    # where it outlives the process and cannot
+                                    # be told apart from a real reading. The
+                                    # live store already holds a gridzilla
+                                    # ETH/USD trade with entry_price 0.0 /
+                                    # exit_price 0.0 beside a genuine
+                                    # +$34.90 on $20,781 — the P/L is real,
+                                    # the prices are fiction. r_multiple is
+                                    # null for exactly this reason.
+                                    entry_price=(buy_price if buy_price > 0
+                                                 else None),
                                     exit_price=current_price,
                                     size_usd=matching_buy.get("size_usd", 0),
                                     duration=time.time() - matching_buy.get("time", time.time()),

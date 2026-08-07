@@ -31,7 +31,26 @@ from datetime import datetime, timezone
 FAIL = []
 BOTS = (('aegis', 'D:/Aegis/aegis.py'),
         ('sentinel', 'D:/Sentinel/sentinel.py'),
-        ('phitex', 'D:/PhiTex/phitex.py'))
+        ('phitex', 'D:/PhiTex/phitex.py'),
+        # nexus was MISSED by the first pass of this fix — it has the same
+        # buffer-only _log and is the busiest engine in the fleet. Its log sat
+        # at 672 bytes while its cycle counter advanced 54 -> 77.
+        ('nexus', 'D:/Nexus/nexus.py'))
+
+# Severities that MUST reach disk. The first version of the mirror gate
+# matched only ERROR/WARN/FAIL, which excluded the most severe lines the
+# fleet emits: PhiTex sends "CRITICAL:"/"PRE_CRITICAL:" and Sentinel sends
+# "Degraded cycle ...". A gate that catches warnings but drops criticals is
+# worse than no gate, because a quiet log then reads as calm at exactly the
+# moment it should not.
+MUST_MIRROR = ('ERROR: fetch failed',
+               'WARNING: stale snapshot',
+               'regime FAILOVER engaged',
+               'CRITICAL: fusion meltdown',
+               'PRE_CRITICAL: ALGO/USD approaching transition',
+               'Degraded cycle 4: 2 sources unreachable')
+MUST_STAY_QUIET = ('compute cycle ok',
+                   'scan complete, 56 pairs')
 
 
 def check(cond, msg):
@@ -52,39 +71,44 @@ for name, path in BOTS:
         FAIL.append('could not locate _log in %s' % path)
         continue
 
+    # nexus routes its gate through a module-level _is_severe(); pull the real
+    # one in rather than reimplementing it, so this tests the shipped policy.
+    g = {'deque': deque, 'datetime': datetime, 'timezone': timezone}
+    sev = re.search(r'def _is_severe\(msg\):\n(?:.*\n)*?(?=\n\ndef )', src)
+    if sev:
+        exec(sev.group(0), g)
     ns = {}
     exec('class Shim:\n    def __init__(self):\n        self._log_buf = deque(maxlen=100)\n'
-         + m.group(0),
-         {'deque': deque, 'datetime': datetime, 'timezone': timezone}, ns)
+         + m.group(0), g, ns)
     shim = ns['Shim']()
 
     cap = io.StringIO()
     real, sys.stdout = sys.stdout, cap
     try:
-        shim._log('compute cycle ok')          # healthy — must NOT print
-        shim._log('scan complete, 56 pairs')   # healthy — must NOT print
-        shim._log('ERROR: fetch failed')
-        shim._log('WARNING: stale snapshot')
-        shim._log('regime FAILOVER engaged')
+        for m in MUST_STAY_QUIET:
+            shim._log(m)
+        for m in MUST_MIRROR:
+            shim._log(m)
     finally:
         sys.stdout = real
 
     printed = [l for l in cap.getvalue().splitlines() if l.strip()]
+    total = len(MUST_MIRROR) + len(MUST_STAY_QUIET)
 
-    check(len(shim._log_buf) == 5,
-          '%s: all 5 lines must still reach the in-memory buffer, got %d'
-          % (name, len(shim._log_buf)))
-    check(len(printed) == 3,
-          '%s: the 3 error/warning lines must be mirrored to stdout, got %d'
-          % (name, len(printed)))
-    check(not any('cycle ok' in p or 'scan complete' in p for p in printed),
-          '%s: healthy lines must NOT be mirrored — that floods the log and '
-          'buries real errors' % name)
-    check(any('ERROR: fetch failed' in p for p in printed),
-          '%s: an ERROR line must reach stdout so the launcher captures it '
-          'to disk' % name)
-    check(any('FAILOVER' in p for p in printed),
-          '%s: a FAIL* line must reach stdout' % name)
+    check(len(shim._log_buf) == total,
+          '%s: all %d lines must still reach the in-memory buffer, got %d'
+          % (name, total, len(shim._log_buf)))
+    check(len(printed) == len(MUST_MIRROR),
+          '%s: all %d severe lines must be mirrored to stdout, got %d'
+          % (name, len(MUST_MIRROR), len(printed)))
+    for m in MUST_MIRROR:
+        check(any(m in p for p in printed),
+              '%s: %r must reach stdout so the launcher captures it to disk'
+              % (name, m))
+    for m in MUST_STAY_QUIET:
+        check(not any(m in p for p in printed),
+              '%s: healthy line %r must NOT be mirrored — that floods the log '
+              'and buries real errors' % (name, m))
 
 if FAIL:
     for f in FAIL:

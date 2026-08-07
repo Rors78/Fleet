@@ -150,6 +150,12 @@ def _run_scan():
         elif error:
             _state["status"] = "error"
             _state["error"] = error
+            # Errors used to live ONLY in _state, readable over HTTP and lost
+            # on restart, so a permanently failing Oracle looked exactly like
+            # a healthy one in logs/bots/oracle.log. Emit to stdout, which the
+            # launcher captures to disk.
+            print(f"[{time.strftime('%H:%M:%S')}] ERROR: scan failed: {error}",
+                  flush=True)
         else:
             _state["status"] = "running"
 

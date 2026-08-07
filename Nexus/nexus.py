@@ -634,6 +634,23 @@ class EuclideanStructureEngine:
         }
 
 
+def _is_severe(msg):
+    """Should this log line reach stdout (and so the on-disk log)?
+
+    Deliberately broader than ERROR/WARN/FAIL. The first version of this gate
+    matched only those three, which silently excluded the MOST severe
+    messages in the fleet: PhiTex emits "CRITICAL:" and "PRE_CRITICAL:", and
+    Sentinel emits "Degraded cycle ...". A gate that catches warnings but
+    drops criticals is worse than no gate, because the quiet log then reads
+    as calm at exactly the moment it should not.
+    """
+    up = str(msg).upper()
+    return any(k in up for k in (
+        "ERROR", "WARN", "FAIL", "CRITICAL", "DEGRADED",
+        "EXCEPTION", "TIMEOUT", "UNREACHABLE", "STALE",
+    ))
+
+
 def _mean_or_none(vals):
     """Mean of measured values, or None when nothing was measured.
 
@@ -1210,7 +1227,15 @@ class NexusEngine:
 
     def _log(self, msg):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        self._log_buf.append(f"[{ts}] {msg}")
+        line = f"[{ts}] {msg}"
+        self._log_buf.append(line)
+        # nexus is the fleet's busiest engine and its _log_buf is a bounded
+        # deque that nothing persists, so before 2026-08-06 an error here
+        # existed only in RAM and died with the process: the scan loop
+        # formats "ERROR: {e}" and handed it to a dead end. logs/bots/nexus.log
+        # sat at 672 bytes while the cycle counter advanced 54 -> 77.
+        if _is_severe(msg):
+            print(line, flush=True)
 
     def _fetch_candles(self, pair, interval=5, limit=200):
         """Fetch cached candles from Command Center's shared market layer."""

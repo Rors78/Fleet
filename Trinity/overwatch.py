@@ -642,6 +642,14 @@ def add_alert(symbol: str, message: str, level: str = "INFO"):
     entry = AlertEntry(timestamp=ts, symbol=symbol, message=message, level=level)
     with state_lock:
         alert_log.append(entry)
+    # Trinity's ONLY stdout emit was render_dashboard(), whose thread starts
+    # `if not auto` — and the fleet launches it with --auto. It was therefore
+    # 100% silent on disk by construction: alerts existed solely in the
+    # in-memory alert_log, so logs/bots/trinity.log could never show a
+    # problem no matter how bad things got. Non-INFO alerts now reach stdout,
+    # which the launcher captures, without resurrecting the TUI.
+    if str(level).upper() not in ("INFO", "DEBUG"):
+        print(f"[{ts}] {level}: {symbol} {message}", flush=True)
 
 
 # ─────────────────────────────────────────────

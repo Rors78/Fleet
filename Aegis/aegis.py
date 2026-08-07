@@ -384,8 +384,12 @@ class AegisEngine:
         # its ONLY error path through here, so a crash-looping compute() left
         # no trace on disk at all. Errors and warnings now also go to stdout,
         # which the launcher captures to the per-bot log file.
+        # Broader than ERROR/WARN/FAIL — the original gate excluded CRITICAL
+        # and DEGRADED, i.e. the most severe lines the fleet emits.
         up = str(msg).upper()
-        if "ERROR" in up or "WARN" in up or "FAIL" in up:
+        if any(k in up for k in ("ERROR", "WARN", "FAIL", "CRITICAL",
+                                 "DEGRADED", "EXCEPTION", "TIMEOUT",
+                                 "UNREACHABLE", "STALE")):
             print(line, flush=True)
 
     def _fetch_json(self, path):

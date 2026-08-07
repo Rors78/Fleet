@@ -742,6 +742,60 @@ class GaussianBeliefFusion:
         # Historical accuracy — starts at 0.5, updated as regime predictions
         # are verified against actual market moves
         self.accuracy = {}  # {source: float}
+        # Pending calls awaiting a verdict: {source: regime_value} from the
+        # previous cycle, scored once the realized move is known.
+        self._pending = {}
+        self._scored = {}   # {source: [n_scored, n_correct]}
+
+    def score_previous(self, realized_move):
+        """Grade last cycle's regime calls against the realized market move.
+
+        Before 2026-08-06 `self.accuracy` was initialised to {} and WRITTEN
+        NOWHERE — every lookup fell through to the 0.5 default, so every
+        source carried identical precision and this "Gauss-optimal
+        precision-weighted fusion" was arithmetically a plain average,
+        permanently. The docstring's promise that accuracy is "updated as
+        regime predictions are verified" was never implemented, and the
+        weights block published 10 sources at exactly 0.1 each with
+        information_gain 0.0 — honest, but honest about doing nothing.
+
+        realized_move: signed fractional change of the market proxy over the
+        cycle (e.g. +0.004 = +0.4%). None when unknown, which scores nothing
+        rather than guessing a direction.
+        """
+        if realized_move is None or not self._pending:
+            self._pending = {}
+            return
+        # Below this the move is noise and BOTH a directional and a range
+        # call are defensible, so scoring it would reward luck.
+        DEAD_ZONE = 0.0015
+        actual = 0.0
+        if realized_move > DEAD_ZONE:
+            actual = 1.0
+        elif realized_move < -DEAD_ZONE:
+            actual = -1.0
+
+        for source, predicted in self._pending.items():
+            # Correct if the call had the right sign, or if it called RANGE
+            # (0.0) and the market genuinely went nowhere.
+            if actual == 0.0:
+                correct = abs(predicted) < 0.5
+            else:
+                correct = (predicted * actual) > 0
+            rec = self._scored.setdefault(source, [0, 0])
+            rec[0] += 1
+            rec[1] += 1 if correct else 0
+            # Laplace-smoothed hit rate: starts at 0.5 with no evidence and
+            # moves only as calls are actually graded, so a source with 2
+            # lucky hits does not jump to 1.0 and dominate the fusion.
+            n, k = rec
+            self.accuracy[source] = (k + 1.0) / (n + 2.0)
+        self._pending = {}
+
+    def accuracy_report(self):
+        """Per-source grading record, for the snapshot."""
+        return {s: {"scored": n, "correct": k, "accuracy": round(self.accuracy.get(s, 0.5), 4)}
+                for s, (n, k) in sorted(self._scored.items())}
 
     def fuse(self, estimates):
         """Fuse multiple regime estimates optimally.
@@ -760,6 +814,9 @@ class GaussianBeliefFusion:
             precision = max(acc * conf, 0.01)
             values.append(val)
             precisions.append(precision)
+            # Remember this call so the next cycle can grade it against the
+            # realized move (see score_previous).
+            self._pending[est["source"]] = val
 
         total_prec = sum(precisions)
         fused_val = sum(v * p for v, p in zip(values, precisions)) / total_prec
@@ -1369,17 +1426,48 @@ class NexusEngine:
             pass
 
         # Engine 5: Gaussian Belief Fusion
+        #
+        # Grade the PREVIOUS cycle's calls before making new ones. BTC is the
+        # market proxy: a regime call is a claim about market direction, and
+        # BTC's realized move over the cycle is the cheapest honest ground
+        # truth available here. If the price is unavailable the cycle scores
+        # nothing rather than inventing a verdict.
+        _realized = None
+        try:
+            _btc = self._fetch_candles("BTC/USD", interval=5, limit=3)
+            if _btc and len(_btc) >= 2:
+                _prev_c = float(_btc[-2][4])
+                _last_c = float(_btc[-1][4])
+                if _prev_c > 0:
+                    _realized = (_last_c - _prev_c) / _prev_c
+        except Exception:
+            _realized = None
+        try:
+            self.gaussian.score_previous(_realized)
+        except Exception:
+            pass
+
         regime_estimates = []
         for bot_id, bstate in bot_states.items():
             norm = bstate.get("normalized", {}) or {}
             regime = norm.get("regime")
             if regime and bot_id not in ("aegis", "phitex", "nexus"):
+                # Per-source confidence is the graded hit rate when the source
+                # has been scored, and 0.5 (no evidence) when it has not. The
+                # old hardcoded 0.6 made every precision identical, so both
+                # inputs to the "precision weighting" were constants and the
+                # fusion could never be anything but a plain average.
+                _acc = self.gaussian.accuracy.get(bot_id)
                 regime_estimates.append({
                     "source": bot_id,
                     "regime": regime,
-                    "confidence": 0.6,  # default; updated by accuracy tracking
+                    "confidence": _acc if isinstance(_acc, float) else 0.5,
                 })
         gaussian_result = self.gaussian.fuse(regime_estimates) if regime_estimates else {}
+        if gaussian_result:
+            gaussian_result["accuracy"] = self.gaussian.accuracy_report()
+            gaussian_result["realized_move"] = (
+                round(_realized, 6) if _realized is not None else None)
 
         # Engine 6: Riemann Spectral Analysis
         whale_spectral = riemann_spectral(events, "WHALE_ALERT")

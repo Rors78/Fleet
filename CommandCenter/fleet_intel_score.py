@@ -317,12 +317,21 @@ class FleetIntelScore:
         with self._lock:
             scores = list(self._pair_scores.values())
         if not scores:
-            return {"pairs_scored": 0, "avg_risk_multiplier": 1.0,
+            # None, not 1.0. An average over ZERO scored pairs is not
+            # "full size approved across the fleet" — it is no measurement at
+            # all, and the dashboard paints this figure green at >0.7.
+            return {"pairs_scored": 0, "avg_risk_multiplier": None,
                     "warnings_active": 0, "engines_contributing": 0}
+        # Only real multipliers average. An unscored pair carries None (see
+        # get_score), and summing that raises TypeError — the same shape that
+        # took /api/expectancy down when _empty_stats started returning None.
+        _mults = [s["risk_multiplier"] for s in scores
+                  if isinstance(s.get("risk_multiplier"), (int, float))]
         return {
             "pairs_scored": len(scores),
-            "avg_risk_multiplier": round(
-                sum(s["risk_multiplier"] for s in scores) / len(scores), 3),
+            "avg_risk_multiplier": (round(sum(_mults) / len(_mults), 3)
+                                    if _mults else None),
+            "pairs_with_multiplier": len(_mults),
             "warnings_active": sum(len(s["active_warnings"]) for s in scores),
             "engines_contributing": len(set(
                 e for s in scores for e in s["contributing_engines"])),

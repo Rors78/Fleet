@@ -20,6 +20,7 @@ nobody measured.
   test_rows     — _drop_empty_rows placeholder stripping
 """
 import os
+import shutil
 import subprocess
 import sys
 
@@ -54,6 +55,22 @@ TESTS = [
     "test_bus_listener_absence.py",
 ]
 
+# Dashboard-side guards. These were written alongside the Python tests but
+# were never run by this runner, so a regression in the rendering layer went
+# unnoticed by CI while the Python suite stayed green.
+JS_TESTS = [
+    "nullcmp.js",
+    "ov.js",
+    "tile.js",
+    "aegis_guard.js",
+    "units.js",
+    "stale.js",
+    "verdict.js",
+    "hivemind.js",
+    "helper_test.js",
+    "intel_render.js",
+]
+
 
 def main() -> int:
     results = []
@@ -63,6 +80,18 @@ def main() -> int:
             results.append((name, None, "missing"))
             continue
         proc = subprocess.run([sys.executable, path], cwd=HERE,
+                              capture_output=True, text=True)
+        results.append((name, proc.returncode == 0, proc))
+
+    node = shutil.which("node")
+    for name in JS_TESTS:
+        path = os.path.join(HERE, name)
+        if not os.path.exists(path):
+            continue          # optional
+        if not node:
+            print(f"SKIP  {name} (node not on PATH)")
+            continue
+        proc = subprocess.run([node, path], cwd=HERE,
                               capture_output=True, text=True)
         results.append((name, proc.returncode == 0, proc))
 

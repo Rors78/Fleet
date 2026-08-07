@@ -12919,7 +12919,7 @@ function handleSSEEvent(rawData){
     /* Update overview whale alerts + engine tracking */
     if(/WHALE_ALERT/.test(type)){
       var d2=ev.data||{};
-      ovData.whaleAlerts.unshift({pair:d2.pair||"?",tier:d2.tier||"HIGH",score:d2.score||0.5,driver:d2.driver||d2.reason||"",ts:ts});
+      ovData.whaleAlerts.unshift({pair:d2.pair||"?",tier:d2.tier||null,score:(typeof d2.score==="number"&&isFinite(d2.score))?d2.score:null,driver:d2.driver||d2.reason||"",ts:ts});
       ovData.whaleAlerts=ovData.whaleAlerts.slice(0,20);
       if(activeTab===0) renderOvWhaleIntel();
     }
@@ -14742,8 +14742,12 @@ function _fetchExposure(){
     var h='';
     /* Exposure map from portfolio data */
     h+='<div style="font-size:0.7rem;letter-spacing:0.14em;color:rgba(100,180,255,0.65);margin-bottom:12px">POSITION EXPOSURE</div>';
-    var deployed=port.deployed||0;var total=port.total||10000;
-    h+='<div style="font-size:0.78rem;color:rgba(255,255,255,0.7);margin-bottom:14px">Deployed: <span style="color:#fff;font-weight:500">$'+deployed.toFixed(0)+'</span> of $'+total.toFixed(0)+' ('+(port.deployed_pct||0).toFixed(1)+'%) &middot; Status: <span style="color:'+(port.risk_status==="GREEN"?"#00ff88":"#ff4466")+';text-shadow:0 0 8px '+(port.risk_status==="GREEN"?"rgba(0,255,136,0.3)":"rgba(255,68,102,0.3)")+'">'+(port.risk_status||"?")+'</span></div>';
+    /* total is NOT 10000 when absent — the live pool is ~$1M, so a fabricated
+       10000 misstates "Deployed $X of $Y" by ~100x. */
+    var deployed=port.deployed||0;
+    var totalKnown=(typeof port.total==='number'&&isFinite(port.total)&&port.total>0);
+    var total=totalKnown?port.total:null;
+    h+='<div style="font-size:0.78rem;color:rgba(255,255,255,0.7);margin-bottom:14px">Deployed: <span style="color:#fff;font-weight:500">$'+deployed.toFixed(0)+'</span> of '+(totalKnown?'$'+total.toFixed(0):'&mdash;')+' ('+((typeof port.deployed_pct==='number'&&isFinite(port.deployed_pct))?port.deployed_pct.toFixed(1)+'%':'&mdash;')+') &middot; Status: <span style="color:'+(port.risk_status==="GREEN"?"#00ff88":"#ff4466")+';text-shadow:0 0 8px '+(port.risk_status==="GREEN"?"rgba(0,255,136,0.3)":"rgba(255,68,102,0.3)")+'">'+(port.risk_status||"?")+'</span></div>';
     /* Per-pair bars */
     var byPair=port.by_pair||{};
     var pairArr=Object.entries(byPair).sort(function(a,b){return (b[1].amount||0)-(a[1].amount||0)});
@@ -14946,8 +14950,13 @@ function _fetchIntelScore(){
     var h='';
     h+='<div style="display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:14px;margin-bottom:24px">';
     h+='<div style="text-align:center;padding:16px;border:1px solid rgba(100,180,255,0.15);border-radius:6px;background:rgba(100,180,255,0.03)"><div style="font-size:0.65rem;letter-spacing:0.1em;color:rgba(100,180,255,0.6)">PAIRS SCORED</div><div style="font-size:1.4rem;color:#fff;margin-top:6px">'+(summary.pairs_scored||0)+'</div></div>';
-    var avgR=summary.avg_risk_multiplier||1;var avgColor=avgR>0.7?"#00ff88":avgR>0.4?"#fbbf24":"#ff4466";
-    h+='<div style="text-align:center;padding:16px;border:1px solid rgba(100,180,255,0.15);border-radius:6px;background:rgba(100,180,255,0.03)"><div style="font-size:0.65rem;letter-spacing:0.1em;color:rgba(100,180,255,0.6)">AVG RISK</div><div style="font-size:1.4rem;color:'+avgColor+';margin-top:6px;text-shadow:0 0 8px '+avgColor+'33">'+(avgR).toFixed(3)+'</div></div>';
+    /* null when no pair has been scored. `||1` painted that GREEN at 1.000,
+       reading as "fleet-wide full size approved" from zero measurements. */
+    var avgRraw=summary.avg_risk_multiplier;
+    var avgRknown=(typeof avgRraw==='number'&&isFinite(avgRraw));
+    var avgR=avgRknown?avgRraw:null;
+    var avgColor=!avgRknown?"rgba(255,255,255,0.35)":avgR>0.7?"#00ff88":avgR>0.4?"#fbbf24":"#ff4466";
+    h+='<div style="text-align:center;padding:16px;border:1px solid rgba(100,180,255,0.15);border-radius:6px;background:rgba(100,180,255,0.03)"><div style="font-size:0.65rem;letter-spacing:0.1em;color:rgba(100,180,255,0.6)">AVG RISK</div><div style="font-size:1.4rem;color:'+avgColor+';margin-top:6px;text-shadow:0 0 8px '+(avgRknown?avgColor+'33':'transparent')+'">'+(avgRknown?avgR.toFixed(3):'&mdash;')+'</div></div>';
     h+='<div style="text-align:center;padding:16px;border:1px solid rgba(100,180,255,0.15);border-radius:6px;background:rgba(100,180,255,0.03)"><div style="font-size:0.65rem;letter-spacing:0.1em;color:rgba(100,180,255,0.6)">WARNINGS</div><div style="font-size:1.4rem;color:'+(summary.warnings_active>0?"#ff4466":"#00ff88")+';margin-top:6px;text-shadow:0 0 8px '+(summary.warnings_active>0?"rgba(255,68,102,0.3)":"rgba(0,255,136,0.3)")+'">'+(summary.warnings_active||0)+'</div></div>';
     h+='<div style="text-align:center;padding:16px;border:1px solid rgba(100,180,255,0.15);border-radius:6px;background:rgba(100,180,255,0.03)"><div style="font-size:0.65rem;letter-spacing:0.1em;color:rgba(100,180,255,0.6)">ENGINES</div><div style="font-size:1.4rem;color:#fff;margin-top:6px">'+(summary.engines_contributing||0)+'</div></div>';
     h+='</div>';
@@ -14956,14 +14965,24 @@ function _fetchIntelScore(){
     if(pairs.length>0){
       h+='<table style="width:100%;border-collapse:collapse;font-size:0.72rem"><tr style="color:rgba(100,180,255,0.6)"><th style="text-align:left;padding:6px 8px;font-size:0.63rem;letter-spacing:0.1em;border-bottom:1px solid rgba(100,180,255,0.15)">Pair</th><th style="border-bottom:1px solid rgba(100,180,255,0.15);font-size:0.63rem;letter-spacing:0.1em">Regime</th><th style="border-bottom:1px solid rgba(100,180,255,0.15);font-size:0.63rem;letter-spacing:0.1em">Conf</th><th style="border-bottom:1px solid rgba(100,180,255,0.15);font-size:0.63rem;letter-spacing:0.1em">Risk</th><th style="border-bottom:1px solid rgba(100,180,255,0.15);font-size:0.63rem;letter-spacing:0.1em">Bias</th><th style="border-bottom:1px solid rgba(100,180,255,0.15);font-size:0.63rem;letter-spacing:0.1em">Engines</th><th style="border-bottom:1px solid rgba(100,180,255,0.15);font-size:0.63rem;letter-spacing:0.1em">Warnings</th></tr>';
       for(var i=0;i<pairs.length;i++){
-        var s=scores[pairs[i]];var rm=s.risk_multiplier||1;
-        var rc=rm>0.7?"#00ff88":rm>0.4?"#fbbf24":"#ff4466";
+        /* risk_multiplier is deliberately null for a pair no engine has
+           scored (fleet_intel_score.get_score). `||1` turned that back into
+           "1.000" rendered GREEN -- the colour for full-size-approved -- which
+           is exactly the false reassurance the API-side fix removed. An
+           unscored pair must look unscored. Note `||` would also swallow a
+           genuine 0 (total risk veto), the most important value on this
+           table. */
+        var s=scores[pairs[i]];
+        var rmRaw=s.risk_multiplier;
+        var rmKnown=(typeof rmRaw==='number'&&isFinite(rmRaw));
+        var rm=rmKnown?rmRaw:null;
+        var rc=!rmKnown?"rgba(255,255,255,0.35)":rm>0.7?"#00ff88":rm>0.4?"#fbbf24":"#ff4466";
         var wc=s.active_warnings&&s.active_warnings.length>0?"#ff6680":"rgba(255,255,255,0.35)";
         var bc=s.trade_bias>0.2?"#00ff88":s.trade_bias<-0.2?"#ff4466":"rgba(255,255,255,0.6)";
         h+='<tr style="transition:background 0.2s;cursor:pointer"onmouseover="this.style.background=\'rgba(100,180,255,0.06)\'"onmouseout="this.style.background=\'none\'"onclick="var d=this.nextElementSibling;if(d&&d.className===\'intel-pair-detail\'){d.style.display=d.style.display===\'none\'?\'table-row\':\'none\'}"><td style="padding:6px 8px;color:rgba(255,255,255,0.9);font-weight:500">'+pairs[i]+'</td>';
         h+='<td style="text-align:center;color:#e8b030;font-weight:500">'+(s.regime_type||"?")+'</td>';
-        h+='<td style="text-align:center;color:rgba(255,255,255,0.65)">'+(s.regime_confidence||0).toFixed(2)+'</td>';
-        h+='<td style="text-align:center;color:'+rc+';font-weight:500">'+rm.toFixed(3)+'</td>';
+        h+='<td style="text-align:center;color:rgba(255,255,255,0.65)">'+((typeof s.regime_confidence==='number'&&isFinite(s.regime_confidence))?s.regime_confidence.toFixed(2):'&mdash;')+'</td>';
+        h+='<td style="text-align:center;color:'+rc+';font-weight:500">'+(rmKnown?rm.toFixed(3):'&mdash;')+'</td>';
         h+='<td style="text-align:center;color:'+bc+'">'+(s.trade_bias>=0?"+":"")+(s.trade_bias||0).toFixed(3)+'</td>';
         h+='<td style="text-align:center;color:rgba(255,255,255,0.65)">'+(s.contributing_engines||[]).length+'</td>';
         h+='<td style="text-align:center;color:'+wc+'">'+(s.active_warnings||[]).length+'</td></tr>';
@@ -18480,11 +18499,21 @@ function renderOvPortfolioSummary(){
   var p = ovData.portfolio || state.portfolio;
   if(!p){ el.innerHTML = '<div class="ov-sub-text">Loading...</div>'; return; }
 
-  var total = p.total || 10000;
-  var avail = p.available != null ? p.available : total;
-  var deployed = total - avail;
-  var availPct = (avail/total*100).toFixed(1);
-  var depPct   = (deployed/total*100).toFixed(1);
+  /* The pool total is NOT 10000 when absent. With `total` fabricated and
+     `avail` then defaulting to it, this panel rendered a complete and
+     entirely fictional portfolio -- "$10,000 pool, 0% deployed, 100%
+     available" -- indistinguishable from a real one. The live pool is ~$1M,
+     so every percentage computed against 10000 was also wrong by ~100x.
+     Absent total => show nothing rather than invent a portfolio. */
+  var total = (typeof p.total==='number'&&isFinite(p.total)&&p.total>0)?p.total:null;
+  if(total===null){
+    el.innerHTML = '<div class="ov-sub-text">Pool total unavailable &mdash; portfolio not shown</div>';
+    return;
+  }
+  var avail = (typeof p.available==='number'&&isFinite(p.available))?p.available:null;
+  var deployed = (avail===null)?null:(total - avail);
+  var availPct = (avail===null)?null:(avail/total*100).toFixed(1);
+  var depPct   = (deployed===null)?null:(deployed/total*100).toFixed(1);
 
   /* Direction amounts */
   var longAmt  = (p.by_direction && p.by_direction.LONG)  || 0;
@@ -18493,10 +18522,13 @@ function renderOvPortfolioSummary(){
   var longHdRm = Math.max(0, dirCap - longAmt);
   var shortHdRm= Math.max(0, dirCap - shortAmt);
 
-  /* Risk status */
-  var depPctNum = parseFloat(depPct);
+  /* Risk status. parseFloat(null) is NaN and every NaN comparison is false,
+     so an unknown deployment fell through to the green "OK" branch — a
+     reassuring verdict from no data. Unknown must read unknown, not OK. */
+  var depPctNum = (depPct===null)?null:parseFloat(depPct);
   var riskClass, riskLabel;
-  if(depPctNum >= 70){ riskClass="ov-risk-red";   riskLabel="HIGH RISK"; }
+  if(depPctNum===null || !isFinite(depPctNum)){ riskClass="ov-risk-amber"; riskLabel="UNKNOWN"; }
+  else if(depPctNum >= 70){ riskClass="ov-risk-red";   riskLabel="HIGH RISK"; }
   else if(depPctNum >= 50){ riskClass="ov-risk-amber"; riskLabel="MODERATE"; }
   else { riskClass="ov-risk-green";  riskLabel="OK"; }
 
@@ -18516,8 +18548,8 @@ function renderOvPortfolioSummary(){
   el.setAttribute("data-ovpool", String(total));
 
   var h = portRow("Pool", fmt$(total), "total", true, _poolFlash)
-    +portRow("Available", fmt$(avail), availPct+"%")
-    +portRow("Deployed",  fmt$(deployed), depPct+"%")
+    +portRow("Available", (avail===null?"&mdash;":fmt$(avail)), (availPct===null?"":availPct+"%"))
+    +portRow("Deployed",  (deployed===null?"&mdash;":fmt$(deployed)), (depPct===null?"":depPct+"%"))
     +portRow("Long",      fmt$(longAmt), "hdRoom: "+fmt$(longHdRm))
     +portRow("Short",     fmt$(shortAmt), "hdRoom: "+fmt$(shortHdRm));
 
@@ -19327,8 +19359,13 @@ function renderOvWhaleIntel(){
       for(var i=0;i<arr.length;i++){
         var p = arr[i];
         var pairKey = p.pair || p.symbol || p.name || "?";
-        var score = p.score || p.whale_score || p.intensity || 0;
-        var tier = p.tier || (score>0.8?"EXTREME":score>0.5?"HIGH":"MEDIUM");
+        /* A whale with no score gets no derived tier. The old chain fell to
+           score 0, and 0 fails both `>0.8` and `>0.5`, so an UNSCORED pair
+           was classified "MEDIUM" — a severity invented out of absence. */
+        var _sc = [p.score, p.whale_score, p.intensity].filter(function(v){
+          return typeof v==="number" && isFinite(v); });
+        var score = _sc.length ? _sc[0] : null;
+        var tier = p.tier || (score===null?null:(score>0.8?"EXTREME":score>0.5?"HIGH":"MEDIUM"));
         var driver = p.driver || p.primary_driver || p.reason || "";
         pairs[pairKey] = {pair:pairKey, score:score, tier:tier, driver:driver, fromSnap:true};
       }
@@ -19341,7 +19378,7 @@ function renderOvWhaleIntel(){
     var w = wEvts[j];
     var pk = w.pair||"?";
     if(!pairs[pk] || (w.score||0) > (pairs[pk].score||0)){
-      pairs[pk] = {pair:pk, score:w.score||0.5, tier:w.tier||"HIGH", driver:w.driver||"", fromEvent:true};
+      pairs[pk] = {pair:pk, score:(typeof w.score==="number"&&isFinite(w.score))?w.score:null, tier:w.tier||null, driver:w.driver||"", fromEvent:true};
     }
   }
 
@@ -20223,7 +20260,7 @@ function fetchOverviewData(){
         return e.type === "WHALE_ALERT" && (now - (e.ts||e.timestamp||0)) < 300;
       }).map(function(e){
         var d = e.data || {};
-        return {pair:d.pair||e.pair||"?", tier:d.tier||e.tier||"HIGH", score:d.score||e.score||0.5, driver:d.driver||e.driver||"", ts:e.ts||e.timestamp||0};
+        return {pair:d.pair||e.pair||"?", tier:d.tier||e.tier||null, score:(typeof d.score==="number"&&isFinite(d.score))?d.score:((typeof e.score==="number"&&isFinite(e.score))?e.score:null), driver:d.driver||e.driver||"", ts:e.ts||e.timestamp||0};
       });
 
       var counts = {}, lastFired = {};

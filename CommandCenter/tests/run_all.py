@@ -45,6 +45,7 @@ TESTS = [
     "test_harmonic_absent.py",
     "test_nexus_character_map.py",
     "test_log_capture.py",
+    "test_error_visibility.py",
 ]
 
 

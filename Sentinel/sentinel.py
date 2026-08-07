@@ -591,7 +591,15 @@ class SentinelEngine:
 
     def _log(self, msg):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        self._log_buf.append(f"[{ts}] {msg}")
+        line = f"[{ts}] {msg}"
+        self._log_buf.append(line)
+        # The buffer is bounded and never persisted, so an error logged here
+        # was visible only via the live API and lost on restart — nothing
+        # reached logs/bots/sentinel.log. Mirror errors to stdout, which the
+        # launcher captures to the per-bot log file.
+        up = str(msg).upper()
+        if "ERROR" in up or "WARN" in up or "FAIL" in up:
+            print(line, flush=True)
 
     def compute(self):
         self.cycle += 1

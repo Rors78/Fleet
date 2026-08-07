@@ -367,7 +367,18 @@ class AegisEngine:
 
     def _log(self, msg):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
-        self._log_buf.append(f"[{ts}] {msg}")
+        line = f"[{ts}] {msg}"
+        self._log_buf.append(line)
+        # _log_buf is a deque(maxlen=100) that the API exposes 20 entries of
+        # and nothing persists, so before 2026-08-06 an AEGIS error existed
+        # only in memory: invisible in logs/bots/aegis.py and gone entirely on
+        # restart. The scan loop prints nothing on a healthy pass and routes
+        # its ONLY error path through here, so a crash-looping compute() left
+        # no trace on disk at all. Errors and warnings now also go to stdout,
+        # which the launcher captures to the per-bot log file.
+        up = str(msg).upper()
+        if "ERROR" in up or "WARN" in up or "FAIL" in up:
+            print(line, flush=True)
 
     def _fetch_json(self, path):
         try:

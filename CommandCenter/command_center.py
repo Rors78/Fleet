@@ -3282,6 +3282,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         # Test-support: evict rows whose pair carries a test marker. Scoped
         # to a prefix so it cannot remove real history.
         "/api/expectancy/evict":   "_handle_expectancy_evict",
+        "/api/expectancy/repair":  "_handle_expectancy_repair",
         "/api/fleet/mode":         "_handle_fleet_mode",
     }
 
@@ -4557,6 +4558,33 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         removed = _expectancy_tracker.evict_by_pair_prefix(prefix)
         log.info("Expectancy evict: removed %d row(s) matching %r", removed, prefix)
         self._send_json({"ok": True, "removed": removed})
+
+    def _handle_expectancy_repair(self, data: dict) -> None:
+        """POST /api/expectancy/repair — null fabricated $0.00 prices.
+
+        Three writers used to persist `entry_price=data.get(..., 0)` into the
+        durable store, so trades whose bot reported P/L but no prices claimed
+        an entry of $0.00 — a price nobody measured. All three are fixed, but
+        the rows they wrote remain, and they cannot be cleaned on disk: this
+        tracker loads once at construction and _save() writes the in-memory
+        copy, so a file edit under a running process is silently overwritten
+        by the next trade.
+
+        Also drops rows that double-count ONE close. The release path keyed
+        dedup on the reservation id and the bus path on the event id, so a
+        close arriving by both routes was stored twice — which inflates
+        total_trades and understates true per-trade expectancy.
+
+        Repairs only: no gross_pnl, size_usd, duration, direction or timestamp
+        is ever modified.
+        """
+        result = _expectancy_tracker.repair_fabricated_prices()
+        log.info("Expectancy repair: nulled %d fabricated price field(s), "
+                 "dropped %d duplicate row(s)%s",
+                 result.get("nulled", 0), result.get("dropped", 0),
+                 (" — " + "; ".join(result.get("details") or []))
+                 if result.get("details") else "")
+        self._send_json({"ok": True, **result})
 
     def _handle_expectancy_record(self, data: dict) -> None:
         # The public write path into the DURABLE store: any bot can POST here,

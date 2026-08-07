@@ -465,6 +465,74 @@ class ExpectancyTracker:
                 pass
         return removed
 
+    def repair_fabricated_prices(self) -> dict:
+        """Null stored entry/exit prices of exactly 0, and drop double-counts.
+
+        Three writers used to record `entry_price=data.get(..., 0)` into this
+        DURABLE store, so a trade whose bot reported P/L but no prices was
+        persisted claiming an entry of $0.00 — a price nobody measured,
+        indistinguishable from a real one, and the reason r_multiple is null
+        on those rows. All three writers were fixed (8cac8f7, e1763b2,
+        f7b0481) but the rows they already wrote remain.
+
+        Separately, the release path keyed its dedup on the reservation id
+        while the bus path keyed on the event id, so one close arriving by
+        both routes was stored TWICE under different keys. A double-count
+        inflates total_trades and halves the true per-trade expectancy.
+
+        This repairs in MEMORY and then saves, because Command Center loads
+        this store once at construction and _save() writes the in-memory copy
+        — editing the file under a running process is silently overwritten by
+        the next trade.
+
+        Deliberately conservative: it only nulls price fields that are exactly
+        0 and only drops a row that duplicates another's (pair, gross_pnl)
+        while carrying strictly less price information. gross_pnl, size_usd,
+        duration, direction, won and timestamps are never touched, so no
+        derived statistic changes.
+        """
+        nulled = 0
+        dropped = 0
+        details = []
+        for bot_id, rows in list(self.trades.items()):
+            if not isinstance(rows, list):
+                continue
+            seen = {}
+            keep = []
+            for t in rows:
+                try:
+                    key = (t.get("pair"), round(float(t.get("gross_pnl") or 0), 4))
+                except (TypeError, ValueError):
+                    keep.append(t)
+                    continue
+                info = sum(1 for f in ("entry_price", "exit_price")
+                           if isinstance(t.get(f), (int, float)) and t.get(f) > 0)
+                if key in seen:
+                    prev_info, prev_idx = seen[key]
+                    if info > prev_info:
+                        keep[prev_idx] = t          # keep the richer row
+                        seen[key] = (info, prev_idx)
+                    dropped += 1
+                    details.append("dropped duplicate %s %s gross=%s"
+                                   % (bot_id, key[0], key[1]))
+                    continue
+                seen[key] = (info, len(keep))
+                keep.append(t)
+
+            for t in keep:
+                for f in ("entry_price", "exit_price"):
+                    if t.get(f) == 0:
+                        t[f] = None
+                        nulled += 1
+            self.trades[bot_id] = keep
+
+        if nulled or dropped:
+            try:
+                self._save()
+            except Exception:
+                pass
+        return {"nulled": nulled, "dropped": dropped, "details": details}
+
     def _empty_stats(self, bot_id):
         """Stats for a bot with no closed trades.
 

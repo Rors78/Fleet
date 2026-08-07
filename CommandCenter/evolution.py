@@ -28,8 +28,62 @@ from collections import defaultdict
 from datetime import datetime, timedelta, timezone
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-EVENT_DIR = os.path.join(LOG_DIR, "events")
+# `logs/events` is a legacy directory (1.1 MB, 5 event types, ZERO
+# TRADE_CLOSE). The live bus writes to `logs/event_bus` (724 MB, 45 types,
+# every TRADE_CLOSE the fleet has ever emitted). This module pointed at the
+# legacy one, so the glob matched real files, nothing raised, and every run
+# reported "Trades: 0 closes across 1 bots" then "Generated 0 proposals".
+# A silent zero that renders as health: "no closes found" was
+# indistinguishable from "no closes happened", and _measure_timing() could
+# never produce hour-of-day or weekday attribution no matter how much the
+# fleet traded.
+EVENT_DIR = os.path.join(LOG_DIR, "event_bus")
 DAILY_DIR = os.path.join(LOG_DIR, "daily")
+
+
+def assert_event_dir_has_closes(event_dir=None, sample_files=6):
+    """Warn loudly when the configured event dir contains no TRADE_CLOSE.
+
+    The original defect was not a crash — it was a confident zero. Both this
+    module and weekly_analysis.py globbed a directory that contained real
+    .jsonl files but no closes, so every run reported "0 closes" and
+    "No trades to analyze" while the bus held 77. Absence of evidence rendered
+    as evidence of absence.
+
+    This does not raise: a genuinely quiet week is legitimate. It prints a
+    diagnosis when the SAME check finds closes in the sibling directory, which
+    is the signature of pointing at the wrong one.
+    """
+    import glob as _glob
+    import json as _json
+
+    ed = event_dir or EVENT_DIR
+
+    def _count(d):
+        n = 0
+        for f in sorted(_glob.glob(os.path.join(d, "*.jsonl")))[-sample_files:]:
+            try:
+                with open(f, "r", encoding="utf-8", errors="replace") as fh:
+                    for line in fh:
+                        if '"TRADE_CLOSE"' in line:
+                            n += 1
+            except OSError:
+                continue
+        return n
+
+    here = _count(ed)
+    if here:
+        return here
+    for sibling in ("event_bus", "events"):
+        alt = os.path.join(LOG_DIR, sibling)
+        if os.path.abspath(alt) == os.path.abspath(ed):
+            continue
+        if os.path.isdir(alt) and _count(alt):
+            print(f"[evolution] WARNING: no TRADE_CLOSE in {ed!r}, but "
+                  f"{alt!r} has some. EVENT_DIR is probably wrong — every "
+                  f"figure below would be computed from an empty input.")
+            break
+    return 0
 ULTRON_DIR = os.path.join(LOG_DIR, "ultron")
 EVOLUTION_DIR = os.path.join(LOG_DIR, "evolution")
 CC_URL = "http://localhost:9000"

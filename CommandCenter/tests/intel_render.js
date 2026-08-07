@@ -13,7 +13,47 @@
 var fail = 0;
 function check(cond, msg) { if (!cond) { console.log("FAIL  " + msg); fail++; } }
 
-/* --- shipped logic --- */
+/* --- PIN THE SHIPPED SOURCE ---------------------------------------------
+ * This file used to only REIMPLEMENT the dashboard expressions below, which
+ * meant it asserted its own copy and nothing else. Proven on 2026-08-07: with
+ * `var rmRaw=s.risk_multiplier||1;` restored in command_center_v4.html, this
+ * test still printed "ok" and exited 0. The bug it exists to guard was back
+ * and the guard never noticed.
+ *
+ * So before exercising any logic, read the real file and require the guard
+ * expressions to actually be present in it. A negative check ("the bug string
+ * is absent") only forbids one spelling; these are POSITIVE checks that pin
+ * the fix itself.
+ */
+var fs = require('fs');
+var HTML = fs.readFileSync('D:/CommandCenter/command_center_v4.html', 'utf8');
+
+var REQUIRED = [
+  ['risk_multiplier guard',
+   'var rmKnown=(typeof rmRaw===\'number\'&&isFinite(rmRaw));'],
+  ['avg_risk_multiplier guard',
+   'var avgRknown=(typeof avgRraw===\'number\'&&isFinite(avgRraw));'],
+  ['pool total guard',
+   "var total = (typeof p.total==='number'&&isFinite(p.total)&&p.total>0)?p.total:null;"],
+  ['unknown deployment reads UNKNOWN',
+   'riskLabel="UNKNOWN"'],
+  ['whale score null-guard (null.toFixed throws)',
+   "(item.score!=null?item.score.toFixed(2):'&mdash;')"],
+];
+REQUIRED.forEach(function (r) {
+  check(HTML.indexOf(r[1]) !== -1,
+        'command_center_v4.html no longer contains the ' + r[0] +
+        ' — the shipped file regressed even if the logic below still passes');
+});
+
+/* The banned shapes, checked against the real file rather than assumed. */
+check(HTML.indexOf('s.risk_multiplier||1') === -1,
+      'the `s.risk_multiplier||1` fabrication is back in the shipped dashboard');
+check(HTML.indexOf('p.total || 10000') === -1 &&
+      HTML.indexOf('p.total||10000') === -1,
+      'the `p.total||10000` fabricated portfolio is back in the shipped dashboard');
+
+/* --- behavioural checks, mirroring the pinned expressions --- */
 function known(v) { return typeof v === 'number' && isFinite(v); }
 
 function rowRisk(s) {

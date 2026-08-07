@@ -3974,8 +3974,34 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
         self._send_json({"trades": trades[:limit], "total": len(trades)})
 
+    # POST-only action endpoints under /api/expectancy/. They must NOT be
+    # swallowed by the bot_id prefix route below, which would answer a GET
+    # with a full, confident, entirely fabricated stats blob for a "bot"
+    # named "repair".
+    _EXPECTANCY_ACTIONS = ("repair", "evict", "record")
+
     def _serve_expectancy_prefix(self, parsed, path: str) -> None:
         bot_id = path.split("/api/expectancy/", 1)[1].strip("/")
+
+        # This route used to hand ANY trailing string to get_bot_stats(),
+        # which returns a well-formed zero record for a bot that does not
+        # exist. So GET /api/expectancy/notabot answered 200 with
+        # {"bot_id": "notabot", "total_trades": 0, ...} — a complete record
+        # for a nonexistent entity, indistinguishable from a real bot that
+        # has genuinely never traded. Same shape as every other defect this
+        # fleet has been clearing: absence rendered as a confident zero.
+        if bot_id in self._EXPECTANCY_ACTIONS:
+            self._send_json({"error": f"/api/expectancy/{bot_id} is POST-only"},
+                            405)
+            return
+
+        _roster = set(getattr(_fleet_config, "BOTS", {}) or {})
+        known = set(_expectancy_tracker.trades.keys()) | _roster
+        if bot_id not in known:
+            self._send_json({"error": f"unknown bot {bot_id!r}",
+                             "known": sorted(_roster)}, 404)
+            return
+
         self._send_json(_expectancy_tracker.get_bot_stats(bot_id))
 
     def _serve_signals_decay(self, parsed) -> None:

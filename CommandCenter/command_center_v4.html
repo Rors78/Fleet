@@ -19486,7 +19486,12 @@ function renderOvWhaleIntel(){
     var pairClass = tu==="EXTREME" ? "ov-extreme" : tu==="HIGH" ? "ov-high" : "ov-medium";
     h += '<div class="ov-whale-intel-row">'
       +'<span class="ov-whale-pair '+pairClass+'">'+escHtml(item.pair)+'</span>'
-      +'<span class="ov-whale-score '+pairClass+'">'+item.score.toFixed(2)+'</span>'
+      /* item.score is deliberately null for an unscored whale (set above at
+         the snapshot and event paths). `null.toFixed(2)` throws a TypeError
+         that kills this panel's refresh on every Overview poll — a crash
+         introduced by the same change that stopped the score being
+         fabricated. `!=null` (not `||`) so a MEASURED 0 still renders 0.00. */
+      +'<span class="ov-whale-score '+pairClass+'">'+(item.score!=null?item.score.toFixed(2):'&mdash;')+'</span>'
       +'<span class="ov-whale-driver">'+escHtml(item.driver||tu)+'</span>'
       +'</div>';
   }

@@ -83,7 +83,15 @@ class FleetIntelScore:
         ig = d.get("info_geometry", {})
         for w in ig.get("manifold_warnings", []):
             if w.get("pair") == pair:
-                prob = w.get("regime_change_prob", 0)
+                # A MANIFOLD_WARNING exists because the model is objecting.
+                # Defaulting its probability to 0 made "warning raised, value
+                # unreadable" score identically to "no regime change".
+                prob = w.get("regime_change_prob")
+                if not isinstance(prob, (int, float)):
+                    score["active_warnings"].append(
+                        "MANIFOLD: warning raised but probability absent "
+                        "— not scored")
+                    break
                 if prob > 0.7:
                     score["risk_multiplier"] *= max(0.3, 1.0 - prob * 0.7)
                     score["active_warnings"].append(
@@ -168,7 +176,14 @@ class FleetIntelScore:
         bo = d.get("boltzmann", {})
         for item in bo.get("phases", []):
             if item.get("pair") == pair:
-                phase = item.get("phase", "UNKNOWN")
+                # "UNKNOWN" fell through every elif INCLUDING the explicit
+                # `LIQUID: pass` branch, so "we could not read the order
+                # book" was handled by the identical code path as "the order
+                # book is normal". Absent must not reach the same outcome as
+                # measured-and-fine.
+                phase = item.get("phase")
+                if not isinstance(phase, str) or not phase or phase == "UNKNOWN":
+                    break
                 if phase in ("BOILING", "PLASMA"):
                     score["risk_multiplier"] *= 0.3
                     score["active_warnings"].append(f"BOOK: {phase} phase")
@@ -188,8 +203,16 @@ class FleetIntelScore:
         pr = d.get("prigogine", {})
         for item in pr.get("structures_forming", []):
             if item.get("pair") == pair:
-                stype = item.get("type", "")
-                ssc = item.get("score", 0)
+                # This branch UPSIZES 1.3x, so it must fire only on a real
+                # structure type — the same discipline the quantum 1.4x
+                # upsize gate already got. An absent type currently points
+                # the safe way (no upsize), but an unvalidated string
+                # deciding position size is the shape that goes wrong later.
+                # (`score` was read into a variable that nothing used, same
+                # dead-read as the lyapunov one removed on 2026-08-06.)
+                stype = item.get("type")
+                if not isinstance(stype, str) or not stype:
+                    break
                 if "TREND" in stype.upper():
                     score["regime_type"] = "TRENDING"
                     score["risk_multiplier"] *= 1.3  # opportunity
@@ -202,7 +225,19 @@ class FleetIntelScore:
         th = d.get("thom", {})
         for item in th.get("warnings", []):
             if item.get("pair") == pair:
-                ews = item.get("ews_score", 0)
+                # THE most aggressive de-risker in this file (0.3x), and a
+                # Thom warning exists precisely BECAUSE a catastrophe signal
+                # fired. Defaulting a missing ews_score to 0 produced
+                # risk_multiplier 1.0 — indistinguishable from a pair with no
+                # catastrophe signal at all. Against the largest live
+                # position that was the difference between $66,710 and
+                # $20,013 of exposure into a warning the engine was raising.
+                ews = item.get("ews_score")
+                if not isinstance(ews, (int, float)):
+                    score["active_warnings"].append(
+                        "CATASTROPHE: warning raised but ews_score absent "
+                        "— not scored")
+                    break
                 if ews > 0.7:
                     score["risk_multiplier"] *= 0.3
                     score["active_warnings"].append(
@@ -225,8 +260,18 @@ class FleetIntelScore:
 
         # --- SHANNON: fleet-wide noise ratio ---
         sh = d.get("shannon", {})
-        noise_ratio = sh.get("noise_ratio", 0)
-        if noise_ratio > 0.7:
+        # Fleet-wide, not per-pair: this gate is applied to EVERY pair in the
+        # same recompute, so a dead Shannon engine silently un-scaled the
+        # entire fleet at once. Smaller multiplier (0.7x) than the others but
+        # by far the broadest blast radius. None means unmeasured, and 0 is a
+        # legitimate reading (a perfectly clean signal), so the two must not
+        # collapse into the same value.
+        noise_ratio = sh.get("noise_ratio")
+        if not isinstance(noise_ratio, (int, float)):
+            noise_ratio = None
+        if noise_ratio is None:
+            pass  # unmeasured: no scaling, and shannon claims no credit
+        elif noise_ratio > 0.7:
             score["risk_multiplier"] *= 0.7
             score["active_warnings"].append(
                 f"NOISE: fleet signal {noise_ratio:.0%} noise")

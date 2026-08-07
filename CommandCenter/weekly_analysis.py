@@ -18,7 +18,10 @@ from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
-EVENT_DIR = os.path.join(LOG_DIR, "events")
+# See the note in evolution.py: `logs/events` is legacy and contains no
+# TRADE_CLOSE at all. Reading it made every weekly report say "0 closes" and
+# "No trades to analyze" while the bus held 77 of them.
+EVENT_DIR = os.path.join(LOG_DIR, "event_bus")
 JOURNAL_DIR = os.path.join(LOG_DIR, "journals")
 WEEKLY_DIR = os.path.join(LOG_DIR, "weekly")
 INFERENCE_URL = "http://localhost:9001"
@@ -132,15 +135,45 @@ def main():
     journals = read_journals(dates)
     print(f"  AI journals: {len(journals)} entries")
 
-    # Quick stats
-    total_pnl = sum(t.get("pnl", 0) for t in trade_closes)
-    wins = sum(1 for t in trade_closes if t.get("pnl", 0) > 0)
-    losses = len(trade_closes) - wins
-    wr = (wins / len(trade_closes) * 100) if trade_closes else 0
+    # Quick stats.
+    # P/L lives at data.pnl on a bus event, NOT at the top level. Reading
+    # `t.get("pnl", 0)` on the outer envelope returned None -> 0 for every
+    # close, so 77 trades reported as 0W/77L totalling exactly $+0.00 --
+    # incoherent on its face, and the giveaway that the field was never being
+    # read. An unmeasured P/L is also NOT a loss: `losses = total - wins`
+    # silently counted every unpriced close against the fleet.
+    def _pnl(t):
+        d = t.get("data") or {}
+        v = d.get("pnl", t.get("pnl"))
+        return v if isinstance(v, (int, float)) else None
+
+    _pnls = [_pnl(t) for t in trade_closes]
+    _decided = [p for p in _pnls if p is not None]
+    _unpriced = len(_pnls) - len(_decided)
+
+    total_pnl = sum(_decided)
+    wins = sum(1 for p in _decided if p > 0)
+    losses = sum(1 for p in _decided if p < 0)
+    # A close with a P/L of exactly 0.0 is neither a win nor a loss — it is a
+    # capital movement (a grid teardown, a cancelled entry, a re-reservation).
+    # Counting it in the denominator deflates the win rate: 59W/1L over the
+    # full 77 closes reads 77%, but the true decided rate over 60 is 98%.
+    _flat = sum(1 for p in _decided if p == 0)
+    _resolved = wins + losses
+    wr = (wins / _resolved * 100) if _resolved else None
 
     print(f"\n  TRADE SUMMARY:")
     print(f"    Trades closed: {len(trade_closes)}")
-    print(f"    Wins/Losses:   {wins}W / {losses}L ({wr:.0f}% WR)")
+    _wr_s = f"{wr:.0f}% WR" if wr is not None else "WR n/a"
+    print(f"    Wins/Losses:   {wins}W / {losses}L ({_wr_s}, n={_resolved})")
+    if _flat:
+        print(f"    Flat:          {_flat} close(s) at exactly $0.00 "
+              f"— capital movements, excluded from the win rate")
+    if _unpriced:
+        # Disclosed, not folded into losses. A quiet count is how an
+        # unmeasured close becomes a fabricated loss.
+        print(f"    Unpriced:      {_unpriced} close(s) carried no P/L "
+              f"— excluded from W/L and from the total")
     print(f"    Total PnL:     ${total_pnl:+,.2f}")
 
     # Fetch current state

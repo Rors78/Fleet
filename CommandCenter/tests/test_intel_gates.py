@@ -96,6 +96,64 @@ check('quantum_state' not in r['contributing_engines'],
       'a superposed item with NO entropy must not be credited as a '
       'contributing engine; got %r' % r['contributing_engines'])
 
+# ── 2b. The FIVE sibling gates the 2026-08-06 fix missed ──
+# That fix converted predictability / attractor_departure / entropy /
+# confidence and stopped. A capital-risk audit on 2026-08-07 found five more
+# gates in this same file with the identical shape — the default sitting on
+# the safe side of its own test. Ranked by capital at risk:
+#
+#   ews_score          -> 0          vs `> 0.7`  (0.3x, the most aggressive
+#                                                 de-risker in the file: a
+#                                                 catastrophe warning with no
+#                                                 score scored as no warning)
+#   phase              -> "UNKNOWN"  falls through every elif INCLUDING the
+#                                    explicit `LIQUID: pass` branch, so
+#                                    "could not read the book" took the same
+#                                    path as "the book is normal"
+#   regime_change_prob -> 0          vs `> 0.7`
+#   noise_ratio        -> 0          vs `> 0.7`  (fleet-wide: one dead engine
+#                                                 un-scales EVERY pair at once)
+#   type               -> ""         gates a 1.3x UPSIZE on an unvalidated str
+FIVE = [
+    ('thom/ews_score',
+     {'thom': {'warnings': [{'pair': 'BTC/USD', 'ews_score': 0.9}]}},
+     {'thom': {'warnings': [{'pair': 'BTC/USD'}]}}, 0.3),
+    ('boltzmann/phase',
+     {'boltzmann': {'phases': [{'pair': 'BTC/USD', 'phase': 'PLASMA'}]}},
+     {'boltzmann': {'phases': [{'pair': 'BTC/USD'}]}}, 0.3),
+    ('info_geometry/regime_change_prob',
+     {'info_geometry': {'manifold_warnings': [{'pair': 'BTC/USD', 'regime_change_prob': 0.95}]}},
+     {'info_geometry': {'manifold_warnings': [{'pair': 'BTC/USD'}]}}, 0.335),
+    ('shannon/noise_ratio',
+     {'shannon': {'noise_ratio': 0.9}}, {'shannon': {}}, 0.7),
+]
+for _name, _measured, _absent, _expect in FIVE:
+    r_m = sc(_measured)
+    check(abs(r_m['risk_multiplier'] - _expect) < 1e-9,
+          '%s: a MEASURED value must still de-risk to %.3f, got %.4f — a gate '
+          'that never fires is as broken as one that always fires'
+          % (_name, _expect, r_m['risk_multiplier']))
+    r_a = sc(_absent)
+    check(r_a['risk_multiplier'] == 1.0,
+          '%s: an ABSENT measurement must not move risk_multiplier, got %.4f'
+          % (_name, r_a['risk_multiplier']))
+    check(not r_a['contributing_engines'],
+          '%s: an engine that measured NOTHING must not appear in '
+          'contributing_engines — engine_agreement is 1 - warnings/engines, so '
+          'claiming credit while raising no warning manufactures perfect '
+          'consensus out of absence; got %r'
+          % (_name, r_a['contributing_engines']))
+
+# Prigogine is the odd one: its branch UPSIZES 1.3x rather than de-risking.
+r_up = sc({'prigogine': {'structures_forming': [{'pair': 'BTC/USD', 'type': 'TREND_UP'}]}})
+check(abs(r_up['risk_multiplier'] - 1.3) < 1e-9,
+      'a measured TREND structure must still upsize to 1.3, got %.4f'
+      % r_up['risk_multiplier'])
+r_up_a = sc({'prigogine': {'structures_forming': [{'pair': 'BTC/USD'}]}})
+check(r_up_a['risk_multiplier'] == 1.0,
+      'an absent structure type must not upsize position size, got %.4f'
+      % r_up_a['risk_multiplier'])
+
 # ── 3. The unscored-pair contract from the earlier fix must still hold ──
 E2 = fis.FleetIntelScore()
 g = E2.get_score('NEVERSCORED/USD')

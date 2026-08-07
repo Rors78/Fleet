@@ -404,6 +404,25 @@ class PairData:
 # HELPER: SAFE FLOAT (JSON-safe, no inf/nan)
 # ═══════════════════════════════════════════════════════════════════════
 
+def _restored_direction(pair, d) -> str:
+    """Direction for a position being restored from disk.
+
+    LONG stays the fallback because legacy state files predate shorts, but it
+    is no longer SILENT. Current files all record a direction, so a missing
+    one now means corruption — and quietly restoring a live SHORT as a LONG
+    inverts its P/L, its stop and its take-profit. A restart is exactly when
+    nobody is watching, so this announces itself.
+    """
+    direction = d.get("direction")
+    if direction:
+        return direction
+    logger.warning(
+        "Saved position %s has NO direction - assuming LONG (legacy file). "
+        "If it is actually short, its P/L, stop and take-profit are inverted.",
+        pair)
+    return "LONG"
+
+
 def sf(v) -> float:
     """Safe float -- clamp inf/nan to 0.0 for JSON serialization."""
     if v is None:
@@ -1112,7 +1131,7 @@ class PaperTrader:
                     trailing_stop=d.get("trailing_stop", 0.0),
                     peak_price=d.get("peak_price", 0.0),
                     reservation_id=d.get("reservation_id", ""),
-                    direction=d.get("direction", "LONG"),
+                    direction=_restored_direction(pair, d),
                 )
                 pos._kraken_pair = pair.replace("/", "")
                 self.positions[pair] = pos
@@ -2168,8 +2187,16 @@ def cmd_run_sim(args, cfg: Config):
         if pair not in _last_signal:
             return True
         prev = _last_signal[pair]
-        # Flipped direction (LONG <-> SHORT) — always meaningful
-        if signal.direction != prev.get("direction", "LONG"):
+        # Flipped direction (LONG <-> SHORT) — always meaningful.
+        # If the stored signal has NO direction we cannot tell whether this
+        # one flipped. Defaulting to "LONG" answered that question with a
+        # guess, so a genuine SHORT read as a flip (spurious alert) and a
+        # LONG read as unchanged (suppressed alert) — in both cases from a
+        # comparison against a value nobody recorded. Unknown means we cannot
+        # rule out a change, so treat it as changed and let the other checks
+        # below refine it.
+        _prev_dir = prev.get("direction")
+        if _prev_dir is None or signal.direction != _prev_dir:
             return True
         # Changed confidence tier
         if signal.confidence_label != prev["label"]:

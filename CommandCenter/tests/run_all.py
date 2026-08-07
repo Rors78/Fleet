@@ -53,6 +53,7 @@ TESTS = [
     "test_recorded_prices.py",
     "test_trade_attribution.py",
     "test_bus_listener_absence.py",
+    "test_direction_restore.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

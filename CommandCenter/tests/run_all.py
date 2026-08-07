@@ -48,6 +48,7 @@ TESTS = [
     "test_error_visibility.py",
     "test_fusion_accuracy.py",
     "test_intel_gates.py",
+    "test_signal_log_dedupe.py",
 ]
 
 

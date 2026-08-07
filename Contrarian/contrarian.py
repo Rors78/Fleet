@@ -555,7 +555,7 @@ class ContrarianEngine:
                 log.debug(f"State unchanged for {signal_type}/{pair}, "
                           f"skipping publish (heartbeat in "
                           f"{self._heartbeat - (now - prev.get('ts', 0)):.0f}s)")
-                return
+                return False
 
         self._last_published[key] = {"ts": now, "value": value,
                                      "direction": direction}
@@ -572,6 +572,10 @@ class ContrarianEngine:
             log.info(f"Published SENTIMENT_EXTREME/{signal_type}: {data.get('message', '')}")
         else:
             log.warning(f"EventPublisher unavailable, cannot publish {signal_type}")
+        # True = this was a new crossing, a material change, or a heartbeat.
+        # Callers gate their WARNING log on this so a persistent condition is
+        # not re-logged every scan (see the log sites in the scan loop).
+        return True
 
     def _add_alert(self, alert):
         """Add an alert to the ring buffer with timestamp and blacklist flag."""
@@ -672,20 +676,30 @@ class ContrarianEngine:
             self._active_episode_keys = set()
 
             # Extreme greed
+            # NOTE on logging: `signals_found` counts every condition ACTIVE
+            # this scan (the honest gauge of current market state), but the
+            # WARNING line fires only when _publish reports a new crossing,
+            # a material change, or the 30-minute heartbeat. Previously the
+            # log was unconditional, so a persistent condition re-logged
+            # every scan: 12 funding pairs produced 162 identical WARNING
+            # lines in one window, which buries genuine warnings and is the
+            # reason a log stops being read.
             greed = detect_extreme_greed(fear_greed, funding_data, corr_data)
             if greed:
                 self._add_alert(greed)
-                self._publish("EXTREME_GREED", greed)
+                _new = self._publish("EXTREME_GREED", greed)
                 signals_found += 1
-                log.warning(f"SIGNAL: {greed['message']}")
+                if _new:
+                    log.warning(f"SIGNAL: {greed['message']}")
 
             # Extreme fear
             fear = detect_extreme_fear(fear_greed, corr_data)
             if fear:
                 self._add_alert(fear)
-                self._publish("EXTREME_FEAR", fear)
+                _new = self._publish("EXTREME_FEAR", fear)
                 signals_found += 1
-                log.warning(f"SIGNAL: {fear['message']}")
+                if _new:
+                    log.warning(f"SIGNAL: {fear['message']}")
 
             # Funding extremes (can produce multiple alerts)
             funding_alerts, filtered_nc = detect_funding_extremes(funding_data)
@@ -693,27 +707,38 @@ class ContrarianEngine:
                 self.filtered_non_crypto = filtered_nc
             if filtered_nc:
                 log.info(f"Funding scan: {filtered_nc} non-crypto symbol(s) excluded")
+            _suppressed = 0
             for fa in funding_alerts:
                 self._add_alert(fa)
-                self._publish("FUNDING_EXTREME", fa)
+                _new = self._publish("FUNDING_EXTREME", fa)
                 signals_found += 1
-                log.warning(f"SIGNAL: {fa['message']}")
+                if _new:
+                    log.warning(f"SIGNAL: {fa['message']}")
+                else:
+                    _suppressed += 1
+            if _suppressed:
+                # Say how many were held back, so a quiet log is never
+                # mistaken for a quiet market.
+                log.info(f"Funding scan: {_suppressed} ongoing extreme(s) "
+                         f"unchanged since last publish (not re-logged)")
 
             # Liquidation cascade
             cascade = detect_liquidation_cascade(pairs)
             if cascade:
                 self._add_alert(cascade)
-                self._publish("LIQUIDATION_CASCADE", cascade)
+                _new = self._publish("LIQUIDATION_CASCADE", cascade)
                 signals_found += 1
-                log.warning(f"SIGNAL: {cascade['message']}")
+                if _new:
+                    log.warning(f"SIGNAL: {cascade['message']}")
 
             # Correlation breakdown
             breakdowns = detect_correlation_breakdown(corr_data, self._prev_corr_data)
             for bd in breakdowns:
                 self._add_alert(bd)
-                self._publish("CORRELATION_BREAKDOWN", bd)
+                _new = self._publish("CORRELATION_BREAKDOWN", bd)
                 signals_found += 1
-                log.warning(f"SIGNAL: {bd['message']}")
+                if _new:
+                    log.warning(f"SIGNAL: {bd['message']}")
 
             # Episode reconciliation: keys published previously but not
             # detected this scan have dropped back under threshold — clear

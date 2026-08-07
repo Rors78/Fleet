@@ -433,7 +433,22 @@ class ConfluenceEngine:
                 # FLEET_LONG_ONLY flips back on (direction_allowed's
                 # is_reentry semantics: "open no new shorts", not "liquidate
                 # open ones") — restoring it here is the re-reservation path.
-                pos = Position(pair, pd.get("direction", "LONG"),
+                # Legacy files (pre-shorts) genuinely carried only LONGs, so
+                # LONG remains the fallback — but it is no longer SILENT.
+                # Current state files all record a direction, so a missing one
+                # now means corruption, and quietly restoring a live SHORT as
+                # a LONG inverts its P/L, its stop and its target. A restart
+                # is exactly when nobody is watching, so this must announce
+                # itself rather than guess in the dark.
+                _pdir = pd.get("direction")
+                if not _pdir:
+                    self._log(
+                        f"State for {pair} has NO direction — assuming LONG "
+                        f"(legacy file). If this position is actually short, "
+                        f"its P/L, stop and target are now inverted.",
+                        "WARNING")
+                    _pdir = "LONG"
+                pos = Position(pair, _pdir,
                                pd["entry"], pd["size_usd"], pd["stop"],
                                pd["target"], pd.get("reservation_id"), pd.get("thesis", {}))
                 pos.opened_at = pd.get("opened_at", _now())

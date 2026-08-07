@@ -327,11 +327,31 @@ class BusListener:
         return self._latest_data("MANIFOLD_WARNING", pair, max_age)
 
     def manifold_reliable(self, pair, max_age=300):
-        """Is the statistical manifold stable enough to trust models?"""
+        """Is the statistical manifold stable enough to trust models?
+
+        Three distinct cases, and they must not collapse into one:
+          no warning at all      -> nothing is objecting; treat as reliable
+          warning WITH a figure  -> judge it on the figure
+          warning WITHOUT one    -> an objection was raised and we cannot
+                                    grade it. That is not evidence of
+                                    reliability.
+
+        The old `.get("model_reliability", 1.0)` gave the third case the
+        MAXIMUM possible score, so a warning whose reliability was missing
+        sailed through a `> 0.5` gate as "reliable" — the one case where
+        something is demonstrably wrong was the case scored perfect. nexus now
+        publishes a real figure (0.611 / 0.434 / 0.264 / 0.000 across live
+        pairs), and 0.0 is a legitimate value there, so a missing key means
+        absence, never zero and never one.
+        """
         warning = self.manifold_warning(pair, max_age)
         if not warning:
-            return True  # no warning = assume reliable
-        return warning.get("model_reliability", 1.0) > 0.5
+            return True  # no warning = nothing is objecting
+        rel = warning.get("model_reliability")
+        if not isinstance(rel, (int, float)):
+            # A warning we cannot grade is not a clean bill of health.
+            return False
+        return rel > 0.5
 
     def cycle_detected(self, pair=None, max_age=300):
         """Get topological cycle detection events."""
@@ -416,14 +436,33 @@ class BusListener:
         return self._latest_data("CHAOS_STATE", pair, max_age)
 
     def lyapunov(self, pair, max_age=300):
-        """Get Lyapunov exponent (chaos measure) for a pair."""
+        """Lyapunov exponent (chaos measure), or None if unmeasured.
+
+        0 is a meaningful Lyapunov value (a non-chaotic, marginally stable
+        system), so returning 0 for "no data" claimed a specific measurement
+        the fleet never made.
+        """
         state = self.chaos_state(pair, max_age)
-        return state.get("lyapunov_exponent", 0) if state else 0
+        if not state:
+            return None
+        lyap = state.get("lyapunov_exponent")
+        return lyap if isinstance(lyap, (int, float)) else None
 
     def chaos_confidence(self, pair, max_age=300):
-        """Get chaos-derived confidence score (high = predictable)."""
+        """Chaos-derived confidence (high = predictable), or None if unknown.
+
+        Returns None rather than 0.5 when there is no chaos state for the pair
+        or the state carries no confidence. 0.5 is a legitimate measured value
+        here, so returning it for "we have no idea" made the two cases
+        indistinguishable to every caller. Callers must decide what to do with
+        an unknown; they cannot decide if it arrives disguised as a
+        middling measurement.
+        """
         state = self.chaos_state(pair, max_age)
-        return state.get("confidence", 0.5) if state else 0.5
+        if not state:
+            return None
+        conf = state.get("confidence")
+        return conf if isinstance(conf, (int, float)) else None
 
     def attractor_departing(self, pair, max_age=300):
         """Is the market leaving its attractor (regime change)?"""

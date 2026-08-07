@@ -51,6 +51,7 @@ TESTS = [
     "test_signal_log_dedupe.py",
     "test_recorded_prices.py",
     "test_trade_attribution.py",
+    "test_bus_listener_absence.py",
 ]
 
 

@@ -724,16 +724,26 @@ class TurtleEngine:
             self._portfolio_client = PortfolioClient(CONFIG["command_center_url"], "turtlesue")
             self._refresh_pool_basis()
 
-        # Position persistence for crash recovery
-        self._positions_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "turtle_positions.json")
-        self._load_positions()
-        self._reconcile_positions()
-
-        # Fleet bus listener + publisher
+        # Fleet bus listener + publisher — MUST be assigned before
+        # _reconcile_positions(). Reconcile can take the exit path (a stale
+        # reservation whose re-reserve is denied calls _execute_exit, which
+        # emits TRADE_CLOSE via self._event_pub), and on 2026-08-08 the fleet
+        # sat exactly at its AEGIS-tightened 30% deployment cap, so the
+        # re-reserve for UNI/USD was denied, the exit path ran, and the bot
+        # died on AttributeError before finishing __init__ — a crash LOOP,
+        # because the watchdog respawned it into the identical state. The
+        # comment above the portfolio client says "init before position
+        # persistence so reconcile works"; this is the same rule applied to
+        # the other attribute reconcile needs.
         self._bus = _BusListener() if _BusListener else None
         self._event_pub = _EventPublisher(CONFIG["command_center_url"], "turtlesue") if _EventPublisher else None
         if self._event_pub is None:
             logging.warning("[turtlesue] event publisher is None — no events will be emitted to fleet bus")
+
+        # Position persistence for crash recovery
+        self._positions_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "turtle_positions.json")
+        self._load_positions()
+        self._reconcile_positions()
 
         # Log trading mode on startup
         if _is_live():
@@ -1327,7 +1337,13 @@ class TurtleEngine:
         self.positions[pair] = pos
         self._save_positions()
 
-        if self._event_pub:
+        # getattr, not a bare attribute: this method is reachable from
+        # _reconcile_positions() during __init__, and a bare access here is
+        # what crash-looped the bot on 2026-08-08 when a cap denial routed
+        # startup recovery through the exit path. The init order is fixed;
+        # this guard makes sure a future reorder degrades to "event not
+        # emitted" instead of "bot never starts".
+        if getattr(self, "_event_pub", None):
             try:
                 self._event_pub.emit("TRADE_OPEN", {
                     "pair": pair, "direction": direction.upper(),
@@ -1484,7 +1500,13 @@ class TurtleEngine:
             except Exception:
                 pass
 
-        if self._event_pub:
+        # getattr, not a bare attribute: this method is reachable from
+        # _reconcile_positions() during __init__, and a bare access here is
+        # what crash-looped the bot on 2026-08-08 when a cap denial routed
+        # startup recovery through the exit path. The init order is fixed;
+        # this guard makes sure a future reorder degrades to "event not
+        # emitted" instead of "bot never starts".
+        if getattr(self, "_event_pub", None):
             try:
                 _risk_usd = pos.entry_n * CONFIG["stop_n_multiplier"] * pos.total_size if pos.entry_n > 0 else 0
                 _r = round(pnl / _risk_usd, 2) if _risk_usd > 0 else 0

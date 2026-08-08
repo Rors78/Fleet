@@ -61,6 +61,7 @@ TESTS = [
     "test_decay_wired.py",
     "test_correlation_undefined.py",
     "test_init_order.py",
+    "test_synthetic_disclosure.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

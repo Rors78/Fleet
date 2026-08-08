@@ -3109,6 +3109,27 @@ def _parse_trade_log_file(fpath: str) -> list:
     return rows
 
 
+def _is_probe_pair(pair) -> bool:
+    """Synthetic pairs created by test harnesses exercising the live path.
+
+    Nothing in the payload marks them, so the pair name is the only signal —
+    every probe uses a marker prefix no real market carries. They are not a
+    rounding error: on 2026-08-07, 50 of 73 rows on /api/trades were probes
+    contributing +$617 of fabricated P/L, flipping the raw sum positive while
+    real pairs summed -$167. The SIGN of the fleet's trade feed depended on
+    test data. (Same predicate as weekly_analysis._is_probe; if probe rows
+    ever gain a `synthetic: true` field at write time, both should key on it
+    instead.)
+    """
+    p = str(pair or "").upper()
+    if p.startswith(("ZZPROBE", "ZZ", "NFNOK")):
+        return True
+    # NF<digits>... e.g. NF138587OK/USD — no `re` in this module's imports,
+    # and adding one for a prefix test invites the NameError-in-a-handler
+    # class this file has already had once.
+    return p.startswith("NF") and len(p) > 2 and p[2].isdigit()
+
+
 def _collect_closed_trades() -> list[dict]:
     """All durable TRADE_CLOSE trades, fully deduped, newest first.
 
@@ -3979,7 +4000,41 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self._send_json(_signal_aggregator.get_source_rankings())
 
     def _serve_signals_decomposition(self, parsed) -> None:
-        self._send_json(_signal_decomposition.compute_signal_value())
+        result = _signal_decomposition.compute_signal_value()
+        # The persisted store predates two guards, and every row in it shows
+        # it: sources like "trekbot:n" and bare "f"/"2" are single CHARACTERS
+        # of an iterated signal string, from a bot retired from the fleet.
+        # The CUT/KEEP recommendation was being computed over that confetti.
+        # Serve-time filtering (not a store edit — CC holds the store in
+        # memory, a disk edit would be overwritten): a ranking key whose
+        # signal part is a single character is an artifact; a source bot not
+        # in the registry is retired history. Both are disclosed, not
+        # silently vanished.
+        try:
+            _roster = set(getattr(_fleet_config, "BOTS", {}) or {})
+            rankings = result.get("rankings") or {}
+            kept, artifacts, retired = {}, [], []
+            for key, row in rankings.items():
+                bot, _, sig = str(key).partition(":")
+                if len(sig if sig else bot) <= 1:
+                    artifacts.append(key)
+                elif _roster and bot not in _roster:
+                    retired.append(key)
+                else:
+                    kept[key] = row
+            if artifacts or retired:
+                result = dict(result)
+                result["rankings"] = kept
+                result["excluded_artifacts"] = sorted(artifacts)
+                result["excluded_retired"] = sorted(retired)
+                if not kept:
+                    result["recommendation"] = (
+                        "no current-fleet signal has decomposition data yet — "
+                        "prior rankings were single-character parsing artifacts "
+                        "from a retired bot and are excluded above")
+        except Exception:
+            log.warning("decomposition serve-time filter failed", exc_info=True)
+        self._send_json(result)
 
     def _serve_expectancy(self, parsed) -> None:
         self._send_json(_expectancy_tracker.get_fleet_stats())
@@ -4006,7 +4061,32 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             trades = [t for t in trades
                       if (t.get("bot") or "").lower() == bot_filter]
 
-        self._send_json({"trades": trades[:limit], "total": len(trades)})
+        # Stamp synthetic probe rows and disclose the split. Before this,
+        # 50 of 73 rows were unmarked test-harness closes worth +$617 —
+        # the raw sum read +$450 while real pairs summed -$167. A feed whose
+        # SIGN depends on test data must at minimum say which rows are which.
+        # ?synthetic=exclude serves only real trades; =only serves the probes.
+        trades = [dict(t, synthetic=_is_probe_pair(t.get("pair"))) for t in trades]
+        _mode = qs.get("synthetic", ["include"])[0].strip().lower()
+        if _mode == "exclude":
+            trades = [t for t in trades if not t["synthetic"]]
+        elif _mode == "only":
+            trades = [t for t in trades if t["synthetic"]]
+
+        def _sum(rows):
+            return round(sum(t.get("pnl") for t in rows
+                             if isinstance(t.get("pnl"), (int, float))), 2)
+
+        _real = [t for t in trades if not t["synthetic"]]
+        _syn = [t for t in trades if t["synthetic"]]
+        self._send_json({
+            "trades": trades[:limit],
+            "total": len(trades),
+            "real_total": len(_real),
+            "synthetic_total": len(_syn),
+            "real_pnl": _sum(_real),
+            "synthetic_pnl": _sum(_syn),
+        })
 
     # POST-only action endpoints under /api/expectancy/. They must NOT be
     # swallowed by the bot_id prefix route below, which would answer a GET
@@ -4174,6 +4254,26 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         edata = data.get("data", {})
         source = data.get("source", "")
         pair = edata.get("pair", "")
+        if etype == "TRADE_OPEN" and edata.get("signals"):
+            # `signals` must be a LIST of names. A bot that sends a plain
+            # string used to pass the truthiness check and every consumer's
+            # `for sig in signals` iterated its CHARACTERS — the live
+            # decomposition store is full of the evidence: sources named
+            # "trekbot:n", "trekbot:z", bare "f" and "2", each a single
+            # character of some signal string, and the fleet's CUT/KEEP
+            # recommendation was computed over that confetti. A lone string
+            # is wrapped; anything else is dropped with a log line.
+            _sigs = edata["signals"]
+            if isinstance(_sigs, str):
+                _sigs = [_sigs]
+            elif not isinstance(_sigs, (list, tuple)):
+                log.warning("TRADE_OPEN from %r: signals is %s, not a list "
+                            "— ignored", source, type(_sigs).__name__)
+                _sigs = []
+            # Single characters are the artifact signature, never a real
+            # signal name — filtered wherever they came from.
+            _sigs = [s for s in _sigs if isinstance(s, str) and len(s) > 1]
+            edata = dict(edata, signals=_sigs)
         if etype == "TRADE_OPEN" and edata.get("signals"):
             with _open_trade_signals_lock:
                 _open_trade_signals[f"{source}:{pair}"] = {

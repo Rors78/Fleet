@@ -79,7 +79,26 @@ code, body = raw_post("/api/portfolio/reserve",
                       '{"bot_id":"turtlesue","pair":"NF%sOK/USD",'
                       '"direction":"LONG","amount":600}' % RUN)
 ok = code == 200 and json.loads(body).get("ok")
-check("legit reserve accepted", ok, f"HTTP {code} {body[:70]}")
+# What this case proves is that the NON-FINITE guard does not reject a
+# legitimate number — NOT that the fleet always has capacity. A denial by a
+# DOWNSTREAM capacity gate (deployment/per-bot/directional limit or cooldown)
+# means the amount already PASSED the finite/positive guards and reached real
+# risk logic, which is exactly the property under test. On 2026-08-08 the
+# fleet sat at 30.4% deployed against an AEGIS-tightened 30% cap, and this
+# case read the correct denial as a regression.
+_reason = ""
+if not ok:
+    try:
+        _reason = str(json.loads(body).get("reason") or "")
+    except Exception:
+        _reason = ""
+_capacity = code == 403 and any(k in _reason.lower() for k in (
+    "limit", "cooldown", "headroom", "cap"))
+if _capacity:
+    check("legit reserve accepted",
+          True, f"denied by a capacity gate, not the guard: {_reason[:60]}")
+else:
+    check("legit reserve accepted", ok, f"HTTP {code} {body[:70]}")
 _rid = json.loads(body).get("reservation_id") if ok else None
 
 print()

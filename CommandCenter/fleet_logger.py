@@ -446,7 +446,14 @@ class FleetLogger:
             for key, pos in prev_positions.items():
                 if key not in current_positions:
                     pair_name = pos.get("pair", key)
-                    pnl = pos.get("unrealized_pnl", 0)
+                    # unrealized_pnl at the last poll is a legitimate ESTIMATE
+                    # of the close. An ABSENT one is not 0: seeding 0 here fed
+                    # `losses = total - wins` downstream, so every close whose
+                    # bot reported no P/L was silently booked as a loss in the
+                    # daily/weekly aggregates. None survives to the event and
+                    # the aggregation counts it as unpriced, not lost.
+                    _upnl = pos.get("unrealized_pnl")
+                    pnl = _upnl if isinstance(_upnl, (int, float)) else None
                     open_time = pos.get("open_time", 0)
                     exit_reason = "unknown"
 
@@ -491,7 +498,10 @@ class FleetLogger:
                         "type": "TRADE_CLOSE",
                         "pair": pair_name,
                         "pnl": pnl,
-                        "gross_pnl": round(pnl, 2),
+                        # None survives — round(None) raises, and coercing to
+                        # 0.0 here would recreate the fabricated-loss defect
+                        # one key over.
+                        "gross_pnl": (round(pnl, 2) if pnl is not None else None),
                         "fees": 0.0,
                         # None when the notional could not be established.
                         # A null reads as "not measured" downstream; the old
@@ -793,20 +803,38 @@ class FleetLogger:
             bid = t.get("bot", "unknown")
             if bid not in per_bot:
                 per_bot[bid] = {
-                    "trades": 0, "wins": 0, "losses": 0, "pnl": 0,
+                    "trades": 0, "wins": 0, "losses": 0, "flat": 0,
+                    "unpriced": 0, "pnl": 0,
                     "hold_times": [], "worst_trade": None,
                 }
             b = per_bot[bid]
             b["trades"] += 1
-            pnl = t.get("pnl", 0)
-            b["pnl"] += pnl
-            if pnl > 0:
-                b["wins"] += 1
+            # The event's pnl can legitimately be None (the bot reported the
+            # close without a P/L). `t.get("pnl", 0)` does NOT default that —
+            # the key exists with a null value — so the old `+=` would raise,
+            # and before the None fix upstream the seeded 0 fell into the
+            # `else: losses += 1` branch: every unmeasured close was booked
+            # as a loss, silently deflating the daily/weekly win rate on
+            # /api/fleet/daily and the subscriber-facing daily card.
+            pnl = t.get("pnl")
+            if not isinstance(pnl, (int, float)):
+                b["unpriced"] += 1
+                pnl = None
             else:
-                b["losses"] += 1
+                b["pnl"] += pnl
+                if pnl > 0:
+                    b["wins"] += 1
+                elif pnl < 0:
+                    b["losses"] += 1
+                else:
+                    # Exactly $0.00 is a capital movement (grid teardown,
+                    # cancelled entry), neither a win nor a loss.
+                    b["flat"] += 1
             dur = t.get("duration_s", 0)
             b["hold_times"].append(dur)
-            if b["worst_trade"] is None or pnl < b["worst_trade"].get("pnl", 0):
+            if pnl is not None and (
+                    b["worst_trade"] is None
+                    or pnl < b["worst_trade"].get("pnl", 0)):
                 b["worst_trade"] = {"pair": t.get("pair", ""), "pnl": round(pnl, 2)}
 
         # Finalize per-bot
@@ -817,6 +845,8 @@ class FleetLogger:
                 "trades": b["trades"],
                 "wins": b["wins"],
                 "losses": b["losses"],
+                "flat": b["flat"],
+                "unpriced": b["unpriced"],
                 "pnl": round(b["pnl"], 2),
                 "avg_hold_time_s": round(avg_hold),
                 "worst_trade": b["worst_trade"],
@@ -831,12 +861,21 @@ class FleetLogger:
             if sc.get("to") == "OFFLINE":
                 uptime[bid]["offline_transitions"] += 1
 
-        # Fleet totals
+        # Fleet totals. Only measured P/L takes part: an unpriced close is
+        # not a loss (the old `losses = total - wins` said it was), a flat
+        # $0.00 close is neither, and the win rate divides by DECIDED trades
+        # so capital movements cannot deflate it. Same contract as
+        # render_end_of_day() in card_renderer.py and the weekly report.
         total_trades = len(trades)
-        wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
-        losses = total_trades - wins
-        total_pnl = sum(t.get("pnl", 0) for t in trades)
-        win_rate = (wins / total_trades * 100) if total_trades > 0 else 0
+        _measured = [t.get("pnl") for t in trades
+                     if isinstance(t.get("pnl"), (int, float))]
+        wins = sum(1 for p in _measured if p > 0)
+        losses = sum(1 for p in _measured if p < 0)
+        flat = sum(1 for p in _measured if p == 0)
+        unpriced = total_trades - len(_measured)
+        total_pnl = sum(_measured)
+        _decided = wins + losses
+        win_rate = (wins / _decided * 100) if _decided else None
 
         bot_pnls = {bid: b["pnl"] for bid, b in per_bot_final.items()}
         best = max(bot_pnls.items(), key=lambda x: x[1]) if bot_pnls else ("none", 0)
@@ -851,7 +890,13 @@ class FleetLogger:
                 "total_trades": total_trades,
                 "wins": wins,
                 "losses": losses,
-                "win_rate": round(win_rate, 1),
+                "flat": flat,
+                "unpriced": unpriced,
+                # None when nothing was decided — a rate over zero samples is
+                # not 0%, and the daily card already renders None as an
+                # em-dash rather than a measured figure.
+                "win_rate": (round(win_rate, 1) if win_rate is not None else None),
+                "decided": _decided,
                 "best_bot": {"id": best[0], "pnl": round(best[1], 2)},
                 "worst_bot": {"id": worst[0], "pnl": round(worst[1], 2)},
                 "regime_changes": d["regime_changes"],

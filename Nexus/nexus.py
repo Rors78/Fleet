@@ -1308,7 +1308,7 @@ class NexusEngine:
         bot_states = self._fetch_bot_states()
 
         if not events and not bot_states:
-            self._log("No data from Command Center")
+            self._log("DEGRADED: no data from Command Center — cycle running on STALE inputs")
             self.status = "waiting"
             return
 

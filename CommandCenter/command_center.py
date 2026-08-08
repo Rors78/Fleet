@@ -594,7 +594,17 @@ class PortfolioManager:
                         return {"ok": False, "reason": f"Fleet intel scaled ${original:.2f} -> ${amount:.2f} (risk={risk_mult:.2f}), below size floor"}
                     log.info("Intel scaled %s %s: $%.2f -> $%.2f (risk=%.2f)", bot_id, pair, original, amount, risk_mult)
             except Exception:
-                pass  # don't let intel failure block trading
+                # Deliberate availability trade-off: an intel failure must not
+                # block trading. But it was SILENT, and the skip fails toward
+                # LARGER size — the whole risk-scaling block (the 0.10 hard
+                # block, the proportional scaling, the post-scale floor) is
+                # bypassed and the amount proceeds unscaled. Note the
+                # asymmetry this line fixes: the deliberate full-size pass for
+                # an unscored pair logs a WARNING, while this accidental
+                # full-size pass logged nothing at all.
+                log.warning("Fleet intel gate SKIPPED for %s %s $%.2f — intel "
+                            "raised; proceeding UNSCALED", bot_id, pair, amount,
+                            exc_info=True)
 
             # All checks passed — create reservation
             suffix = ''.join(random.choices(string.ascii_lowercase + string.digits, k=4))
@@ -2129,16 +2139,30 @@ def _compute_bot_correlations(bots_data: dict) -> dict:
             if not da or not db:
                 continue
 
-            # Pearson correlation on deltas
+            # Pearson correlation on deltas.
             mean_a = sum(da) / len(da)
             mean_b = sum(db) / len(db)
-            num = sum((da[k] - mean_a) * (db[k] - mean_b) for k in range(len(da)))
-            denom_a = math.sqrt(sum((x - mean_a) ** 2 for x in da)) + 1e-10
-            denom_b = math.sqrt(sum((x - mean_b) ** 2 for x in db)) + 1e-10
-            corr = num / (denom_a * denom_b)
-            corr = max(-1.0, min(1.0, corr))  # clamp to [-1, 1]
+            denom_a = math.sqrt(sum((x - mean_a) ** 2 for x in da))
+            denom_b = math.sqrt(sum((x - mean_b) ** 2 for x in db))
 
             pair_key = f"{bid_a}|{bid_b}"
+
+            # A constant P/L stream has zero variance, and Pearson of a
+            # zero-variance series is UNDEFINED (0/0) — not zero. Most bots
+            # report an unchanged pnl between closes, so the old
+            # `+ 1e-10` epsilon quietly turned every undefined pair into
+            # "0.0000": a full matrix of confident "uncorrelated"
+            # measurements computed from series that never moved. Live proof:
+            # 15/15 pairs read exactly 0.0 while four of six bots had a
+            # constant 0.0 pnl. Undefined must render as absent, or the
+            # concentration-risk check reads "measured and safe" forever.
+            if denom_a < 1e-9 or denom_b < 1e-9:
+                matrix[pair_key] = None
+                continue
+
+            num = sum((da[k] - mean_a) * (db[k] - mean_b) for k in range(len(da)))
+            corr = num / (denom_a * denom_b)
+            corr = max(-1.0, min(1.0, corr))  # clamp to [-1, 1]
             matrix[pair_key] = round(corr, 4)
 
             # Alert if correlation > 0.85
@@ -2151,6 +2175,8 @@ def _compute_bot_correlations(bots_data: dict) -> dict:
                     "message": f"{bid_a} and {bid_b} are {corr:.2f} correlated — concentration risk",
                 })
 
+    _measured_pairs = sum(1 for v in matrix.values() if v is not None)
+    _undefined_pairs = sum(1 for v in matrix.values() if v is None)
     result = {
         "timestamp": time.time(),
         "status": "active",
@@ -2158,6 +2184,14 @@ def _compute_bot_correlations(bots_data: dict) -> dict:
         "bots_correlated": len(bot_ids),
         "samples_collected": samples_collected,
         "matrix": matrix,
+        # Say how much of the matrix is real. concentration_risk=False over
+        # a matrix that is entirely undefined is "no risk DETECTED", which
+        # is not "no risk" — the note makes that readable.
+        "pairs_measured": _measured_pairs,
+        "pairs_undefined": _undefined_pairs,
+        "coverage_note": (None if _measured_pairs else
+                          "no pair had two moving P/L streams — correlation "
+                          "is unmeasurable until bots realize P/L changes"),
         "alerts": alerts,
         "concentration_risk": len(alerts) > 0,
     }

@@ -14807,7 +14807,14 @@ function _fetchExposure(){
         for(var j=0;j<botNames.length;j++){
           if(i===j){h+='<td style="padding:6px;text-align:center;background:rgba(100,180,255,0.06);color:rgba(255,255,255,0.35)">1.0</td>';continue;}
           var key1=botNames[i]+"|"+botNames[j];var key2=botNames[j]+"|"+botNames[i];
-          var val=matrix[key1]!=null?matrix[key1]:matrix[key2]!=null?matrix[key2]:0;
+          /* null means UNDEFINED — Pearson of a constant P/L stream is 0/0,
+             not zero. The old fallback-to-0 rendered a full matrix of
+             confident "0.00" cells from series that never moved. */
+          var val=matrix[key1]!==undefined?matrix[key1]:matrix[key2]!==undefined?matrix[key2]:null;
+          if(val==null){
+            h+='<td style="padding:6px;text-align:center;background:rgba(30,30,40,0.3);color:rgba(255,255,255,0.2)">&mdash;</td>';
+            continue;
+          }
           var cellBg=val>0.3?"rgba(255,68,102,"+(val*0.35)+")":val<-0.3?"rgba(59,130,246,"+(Math.abs(val)*0.35)+")":"rgba(30,30,40,0.3)";
           var cellColor=val>0.3?"#ff6680":val<-0.3?"#60a5fa":"rgba(255,255,255,0.35)";
           h+='<td style="padding:6px;text-align:center;background:'+cellBg+';color:'+cellColor+';transition:background 0.2s">'+val.toFixed(2)+'</td>';

@@ -487,7 +487,7 @@ class AegisEngine:
         portfolio = self._fetch_json("/api/portfolio")
 
         if not master and not events_raw:
-            self._log("Command Center not available — using last known state")
+            self._log("DEGRADED: Command Center UNREACHABLE — using last known (STALE) state")
             self.status = "stale"
             self.scan_duration = time.time() - t0
             # Still publish with last known values so dashboard has something

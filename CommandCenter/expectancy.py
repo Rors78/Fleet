@@ -73,6 +73,34 @@ def _fleet_member_ids() -> set:
         return set()
 
 
+def _wilson_ci_95(wins, n):
+    """95% Wilson score interval for a win rate, as (lo_pct, hi_pct).
+
+    Exists because the verdicts here were being read as measurements:
+    gridzilla's "PROFITABLE" at 5W/0L carries a CI of [56.6%, 100%], and a
+    fair coin produces the fleet's 5W/1L 10.9% of the time. The interval is
+    what n=5 actually establishes — shipping the verdict without it invites
+    certainty the sample cannot support.
+    """
+    if not n:
+        return None
+    z = 1.959964  # 95%
+    p = wins / n
+    denom = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / denom
+    margin = (z * ((p * (1 - p) + z * z / (4 * n)) / n) ** 0.5) / denom
+    return (round(max(0.0, centre - margin) * 100, 1),
+            round(min(1.0, centre + margin) * 100, 1))
+
+
+# Below this many DECIDED trades a PROFITABLE/LOSING verdict is a coin-read,
+# not a measurement: 'LOSING' was being published from n=1 and 'PROFITABLE'
+# from 5W/0L, where profit_factor 999 is a division-by-zero placeholder.
+# ~188 trades are needed to resolve an effect of the currently observed size
+# at 80% power; 10 is merely where a verdict stops being embarrassing.
+MIN_VERDICT_N = 10
+
+
 class ExpectancyTracker:
     PERSIST_PATH = os.path.join(os.path.dirname(__file__),
                                 'logs', 'expectancy.json')
@@ -335,6 +363,26 @@ class ExpectancyTracker:
 
         fleet_expectancy = (win_rate * avg_win + (1 - win_rate) * avg_loss)
 
+        # Size-normalized expectancy. The dollar mean weights each trade by
+        # its notional — stored sizes span $8k to $47k (5.7x), so one large
+        # loser outweighs five small winners, and on 2026-08-07 the two
+        # measures DISAGREED IN SIGN: -$47.04/trade in dollars vs +0.23%%
+        # per trade on notional. Publishing only dollars presents a
+        # size-weighted artefact as the fleet's edge. Only trades with a
+        # real positive size can be normalized; n is disclosed.
+        _returns = [t['gross_pnl'] / t['size_usd'] for t in all_trades
+                    if isinstance(t.get('size_usd'), (int, float))
+                    and t['size_usd'] > 0]
+        if _returns:
+            _mean_r = sum(_returns) / len(_returns)
+            _var_r = (sum((r - _mean_r) ** 2 for r in _returns)
+                      / len(_returns)) if len(_returns) > 1 else 0.0
+            expectancy_pct = round(_mean_r * 100, 4)
+            expectancy_pct_sd = round((_var_r ** 0.5) * 100, 4)
+        else:
+            expectancy_pct = None
+            expectancy_pct_sd = None
+
         total_gross = sum(t['gross_pnl'] for t in all_trades)
         total_net = total_gross  # key kept for consumers; equals gross now
         total_fees = 0.0         # signal product — no fees tracked
@@ -372,11 +420,28 @@ class ExpectancyTracker:
                  'expectancy': (s['expectancy_per_trade']
                                 if s['total_trades'] else None),
                  'trades': s['total_trades'],
+                 # What the sample actually supports. 'LOSING' was published
+                 # from n=1 and 'PROFITABLE' from 5W/0L; below MIN_VERDICT_N
+                 # decided trades the direction of the expectancy is shown as
+                 # EARLY_*, which carries the sign without the certainty, and
+                 # the Wilson CI says the rest.
                  'verdict': ('UNMEASURED' if not s['total_trades']
-                             else 'PROFITABLE' if s['expectancy_per_trade'] > 0
-                             else 'LOSING')}
+                             else ('PROFITABLE' if s['expectancy_per_trade'] > 0
+                                   else 'LOSING')
+                             if (s.get('wins', 0) + s.get('losses', 0)) >= MIN_VERDICT_N
+                             else ('EARLY_POSITIVE'
+                                   if s['expectancy_per_trade'] > 0
+                                   else 'EARLY_NEGATIVE')),
+                 'n_decided': s.get('wins', 0) + s.get('losses', 0),
+                 'win_rate_ci_95': _wilson_ci_95(
+                     s.get('wins', 0),
+                     s.get('wins', 0) + s.get('losses', 0))}
                 for bid, s in ranked
             ],
+            'expectancy_pct': expectancy_pct,
+            'expectancy_pct_sd': expectancy_pct_sd,
+            'expectancy_pct_n': len(_returns),
+            'min_verdict_n': MIN_VERDICT_N,
             'bot_stats': dict(ranked),
             # Named, not silent: a bot dropped from the numbers must be
             # visible in them. Retired members with residual trade history

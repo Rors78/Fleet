@@ -113,6 +113,38 @@ check('excluded_artifacts' in src and 'excluded_retired' in src,
       'the endpoint must DISCLOSE what it filtered — silently vanishing rows '
       'is the same defect as silently serving them')
 
+# ── 5. /api/signals/rankings gets the same filter (list shape preserved) ──
+# The rankings endpoint served the identical confetti WITH weights and
+# verdicts. Its response is a bare list (the dashboard's error fallback is
+# []), so the named disclosure rides the decomposition payload and the
+# suppression is logged once per process.
+_rk_def = src.find('def _serve_signals_rankings')
+_rk_filter = src.find('kept, dropped = [], []')
+check(_rk_def != -1 and _rk_filter != -1 and _rk_filter > _rk_def,
+      'the rankings endpoint must filter artifact/retired sources before '
+      'serving — trekbot:n was being served with a weight and a verdict')
+check('_rankings_filter_logged' in src,
+      'the rankings suppression must be logged (once), not silent')
+
+rank_rows = [{'source': 'trekbot:n'}, {'source': 'f'},
+             {'source': 'confluence:oracle_conf'},
+             {'source': 'goldeneye:macd_cross'}]
+r_kept, r_dropped = [], []
+for row in rank_rows:
+    bot, _, sig = str(row.get('source', '')).partition(':')
+    if len(sig if sig else bot) <= 1:
+        r_dropped.append(row.get('source'))
+    elif roster and bot not in roster:
+        r_dropped.append(row.get('source'))
+    else:
+        r_kept.append(row)
+check([r['source'] for r in r_kept] == ['confluence:oracle_conf'],
+      'rankings filter must keep only current-fleet, real-name sources; '
+      'got %r' % [r['source'] for r in r_kept])
+check('goldeneye:macd_cross' in r_dropped,
+      'goldeneye is not fleet-managed (no fleet_config entry) and its '
+      'sources must not appear in fleet rankings')
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

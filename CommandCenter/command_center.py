@@ -3996,8 +3996,40 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         pair = qs.get("pair", ["BTC/USD"])[0]
         self._send_json(_signal_aggregator.decide(pair))
 
+    # One-time flag so the rankings filter logs what it suppresses once per
+    # process, not once per dashboard poll.
+    _rankings_filter_logged = False
+
     def _serve_signals_rankings(self, parsed) -> None:
-        self._send_json(_signal_aggregator.get_source_rankings())
+        rows = _signal_aggregator.get_source_rankings()
+        # Same confetti lineage as the decomposition store: sources like
+        # "trekbot:n" are single CHARACTERS of a char-iterated signal string
+        # from a bot retired from the fleet, yet they were served here with
+        # weights and verdicts as if they were ranked signals. The response
+        # shape is a bare LIST (the dashboard's error fallback is []), so
+        # disclosure cannot ride this payload — the named exclusions ship on
+        # /api/signals/decomposition (excluded_artifacts / excluded_retired),
+        # and the suppression is logged once per process here.
+        try:
+            _roster = set(getattr(_fleet_config, "BOTS", {}) or {})
+            kept, dropped = [], []
+            for row in rows:
+                bot, _, sig = str(row.get("source", "")).partition(":")
+                if len(sig if sig else bot) <= 1:
+                    dropped.append(row.get("source"))
+                elif _roster and bot not in _roster:
+                    dropped.append(row.get("source"))
+                else:
+                    kept.append(row)
+            if dropped and not CommandCenterHandler._rankings_filter_logged:
+                CommandCenterHandler._rankings_filter_logged = True
+                log.info("signals/rankings: suppressing %d artifact/retired "
+                         "source(s): %s — see /api/signals/decomposition for "
+                         "the disclosed list", len(dropped), sorted(dropped))
+            rows = kept
+        except Exception:
+            log.warning("rankings serve-time filter failed", exc_info=True)
+        self._send_json(rows)
 
     def _serve_signals_decomposition(self, parsed) -> None:
         result = _signal_decomposition.compute_signal_value()

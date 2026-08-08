@@ -3463,7 +3463,12 @@ function _drawMetricsBar(ctx,W){
   /* WR: use avg_win_rate (0-100 scale), normalize to fraction */
   var wr=(agg.avg_win_rate!=null&&agg.total_trades>0)?agg.avg_win_rate:0;
   if(wr>1) wr=wr/100;
-  var pnl=(agg.total_pnl||0);
+  /* null-safe: this is the persistent command-bar HUD, on screen at all
+     times. `||0` rendered an UNREPORTED total_pnl as "+0.00" in gain-teal —
+     indistinguishable from a genuine flat day. The two sibling values in
+     this same function (pool at line ~3462, wr at ~3464) already got the
+     !=null treatment; pnl was the one left behind. */
+  var pnl=(typeof agg.total_pnl==="number"&&isFinite(agg.total_pnl))?agg.total_pnl:null;
   var aegisScr=null;
   for(var bid=0;bid<(state.bots||[]).length;bid++){
     var b=state.bots[bid];if(b&&b.id==="aegis"&&b.raw){aegisScr=b.raw.overall_score!=null?b.raw.overall_score:b.raw.score;break;}
@@ -3500,8 +3505,8 @@ function _drawMetricsBar(ctx,W){
   }
   ctx.fillText(wrStr,xp,y);xp+=ctx.measureText(wrStr).width+18;
   /* PnL */
-  var pnlStr="PnL: "+(pnl>=0?"+":"")+pnl.toFixed(2);
-  ctx.fillStyle=pnl>=0?"rgba(0,191,165,0.7)":"rgba(255,100,100,0.65)";
+  var pnlStr="PnL: "+(pnl===null?"—":(pnl>=0?"+":"")+pnl.toFixed(2));
+  ctx.fillStyle=pnl===null?"rgba(255,255,255,0.35)":pnl>=0?"rgba(0,191,165,0.7)":"rgba(255,100,100,0.65)";
   ctx.fillText(pnlStr,xp,y);xp+=ctx.measureText(pnlStr).width+18;
   /* AEGIS score */
   if(aegisScr!=null){

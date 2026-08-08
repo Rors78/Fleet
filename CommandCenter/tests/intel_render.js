@@ -39,6 +39,8 @@ var REQUIRED = [
    'riskLabel="UNKNOWN"'],
   ['whale score null-guard (null.toFixed throws)',
    "(item.score!=null?item.score.toFixed(2):'&mdash;')"],
+  ['HUD pnl guard (unreported P/L rendered "+0.00" in gain-teal)',
+   'var pnl=(typeof agg.total_pnl==="number"&&isFinite(agg.total_pnl))?agg.total_pnl:null;'],
 ];
 REQUIRED.forEach(function (r) {
   check(HTML.indexOf(r[1]) !== -1,

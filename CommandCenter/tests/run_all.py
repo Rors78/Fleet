@@ -58,6 +58,7 @@ TESTS = [
     "test_weekly_probes.py",
     "test_daily_aggregation.py",
     "test_verdict_ci.py",
+    "test_decay_wired.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

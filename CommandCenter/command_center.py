@@ -4194,6 +4194,26 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
             won = pnl > 0
             if direction:
                 _signal_aggregator.record_outcome(pair, direction, won, pnl)
+
+            # Feed the decay tracker. SignalDecay.record_outcome had ZERO
+            # call sites since it was written: /api/signals/decay served 35
+            # half-lives, every one `data_points: 0, source: "default"` —
+            # hardcoded constants presented on a measurement endpoint. (The
+            # payload at least labelled them "default"; this makes the
+            # empirical path real.) Only measured, non-zero outcomes count:
+            # an unpriced or flat close says nothing about whether the
+            # signal's edge had decayed.
+            if (open_info and isinstance(pnl, (int, float)) and pnl != 0):
+                _opened = open_info.get("opened_at")
+                if isinstance(_opened, (int, float)) and _opened > 0:
+                    for _sig in (open_info.get("signals") or []):
+                        try:
+                            _signal_decay.record_outcome(
+                                f"{source}:{_sig}", _opened,
+                                time.time(), pnl > 0)
+                        except Exception:
+                            log.warning("signal_decay.record_outcome failed "
+                                        "for %s:%s", source, _sig)
             else:
                 log.warning("TRADE_CLOSE from %r for %r has no direction -- "
                             "outcome not attributed to either side", source, pair)

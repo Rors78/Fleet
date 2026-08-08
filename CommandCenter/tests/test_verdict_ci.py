@@ -119,6 +119,41 @@ check(fs4['expectancy_pct_n'] == 1,
       '(division by zero disguised as a return); got n=%r'
       % fs4['expectancy_pct_n'])
 
+# ── 7. Flat trades are not losses, and a flat-only bot is UNMEASURED ──
+# Live defect (2026-08-08): turtlesue's two stale-reservation cleanups —
+# gross $0.00, size 0 — rendered as "2 losses, 0% win rate, EARLY_NEGATIVE".
+# The old classifier bucketed `gross_pnl <= 0` as a loss, so two closes that
+# measured NOTHING produced a losing verdict. Third sibling of the defect
+# already fixed in weekly_analysis and fleet_logger.
+t5 = fresh()
+add(t5, 'turtlesue', 0.0, 0, 0)
+add(t5, 'turtlesue', 0.0, 0, 1)
+add(t5, 'gridzilla', 25.0, 1000, 0)
+fs5 = t5.get_fleet_stats()
+r5 = {r['bot']: r for r in fs5['bot_rankings']}
+
+check(r5['turtlesue']['verdict'] == 'UNMEASURED',
+      'a bot whose closes were ALL $0.00 capital movements must read '
+      'UNMEASURED — a losing verdict from trades that measured nothing is '
+      'the defect; got %r' % r5['turtlesue']['verdict'])
+check(r5['turtlesue']['n_decided'] == 0 and r5['turtlesue']['flat'] == 2,
+      'flats must be counted as flat, not decided; got n_decided=%r flat=%r'
+      % (r5['turtlesue']['n_decided'], r5['turtlesue']['flat']))
+ts_stats = fs5['bot_stats']['turtlesue']
+check(ts_stats['losses'] == 0 and ts_stats['win_rate'] is None,
+      'flat closes must not count as losses and the win rate over zero '
+      'decided trades must be None, not 0%%; got losses=%r win_rate=%r'
+      % (ts_stats['losses'], ts_stats['win_rate']))
+
+# A measured break-even on a REAL size is still flat — but a real loss is a loss.
+t6 = fresh()
+add(t6, 'rubberband', -10.0, 1000, 0)
+fs6 = t6.get_fleet_stats()
+rb = fs6['bot_stats']['rubberband']
+check(rb['losses'] == 1 and rb['win_rate'] == 0.0,
+      'a genuine measured loss must still count as a loss with a real 0%% '
+      'rate; got losses=%r win_rate=%r' % (rb['losses'], rb['win_rate']))
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

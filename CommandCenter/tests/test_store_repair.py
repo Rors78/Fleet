@@ -138,6 +138,26 @@ res6 = t5.repair_fabricated_prices()
 check(res6['nulled'] == 0 and res6['dropped'] == 0,
       'repair must be idempotent, second run reported %r' % res6)
 
+# ── 7. Unmeasurable capital movements are dropped; measured flats survive ──
+# turtlesue's stale-reservation cleanups (gross $0.00, size 0) slipped past
+# the writers' guards and inflated total_trades. A flat close with a REAL
+# size is a measured break-even and must survive — different thing entirely.
+t7 = fresh()
+t7.trades['turtlesue'] = [
+    row('UNIUSD', None, 4.2027, 0.0, size_usd=0),
+    row('XXLMZUSD', None, 0.1628, 0.0, size_usd=0),
+]
+t7.trades['rubberband'] = [row('BTC/USD', 100.0, 100.0, 0.0, size_usd=1000.0)]
+res7 = t7.repair_fabricated_prices()
+check(len(t7.trades['turtlesue']) == 0,
+      'zero-P/L zero-size rows measure nothing and must be dropped, got %d'
+      % len(t7.trades['turtlesue']))
+check(len(t7.trades['rubberband']) == 1,
+      'a measured break-even (flat P/L on a REAL size) must survive — '
+      'dropping it would erase a genuine trade')
+check(res7['dropped'] == 2,
+      'the drop must be counted, got %r' % res7['dropped'])
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

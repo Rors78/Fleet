@@ -101,6 +101,36 @@ def _wilson_ci_95(wins, n):
 MIN_VERDICT_N = 10
 
 
+def _rank_row(bid, s):
+    """One bot_rankings row, verdict scaled to what the sample supports.
+
+    UNMEASURED covers two cases that must not be told apart by a verdict:
+    zero trades, and trades that were ALL flat ($0.00 capital movements —
+    decided == 0 either way). Live defect this closes: turtlesue's two
+    stale-reservation cleanups rendered as "2 losses, 0% win rate,
+    EARLY_NEGATIVE" — a losing verdict from closes that measured nothing.
+    Below MIN_VERDICT_N decided trades the verdict is EARLY_* (the sign of
+    the expectancy without the certainty); the Wilson CI says the rest.
+    """
+    wins = s.get('wins', 0)
+    losses = s.get('losses', 0)
+    decided = wins + losses
+    ev = s.get('expectancy_per_trade')
+    if decided == 0 or ev is None:
+        verdict = 'UNMEASURED'
+    elif decided >= MIN_VERDICT_N:
+        verdict = 'PROFITABLE' if ev > 0 else 'LOSING'
+    else:
+        verdict = 'EARLY_POSITIVE' if ev > 0 else 'EARLY_NEGATIVE'
+    return {'bot': bid,
+            'expectancy': ev if s.get('total_trades') else None,
+            'trades': s.get('total_trades', 0),
+            'flat': s.get('flat', 0),
+            'verdict': verdict,
+            'n_decided': decided,
+            'win_rate_ci_95': _wilson_ci_95(wins, decided)}
+
+
 class ExpectancyTracker:
     PERSIST_PATH = os.path.join(os.path.dirname(__file__),
                                 'logs', 'expectancy.json')
@@ -222,20 +252,34 @@ class ExpectancyTracker:
         # Pre-2026-07-30 records carry a net-of-fees net_pnl and a `won`
         # flag derived from it — reading gross_pnl here re-reads that
         # history under gross semantics without rewriting the file.
+        # A gross_pnl of exactly 0 is a capital movement (a stale-reservation
+        # cleanup, a cancelled entry), neither a win nor a loss. The old
+        # `<= 0` bucketed flats as LOSSES: live, turtlesue's two $0.00
+        # reconcile-closes rendered as "2 losses, 0% win rate,
+        # EARLY_NEGATIVE" — a losing verdict from trades that measured
+        # nothing. Same defect already fixed in weekly_analysis and
+        # fleet_logger; this was the third sibling.
         wins = [t for t in trades if t['gross_pnl'] > 0]
-        losses = [t for t in trades if t['gross_pnl'] <= 0]
+        losses = [t for t in trades if t['gross_pnl'] < 0]
+        flats = [t for t in trades if t['gross_pnl'] == 0]
 
         total = len(trades)
         win_count = len(wins)
         loss_count = len(losses)
-        win_rate = win_count / total
+        flat_count = len(flats)
+        decided = win_count + loss_count
+        # Rate over DECIDED trades; None when nothing was decided — 0.0
+        # reads as "measured, and it lost every trade".
+        win_rate = (win_count / decided) if decided else None
 
         # Average win/loss (gross price movement)
         avg_win = sum(t['gross_pnl'] for t in wins) / win_count if wins else 0
         avg_loss = sum(t['gross_pnl'] for t in losses) / loss_count if losses else 0
 
-        # EXPECTANCY: THE NUMBER
-        expectancy = (win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+        # EXPECTANCY: THE NUMBER — per decided trade; None when nothing
+        # was decided (a flat-only bot has not been measured).
+        expectancy = ((win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+                      if win_rate is not None else None)
 
         # Profit factor
         gross_wins = sum(t['gross_pnl'] for t in wins)
@@ -279,8 +323,12 @@ class ExpectancyTracker:
             'total_trades': total,
             'wins': win_count,
             'losses': loss_count,
-            'win_rate': round(win_rate * 100, 1),
-            'expectancy_per_trade': round(expectancy, 2),
+            'flat': flat_count,
+            'decided': decided,
+            'win_rate': (round(win_rate * 100, 1)
+                         if win_rate is not None else None),
+            'expectancy_per_trade': (round(expectancy, 2)
+                                     if expectancy is not None else None),
             'avg_win': round(avg_win, 2),
             'avg_loss': round(avg_loss, 2),
             'profit_factor': round(min(profit_factor, 999), 2),
@@ -294,7 +342,8 @@ class ExpectancyTracker:
             'total_gross_pnl': round(total_gross_pnl, 2),
             'total_fees': round(total_fees, 2),
             'fees_pct_of_gross': round(fee_pct, 1),
-            'is_profitable': expectancy > 0,
+            'is_profitable': (expectancy > 0
+                              if expectancy is not None else None),
         }
 
     # ── Fleet-Wide Statistics ───────────────────────────────────────
@@ -351,17 +400,20 @@ class ExpectancyTracker:
 
         # Fleet aggregate — gross semantics (2026-07-30): classify and
         # average on gross_pnl, same convention as get_bot_stats.
+        # Same flat-is-not-a-loss rule as get_bot_stats (see the note there).
         wins = [t for t in all_trades if t['gross_pnl'] > 0]
-        losses = [t for t in all_trades if t['gross_pnl'] <= 0]
+        losses = [t for t in all_trades if t['gross_pnl'] < 0]
         total = len(all_trades)
-        win_rate = len(wins) / total if total else 0
+        _fleet_decided = len(wins) + len(losses)
+        win_rate = (len(wins) / _fleet_decided) if _fleet_decided else None
 
         avg_win = (sum(t['gross_pnl'] for t in wins) / len(wins)
                   if wins else 0)
         avg_loss = (sum(t['gross_pnl'] for t in losses) / len(losses)
                    if losses else 0)
 
-        fleet_expectancy = (win_rate * avg_win + (1 - win_rate) * avg_loss)
+        fleet_expectancy = ((win_rate * avg_win + (1 - win_rate) * avg_loss)
+                            if win_rate is not None else None)
 
         # Size-normalized expectancy. The dollar mean weights each trade by
         # its notional — stored sizes span $8k to $47k (5.7x), so one large
@@ -402,8 +454,11 @@ class ExpectancyTracker:
 
         return {
             'total_trades': total,
-            'win_rate': round(win_rate * 100, 1),
-            'fleet_expectancy': round(fleet_expectancy, 2),
+            'win_rate': (round(win_rate * 100, 1)
+                         if win_rate is not None else None),
+            'fleet_decided': _fleet_decided,
+            'fleet_expectancy': (round(fleet_expectancy, 2)
+                                 if fleet_expectancy is not None else None),
             'avg_win': round(avg_win, 2),
             'avg_loss': round(avg_loss, 2),
             'total_net_pnl': round(total_net, 2),
@@ -415,29 +470,7 @@ class ExpectancyTracker:
             # A bot with no closed trades has not been judged. Calling it
             # LOSING is a verdict from zero measurements — it read as a
             # failing bot beside bots that had actually traded.
-            'bot_rankings': [
-                {'bot': bid,
-                 'expectancy': (s['expectancy_per_trade']
-                                if s['total_trades'] else None),
-                 'trades': s['total_trades'],
-                 # What the sample actually supports. 'LOSING' was published
-                 # from n=1 and 'PROFITABLE' from 5W/0L; below MIN_VERDICT_N
-                 # decided trades the direction of the expectancy is shown as
-                 # EARLY_*, which carries the sign without the certainty, and
-                 # the Wilson CI says the rest.
-                 'verdict': ('UNMEASURED' if not s['total_trades']
-                             else ('PROFITABLE' if s['expectancy_per_trade'] > 0
-                                   else 'LOSING')
-                             if (s.get('wins', 0) + s.get('losses', 0)) >= MIN_VERDICT_N
-                             else ('EARLY_POSITIVE'
-                                   if s['expectancy_per_trade'] > 0
-                                   else 'EARLY_NEGATIVE')),
-                 'n_decided': s.get('wins', 0) + s.get('losses', 0),
-                 'win_rate_ci_95': _wilson_ci_95(
-                     s.get('wins', 0),
-                     s.get('wins', 0) + s.get('losses', 0))}
-                for bid, s in ranked
-            ],
+            'bot_rankings': [_rank_row(bid, s) for bid, s in ranked],
             'expectancy_pct': expectancy_pct,
             'expectancy_pct_sd': expectancy_pct_sd,
             'expectancy_pct_n': len(_returns),
@@ -589,6 +622,21 @@ class ExpectancyTracker:
                     if t.get(f) == 0:
                         t[f] = None
                         nulled += 1
+
+            # Rows that measure NOTHING: gross_pnl exactly 0 AND no size.
+            # These are capital movements (stale-reservation cleanups) that
+            # slipped past the writers' guards; they inflate total_trades
+            # and, before the flat-is-not-a-loss classifier fix, rendered as
+            # losses. A flat close with a REAL size survives — that is a
+            # measured break-even trade, which is a different thing.
+            _before = len(keep)
+            keep = [t for t in keep
+                    if not (t.get("gross_pnl") == 0
+                            and not t.get("size_usd"))]
+            if len(keep) != _before:
+                dropped += _before - len(keep)
+                details.append("dropped %d unmeasurable zero-P/L zero-size "
+                               "row(s) for %s" % (_before - len(keep), bot_id))
             self.trades[bot_id] = keep
 
         if nulled or dropped:

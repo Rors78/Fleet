@@ -1486,7 +1486,21 @@ class TurtleEngine:
             exit_reason=exit_info["type"],
         )
 
-        if _expectancy:
+        # A close that cannot be priced is a capital movement, not a trade.
+        # The stale-reservation reconcile path exits positions restored with
+        # avg_entry 0 and total_size 0; recording those in PRICE-DRIVEN mode
+        # books a $0.00 "trade" into the DURABLE expectancy store, and the
+        # fleet scoreboard then rendered turtlesue as "2 losses, 0% win
+        # rate" from two cleanups that measured nothing. Same rule as
+        # Command Center's release path (`_priced`): nothing measurable,
+        # nothing recorded.
+        _measurable = (pos.avg_entry and pos.avg_entry > 0
+                       and pos.total_size and pos.total_size > 0)
+        if _expectancy and not _measurable:
+            logging.info("[turtlesue] %s close not recorded to expectancy: "
+                         "unpriced capital movement (entry=%r size=%r)",
+                         pair, pos.avg_entry, pos.total_size)
+        if _expectancy and _measurable:
             try:
                 _expectancy.record_trade(
                     bot_id='turtlesue',

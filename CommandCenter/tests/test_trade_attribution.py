@@ -124,6 +124,106 @@ check(abs(r2.get('gross_pnl', 0) - 100.0) < 1e-9,
       'a real SHORT that fell 10%% must book +$100, got %r — if this reads '
       '-100 the direction is being ignored' % r2.get('gross_pnl'))
 
+# ── 6. Close attribution: absent pnl is not a loss; the warning tells the truth ──
+# Live defect (2026-08-13): `pnl = edata.get("pnl", 0)` booked every
+# unmeasured close as a LOSS (won = 0 > 0), and the "has no direction"
+# warning was attached as the else of the DECAY-feed condition — it fired on
+# turtlesue's XRP close (direction=SHORT present, flat P/L) while a close
+# actually missing direction was skipped silently.
+import textwrap
+
+check('edata.get("pnl", 0)' not in src,
+      'the handler still defaults an absent pnl to 0 — an unmeasured close '
+      'is not a $0.00 loss')
+
+_i_dir = src.find('has no direction')
+_i_decay = src.find('Feed the decay tracker')
+check(_i_dir != -1 and _i_decay != -1 and _i_dir < _i_decay,
+      'the "has no direction" warning must live at the DIRECTION check, '
+      'before the decay feed — not as the decay condition\'s else')
+check(src.count('has no direction -- ') <= 2,   # TRADE_OPEN has its own
+      'the misattached decay-else warning is back')
+
+# The logger bridge (_on_logger_event) is the SECOND close path — it kept
+# the full original defect set after the HTTP path was fixed. Both blocks
+# must exist and both must behave.
+check('direction = data.get("direction", "LONG")' not in src,
+      'the logger bridge still calls every unlabelled close a long')
+check('won=data.get("won", False)' not in src,
+      '/api/signals/outcome still fabricates a loss from a malformed POST')
+check('neither win nor loss' in src,
+      '/api/signals/outcome must ignore flat/unmeasured pnl — turtlesue\'s '
+      'forced XRP exit debited the SHORT hit rate with pnl -0.0')
+
+
+class _Log:
+    def __init__(self):
+        self.warnings = []
+
+    def warning(self, msg, *a):
+        self.warnings.append(msg % a if a else msg)
+
+
+class _Agg:
+    def __init__(self):
+        self.calls = []
+
+    def record_outcome(self, *a):
+        self.calls.append(a)
+
+
+_blocks = {}
+_mh = re.search(r'^[ ]*_praw = edata\.get\("pnl"\)\n[\s\S]*?nothing to attribute\.',
+                src, re.M)
+if _mh:
+    _blocks['http'] = (textwrap.dedent(_mh.group(0)), 'edata')
+_mb = re.search(r'^[ ]*_praw = data\.get\("pnl"\)\n[\s\S]*?record_outcome\(pair, direction, pnl > 0, pnl\)',
+                src, re.M)
+if _mb:
+    _blocks['bridge'] = (textwrap.dedent(_mb.group(0)), 'data')
+check('http' in _blocks, 'could not locate the HTTP close-attribution block')
+check('bridge' in _blocks, 'could not locate the logger-bridge attribution block')
+
+for _name, (_block, _var) in _blocks.items():
+    def run_close(edata, _block=_block, _var=_var):
+        ns = {_var: edata, 'source': 'bot', 'bot': 'bot', 'pair': 'X/USD',
+              'log': _Log(), '_signal_aggregator': _Agg(), 'isinstance': isinstance}
+        exec(_block, ns)
+        return ns
+
+    # A flat close WITH direction: no outcome, and NO warning — the old code
+    # printed "has no direction" here, about a field that was present.
+    n1 = run_close({'direction': 'SHORT', 'pnl': -0.0})
+    check(not n1['_signal_aggregator'].calls and not n1['log'].warnings,
+          '[%s] a flat close with direction present must attribute nothing '
+          'and warn nothing; got calls=%r warnings=%r'
+          % (_name, n1['_signal_aggregator'].calls, n1['log'].warnings))
+
+    # Absent pnl: not a loss, and the warning says what is actually missing.
+    n2 = run_close({'direction': 'LONG'})
+    check(not n2['_signal_aggregator'].calls,
+          '[%s] a close with NO pnl must not be booked as a loss' % _name)
+    check(n2['pnl'] is None,
+          '[%s] absent pnl must stay None downstream, got %r'
+          % (_name, n2['pnl']))
+    check(any('no measured pnl' in w for w in n2['log'].warnings),
+          '[%s] the missing-pnl close must be warned about as missing PNL, '
+          'got %r' % (_name, n2['log'].warnings))
+
+    # Missing direction: warned as missing DIRECTION, loudly not silently.
+    n3 = run_close({'pnl': 5.0})
+    check(not n3['_signal_aggregator'].calls
+          and any('no direction' in w for w in n3['log'].warnings),
+          '[%s] a close missing direction must warn about direction; got '
+          'calls=%r warnings=%r'
+          % (_name, n3['_signal_aggregator'].calls, n3['log'].warnings))
+
+    # A real measured close still attributes.
+    n4 = run_close({'direction': 'long', 'pnl': 12.5})
+    check(n4['_signal_aggregator'].calls == [('X/USD', 'LONG', True, 12.5)],
+          '[%s] a measured close must still reach record_outcome, got %r'
+          % (_name, n4['_signal_aggregator'].calls))
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

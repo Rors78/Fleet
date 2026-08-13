@@ -4379,16 +4379,30 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 open_info = _open_trade_signals.pop(key, None)
             if open_info is not None:
                 _save_open_trade_signals()
-            pnl = edata.get("pnl", 0)
+            # An absent pnl is not $0.00. The old default-to-zero made
+            # `won = pnl > 0` book every unmeasured close as a LOSS in the
+            # per-direction hit rate, and fed a fabricated 0.0 through to
+            # the expectancy writer below.
+            _praw = edata.get("pnl")
+            pnl = _praw if isinstance(_praw, (int, float)) else None
             # An unlabelled close is not a long. record_outcome credits or
             # debits the per-direction hit rate, so defaulting here silently
             # attributed every unlabelled trade to the long side and skewed
             # any later long/short comparison.
             _cdir = edata.get("direction")
             direction = _cdir.upper() if isinstance(_cdir, str) and _cdir else None
-            won = pnl > 0
-            if direction:
-                _signal_aggregator.record_outcome(pair, direction, won, pnl)
+            if direction is None:
+                log.warning("TRADE_CLOSE from %r for %r has no direction -- "
+                            "outcome not attributed to either side",
+                            source, pair)
+            elif pnl is None:
+                log.warning("TRADE_CLOSE from %r for %r has no measured pnl "
+                            "-- outcome not attributed to either side",
+                            source, pair)
+            elif pnl != 0:
+                _signal_aggregator.record_outcome(pair, direction, pnl > 0, pnl)
+            # direction present, pnl exactly 0: a flat -- neither win nor
+            # loss, nothing to attribute.
 
             # Feed the decay tracker. SignalDecay.record_outcome had ZERO
             # call sites since it was written: /api/signals/decay served 35
@@ -4409,9 +4423,14 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         except Exception:
                             log.warning("signal_decay.record_outcome failed "
                                         "for %s:%s", source, _sig)
-            else:
-                log.warning("TRADE_CLOSE from %r for %r has no direction -- "
-                            "outcome not attributed to either side", source, pair)
+            # No else: the warning that lived here said "has no direction",
+            # but this condition is about the DECAY feed -- it fired on every
+            # close with no recorded open or a flat P/L, direction present or
+            # not (turtlesue's XRP close carried direction=SHORT and still
+            # tripped it, 2026-08-13), while an actually-missing direction
+            # was skipped in silence above. Direction is warned about at the
+            # direction check; a close the decay tracker can't learn from is
+            # not a defect.
 
             # Expectancy only ever heard about trades closed through the
             # reservation-release path. A bot that emits TRADE_CLOSE straight
@@ -4460,7 +4479,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                 except Exception:
                     log.warning("expectancy.record_trade failed for bus "
                                 "TRADE_CLOSE %s:%s", source, pair, exc_info=True)
-            if open_info and open_info.get("signals"):
+            if open_info and open_info.get("signals") and pnl is not None:
                 sigs = open_info["signals"]
                 contrib = [f"{source}:{s}" for s in sigs] if isinstance(sigs, list) else [source]
                 _signal_decomposition.log_trade(
@@ -4653,7 +4672,11 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         "type": "TRADE_CLOSE",
                         "data": {
                             "pair": res_info.get("pair", ""),
-                            "direction": res_info.get("direction", "LONG"),
+                            # No LONG default: every reservation carries a
+                            # real direction (reserve() rejects without one),
+                            # and if that ever breaks the consumers now warn
+                            # on absence rather than mislabeling the close.
+                            "direction": res_info.get("direction"),
                             # NOT 0 when absent. A release whose bot supplied no
                             # prices is a capital movement, not a priced trade —
                             # defaulting to 0 fabricated closes that render as
@@ -4776,11 +4799,33 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         self._send_json({"status": "accepted"})
 
     def _handle_signals_outcome(self, data: dict) -> None:
+        """POST /api/signals/outcome — bot reports a closed trade's result.
+
+        Absence is not an outcome. The old defaults ("" direction, won
+        False, pnl 0) meant a malformed POST fabricated a directionless
+        loss — and a FLAT close is neither win nor loss: turtlesue's
+        forced XRP exit (2026-08-13, pnl -0.0 by construction) posted
+        here and debited the SHORT hit rate with a trade that measured
+        nothing. Bots post unconditionally on every close, so this
+        choke point does the gating for the whole fleet.
+        """
+        pair = data.get("pair")
+        _dir = data.get("direction")
+        _p = data.get("pnl")
+        if not pair or not isinstance(_dir, str) or not _dir:
+            self._send_json({"status": "rejected",
+                             "reason": "pair and direction required"}, 400)
+            return
+        if not isinstance(_p, (int, float)) or _p == 0:
+            self._send_json({"status": "ignored",
+                             "reason": "unmeasured or flat pnl -- "
+                                       "neither win nor loss"})
+            return
         _signal_aggregator.record_outcome(
-            pair=data.get("pair", ""),
-            direction=data.get("direction", ""),
-            won=data.get("won", False),
-            pnl=data.get("pnl", 0),
+            pair=pair,
+            direction=_dir.upper(),
+            won=_p > 0,
+            pnl=_p,
         )
         self._send_json({"status": "recorded"})
 
@@ -5181,11 +5226,25 @@ def main():
                 open_info = _open_trade_signals.pop(key, None)
             if open_info is not None:
                 _save_open_trade_signals()
-            pnl = data.get("pnl", 0)
-            direction = data.get("direction", "LONG")
-            won = pnl > 0
-            _signal_aggregator.record_outcome(pair, direction, won, pnl)
-            if open_info and open_info.get("signals"):
+            # Same contract as _handle_event_publish's TRADE_CLOSE path: an
+            # absent pnl is not a $0.00 loss, and an unlabelled close is not
+            # a long. This bridge had the ORIGINAL defect set after the HTTP
+            # path was fixed — the fix-one-sibling shape again (2026-08-13).
+            _praw = data.get("pnl")
+            pnl = _praw if isinstance(_praw, (int, float)) else None
+            _cdir = data.get("direction")
+            direction = _cdir.upper() if isinstance(_cdir, str) and _cdir else None
+            if direction is None:
+                log.warning("TRADE_CLOSE (logger bridge) from %r for %r has "
+                            "no direction -- outcome not attributed to "
+                            "either side", bot, pair)
+            elif pnl is None:
+                log.warning("TRADE_CLOSE (logger bridge) from %r for %r has "
+                            "no measured pnl -- outcome not attributed to "
+                            "either side", bot, pair)
+            elif pnl != 0:
+                _signal_aggregator.record_outcome(pair, direction, pnl > 0, pnl)
+            if open_info and open_info.get("signals") and pnl is not None:
                 sigs = open_info["signals"]
                 contrib = [f"{bot}:{s}" for s in sigs] if isinstance(sigs, list) else [bot]
                 _signal_decomposition.log_trade(

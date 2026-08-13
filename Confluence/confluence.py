@@ -146,9 +146,19 @@ FALLBACK_EQUITY_USD = 10000.0  # basis when CC is unreachable
 # 0.4% denominator floor and a $500 risk budget the derived size tops out
 # around $125k, so the ceiling below only ever catches genuinely absurd input
 # and is set above that natural maximum rather than inside it.
-MIN_POSITION_USD = 500.0        # also clears CC's $100 floor with headroom
-MIN_STOP_PCT_FOR_SIZING = 0.004  # 0.4% — floor on the sizing denominator
-MAX_POSITION_USD = 150000.0     # backstop only; 15% of a $1M pool
+# These are FRACTIONS OF THE POOL, not dollar figures. They were $500 and
+# $150,000 — sized for a $1M pool — and when the pool became $210.53 the
+# $500 minimum FORCED every position to $500, which the pool then refused
+# with "0.00 deployed + 500.00 requested > 126.32 cap". The bot computed a
+# correct $3.51 and the floor overrode it. Ten denials in four minutes,
+# and no trades at all.
+#
+# A hardcoded dollar bound goes stale at every resize; this is the same
+# lesson as MIN_TRADE_USD, one layer up. Expressed as fractions they follow
+# the pool automatically.
+MIN_POSITION_PCT_OF_POOL = 0.005   # 0.5% — $1.05 at $210, $5k at $1M
+MIN_STOP_PCT_FOR_SIZING = 0.004    # 0.4% — floor on the sizing denominator
+MAX_POSITION_PCT_OF_POOL = 0.15    # 15% — the old $150k at a $1M pool
 STOP_LOSS_PCT = 0.025          # 2.5% hard floor if Oracle gives no stop
 MAX_POSITION_AGE_H = 36
 # Signal-worthiness floor: the projected entry→target move must be at least
@@ -296,7 +306,16 @@ class ConfluenceEngine:
         stop_pct_eff = max(stop_pct, MIN_STOP_PCT_FOR_SIZING)
 
         size = risk_usd / stop_pct_eff
-        size = max(MIN_POSITION_USD, min(size, MAX_POSITION_USD))
+        # Bounds derived from the POOL, not hardcoded dollars. basis is
+        # RISK_POOL_SHARE_PCT of the pool, so the pool is basis / share.
+        # Deriving them here rather than reading pool_total() again keeps
+        # the whole calculation on ONE reading — a second fetch could
+        # return a different number mid-calculation and the bounds would
+        # not match the risk they are bounding.
+        _pool = basis / (RISK_POOL_SHARE_PCT / 100.0) if RISK_POOL_SHARE_PCT else basis
+        _min = _pool * MIN_POSITION_PCT_OF_POOL
+        _max = _pool * MAX_POSITION_PCT_OF_POOL
+        size = max(_min, min(size, _max))
         return size, basis, risk_usd, stop_pct
 
     # ── fleet wiring ──

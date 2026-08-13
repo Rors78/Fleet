@@ -69,13 +69,24 @@ check("tight stop now sizes LARGER", rows[2][2] > rows[0][2],
 
 print()
 print("=== CASE 3: clamps hold ===")
+# The clamps are FRACTIONS OF THE POOL now, not dollar figures. They were
+# MIN_POSITION_USD = 500 / MAX_POSITION_USD = 150000, sized for a $1M pool;
+# at a $210.53 pool the $500 minimum forced every position to $500 and the
+# pool refused it, so the bot computed $3.51 and its own floor overrode it.
+_pool = b._sizing_basis() / (cf.RISK_POOL_SHARE_PCT / 100.0)
+_min_expected = _pool * cf.MIN_POSITION_PCT_OF_POOL
+_max_expected = _pool * cf.MAX_POSITION_PCT_OF_POOL
 size, _, _, _ = b._position_size(100.0, 99.99)      # 0.01% stop
-check("near-zero stop is clamped", size <= cf.MAX_POSITION_USD,
-      f"${size:,.0f} <= ${cf.MAX_POSITION_USD:,.0f}")
+check("near-zero stop is clamped", size <= _max_expected,
+      f"${size:,.0f} <= ${_max_expected:,.0f} (15% of pool)")
 size, _, _, _ = b._position_size(100.0, 20.0)       # 80% stop
-check("huge stop still clears the minimum", size >= cf.MIN_POSITION_USD,
-      f"${size:,.0f} >= ${cf.MIN_POSITION_USD:,.0f}")
-check("minimum clears CC's $100 floor", cf.MIN_POSITION_USD > 100.0)
+check("huge stop still clears the minimum", size >= _min_expected,
+      f"${size:,.0f} >= ${_min_expected:,.2f} (0.5% of pool)")
+# The bounds must SCALE, which is the whole point — a fixed dollar minimum
+# is what broke the $210.53 pool.
+check("bounds are pool-relative, not hardcoded dollars",
+      not hasattr(cf, "MIN_POSITION_USD") and not hasattr(cf, "MAX_POSITION_USD"),
+      "MIN/MAX_POSITION_USD must be gone")
 
 print()
 print("=== CASE 4: unreachable pool degrades safely and warns once ===")

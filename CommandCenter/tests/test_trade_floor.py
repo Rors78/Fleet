@@ -191,6 +191,32 @@ for _bot, _req in _sizes.items():
           '[%s] requests $%.2f, above the $%.2f per-trade cap — it would be '
           'refused before sizing even applies' % (_bot, _req, _cap))
 
+# ── 9. Per-bot position BOUNDS must scale with the pool too ──
+# Confluence clamped its computed size with MIN_POSITION_USD = 500.0 and
+# MAX_POSITION_USD = 150000.0 — dollar figures sized for a $1M pool. At
+# $210.53 the minimum FORCED every position to $500, which the pool then
+# refused ("0.00 deployed + 500.00 requested > 126.32 cap"). The bot
+# computed a correct $3.51 and its own floor overrode it: 10 denials in
+# four minutes and no trades. Same lesson as MIN_TRADE_USD, one layer up.
+_cf = open("D:/Confluence/confluence.py", encoding="utf-8",
+           errors="replace").read()
+check("MIN_POSITION_USD = " not in _cf,
+      "Confluence still clamps to a hardcoded dollar minimum — it goes "
+      "stale at every pool resize and overrides the pool-share sizing")
+check("MIN_POSITION_PCT_OF_POOL" in _cf and "MAX_POSITION_PCT_OF_POOL" in _cf,
+      "Confluence's position bounds must be fractions of the pool")
+
+# The bounds must not fight the fleet caps at the current pool size.
+_min_pos = POOL * 0.005
+_max_pos = POOL * 0.15
+check(_min_pos >= FLOOR,
+      "Confluence's minimum position ($%.2f) must clear the fleet dust "
+      "floor ($%.2f)" % (_min_pos, FLOOR))
+check(_max_pos <= POOL * LIM["max_per_trade_pct"] / 100.0,
+      "Confluence's maximum position ($%.2f) must sit under the per-trade "
+      "cap ($%.2f), or its own ceiling is unreachable"
+      % (_max_pos, POOL * LIM["max_per_trade_pct"] / 100.0))
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

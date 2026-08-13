@@ -382,7 +382,25 @@ class RubberbandEngine:
     # -- Position Persistence ----------------------------------------------------
 
     def _load_positions(self):
-        """Load positions from disk on startup."""
+        """Load positions from disk on startup.
+
+        Sets self._state_unreadable when the file EXISTS but cannot be
+        parsed. The write side of the SL-cooldown fix is already here (see
+        _save_positions) but the READ was never defended, and an unreadable
+        read reproduces the original defect exactly, twice over:
+
+          - _sl_cooldowns stays empty, and the gate reads
+            `.get(pair, 0)` — a missing entry is a 1970 timestamp, so
+            sl_elapsed is ~1.7 billion seconds and the cooldown ALWAYS
+            passes. The bot re-enters the pair that just stopped it out.
+          - self.equity falls back to PAPER_BALANCE, forgiving the entire
+            realized drawdown and restoring full position size, because
+            sizing is `self.equity * TRADE_RISK_PCT`.
+
+        Unreadable therefore fails toward ARMED: new entries are refused
+        and the file is preserved. Mirrors TurtleSue's _load_positions.
+        """
+        self._state_unreadable = False
         if not os.path.exists(self._positions_file):
             return
         try:
@@ -432,7 +450,23 @@ class RubberbandEngine:
                     f"{len(self._sl_cooldowns)} SL cooldown(s), "
                     f"{self.wins}W/{self.losses}L from disk")
         except Exception as e:
-            self._log(f"Failed to load positions: {e}", "WARNING")
+            # The file exists and could not be read. That is NOT "no
+            # positions and no cooldowns" — both would fail OPEN.
+            self._state_unreadable = True
+            self.positions = []
+            self._sl_cooldowns = {}
+            self._log(
+                f"UNREADABLE POSITION STATE {self._positions_file}: {e} — "
+                "positions, SL cooldowns and the equity ledger are UNKNOWN. "
+                "New entries blocked, file preserved for diagnosis.",
+                "ERROR")
+            try:
+                _q = "%s.corrupt_%d" % (self._positions_file, int(time.time()))
+                os.replace(self._positions_file, _q)
+                self._log(f"Preserved unreadable state as {_q}", "ERROR")
+            except Exception as _qe:
+                self._log(f"Could not quarantine {self._positions_file}: {_qe}",
+                          "ERROR")
 
     def _save_positions(self):
         """Atomic save of positions to disk."""
@@ -776,6 +810,12 @@ class RubberbandEngine:
 
     def open_position(self, signal: dict) -> bool:
         """Open a new paper position from a signal."""
+        # Unknown state fails toward ARMED. With the state file unreadable
+        # both safety gates below are disarmed at once: the SL cooldown
+        # always passes (missing entry = 1970) and equity has silently
+        # reset to PAPER_BALANCE, restoring full size after a drawdown.
+        if getattr(self, "_state_unreadable", False):
+            return False
         pair = signal["pair"]
         direction = signal["direction"]
         price = signal["price"]

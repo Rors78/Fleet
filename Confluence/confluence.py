@@ -392,6 +392,30 @@ class ConfluenceEngine:
             self._log(f"State save failed: {e}", "WARNING")
 
     def _load_state(self):
+        """Restore state from disk.
+
+        Sets self._state_unreadable when the file EXISTS but cannot be
+        parsed. Three things fail OPEN on an unreadable read:
+
+          - pair_cooldowns stays empty, and the gate reads
+            `.get(pair, 0)`, so `_now() - 0` always exceeds
+            SAME_PAIR_COOLDOWN_S and re-entry on any pair is permitted
+            immediately.
+          - realized_pnl / wins / losses reset to 0.0/0/0, so the bot
+            reports a clean slate — the failure LOOKS like a fresh healthy
+            start rather than lost history.
+          - positions come back empty while their reservations stay booked
+            in the pool.
+
+        The restore is also a long sequential block, so a failure PART WAY
+        through leaves earlier fields set and later ones at defaults. That
+        partial state is just as unknown as none of it, and is treated the
+        same way.
+
+        Unreadable therefore fails toward ARMED: new entries are refused
+        and the file is preserved. Mirrors TurtleSue's _load_positions.
+        """
+        self._state_unreadable = False
         if not os.path.exists(STATE_FILE):
             return
         try:
@@ -456,7 +480,22 @@ class ConfluenceEngine:
             if self.positions:
                 self._log(f"Restored {len(self.positions)} position(s) from state", "INFO")
         except Exception as e:
-            self._log(f"State load failed: {e}", "WARNING")
+            # The file exists and could not be read (or only partly read).
+            # A clean-looking zero state is the most dangerous outcome here:
+            # it disarms the pair cooldown AND reports a fresh slate.
+            self._state_unreadable = True
+            self.positions = {}
+            self.pair_cooldowns = {}
+            self._log(
+                f"UNREADABLE STATE {STATE_FILE}: {e} — positions, pair "
+                f"cooldowns and realized P/L are UNKNOWN. New entries "
+                f"blocked, file preserved for diagnosis.", "ERROR")
+            try:
+                _q = "%s.corrupt_%d" % (STATE_FILE, int(time.time()))
+                os.replace(STATE_FILE, _q)
+                self._log(f"Preserved unreadable state as {_q}", "ERROR")
+            except Exception as _qe:
+                self._log(f"Could not quarantine {STATE_FILE}: {_qe}", "ERROR")
 
     # ── intel gathering ──
     def gather_intel(self):
@@ -864,6 +903,12 @@ class ConfluenceEngine:
 
     # ── entry / exit ──
     def _can_enter(self, pair):
+        # Unknown state fails toward ARMED. With the state file unreadable
+        # the pair cooldown below is disarmed (empty dict -> _now()-0 always
+        # exceeds the window) and self.positions may be missing positions
+        # whose reservations the pool still holds.
+        if getattr(self, "_state_unreadable", False):
+            return False, "state unreadable — entries blocked"
         if pair in self.positions:
             return False, "already open"
         if len(self.positions) >= MAX_OPEN_POSITIONS:

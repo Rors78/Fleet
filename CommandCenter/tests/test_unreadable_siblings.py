@@ -41,6 +41,17 @@ def check(cond, msg):
 BOTS = {
     'nexusbrain': ('D:/NexusBrain/nexus_brain.py', '_POSITIONS_FILE'),
     'arbitrageur': ('D:/Arbitrageur/arbitrageur.py', '_positions_file'),
+    # Both of these carry a comment describing a safety defect their WRITE
+    # side already fixed, while the READ still reproduced it exactly:
+    #   rubberband  — SL cooldown; a missing entry is a 1970 timestamp, so
+    #                 sl_elapsed ~1.7e9 and the cooldown ALWAYS passes.
+    #                 Plus equity falling back to PAPER_BALANCE, which
+    #                 forgives the whole drawdown and restores full size.
+    #   confluence  — pair cooldown; `_now() - 0` always exceeds the window.
+    #                 Plus realized_pnl/wins/losses resetting to a clean
+    #                 slate, so lost history LOOKS like a healthy new start.
+    'rubberband': ('D:/Rubberband/rubberband.py', '_positions_file'),
+    'confluence': ('D:/Confluence/confluence.py', 'STATE_FILE'),
 }
 SRC = {}
 for _name, (_p, _) in BOTS.items():
@@ -70,8 +81,13 @@ for name, src in SRC.items():
           'for both is the collapse itself' % name)
 
     # ── 2. It must be loud. A silent arm is its own failure mode. ──
-    check(re.search(r'log(ger)?\.error\(\s*\n?\s*["\']UNREADABLE POSITION STATE',
-                    src) is not None,
+    # Two logging conventions in the fleet: a module logger (nexusbrain,
+    # arbitrageur) and a self._log(msg, "ERROR") helper (rubberband,
+    # confluence). Assert the SEVERITY reaches the log either way rather
+    # than pinning one spelling — the earlier version of this test failed
+    # on a correct implementation for exactly that reason.
+    check(re.search(r'UNREADABLE (POSITION )?STATE', src) is not None
+          and re.search(r'(log(ger)?\.error\(|"ERROR"\))', src) is not None,
           '[%s] an unreadable state file must log at ERROR — a warning about '
           'lost positions is not a warning about a disarmed safety gate'
           % name)
@@ -82,6 +98,7 @@ for name, src in SRC.items():
           'record of what was open' % name)
 
     # ── 4. Entries must be BLOCKED, not merely logged ──
+    # `return` (bool/None) or `return False, "..."` (confluence's tuple).
     check(re.search(r'if getattr\(self, "_state_unreadable", False\):\s*\n\s*return',
                     src) is not None,
           '[%s] new entries must be refused while state is unknown — the bot '
@@ -104,6 +121,31 @@ check(re.search(r'if not self\._state_unreadable:\s*\n\s*self\._save_positions\(
       '[nexusbrain] _save_positions must not run after an unreadable load — '
       'it would overwrite the only remaining record with an empty file')
 
+# Rubberband: the SL-cooldown dict must be CLEARED on an unreadable read,
+# not merely left alone. A half-populated dict from a partial parse is as
+# unknown as an empty one, and the gate cannot tell them apart.
+_rb = SRC['rubberband']
+check(re.search(r'self\._state_unreadable = True[\s\S]{0,300}?self\._sl_cooldowns = \{\}',
+                _rb) is not None,
+      '[rubberband] the SL cooldown dict must be explicitly cleared when '
+      'state is unreadable — a partially restored dict silently disarms the '
+      'gate for every pair missing from it')
+check('open_position' in _rb and re.search(
+      r'def open_position[\s\S]{0,400}?if getattr\(self, "_state_unreadable", False\):\s*\n\s*return False',
+      _rb) is not None,
+      '[rubberband] open_position must refuse while state is unknown — '
+      'both the SL cooldown AND the equity ledger are disarmed at once')
+
+# Confluence: the pair-cooldown dict, same reasoning.
+_cf = SRC['confluence']
+check(re.search(r'self\._state_unreadable = True[\s\S]{0,300}?self\.pair_cooldowns = \{\}',
+                _cf) is not None,
+      '[confluence] pair_cooldowns must be explicitly cleared on an '
+      'unreadable read')
+check(re.search(r'def _can_enter[\s\S]{0,400}?_state_unreadable', _cf) is not None,
+      '[confluence] _can_enter must refuse while state is unknown — the '
+      'pair cooldown is the only thing preventing immediate re-entry')
+
 # Arbitrageur: the lease heartbeat.
 _ab = SRC['arbitrageur']
 check(re.search(r'if self\._portfolio and not getattr\(self, "_state_unreadable", False\):\s*\n\s*self\._portfolio\.confirm_reservations',
@@ -119,15 +161,20 @@ _m = re.search(r'except FileNotFoundError:\s*\n\s*(.+)', _nb)
 check(_m is not None and '_state_unreadable = True' not in _m.group(1),
       '[nexusbrain] a genuinely ABSENT file is a first run and must NOT arm '
       '— arming here would block a new bot from ever opening a position')
-# arbitrageur: the exists-check returns BEFORE the flag could be set, and
-# the flag is initialised False on the line above it.
-check(re.search(r'self\._state_unreadable = False\s*\n\s*if not os\.path\.exists',
-                _ab) is not None,
-      '[arbitrageur] the absent-file early return must come AFTER the flag '
-      'is cleared, so a first run leaves the bot disarmed and able to trade')
+# arbitrageur / rubberband / confluence: the exists-check returns BEFORE the
+# flag could be set, and the flag is initialised False on the line above it.
+# Order matters — clearing the flag AFTER the early return would leave a
+# previously-armed bot armed forever once its state file was removed.
+for _n, _s in (('arbitrageur', _ab), ('rubberband', _rb), ('confluence', _cf)):
+    check(re.search(r'self\._state_unreadable = False\s*\n\s*if not os\.path\.exists',
+                    _s) is not None,
+          '[%s] the absent-file early return must come AFTER the flag is '
+          'cleared, so a first run leaves the bot disarmed and able to trade'
+          % _n)
 
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)
     sys.exit(1)
-print('ok  unreadable state arms in nexusbrain and arbitrageur, first run still runs')
+print('ok  unreadable state arms in %s; first run still runs'
+      % ', '.join(sorted(BOTS)))

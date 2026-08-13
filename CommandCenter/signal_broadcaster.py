@@ -53,10 +53,32 @@ from bot_names import (BOT_DISPLAY_NAMES, display_name,  # noqa: F401
 # log must be in the same frame as the thing it describes. The Z is not
 # decoration — it is what stops the next reader inferring a frame.
 logging.Formatter.converter = time.gmtime
+_LOG_HANDLERS = [logging.StreamHandler()]
+try:
+    # A durable file, not just stdout.
+    #
+    # basicConfig had no FileHandler, so under the launcher every broadcaster
+    # line went to the shared fleet log and was buried among thousands of
+    # events. logs/broadcaster.log existed but was FOUR MONTHS stale — a
+    # leftover from a manual run — which made the file look like a live log
+    # while carrying nothing.
+    #
+    # The cost was real: the once-per-day "PAID CHANNEL UNSET" warning
+    # reached no durable log at all, so 27 dropped paid cards on 2026-08-13
+    # were invisible until /stats was read by hand. The drop was correctly
+    # COUNTED (unconfigured_today); it just could not be seen.
+    _LOG_HANDLERS.append(logging.FileHandler(
+        os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                     "logs", "broadcaster.log"),
+        encoding="utf-8"))
+except Exception:
+    pass          # stdout alone is still better than failing to start
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)sZ [%(name)s] %(levelname)s %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=_LOG_HANDLERS,
 )
 log = logging.getLogger("signal_broadcaster")
 
@@ -836,6 +858,21 @@ class TierRouter:
             # flow, Shannon entropy, structure forming — all stay on the
             # internal event bus for the dashboard and do not page the
             # user's phone.
+            #
+            # FORECAST_CONVICTION (sentinel) lands here too, and that is a
+            # DECISION rather than an oversight — worth stating because it
+            # was previously silent only by omission, which is
+            # indistinguishable from a routing bug. Sentinel's conviction
+            # signal is a 4h DIRECTIONAL FORECAST (e.g. US/USD DOWN
+            # p=0.458, expected move -0.35%), not an executed action. The
+            # whitelist's test is "would a human act on this — open, close,
+            # rebalance, or stop the fleet?" and a probabilistic lean does
+            # not meet it. Its achievable probability ceiling is ~0.48 by
+            # construction (see sentinel.HIGH_CONVICTION_PROB), so it will
+            # never read as certainty either.
+            #
+            # It stays on the bus for the dashboard. To page on it, add a
+            # routing_overrides entry — deliberately, not by accident.
             return None
 
         # Apply per-type overrides from config

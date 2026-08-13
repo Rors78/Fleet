@@ -295,7 +295,20 @@ class ArbitrageurEngine:
     # -----------------------------------------------------------------------
 
     def _load_positions(self):
-        """Load positions from disk. Handles v1→v2 migration."""
+        """Load positions from disk. Handles v1→v2 migration.
+
+        Sets self._state_unreadable when the file EXISTS but cannot be
+        parsed. Absent, empty and corrupt all used to produce the same empty
+        open_positions, and the scan loop's lease heartbeat then declares an
+        EMPTY reservation list to the pool — which Command Center's confirm()
+        treats as "this bot holds nothing" and sweeps every reservation
+        booked to it, while the positions remain open with no capital behind
+        them. Mirrors TurtleSue's _load_positions.
+
+        Unreadable therefore fails toward ARMED: the heartbeat declines to
+        declare, new entries are blocked, and the file is preserved.
+        """
+        self._state_unreadable = False
         if not os.path.exists(self._positions_file):
             return
         try:
@@ -343,7 +356,22 @@ class ArbitrageurEngine:
             if loaded > 0:
                 self._log(f"Restored {loaded} position(s) from disk")
         except Exception as e:
-            log.warning(f"Failed to load positions: {e}")
+            # The file exists and could not be read. That is NOT "no
+            # positions" — treat it as unknown state, loudly.
+            self._state_unreadable = True
+            self.open_positions = []
+            log.error(
+                "UNREADABLE POSITION STATE %s: %s — treating open positions "
+                "as UNKNOWN. Lease heartbeat will not declare, new entries "
+                "blocked, file preserved for diagnosis.",
+                self._positions_file, e)
+            try:
+                _q = "%s.corrupt_%d" % (self._positions_file, int(time.time()))
+                os.replace(self._positions_file, _q)
+                log.error("Preserved unreadable state as %s", _q)
+            except Exception:
+                log.error("Could not quarantine %s", self._positions_file,
+                          exc_info=True)
 
     def _save_positions(self):
         """Atomic save of positions to disk."""
@@ -557,6 +585,11 @@ class ArbitrageurEngine:
 
     def _open_position(self, opp):
         """Open a LONG position on the laggard. Single leg."""
+        # Unknown state fails toward ARMED: with positions unreadable this
+        # bot cannot tell "flat" from "holding positions it forgot", and
+        # opening more would double-commit capital the pool still books.
+        if getattr(self, "_state_unreadable", False):
+            return
         if len(self.open_positions) >= MAX_POSITIONS:
             return
 
@@ -777,7 +810,11 @@ class ArbitrageurEngine:
 
         # Lease heartbeat: declare held reservation ids so the pool can sweep
         # anything a wiring bug stranded (never raises).
-        if self._portfolio:
+        # An empty declaration from a bot whose state is UNKNOWN is not a
+        # declaration that it holds nothing — CC's confirm() would sweep
+        # every reservation booked here. Stay silent instead; the pool's
+        # own 48h position-aware sweep still covers genuine orphans.
+        if self._portfolio and not getattr(self, "_state_unreadable", False):
             self._portfolio.confirm_reservations(
                 [p.reservation_id for p in self.open_positions if p.reservation_id])
 

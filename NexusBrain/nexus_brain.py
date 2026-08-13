@@ -1114,14 +1114,35 @@ class PaperTrader:
         (same family as the TurtleSue pyramid leak).
         """
         self._persist = True
+        # Absent, empty and UNREADABLE must not produce the same empty dict.
+        # The orphan sweep below releases every pool reservation no local
+        # position references — with an empty positions dict that is ALL of
+        # them, while the positions stay open with no capital behind them.
+        # A truncated write was indistinguishable from a first run.
+        # Unreadable therefore fails toward ARMED: sweep skipped, new entries
+        # blocked, the bytes preserved for diagnosis. Mirrors TurtleSue's
+        # _load_positions, which already carries this defence.
+        self._state_unreadable = False
         try:
             with open(self._POSITIONS_FILE) as f:
                 saved = json.load(f).get("positions", {})
         except FileNotFoundError:
-            saved = {}
+            saved = {}          # genuinely absent — a real first run
         except Exception as e:
-            logger.warning(f"Failed to load positions: {e}")
+            self._state_unreadable = True
             saved = {}
+            logger.error(
+                "UNREADABLE POSITION STATE %s: %s — treating open positions "
+                "as UNKNOWN. Orphan sweep disabled and new entries blocked "
+                "until this is resolved; the file is not overwritten.",
+                self._POSITIONS_FILE, e)
+            try:
+                _q = "%s.corrupt_%d" % (self._POSITIONS_FILE, int(time.time()))
+                os.replace(self._POSITIONS_FILE, _q)
+                logger.error("Preserved unreadable state as %s", _q)
+            except Exception:
+                logger.error("Could not quarantine %s", self._POSITIONS_FILE,
+                             exc_info=True)
         for pair, d in saved.items():
             try:
                 pos = Position(
@@ -1159,17 +1180,33 @@ class PaperTrader:
                 # local position references — capital the pool holds forever
                 # otherwise. (Sweeps the snapshot taken above, so rids created
                 # by the re-reserve loop are never candidates.)
-                local_rids = {p.reservation_id for p in self.positions.values() if p.reservation_id}
-                for rid, res in reservations.items():
-                    if res.get("bot_id") == self._portfolio.bot_id and rid not in local_rids:
-                        ok, reason = self._portfolio.release(rid, pnl=0.0)
-                        logger.warning(f"Orphaned reservation {rid}: release {'ok' if ok else f'FAILED ({reason})'}")
+                if self._state_unreadable:
+                    logger.error(
+                        "Orphan sweep SKIPPED — position state was unreadable, "
+                        "so an empty local set is not evidence the pool's "
+                        "reservations are orphaned. Held capital is "
+                        "recoverable; capital released under a live position "
+                        "is not.")
+                else:
+                    local_rids = {p.reservation_id for p in self.positions.values() if p.reservation_id}
+                    for rid, res in reservations.items():
+                        if res.get("bot_id") == self._portfolio.bot_id and rid not in local_rids:
+                            ok, reason = self._portfolio.release(rid, pnl=0.0)
+                            logger.warning(f"Orphaned reservation {rid}: release {'ok' if ok else f'FAILED ({reason})'}")
         if self.positions:
             logger.info(f"Restored {len(self.positions)} open position(s) from disk")
-        self._save_positions()
+        # Never overwrite state we could not read — the quarantined copy is
+        # the only remaining record of what was open.
+        if not self._state_unreadable:
+            self._save_positions()
 
     def can_open(self) -> bool:
         """Check if we can open a new position."""
+        # Unknown state fails toward ARMED. With positions unreadable, this
+        # bot cannot tell "flat" from "holding positions it forgot", and
+        # opening more would double-commit capital the pool still books.
+        if getattr(self, "_state_unreadable", False):
+            return False
         return len(self.positions) < self.cfg.max_positions
 
     def open_position(self, signal: Signal) -> Optional[Position]:

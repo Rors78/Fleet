@@ -59,7 +59,10 @@ except ImportError:
 try:
     from command_center import MIN_TRADE_USD as _MIN_TRADE_USD
 except Exception:
-    _MIN_TRADE_USD = 100.0
+    # Fallback matches the CURRENT fleet floor. Pinning the old 100.0
+    # here would silently re-park a $210 pool if the import ever
+    # failed — the fallback must be safe AND usable.
+    _MIN_TRADE_USD = 1.0
 
 try:
     from event_publisher import EventPublisher

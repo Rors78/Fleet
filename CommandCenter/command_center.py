@@ -89,18 +89,28 @@ KRAKEN_REST = _FC_KRAKEN_REST
 # PortfolioManager.reserve() for why a percentage silently broke the fleet when
 # the pool was resized. This filters dust without tracking pool size.
 #
-# Lowered 100.00 -> 5.00 on 2026-08-13 when the operator set the pool to
+# Lowered 100.00 -> 1.00 on 2026-08-13 when the operator set the pool to
 # $210.53. At that size the per-trade cap is $42.11 and TurtleSue's 10%
-# pool share is $21.05 — both BELOW the old floor, so every bot was refused
-# and the fleet was parked. $5 keeps the dust filter meaningful at retail
-# pool sizes while leaving room for the real sizing rules to bind first.
+# pool share is $21.05 — both below the OLD $100 floor, so every bot was
+# refused and the fleet was parked.
+#
+# $5 was the first attempt and was still too high, for a reason worth
+# recording: the floor is checked AFTER fleet-intel risk scaling, not
+# before. TurtleSue's real $21.05 basis scaled by a live 0.21 risk
+# multiplier is $4.42 — refused. Only requests near $40 survived, which is
+# above what any bot actually asks for. Verified against the running pool
+# rather than reasoned about: the live multipliers today run 0.15-0.39.
+#
+# $1 sits below the smallest legitimate POST-SCALE size while still
+# filtering true dust. The real limiting is done by the per-trade and
+# per-pair caps, not by this.
 #
 # Still absolute, deliberately: the comment above records that making this
 # a percentage is what broke the fleet last time the pool was resized. If
 # the pool returns to six figures, raise this by hand — it is a dust
 # filter, not a risk control, and the per-trade/per-pair caps do the
 # actual limiting.
-MIN_TRADE_USD = 5.0
+MIN_TRADE_USD = 1.0
 
 # ---------------------------------------------------------------------------
 # Thread-safe state

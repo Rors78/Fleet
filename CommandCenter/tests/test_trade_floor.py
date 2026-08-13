@@ -59,6 +59,21 @@ check(FLOOR > 0,
       'a zero/negative floor is not a filter — dust positions produce '
       'signals too small to be actionable')
 
+# ── 2b. The floor must survive fleet-intel RISK SCALING ──
+# The floor is checked AFTER intel scaling, not before. A $5 floor looked
+# fine against the $42.11 per-trade cap but refused TurtleSue's real $21.05
+# basis once a live 0.21 risk multiplier reduced it to $4.42 — and it did so
+# only on SOME pairs, because the multiplier is per-pair, so the refusal
+# read as random rather than as a threshold. Verified against the running
+# pool: live multipliers ran 0.15-0.39 on 2026-08-13.
+_worst_mult = 0.15          # lowest live multiplier observed
+_turtle_basis = POOL * 10.0 / 100.0
+check(_turtle_basis * _worst_mult >= FLOOR,
+      "TurtleSue's $%.2f basis scaled by the worst live risk multiplier "
+      "(%.2f) is $%.2f, which must still clear the $%.2f floor — the floor "
+      "is applied AFTER scaling"
+      % (_turtle_basis, _worst_mult, _turtle_basis * _worst_mult, FLOOR))
+
 # ── 3. No bot may carry its OWN hardcoded copy ──
 for _bot, _path in (("nexusbrain", "D:/NexusBrain/nexus_brain.py"),
                     ("arbitrageur", "D:/Arbitrageur/arbitrageur.py")):
@@ -69,11 +84,22 @@ for _bot, _path in (("nexusbrain", "D:/NexusBrain/nexus_brain.py"),
           'entries the pool accepts' % _bot)
     check("_MIN_TRADE_USD" in _src,
           '[%s] must read the fleet floor rather than its own copy' % _bot)
-    # The fallback must be the OLD value, never 0 — an import failure must
-    # not silently remove the floor.
-    check("_MIN_TRADE_USD = 100.0" in _src,
-          '[%s] the import fallback must restore the ORIGINAL floor, not 0 '
-          '— a path problem must not remove a safety filter' % _bot)
+    # The fallback must match the CURRENT fleet floor, and must never be 0.
+    # Pinning the old 100.0 would silently re-park a $210 pool if the import
+    # failed; a 0 would remove the dust filter entirely. Both are wrong in
+    # opposite directions, so assert the actual value.
+    import re as _re
+    _fb = _re.search(r'_MIN_TRADE_USD = ([0-9.]+)', _src)
+    check(_fb is not None, '[%s] no import fallback found' % _bot)
+    if _fb:
+        _fbv = float(_fb.group(1))
+        check(_fbv == FLOOR,
+              '[%s] the import fallback ($%.2f) must match the fleet floor '
+              '($%.2f) — a stale fallback re-parks the fleet the moment the '
+              'import fails' % (_bot, _fbv, FLOOR))
+        check(_fbv > 0,
+              '[%s] the fallback must not be 0 — that removes the dust '
+              'filter entirely' % _bot)
 
 # ── 4. The floor must remain ABSOLUTE, not a fraction of the pool ──
 # The constant's own comment records that a percentage is what broke the

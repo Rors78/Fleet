@@ -70,6 +70,7 @@ TESTS = [
     "test_aegis_correlation.py",
     "test_brainiac_health.py",
     "test_aegis_seed.py",
+    "test_sizing_multiplier.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

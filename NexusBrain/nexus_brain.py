@@ -1233,9 +1233,24 @@ class PaperTrader:
             if risk_distance <= 0:
                 return None
 
-            size_usd = risk_amount / risk_distance * signal.entry_price
+            # Risk-based size, kept UNCAPPED here so the bus multipliers
+            # below apply to it. _risk_size is what risk_per_trade_pct and
+            # the stop distance actually ask for; max_size is a ceiling.
+            #
+            # Note this ceiling binds in every realistic market: the cap
+            # fails to bind only when 0.01/(2*atr_frac) <= 0.05, i.e.
+            # atr_frac >= 10%. Live 1h ATR on the traded pairs measured
+            # 0.30%-0.78% on 2026-08-13, so raw risk size is ~13x the cap
+            # and the 5% cap is the binding constraint for every trade.
+            # That is a real policy question — per-trade RISK then varies
+            # with volatility instead of being held constant — but it is
+            # left as-is deliberately: changing risk_per_trade_pct or the
+            # cap changes position sizes on a live fleet and is the
+            # operator's call, not a silent fix. What IS fixed here is the
+            # multiplier erasure below, which nobody chose.
+            _risk_size = risk_amount / risk_distance * signal.entry_price
             max_size = self.equity * self.cfg.max_position_pct
-            size_usd = min(size_usd, max_size)
+            size_usd = min(_risk_size, max_size)
 
             # Bus intelligence — fleet context modifies confidence
             _bus_mult = 1.0
@@ -1314,13 +1329,42 @@ class PaperTrader:
                             break
 
                     _bus_mult = max(0.3, min(2.0, _bus_mult))
-                    if _bus_mult != 1.0:
-                        logger.info(f"BUS CONTEXT {PAIR_DISPLAY.get(signal.pair, signal.pair)}: size x{_bus_mult:.2f}")
                 except Exception:
                     _bus_mult = 1.0
 
-            size_usd = size_usd * _bus_mult
-            size_usd = min(size_usd, max_size)  # re-cap after bus multiplier
+            # Multiply the CAPPED base, then cap again.
+            #
+            # size_usd is already min(_risk_size, max_size) from above.
+            # Because the cap binds in every realistic market (see there),
+            # the base IS max_size, and that makes the upward multipliers
+            # structurally unreachable: raising size above the base would
+            # mean exceeding max_position_pct, which is a deliberate risk
+            # limit, not something a conviction signal may override.
+            #
+            # So: downward multipliers apply in full (x0.3 -> 30% of the
+            # cap), upward ones cannot raise size past the cap. That is the
+            # honest behaviour of the current config rather than a silent
+            # policy change — and unlike before, the log below says so
+            # instead of claiming an increase that did not happen.
+            #
+            # Getting this order wrong breaks one direction or the other,
+            # and I did both while writing this: `_risk_size * _bus_mult`
+            # erases the DOWNWARD multipliers (risk_size is ~25x the cap at
+            # live ATR, so even x0.3 still exceeds it) — strictly worse,
+            # since those are the safety-relevant ones.
+            _requested = size_usd * _bus_mult
+            size_usd = min(_requested, max_size)  # cap is the ceiling, not the value
+            # Log what was APPLIED, not what was asked for. The old line
+            # printed "size x1.30" from _bus_mult alone, at a point where
+            # the cap had already discarded the increase — a log asserting
+            # an effect that did not occur.
+            if _bus_mult != 1.0:
+                _capped = " (capped at %.1f%% of equity)" % (
+                    self.cfg.max_position_pct * 100) if _requested > max_size else ""
+                logger.info(
+                    "BUS CONTEXT %s: size x%.2f requested -> $%.2f%s",
+                    PAIR_DISPLAY.get(signal.pair, signal.pair), _bus_mult,
+                    size_usd, _capped)
 
             # Size floor: $100 minimum trade size. Threshold unchanged after
             # fee removal — dust positions produce signals too small to be

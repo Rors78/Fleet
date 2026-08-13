@@ -666,7 +666,15 @@ class ExpectancyTracker:
         return {
             'bot_id': bot_id,
             # Real counts: nothing closed.
+            # flat/decided were MISSING here while get_bot_stats returns
+            # them for every bot that has traded, so a silent bot's payload
+            # had different KEYS from an active one — the exact trap the
+            # get_fleet_stats docstring warns about, in the function right
+            # below it. Consumers doing s.get('decided') got None and could
+            # not tell "no trades" from "field absent". They are counts, so
+            # they are 0 here, not None.
             'total_trades': 0, 'wins': 0, 'losses': 0,
+            'flat': 0, 'decided': 0,
             'max_consecutive_losses': 0,
             # Never measured — not zero.
             'win_rate': None, 'expectancy_per_trade': None,

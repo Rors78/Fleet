@@ -172,6 +172,41 @@ check(cf['profit_factor'] == 0.0,
       'all-losses is a measured 0.0 ratio (numerator zero, denominator '
       'real), not None; got %r' % cf['profit_factor'])
 
+# ── 9. Payload SHAPE must not change with its values ──
+# Live 2026-08-13: /api/expectancy returned turtlesue with flat=None
+# decided=None while gridzilla and confluence carried real integers,
+# because the zero-trade return omitted those keys entirely. A consumer
+# doing s.get('decided') could not tell "no trades" from "field absent".
+# They are COUNTS, so the empty case is 0 — the same rule this module
+# applies everywhere else (counts 0, rates None).
+t9 = fresh()
+add(t9, 'active', 10.0, 1000, 0)
+_full_bot = set(t9.get_bot_stats('active').keys())
+_empty_bot = set(t9.get_bot_stats('never_traded').keys())
+check(_full_bot == _empty_bot,
+      'a bot with NO trades must return the same KEYS as one with trades — '
+      'missing: %r, extra: %r'
+      % (sorted(_full_bot - _empty_bot), sorted(_empty_bot - _full_bot)))
+_e = t9.get_bot_stats('never_traded')
+# .get with a MISSING sentinel, not [] — the whole point is that these keys
+# may be absent, so indexing would KeyError on exactly the defect under
+# test and print nothing at all.
+check(_e.get('flat', 'MISSING') == 0 and _e.get('decided', 'MISSING') == 0,
+      'flat/decided are counts and must be 0 for a silent bot, not None or '
+      'absent; got flat=%r decided=%r'
+      % (_e.get('flat', 'MISSING'), _e.get('decided', 'MISSING')))
+check(_e.get('win_rate') is None and _e.get('profit_factor') is None,
+      'rates and ratios must stay None over zero samples — the counts-vs-'
+      'rates distinction must survive this fix')
+
+t10 = fresh()
+_empty_fleet = set(t10.get_fleet_stats().keys())
+add(t10, 'a', 5.0, 1000, 0)
+_full_fleet = set(t10.get_fleet_stats().keys())
+check(_full_fleet == _empty_fleet,
+      'the FLEET payload must be shape-stable too — missing when empty: %r'
+      % sorted(_full_fleet - _empty_fleet))
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

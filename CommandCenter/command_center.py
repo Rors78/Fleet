@@ -627,6 +627,19 @@ class PortfolioManager:
                         "reason": f"Pool exhausted (total ${self.total:.2f}) — no capital to reserve"}
 
             # 5. Per-trade limit (epsilon prevents float equality rejection at exact boundary)
+            #
+            # NOTE (2026-08-13 config audit): this gate cannot bind while
+            # max_per_trade_pct >= max_per_pair_pct, and both are currently
+            # 20%. Gate 3 above tests `pair_exp + amount` (CUMULATIVE) while
+            # this tests `amount` alone (SINGLE), and pair_exp >= 0, so the
+            # pair gate is always at least as strict. Any single trade this
+            # would refuse was already refused there.
+            #
+            # Left at 20% deliberately: lowering it would tighten a live risk
+            # limit and start refusing trades the fleet currently accepts,
+            # which is a position-sizing policy decision for the operator,
+            # not a silent side effect of an audit. Recorded here so the
+            # redundancy is visible rather than mistaken for active defence.
             max_trade = self.total * lim["max_per_trade_pct"] / 100
             if amount > max_trade + 0.01:
                 return {"ok": False, "reason": f"Trade limit: {amount:.2f} > {max_trade:.2f} max ({lim['max_per_trade_pct']}%)"}

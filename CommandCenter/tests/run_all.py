@@ -71,6 +71,7 @@ TESTS = [
     "test_brainiac_health.py",
     "test_aegis_seed.py",
     "test_sizing_multiplier.py",
+    "test_grid_risk_gates.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

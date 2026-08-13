@@ -769,6 +769,12 @@ class GridExecutor:
                 "cycles_completed": 0,
                 "grid_pnl": 0,
                 "grid_fees": 0,
+                # Mark-to-market: realized cycles PLUS open inventory. The
+                # drawdown kill measures this, not grid_pnl alone — see the
+                # drawdown block in _check_grid. Present from creation so
+                # every consumer sees a consistent shape.
+                "unrealized_pnl": 0,
+                "total_pnl_mtm": 0,
                 "peak_pnl": 0,
                 "max_drawdown": 0,
                 "range_breaks": 0,
@@ -1007,11 +1013,40 @@ class GridExecutor:
                             f"(level {level['price']:.6f}) PnL: ${pnl:.4f}"
                         )
 
-            # Track drawdown
-            if grid["grid_pnl"] > grid["peak_pnl"]:
-                grid["peak_pnl"] = grid["grid_pnl"]
-            dd = grid["peak_pnl"] - grid["grid_pnl"]
-            if dd > grid["max_drawdown"]:
+            # Track drawdown — on TOTAL equity, realized plus open inventory.
+            #
+            # This measured grid_pnl alone, which is the sum of COMPLETED
+            # cycles. A cycle only completes when a sell fires at
+            # `current_price >= level["price"]` against a buy filled at a
+            # strictly lower level, so every realized pnl is >= 0 and
+            # grid_pnl is monotonically NON-DECREASING. peak_pnl therefore
+            # always equalled grid_pnl and dd was structurally 0.0 forever:
+            # the DD_KILLED gate below could never fire.
+            #
+            # The actual risk in a grid is the opposite quantity — open
+            # inventory bought on the way down, which the old measure
+            # ignored entirely. A grid bleeding badly on held bags reported
+            # max_drawdown 0.0 and was killable only by the range-break
+            # path. Everything needed was already tracked per level
+            # (filled / fill_price / size_usd), so unrealized is computed
+            # here rather than inferred.
+            _unrealized = 0.0
+            for _lv in grid["levels"]:
+                if _lv.get("filled") and _lv.get("side") == "BUY":
+                    _fp = _lv.get("fill_price") or 0
+                    if _fp > 0 and current_price > 0:
+                        _qty = (_lv.get("size_usd") or 0) / _fp
+                        _unrealized += _qty * (current_price - _fp)
+            grid["unrealized_pnl"] = round(_unrealized, 4)
+            _equity = (grid.get("grid_pnl") or 0) + _unrealized
+            grid["total_pnl_mtm"] = round(_equity, 4)
+            # .get with a default: grids restored from a state file written
+            # before these keys existed would otherwise KeyError here, on
+            # the first scan after an upgrade restart.
+            if _equity > (grid.get("peak_pnl") or 0):
+                grid["peak_pnl"] = _equity
+            dd = (grid.get("peak_pnl") or 0) - _equity
+            if dd > (grid.get("max_drawdown") or 0):
                 grid["max_drawdown"] = dd
 
             # Publish fills
@@ -1416,9 +1451,28 @@ class GridzillaEngine:
         max_exposure = portfolio_balance * self.config["max_total_exposure_pct"]
         max_exposure *= self.intel.max_exposure_multiplier()
 
-        # Current exposure
-        active = self.executor.get_active_grids()
-        current_exposure = sum(g.get("levels", 0) * 10 for g in active.values())  # rough
+        # Current exposure, in DOLLARS.
+        #
+        # This was `sum(g.get("levels", 0) * 10 ...)`, and get_active_grids
+        # returns "levels" as design.n_levels — a COUNT OF GRID LINES, not
+        # money. With 5 lines per grid and a 10-pair universe that caps out
+        # at 10*5*10 = $500, against a max_exposure of balance * 0.30 *
+        # multiplier (>= balance * 0.15). Tripping it needed a balance
+        # under ~$3.3k, but the deploy path below already refuses to act
+        # below $10k — the two ranges are disjoint, so the 30% portfolio
+        # ceiling could never fire and only the per-pair 5% cap constrained
+        # anything. Ten pairs at 5% each is 50% of the portfolio.
+        #
+        # allocation is the real capital committed to each grid (set at
+        # deploy from per_pair_alloc), so summing it is the actual exposure.
+        active_full = self.executor.active_grids
+        current_exposure = 0.0
+        for _g in list(active_full.values()):
+            if not isinstance(_g, dict):
+                continue
+            _alloc = _g.get("allocation")
+            if isinstance(_alloc, (int, float)) and _alloc > 0:
+                current_exposure += float(_alloc)
 
         # Scan universe for grid opportunities (skip blacklisted pairs)
         for pair in self.config["universe"]:

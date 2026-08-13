@@ -143,7 +143,64 @@ class BrainiacCollector:
         ]
         for t in threads:
             t.start()
+        # Retained so health() can report ACTUAL thread liveness. Without a
+        # reference, a collector thread that died left no trace: its category
+        # simply stopped updating, and every consumer read the last value as
+        # current. AEGIS consumed exactly this for correlation.
+        self._threads = threads
+        self._started_at = time.time()
         return threads
+
+    # Category -> how often its collector loop is designed to run. A category
+    # is STALE when its newest sample is older than a generous multiple of
+    # this; that is measured, not assumed, from the loop sleeps below.
+    _CADENCE = {"depth": 60, "trades": 60, "metrics": 300,
+                "correlations": 300, "funding": 300}
+
+    def health(self) -> dict:
+        """Measured collector state: thread liveness + per-category freshness.
+
+        Every field here is observed. A category with no sample reports
+        last_ts None and stale True — absent is not "fresh", and a dead
+        collector must not look identical to a quiet market.
+        """
+        now = time.time()
+        threads = getattr(self, "_threads", []) or []
+        alive_names = {t.name for t in threads if t.is_alive()}
+        cats = {}
+        for cat, cadence in self._CADENCE.items():
+            newest = None
+            with _latest_lock:
+                for (c, _k), entry in _latest_cache.items():
+                    if c == cat:
+                        _ts = entry.get("ts")
+                        if isinstance(_ts, (int, float)):
+                            newest = _ts if newest is None else max(newest, _ts)
+            age = (now - newest) if newest else None
+            cats[cat] = {
+                "samples": self.stats.get(cat, 0),
+                "last_ts": newest,
+                "age_s": round(age, 1) if age is not None else None,
+                "cadence_s": cadence,
+                # No sample at all is stale, not fresh. `age is None` must
+                # never take the healthy branch.
+                "stale": True if age is None else age > cadence * 3,
+            }
+        return {
+            "started_at": getattr(self, "_started_at", None),
+            "uptime_s": (round(now - self._started_at, 1)
+                         if getattr(self, "_started_at", None) else None),
+            "threads_expected": len(threads),
+            "threads_alive": len(alive_names),
+            "threads": [{"name": t.name, "alive": t.is_alive()}
+                        for t in threads],
+            "pairs": self._get_pairs(),
+            "pairs_count": len(self._get_pairs()),
+            "categories": cats,
+            "healthy": (len(threads) > 0
+                        and len(alive_names) == len(threads)
+                        and not any(c["stale"] for c in cats.values())),
+        }
 
     def _collect_depth(self):
         """Order book snapshots — reveals institutional positioning."""
@@ -361,6 +418,40 @@ def register_brainiac_endpoints(handler_class):
                 data = get_latest("trades", pair)
             elif category == "stats":
                 data = {"ts": time.time(), "data": _collector.stats if _collector else {}}
+            elif category == "health":
+                # Distinguish "collector never started" from "collector
+                # running but idle" — they are different failures and the
+                # dashboard renders them differently.
+                if _collector is None:
+                    data = {"ts": time.time(), "data": {
+                        "healthy": False, "threads_expected": 0,
+                        "threads_alive": 0, "threads": [], "categories": {},
+                        "pairs": [], "pairs_count": 0,
+                        "uptime_s": None, "started_at": None,
+                        "unavailable": "collector not started"}}
+                else:
+                    data = {"ts": time.time(), "data": _collector.health()}
+            elif category == "depth_all":
+                # Every collected pair's book imbalance in one call — the
+                # dashboard needs the fleet-wide view, and 10 sequential
+                # per-pair requests would be 10 round-trips per refresh.
+                _pairs = _collector._get_pairs() if _collector else []
+                _rows = {}
+                for _p in _pairs:
+                    _e = get_latest("depth", _p)
+                    if _e and isinstance(_e.get("data"), dict):
+                        _rows[_p] = {**_e["data"], "ts": _e.get("ts")}
+                data = {"ts": time.time(), "data": {"pairs": _rows,
+                                                    "count": len(_rows)}}
+            elif category == "trades_all":
+                _pairs = _collector._get_pairs() if _collector else []
+                _rows = {}
+                for _p in _pairs:
+                    _e = get_latest("trades", _p)
+                    if _e and isinstance(_e.get("data"), dict):
+                        _rows[_p] = {**_e["data"], "ts": _e.get("ts")}
+                data = {"ts": time.time(), "data": {"pairs": _rows,
+                                                    "count": len(_rows)}}
             else:
                 data = None
 

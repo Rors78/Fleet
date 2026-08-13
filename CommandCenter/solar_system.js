@@ -379,7 +379,16 @@ var CELESTIAL_HIERARCHY={
   chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.0004898, mass:10, sz:22, grp:"intel",    pt:"pulsar",     pers:"rhythmic"},
   hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0012397, mass:8,  sz:21, grp:"optimizer",pt:"cluster",    pers:"swarm"},
   trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0011340, mass:8,  sz:21, grp:"intel",    pt:"trinary",    pers:"scattered"},
-  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:20, grp:"support",  pt:"nebula",     pers:"processing"}
+  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:20, grp:"support",  pt:"nebula",     pers:"processing"},
+  /* BRAINIAC — Command Center's own sensory apparatus, not a fleet bot: it
+     is five collector threads running INSIDE cc, so it orbits cc closely
+     and fast. orbitRadius 88 is the tightest orbit in the scene and its
+     speed follows the same Kepler relation as its siblings
+     (0.0012397*(98/88)^1.5 ~ 0.001456), so it does not break the physics
+     the rest of the bodies obey. sz 20 sits on the existing smallest-body
+     floor — it is a sensor, not a planet, and the size-ratio cap in the
+     comments above must keep holding. */
+  brainiac:  {type:"moon",  parent:"cc",              orbitRadius:88, orbitSpeed:0.0014560, mass:6,  sz:20, grp:"support",  pt:"sensor",     pers:"scanning"}
 };
 
 /* --- Synapse definitions (event bus connections) --- */
@@ -2232,6 +2241,94 @@ var PLANET_VISUALS = {
                 ctx.fillStyle = moteG;
                 ctx.beginPath(); ctx.arc(mx, my, r*0.14, 0, Math.PI*2); ctx.fill();
             }
+        }
+    },
+
+    brainiac: {
+        /* Brainiac — Command Center's sensory apparatus. A cold sensor body:
+           a slow radar sweep over a latitude/longitude survey grid, with a
+           ring of five collector lamps around the rim.
+
+           The lamps are DATA, not decoration: each is one collector thread,
+           lit when its category is fresh and dark when it is stale or has
+           never sampled. A dead collector goes visibly dark on the body
+           itself, which is the failure this whole tab was built to expose —
+           previously a dead thread just stopped updating and every consumer
+           read the last value as current. */
+        baseColor: [30, 74, 108],
+        atmosphere: [56, 189, 248],
+        surface: function(ctx, x, y, r, lx, ly, now) {
+            var tex = _bakeMottleTex('brainiac', _texBucket(r), [40, 96, 140]);
+            _stampSurfTex(ctx, tex, x, y, r);
+            /* Survey grid — 3 latitude arcs + 4 meridians, faint. */
+            ctx.save();
+            ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.clip();
+            ctx.strokeStyle = 'rgba(120, 200, 250, 0.16)';
+            ctx.lineWidth = Math.max(0.4, r*0.012);
+            for (var gi=1; gi<=3; gi++){
+                var gy = y - r + (2*r) * (gi/4);
+                var hw = Math.sqrt(Math.max(0, r*r - (gy-y)*(gy-y)));
+                ctx.beginPath(); ctx.moveTo(x-hw, gy); ctx.lineTo(x+hw, gy); ctx.stroke();
+            }
+            for (var mi2=0; mi2<4; mi2++){
+                var mfrac = (mi2+0.5)/4;
+                var ell = Math.abs(Math.cos(mfrac*Math.PI));
+                ctx.beginPath();
+                ctx.ellipse(x, y, Math.max(0.1, r*ell), r, 0, 0, Math.PI*2);
+                ctx.stroke();
+            }
+            /* Radar sweep — one slow rotation every ~6s, with a trailing
+               wedge so the direction of travel is legible. */
+            var sweep = (now/6000) % (Math.PI*2);
+            var sweepG = ctx.createRadialGradient(x, y, 0, x, y, r);
+            sweepG.addColorStop(0, 'rgba(125, 211, 252, 0.30)');
+            sweepG.addColorStop(1, 'rgba(56, 189, 248, 0)');
+            ctx.fillStyle = sweepG;
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.arc(x, y, r, sweep - 0.55, sweep);
+            ctx.closePath();
+            ctx.fill();
+            /* Leading edge */
+            ctx.strokeStyle = 'rgba(186, 230, 253, 0.55)';
+            ctx.lineWidth = Math.max(0.5, r*0.02);
+            ctx.beginPath();
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + Math.cos(sweep)*r, y + Math.sin(sweep)*r);
+            ctx.stroke();
+            ctx.restore();
+        },
+        overlay: function(ctx, x, y, r, lx, ly, now) {
+            /* Five collector lamps. Read live health when it is available;
+               when it is NOT, render them all dim rather than lit — an
+               unknown collector must never look like a working one. */
+            var cats = ['depth','trades','metrics','correlations','funding'];
+            var H = (typeof window!=='undefined' && window._brainiac)
+                    ? window._brainiac.health : null;
+            for (var li=0; li<cats.length; li++){
+                var la = -Math.PI/2 + (li/cats.length)*Math.PI*2;
+                var lrad = r*1.28;
+                var px = x + Math.cos(la)*lrad, py = y + Math.sin(la)*lrad*0.72;
+                var st = H && H.categories ? H.categories[cats[li]] : null;
+                var lit = !!(st && st.stale === false);
+                var unknown = !st;
+                var pulse = 0.6 + 0.4*Math.sin(now/650 + li*1.3);
+                var a = unknown ? 0.12 : (lit ? 0.45+0.35*pulse : 0.14);
+                var col = unknown ? '148,163,184' : (lit ? '125,211,252' : '239,68,68');
+                var lg = ctx.createRadialGradient(px, py, 0, px, py, Math.max(0.1, r*0.16));
+                lg.addColorStop(0, 'rgba('+col+','+a.toFixed(3)+')');
+                lg.addColorStop(1, 'rgba('+col+',0)');
+                ctx.fillStyle = lg;
+                ctx.beginPath(); ctx.arc(px, py, Math.max(0.1, r*0.16), 0, Math.PI*2); ctx.fill();
+            }
+            /* Cold scanning halo */
+            var haloR = Math.max(0.1, r*1.14);
+            var hg = ctx.createRadialGradient(x, y, r*0.92, x, y, haloR);
+            hg.addColorStop(0, 'rgba(0,0,0,0)');
+            hg.addColorStop(0.7, 'rgba(56,189,248,0.09)');
+            hg.addColorStop(1, 'rgba(56,189,248,0)');
+            ctx.fillStyle = hg;
+            ctx.beginPath(); ctx.arc(x, y, haloR, 0, Math.PI*2); ctx.fill();
         }
     },
 };

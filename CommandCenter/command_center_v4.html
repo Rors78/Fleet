@@ -654,7 +654,13 @@ var BOTS_DEF = [
      header counts _orbNodes rather than the API bot list, the fleet read
      "17/17" while /api/master served 18 alive. The id must be
      "signal_broadcaster" to match the API; "broadcaster" silently never binds. */
-  {id:"signal_broadcaster", name:"Broadcaster", port:9002, color:"#c8a96e", trading:false, noHtml:true}
+  {id:"signal_broadcaster", name:"Broadcaster", port:9002, color:"#c8a96e", trading:false, noHtml:true},
+  /* Brainiac: the market-microstructure collector. It runs as five threads
+     INSIDE Command Center, so it has no port of its own and never appears
+     in /api/master — port is 9000 (CC's) because that is genuinely where it
+     serves from, and `inProcess` marks it so nothing tries to poll it as a
+     separate process. Liveness comes from /api/brainiac/health. */
+  {id:"brainiac", name:"Brainiac", port:9000, color:"#38bdf8", trading:false, noHtml:true, inProcess:true}
 ];
 var POLL_MS = 30000;
 var SSE_RETRY_MS = 5000;
@@ -1251,6 +1257,11 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
   if(this.id==="phitex"&&phitexData.pairs.length) this.alive=true;
   else if(this.id==="aegis"&&aegisState.score!=null) this.alive=true;
   else if(this.id==="cc") this.alive=true;
+  /* Brainiac runs inside CC, so it is never in state.bots. Its liveness is
+     its MEASURED collector health — threads alive and data still arriving.
+     Hardcoding true would make the body glow while every collector was
+     dead, which is the exact failure this tab was added to expose. */
+  else if(this.id==="brainiac") this.alive=!!(_brainiac.health&&_brainiac.health.healthy);
   else this.alive=!!(b&&b.alive);
   var raw=(b&&b.raw)||{},norm=(b&&b.normalized)||{};
   this.direction=_botDir(this.id,b);
@@ -3456,7 +3467,12 @@ function _drawMetricsBar(ctx,W){
     totalCount=_apiBots.length;
     for(var bi=0;bi<_apiBots.length;bi++){if(_apiBots[bi].alive)aliveCount++;}
   }else{
-    for(var id in _orbNodes){var nd=_orbNodes[id];if(nd.id!=="cc"){totalCount++;if(nd.alive)aliveCount++;}}
+    /* Exclude in-process members (brainiac) as well as cc: they are part of
+       Command Center, not separate fleet bots, and counting them here would
+       make the HUD read 19/19 against /api/master's 18. The fallback branch
+       must agree with the API branch above. */
+    for(var id in _orbNodes){var nd=_orbNodes[id];
+      if(nd.id!=="cc"&&nd.id!=="brainiac"){totalCount++;if(nd.alive)aliveCount++;}}
   }
   /* Pool: use portfolio.total (real pool), fallback to aggregate equity */
   var pool=port.total!=null?port.total:(agg.total_equity||0);
@@ -5486,6 +5502,65 @@ function fetchBotData(botId,port){
     }
   }).catch(function(){});
 }
+
+/* ===== BRAINIAC — market microstructure collector =====
+   Brainiac is NOT a bot: it is five collector threads inside Command Center,
+   with no port and no entry in /api/master. So it has no /api/bot/<id> and
+   fetchBotData cannot reach it; it reads the /api/brainiac/* endpoints
+   directly. Everything cached here is either a measured value or absent —
+   a failed fetch leaves the previous entry untouched and stamps _err so the
+   panel can say the data is stale rather than silently showing old numbers
+   as current. */
+var _brainiac={health:null,depth:null,trades:null,corr:null,funding:null,
+               metrics:null,_err:{},_lastOk:{}};
+/* solar_system.js is a separate file and cannot see this closure — the
+   collector lamps on the Brainiac body read window._brainiac. Same object,
+   so live updates are visible to both without any copying. */
+window._brainiac=_brainiac;
+/* Health alone — cheap, and the only part the solar body needs. Kept
+   separate from fetchBrainiac() so the background poll does not pull the
+   full funding/depth payloads every 15s for a tab nobody is looking at. */
+function fetchBrainiacHealth(){
+  fetch("/api/brainiac/health").then(function(r){return r.ok?r.json():null;})
+    .then(function(j){
+      if(j&&j.data){ _brainiac.health=j.data; delete _brainiac._err.health; }
+      else { _brainiac._err.health="no data"; }
+    }).catch(function(){
+      /* Unreachable is NOT healthy — leave the last value but mark it, and
+         if we never got one, health stays null so the lamps read unknown
+         (dim) rather than lit. */
+      _brainiac._err.health="unreachable";
+    });
+}
+function fetchBrainiac(){
+  var _parts=[["health","/api/brainiac/health"],
+              ["depth","/api/brainiac/depth_all"],
+              ["trades","/api/brainiac/trades_all"],
+              ["corr","/api/brainiac/correlations"],
+              ["funding","/api/brainiac/funding"],
+              ["metrics","/api/brainiac/metrics"]];
+  _parts.forEach(function(p){
+    fetch(p[1]).then(function(r){return r.ok?r.json():null;})
+      .then(function(j){
+        if(j&&j.data){
+          _brainiac[p[0]]=j.data;
+          _brainiac._lastOk[p[0]]=(typeof j.ts==="number")?j.ts:(Date.now()/1000);
+          delete _brainiac._err[p[0]];
+        } else {
+          /* Keep the last good value but MARK it — replacing it with {} would
+             render as "no correlation" rather than "could not refresh". */
+          _brainiac._err[p[0]]="no data";
+        }
+        if(activeTab>0){
+          var d=BOTS_DEF[activeTab-1];
+          if(d&&d.id==="brainiac"){
+            $focusFrame.innerHTML=buildDetailView(d,findBot(state.bots,"brainiac")||{raw:{},normalized:{}});
+          }
+        }
+      }).catch(function(){_brainiac._err[p[0]]="unreachable";});
+  });
+}
+
 /* ===== PLANET IDENTITY SYSTEM — shared across all 16 panels ===== */
 
 var VOICE_CONFIG={
@@ -11098,6 +11173,193 @@ function buildContrarianView(def,b){
   h+='</div>'; /* /dv2-frame */
   return h;
 }
+/* ===== BRAINIAC detail view — MARKET MICROSTRUCTURE =====
+   The fleet's data-collection layer, previously invisible: five threads
+   inside CC with no port, no process and no /api/master entry. A dead
+   collector simply stopped updating its category and every consumer read
+   the last stored value as current — AEGIS did exactly that for
+   correlation. This panel exists so that failure is visible.
+   Every figure is measured or explicitly absent; nothing is defaulted. */
+function buildBrainiacView(def,b){
+  var c=def.color;
+  var H=_brainiac.health, err=_brainiac._err||{};
+  function dash(){return '<span style="color:#475569">&mdash;</span>';}
+  function num(v,d,suf){
+    return (typeof v==="number"&&isFinite(v))
+      ? (v.toFixed(d===undefined?2:d)+(suf||"")) : dash();
+  }
+  function ago(ts){
+    if(typeof ts!=="number"||!isFinite(ts)) return dash();
+    var s=Math.max(0,Date.now()/1000-ts);
+    return s<90?(s.toFixed(0)+"s"):(s/60).toFixed(1)+"m";
+  }
+  var h='<div class="dv2-frame" style="padding:10px;overflow-y:auto">';
+  h+='<div class="dv2-title-strip"><div class="dv2-accent-bar" style="background:'+c+'"></div>'
+   + '<span class="dv2-bot-name" style="color:'+c+'">BRAINIAC</span>'
+   + '<span class="dv2-port">in-process &middot; no port</span></div>';
+
+  /* ── Collector health: the reason this tab exists ── */
+  var _hz=H&&H.healthy, _unavail=H&&H.unavailable;
+  var _hc=_unavail?"#e67e22":(_hz?"#22c55e":"#ef4444");
+  var _ht=_unavail?("COLLECTOR "+String(_unavail).toUpperCase())
+        :(H?(_hz?"COLLECTING":"DEGRADED"):"HEALTH UNKNOWN");
+  h+='<div style="margin:8px 0;padding:8px 10px;border-radius:4px;border:1px solid '+_hc
+   + ';background:rgba(0,0,0,0.25)">';
+  h+='<span style="color:'+_hc+';font-weight:700;letter-spacing:0.5px">'+_ht+'</span>';
+  if(H&&typeof H.threads_alive==="number"){
+    h+='<span style="color:var(--ov-dim);margin-left:10px">threads '
+     + H.threads_alive+'/'+H.threads_expected
+     + ' &middot; uptime '+(typeof H.uptime_s==="number"?(H.uptime_s/3600).toFixed(1)+'h':dash())
+     + ' &middot; '+(typeof H.pairs_count==="number"?H.pairs_count:dash())+' pairs</span>';
+  }
+  h+='</div>';
+
+  /* Per-collector rows — a dead thread or a stale category is named. */
+  if(H&&H.categories){
+    h+='<table class="ov-score-table2" style="width:100%;margin-bottom:10px">';
+    h+='<thead><tr><th style="text-align:left">Collector</th><th>Samples</th>'
+     + '<th>Last</th><th>Cadence</th><th>State</th></tr></thead><tbody>';
+    var _tAlive={};
+    (H.threads||[]).forEach(function(t){
+      var _n=String(t.name||"").replace("Brainiac-","").toLowerCase();
+      _tAlive[_n]=t.alive;
+    });
+    Object.keys(H.categories).forEach(function(k){
+      var v=H.categories[k];
+      var _alive=_tAlive[k.slice(0,4)]; /* depth/trad/metr/corr/fund prefix */
+      var st=v.stale?"STALE":"FRESH", stc=v.stale?"#ef4444":"#22c55e";
+      if(v.last_ts==null){st="NO DATA";stc="#e67e22";}
+      h+='<tr><td style="text-align:left;color:'+c+'">'+escHtml(k)+'</td>'
+       + '<td>'+(typeof v.samples==="number"?v.samples:dash())+'</td>'
+       + '<td>'+ago(v.last_ts)+'</td>'
+       + '<td>'+(v.cadence_s||dash())+'s</td>'
+       + '<td style="color:'+stc+'">'+st+'</td></tr>';
+    });
+    h+='</tbody></table>';
+  } else {
+    h+='<div style="color:#475569;margin-bottom:10px">Collector health unavailable'
+     + (err.health?(' &mdash; '+escHtml(err.health)):'')+'</div>';
+  }
+
+  /* ── Global market metrics ── */
+  var M=_brainiac.metrics;
+  h+='<div class="ov-cell-hdr" style="margin-top:6px">GLOBAL MARKET</div>';
+  if(M){
+    var _mc=M.market_cap_change_24h;
+    h+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin:6px 0 10px 0">';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">TOTAL CAP</div><div style="font-size:0.95rem">$'
+     + (typeof M.total_market_cap_usd==="number"?(M.total_market_cap_usd/1e12).toFixed(3)+'T':dash())+'</div></div>';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">24H VOLUME</div><div style="font-size:0.95rem">$'
+     + (typeof M.total_volume_usd==="number"?(M.total_volume_usd/1e9).toFixed(1)+'B':dash())+'</div></div>';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">BTC DOM</div><div style="font-size:0.95rem">'
+     + num(M.btc_dominance,2,'%')+'</div></div>';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">ETH DOM</div><div style="font-size:0.95rem">'
+     + num(M.eth_dominance,2,'%')+'</div></div>';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">24H CHANGE</div><div style="font-size:0.95rem;color:'
+     + (typeof _mc==="number"?(_mc>=0?"#22c55e":"#ef4444"):"#475569")+'">'+num(_mc,2,'%')+'</div></div>';
+    h+='</div>';
+  } else { h+='<div style="color:#475569;margin:6px 0 10px 0">no metrics sample yet</div>'; }
+
+  /* ── Order book imbalance, per pair ── */
+  var D=_brainiac.depth&&_brainiac.depth.pairs;
+  h+='<div class="ov-cell-hdr">ORDER BOOK IMBALANCE <span style="color:var(--ov-dim);font-weight:400">'
+   + '&middot; negative = ask-heavy (sell pressure)</span></div>';
+  if(D&&Object.keys(D).length){
+    h+='<table class="ov-score-table2" style="width:100%;margin:6px 0 10px 0">';
+    h+='<thead><tr><th style="text-align:left">Pair</th><th>Bid $</th><th>Ask $</th>'
+     + '<th>Imbalance</th><th>Spread</th><th>Age</th></tr></thead><tbody>';
+    Object.keys(D).sort(function(a,b2){
+      return (D[a].imbalance||0)-(D[b2].imbalance||0);
+    }).forEach(function(p){
+      var d=D[p], im=d.imbalance;
+      var imc=(typeof im==="number")?(im<-0.3?"#ef4444":im>0.3?"#22c55e":"#e2e8f0"):"#475569";
+      /* Bar is centred at zero: left = ask-heavy, right = bid-heavy. */
+      var _w=(typeof im==="number")?Math.min(50,Math.abs(im)*50):0;
+      h+='<tr><td style="text-align:left;color:'+c+'">'+escHtml(p)+'</td>'
+       + '<td>'+(typeof d.bid_depth_usd==="number"?Math.round(d.bid_depth_usd).toLocaleString():dash())+'</td>'
+       + '<td>'+(typeof d.ask_depth_usd==="number"?Math.round(d.ask_depth_usd).toLocaleString():dash())+'</td>'
+       + '<td style="color:'+imc+'">'+num(im,4)
+       + '<div style="position:relative;height:3px;background:#1e293b;margin-top:2px">'
+       + '<div style="position:absolute;left:50%;top:0;height:3px;background:'+imc
+       + ';width:'+_w+'%;'+((typeof im==="number"&&im<0)?'transform:translateX(-100%)':'')+'"></div></div></td>'
+       + '<td>'+num(d.spread_pct,4,'%')+'</td>'
+       + '<td style="color:var(--ov-dim)">'+ago(d.ts)+'</td></tr>';
+    });
+    h+='</tbody></table>';
+  } else { h+='<div style="color:#475569;margin:6px 0 10px 0">no depth samples yet</div>'; }
+
+  /* ── Trade flow ── */
+  var T=_brainiac.trades&&_brainiac.trades.pairs;
+  h+='<div class="ov-cell-hdr">TRADE FLOW <span style="color:var(--ov-dim);font-weight:400">'
+   + '&middot; buy ratio over the sampled window</span></div>';
+  if(T&&Object.keys(T).length){
+    h+='<table class="ov-score-table2" style="width:100%;margin:6px 0 10px 0">';
+    h+='<thead><tr><th style="text-align:left">Pair</th><th>Trades</th><th>Buy/Sell</th>'
+     + '<th>Buy ratio</th><th>Avg $</th><th>Max $</th></tr></thead><tbody>';
+    Object.keys(T).sort(function(a,b2){
+      return (T[b2].total_volume_usd||0)-(T[a].total_volume_usd||0);
+    }).forEach(function(p){
+      var t=T[p], br=t.buy_ratio;
+      var brc=(typeof br==="number")?(br>0.6?"#22c55e":br<0.4?"#ef4444":"#e2e8f0"):"#475569";
+      h+='<tr><td style="text-align:left;color:'+c+'">'+escHtml(p)+'</td>'
+       + '<td>'+(typeof t.count==="number"?t.count:dash())+'</td>'
+       + '<td><span style="color:#22c55e">'+(t.buys!=null?t.buys:dash())+'</span>/'
+       + '<span style="color:#ef4444">'+(t.sells!=null?t.sells:dash())+'</span></td>'
+       + '<td style="color:'+brc+'">'+num(br,3)+'</td>'
+       + '<td>'+(typeof t.avg_size_usd==="number"?Math.round(t.avg_size_usd).toLocaleString():dash())+'</td>'
+       + '<td>'+(typeof t.max_size_usd==="number"?Math.round(t.max_size_usd).toLocaleString():dash())+'</td></tr>';
+    });
+    h+='</tbody></table>';
+  } else { h+='<div style="color:#475569;margin:6px 0 10px 0">no trade samples yet</div>'; }
+
+  /* ── Correlation matrix — the input AEGIS consumes ── */
+  var R=_brainiac.corr;
+  h+='<div class="ov-cell-hdr">CROSS-PAIR CORRELATION <span style="color:var(--ov-dim);font-weight:400">'
+   + '&middot; feeds the AEGIS safety term</span></div>';
+  if(R){
+    h+='<div style="margin:6px 0">avg |&rho;| <span style="color:'
+     + (typeof R.avg_abs_correlation==="number"
+        ?(R.avg_abs_correlation>0.7?"#ef4444":R.avg_abs_correlation>0.5?"#e67e22":"#22c55e"):"#475569")
+     + ';font-weight:700">'+num(R.avg_abs_correlation,4)+'</span>'
+     + '<span style="color:var(--ov-dim)"> across '+(R.correlations_count!=null?R.correlations_count:dash())
+     + ' pairs of '+(R.pairs_count!=null?R.pairs_count:dash())+' assets</span></div>';
+    var _mk=function(title,rows,col){
+      var s='<div style="flex:1;min-width:200px"><div style="color:var(--ov-dim);font-size:0.6rem;margin-bottom:2px">'
+        + title+'</div>';
+      (rows||[]).forEach(function(r){
+        var _n=Array.isArray(r)?r[0]:"", _v=Array.isArray(r)?r[1]:null;
+        s+='<div style="display:flex;justify-content:space-between;font-size:0.7rem">'
+         + '<span>'+escHtml(String(_n).replace("|"," / "))+'</span>'
+         + '<span style="color:'+col+'">'+num(_v,4)+'</span></div>';
+      });
+      return s+'</div>';
+    };
+    h+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin-bottom:10px">';
+    h+=_mk("MOST CORRELATED (herding risk)",R.top_correlated,"#ef4444");
+    h+=_mk("LEAST CORRELATED (diversifiers)",R.least_correlated,"#22c55e");
+    h+='</div>';
+  } else { h+='<div style="color:#475569;margin:6px 0 10px 0">no correlation sample yet</div>'; }
+
+  /* ── Funding ── */
+  var F=_brainiac.funding;
+  h+='<div class="ov-cell-hdr">PERPETUAL FUNDING</div>';
+  if(F){
+    h+='<div style="display:flex;gap:16px;flex-wrap:wrap;margin:6px 0 10px 0">';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">PAIRS</div><div>'
+     + (F.pairs!=null?F.pairs:dash())+'</div></div>';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">AVG RATE</div><div>'
+     + num(F.avg_rate,6)+'</div></div>';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">EXTREME LONG</div>'
+     + '<div style="color:#22c55e">'+(F.extreme_long_count!=null?F.extreme_long_count:dash())+'</div></div>';
+    h+='<div><div style="color:var(--ov-dim);font-size:0.6rem">EXTREME SHORT</div>'
+     + '<div style="color:#ef4444">'+(F.extreme_short_count!=null?F.extreme_short_count:dash())+'</div></div>';
+    h+='</div>';
+  } else { h+='<div style="color:#475569;margin:6px 0 10px 0">no funding sample yet</div>'; }
+
+  h+='</div>';
+  return h;
+}
+
 /* ===== ARBITRAGEUR detail view — PAIR SPREADS ===== */
 function buildArbitrageurView(def,b){
   var c=def.color; /* #7c4dff purple */
@@ -12690,6 +12952,10 @@ function buildDetailView(def,b){
   if(def.id==="rubberband") return _injectOffline(buildRubberbandView(def,b));
   if(def.id==="contrarian") return _injectOffline(buildContrarianView(def,b));
   if(def.id==="arbitrageur") return _injectOffline(buildArbitrageurView(def,b));
+  /* Brainiac has no port and no /api/master entry, so _injectOffline's
+     "bot offline" banner would fire permanently. Its own health block
+     reports collector state instead. */
+  if(def.id==="brainiac") return buildBrainiacView(def,b);
   if(def.id==="chronos") return _injectOffline(buildChronosView(def,b));
   if(def.id==="phitex") return _injectOffline(buildPhitexView(def,b));
   /* 2026-07-31 audit: all three previously fell through to the 88-line
@@ -12817,13 +13083,18 @@ function setTab(idx){
     $focusFrame.classList.add("active");
     var def=BOTS_DEF[idx-1];
     var b=findBot(state.bots,def.id);
-    var hasData=(def.id==="phitex"&&phitexData.pairs.length)||(def.id==="aegis"&&aegisState.score!=null);
+    /* Brainiac is in-process: it never appears in /api/master, so `b` is
+       always null and the generic path would render "Offline" forever.
+       Same escape hatch PHITEX and AEGIS already use — liveness comes from
+       the data actually arriving, not from a port poll. */
+    var hasData=(def.id==="phitex"&&phitexData.pairs.length)||(def.id==="aegis"&&aegisState.score!=null)
+                ||(def.id==="brainiac");
     var isAlive=(b&&b.alive)||hasData;
     if(isAlive){
       if(def.noHtml){
         /* Show immediate render with whatever data we have, then fetch rich data */
         $focusFrame.innerHTML=buildDetailView(def,b||{raw:{},normalized:{}});
-        fetchBotData(def.id,def.port);
+        if(def.id==="brainiac") fetchBrainiac(); else fetchBotData(def.id,def.port);
         if(def.id==="phitex"){
           var el=document.getElementById("phitex-detail-hm");
           if(el){var tmp=document.createElement("div");renderHeatmapInto(tmp,phitexData);el.appendChild(tmp);}
@@ -20538,10 +20809,16 @@ fetchPhitex();
 fetchOverviewData();
 fetchTradeHistory();
 connectSSE();
+/* Brainiac health drives the collector lamps on its solar body and its
+   orbital liveness, both of which render whether or not the tab is open —
+   so it polls in the background too. 15s: the fastest collector cadence is
+   60s, so this samples well inside it without hammering the endpoint. */
+fetchBrainiacHealth();
 setInterval(fetchData,POLL_MS);
 setInterval(fetchPhitex,POLL_MS);
 setInterval(fetchOverviewData, 10000);
 setInterval(fetchTradeHistory, 60000);
+setInterval(fetchBrainiacHealth, 15000);
 
 /* Post-init enhancements */
 setTimeout(function(){

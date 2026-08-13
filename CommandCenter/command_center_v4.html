@@ -7529,7 +7529,7 @@ function buildTrinityView(def,b){
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PAIRS</div><div class="dv2-kpi-value" style="color:'+c+'">'+streaming+'/'+total+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPENS</div><div class="dv2-kpi-value good">'+opens+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">W / L</div><div class="dv2-kpi-value"><span style="color:#16a085">'+wins+'</span>/<span style="color:#ef4444">'+losses+'</span></div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE</div><div class="dv2-kpi-value '+(!wrKnown?'':(wr>=50?'good':wr>=30?'warn':''))+'"'
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label" title="Self-reported by this bot. The BOT SCOREBOARD and EXPECTANCY panel show trades Command Center durably recorded, a smaller set.">WIN RATE <span style="opacity:0.55;font-weight:400">(self)</span></div><div class="dv2-kpi-value '+(!wrKnown?'':(wr>=50?'good':wr>=30?'warn':''))+'"'
     +(!wrKnown?' title="no signals resolved yet — nothing to measure"':'')+'>'
     +(wrKnown?fmtNum(wr,1)+'%':'--')+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">ERRORS</div><div class="dv2-kpi-value '+(wsRecon>0?'warn':'good')+'">'+wsRecon+'</div></div>';

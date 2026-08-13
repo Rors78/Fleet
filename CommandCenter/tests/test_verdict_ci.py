@@ -207,6 +207,50 @@ check(_full_fleet == _empty_fleet,
       'the FLEET payload must be shape-stable too — missing when empty: %r'
       % sorted(_full_fleet - _empty_fleet))
 
+# ── 10. A dollar expectancy from a different pool era must disclose it ──
+# Live 2026-08-13: the pool went $1M -> $210.53 and the store kept 23
+# decided trades sized $7,516-$66,711, while new positions are $5.78-$13.92.
+# The panel published "+$24.84/trade" — a correct average over a population
+# that no longer exists, ~273x the current per-trade cap. Both figures were
+# POSITIVE, so the existing sign-disagreement rule kept the size-normalized
+# correction hidden. The case where a dollar mean misleads most is not
+# always a sign flip.
+t11 = fresh()
+# Trades sized like the old $1M pool
+for i in range(4):
+    add(t11, 'gridzilla', 100.0, 20000.0, i)
+fs11 = t11.get_fleet_stats()
+_ss = fs11.get('size_spread')
+check(_ss is not None, 'fleet stats must publish size_spread')
+if _ss:
+    check(_ss.get('median') is not None and _ss.get('vs_current_cap') is not None,
+          'size_spread must carry the median trade size and its ratio to '
+          'the CURRENT per-trade cap — internal spread alone misses the era '
+          'mismatch entirely (all-old-era trades look perfectly consistent)')
+    check(_ss.get('dollar_mean_comparable') is False,
+          'trades sized $20,000 against a $210.53 pool must report the '
+          'dollar mean as NOT comparable; got %r'
+          % _ss.get('dollar_mean_comparable'))
+
+# ...and a store whose trades match the current pool must read comparable.
+t12 = fresh()
+for i in range(4):
+    add(t12, 'gridzilla', 0.5, 10.0, i)      # $10 positions, current era
+_ss2 = t12.get_fleet_stats().get('size_spread')
+check(_ss2 and _ss2.get('dollar_mean_comparable') is True,
+      'trades sized in the CURRENT pool era must read comparable — the '
+      'check must not permanently condemn the dollar figure; got %r'
+      % (_ss2 or {}).get('dollar_mean_comparable'))
+
+# The dashboard must show the normalized figure when the era is stale,
+# not only when the signs disagree.
+_html = open('D:/CommandCenter/command_center_v4.html', encoding='utf-8',
+             errors='replace').read()
+check('_eraStale' in _html and 'dollar_mean_comparable === false' in _html,
+      'the expectancy panel must disclose the size-normalized figure when '
+      'the stored trades are from a different pool era, not only on a sign '
+      'disagreement')
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

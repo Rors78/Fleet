@@ -20433,14 +20433,32 @@ function renderOvFeeAnalysis(){
        read as the fleet's edge. */
     var _pct = ex.expectancy_pct, _pctN = ex.expectancy_pct_n;
     var _pctHtml = '';
+    /* Also show it when the stored trades were sized in a DIFFERENT pool
+       era than the fleet trades in now. On 2026-08-13 the pool went $1M ->
+       $210.53 and the store kept 23 trades sized $7.5k-$66.7k while new
+       positions are $5.78-$13.92: the panel published "+$24.84/trade",
+       a correct average over a population that no longer exists and ~273x
+       the current per-trade cap. Signs AGREED there, so the existing
+       disagreement rule kept the correction hidden — the case where the
+       dollar figure misleads most is not always a sign flip. */
+    var _ss = ex.size_spread;
+    var _eraStale = !!(_ss && _ss.dollar_mean_comparable === false);
     if(expKnown && typeof _pct === "number" && !isNaN(_pct)
        && typeof _pctN === "number" && _pctN > 0
-       && (_pct < 0) !== (exp < 0)){
+       && ((_pct < 0) !== (exp < 0) || _eraStale)){
       var _pctSign = _pct < 0 ? '-' : '+';
       var _pctColor = _pct < 0 ? '#ef4444' : '#22c55e';
       _pctHtml = ' <span style="color:var(--ov-dim)">· size-normalized: '
         + '<span style="color:' + _pctColor + '">' + _pctSign
         + Math.abs(_pct).toFixed(2) + '%</span>/trade (n=' + _pctN + ')</span>';
+      if(_eraStale){
+        /* Name the reason. "size-normalized" alone reads as a second
+           opinion; this says the dollar figure is measuring a pool that
+           no longer exists. */
+        _pctHtml += ' <span style="color:#e67e22">· dollar figure is from '
+          + 'positions ~' + Math.round(_ss.vs_current_cap) + 'x today’s '
+          + 'per-trade cap — quote the % instead</span>';
+      }
     }
     subEl.innerHTML = (trades > 0 ? trades + " trades recorded" : "no trades recorded") + _cov + _pctHtml;
   }

@@ -439,6 +439,46 @@ class ExpectancyTracker:
             expectancy_pct = None
             expectancy_pct_sd = None
 
+        # Position-size spread — see 'size_spread' in the return below.
+        # ratio is max/min: a fleet trading one pool size sits near 1, and
+        # a store spanning a resize shows the resize as a large ratio.
+        _sizes = [t['size_usd'] for t in all_trades
+                  if isinstance(t.get('size_usd'), (int, float))
+                  and t['size_usd'] > 0]
+        if _sizes:
+            _lo, _hi = min(_sizes), max(_sizes)
+            # Compare the stored sizes against what the fleet can size
+            # TODAY, not just against each other. Internal spread alone
+            # misses the case that matters: every stored trade from the
+            # same (old) era looks perfectly consistent — ratio 8.9 — while
+            # being 2,600x the current pool's per-trade cap. The mismatch
+            # is between the STORE and the POOL, not within the store.
+            _cap_now = None
+            try:
+                from fleet_config import PORTFOLIO_TOTAL, PORTFOLIO_LIMITS
+                _cap_now = PORTFOLIO_TOTAL * PORTFOLIO_LIMITS.get(
+                    "max_per_trade_pct", 20) / 100.0
+            except Exception:
+                _cap_now = None
+            _median = sorted(_sizes)[len(_sizes) // 2]
+            _era_ratio = (_median / _cap_now) if _cap_now and _cap_now > 0 else None
+            _size_spread = {
+                'min': round(_lo, 2),
+                'max': round(_hi, 2),
+                'median': round(_median, 2),
+                'ratio': round(_hi / _lo, 1) if _lo > 0 else None,
+                'current_per_trade_cap': (round(_cap_now, 2) if _cap_now else None),
+                'vs_current_cap': (round(_era_ratio, 1) if _era_ratio else None),
+                # A dollar mean is comparable only if the measured trades
+                # were sized in the same world the fleet trades in now.
+                # 5x either way is generous; beyond that, quote the
+                # percentage figure instead.
+                'dollar_mean_comparable': (
+                    bool(0.2 <= _era_ratio <= 5.0) if _era_ratio else None),
+            }
+        else:
+            _size_spread = None
+
         total_gross = sum(t['gross_pnl'] for t in all_trades)
         total_net = total_gross  # key kept for consumers; equals gross now
         total_fees = 0.0         # signal product — no fees tracked
@@ -478,6 +518,20 @@ class ExpectancyTracker:
             'expectancy_pct': expectancy_pct,
             'expectancy_pct_sd': expectancy_pct_sd,
             'expectancy_pct_n': len(_returns),
+            # Position-size spread across the measured trades.
+            #
+            # A DOLLAR expectancy is only comparable across trades sized
+            # against the same pool. On 2026-08-13 the pool went from $1M to
+            # $210.53 and the store kept 23 decided trades sized $7,517 to
+            # $66,711, while new positions are $5.78 to $13.92 — so the
+            # published "+$24.84/trade" was a correct average over a
+            # population that no longer exists, roughly 2,600x the scale the
+            # fleet now trades at. The percentage figure above survives a
+            # resize; the dollar one does not.
+            #
+            # Measured from the trades themselves rather than a hardcoded
+            # resize date, so any future resize discloses itself.
+            'size_spread': _size_spread,
             'min_verdict_n': MIN_VERDICT_N,
             'bot_stats': dict(ranked),
             # Named, not silent: a bot dropped from the numbers must be

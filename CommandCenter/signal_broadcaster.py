@@ -3422,6 +3422,7 @@ class WeeklyReportJob:
             worst_pnl = float("inf")
             days_positive = 0
             days_loaded = 0
+            _intraday_spreads = []
 
             # fleet_logger.py writes {"date","fleet":{...},"per_bot","uptime"}
             # (see its _write_daily_summary). This job used to read top-level
@@ -3488,6 +3489,13 @@ class WeeklyReportJob:
                         ev = day_pnl / dt
                     if isinstance(ev, (int, float)):
                         expectancies.append((ev, dt))
+                    # Written by fleet_logger from the day's individual
+                    # trades. None on days with fewer than two priced trades
+                    # and absent on files written before 2026-08-13 — both
+                    # mean "not measured", so neither may read as 1.0.
+                    _sp = fleet.get("pnl_magnitude_spread")
+                    if isinstance(_sp, (int, float)) and _sp > 0:
+                        _intraday_spreads.append(_sp)
 
             _wr_n = sum(n for _, n in win_rates)
             _ev_n = sum(n for _, n in expectancies)
@@ -3507,7 +3515,32 @@ class WeeklyReportJob:
             # figure rather than publish a meaningless average. The card
             # already renders an em dash for a missing value.
             _mags = sorted(abs(e) for e, _ in expectancies if e)
-            _ev_spans_eras = bool(_mags and _mags[-1] / _mags[0] > 50)
+            _ev_spans_eras = bool(len(_mags) >= 2 and _mags[0]
+                                  and _mags[-1] / _mags[0] > 50)
+
+            # Day-to-day spread only catches a resize that happened BETWEEN
+            # days. The 2026-08-13 resize happened mid-afternoon, so the
+            # discontinuity lives INSIDE one day: nine trades of $37-$3,111
+            # and three of $0.005-$0.11, a 587,017x spread, averaging to a
+            # bland +$71.88 that ranks mid-pack among ordinary days. The
+            # day-mean detector read that week as 8x and published a
+            # per-trade dollar figure spanning two pools.
+            #
+            # fleet_logger records each day's own trade-magnitude spread for
+            # exactly this reason. A day that internally spans >1000x did not
+            # have a volatile session; its position sizing changed underneath
+            # it. Absent on older files, which is why this is an OR and not a
+            # replacement — a missing spread must not veto the day-mean test.
+            if not _ev_spans_eras and _intraday_spreads:
+                _worst_intraday = max(_intraday_spreads)
+                if _worst_intraday > 1000:
+                    _ev_spans_eras = True
+                    log.warning(
+                        "Weekly report: one day inside the window spans "
+                        "%.0fx between its largest and smallest trade — "
+                        "position sizing changed mid-day, so a dollar "
+                        "average over this week describes neither era.",
+                        _worst_intraday)
             if _ev_spans_eras:
                 log.warning(
                     "Weekly report: per-day expectancy spans %.0fx "
@@ -3534,6 +3567,16 @@ class WeeklyReportJob:
                     "position sizes changed during the week — a dollar "
                     "average would describe neither era"
                     if _ev_spans_eras else None),
+                # Published so the omission is auditable rather than a bare
+                # assertion: whoever reads the payload can see which grain
+                # tripped it and by how much.
+                "expectancy_omitted_evidence": ({
+                    "day_mean_spread": (round(_mags[-1] / _mags[0], 1)
+                                        if len(_mags) >= 2 and _mags[0]
+                                        else None),
+                    "worst_intraday_spread": (round(max(_intraday_spreads), 1)
+                                              if _intraday_spreads else None),
+                } if _ev_spans_eras else None),
                 "best_day": best_day or "\u2014",
                 "worst_day": worst_day or "\u2014",
                 "days_positive": days_positive,

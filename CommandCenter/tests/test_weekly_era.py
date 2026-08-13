@@ -106,6 +106,55 @@ check(spans([12.0, 3.0, 45.0]) is False,
       'be suppressed — that is variance, not a scale change')
 check(spans([]) is False and spans([0.0, 0.0]) is False,
       'no data and all-flat days must not trip the detector')
+check(spans([12.0]) is False,
+      'a single day cannot establish a spread — one sample is not a ratio')
+
+# ── 6. The GRAIN: a resize inside one day must still be caught ──
+# The first version of this detector compared DAY MEANS, which only sees a
+# resize that happened between days. The 2026-08-13 resize happened
+# mid-afternoon: that day holds nine trades of $37-$3,111 beside three of
+# $0.005-$0.11 — a 587,017x internal spread — and averages to a bland
+# +$71.88 that ranks mid-pack. The day-mean detector read the week as 8x and
+# would have published "$+22.47 per trade" across two pools. Averaging is
+# exactly what hides the discontinuity, so the day figures can never reveal
+# it; fleet_logger records each day's own trade-magnitude spread instead.
+check("pnl_magnitude_spread" in _src,
+      'the weekly job must read each day\'s internal trade-magnitude spread '
+      '— a resize inside one day is invisible in that day\'s mean, which is '
+      'precisely the 2026-08-13 case this guard exists for')
+check("_intraday_spreads" in _src,
+      'the intraday spreads must be collected across the window')
+
+_fl_src = open('D:/CommandCenter/fleet_logger.py', encoding='utf-8',
+               errors='replace').read()
+check("pnl_magnitude_spread" in _fl_src,
+      'fleet_logger must record the day\'s trade-magnitude spread — it is '
+      'the only place that still holds the individual trades, since the '
+      'daily file keeps aggregates and one worst_trade')
+
+# The intraday test must be an OR, not a replacement: older daily files have
+# no spread field, and a missing spread must not veto the day-mean test.
+_after = _src.split("_intraday_spreads")[-1] if "_intraday_spreads" in _src else ""
+check("if not _ev_spans_eras and _intraday_spreads" in _src,
+      'the intraday check must only run when the day-mean check has not '
+      'already tripped, and must be skipped when no day reported a spread — '
+      'files written before 2026-08-13 carry no spread field and an absent '
+      'one means unmeasured, not comparable')
+
+
+def spans_intraday(day_spreads):
+    return bool(day_spreads and max(day_spreads) > 1000)
+
+
+check(spans_intraday([587016.9]) is True,
+      "the 2026-08-13 resize day spans 587,017x internally and must trip "
+      "the guard even though its day mean is unremarkable")
+check(spans_intraday([20.8, 15.0]) is False,
+      'a 20x internal spread is an ordinary mix of winners and losers, not '
+      'a sizing change — 2026-08-08 really was 20.8x')
+check(spans_intraday([]) is False,
+      'no day reported a spread (older files) — that is unmeasured and must '
+      'not trip the guard')
 
 if FAIL:
     for f in FAIL:

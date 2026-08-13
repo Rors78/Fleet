@@ -1014,10 +1014,35 @@ class FleetLogger:
         best = max(bot_pnls.items(), key=lambda x: x[1]) if bot_pnls else ("none", 0)
         worst = min(bot_pnls.items(), key=lambda x: x[1]) if bot_pnls else ("none", 0)
 
+        # Spread between the largest and smallest non-zero |P/L| booked
+        # today. The weekly job needs this to tell a good week from a change
+        # of position sizing, and it CANNOT derive it from the day figures:
+        # averaging is exactly what hides the discontinuity. 2026-08-13 is
+        # the proof — the pool was resized from $1M to $210.53 mid-afternoon,
+        # so the day holds nine trades of $37-$3,111 and three of $0.005-$0.11
+        # side by side, a 587,017x spread, yet its mean expectancy is a bland
+        # +$71.88 that sits mid-range among ordinary days. A detector reading
+        # day means saw an 8x week and published "$+22.47 per trade" across
+        # two pools.
+        #
+        # Recorded here because this is the only place that still holds the
+        # individual trades; the daily file keeps aggregates and one
+        # worst_trade, and the weekly job reads the file.
+        _mags = sorted(abs(t["pnl"]) for t in trades
+                       if isinstance(t.get("pnl"), (int, float)) and t["pnl"])
+        _spread = (_mags[-1] / _mags[0]) if len(_mags) >= 2 and _mags[0] else None
+
         summary = {
             "date": date_str,
             "fleet": {
                 "starting_equity": round(starting_equity, 2),
+                # None when fewer than two priced trades exist — a spread over
+                # one sample is not 1.0, it is unmeasured, and the weekly job
+                # must not read an absent spread as a comparable day.
+                "pnl_magnitude_spread": (round(_spread, 1)
+                                         if _spread is not None else None),
+                "pnl_magnitude_min": (round(_mags[0], 6) if _mags else None),
+                "pnl_magnitude_max": (round(_mags[-1], 4) if _mags else None),
                 "ending_equity": round(ending_equity, 2),
                 "daily_pnl": round(total_pnl, 2),
                 "total_trades": total_trades,

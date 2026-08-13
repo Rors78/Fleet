@@ -43,7 +43,14 @@ WATCHDOG_FAILURES = 3         # consecutive failures before restart
 WATCHDOG_COOLDOWN = 300       # seconds between restart attempts per bot
 
 # ── PORTFOLIO ──
-PORTFOLIO_TOTAL = 10000.00
+# Operator-set pool size (2026-08-13). portfolio.json's `total` overrides
+# this once the file exists — see PortfolioManager._load — so BOTH are set
+# to the same figure. Leaving them divergent means deleting or corrupting
+# the state file silently restores a different pool size.
+#
+# Note the pool is not static: release() does `self.total += pnl`, so
+# realized P/L moves it from here. This is the STARTING size.
+PORTFOLIO_TOTAL = 210.53
 PORTFOLIO_LIMITS = {
     "max_deployed_pct": 80,
     "max_per_bot_pct": 30,
@@ -231,7 +238,12 @@ LIVE_LONG_ONLY = True
 # fleet is ever flipped live.
 #
 # Set True to retire short entries again (open shorts survive via is_reentry).
-FLEET_LONG_ONLY = False
+#
+# ON since 2026-08-13, by operator decision: the fleet is long-only. Verified
+# no SHORT positions were open at the time of the change, so nothing needed
+# grandfathering — and is_reentry above would have covered them anyway, since
+# the policy is "open no new shorts", not "liquidate open ones".
+FLEET_LONG_ONLY = True
 
 
 def direction_allowed(direction: str, is_reentry: bool = False) -> tuple:
@@ -246,8 +258,14 @@ def direction_allowed(direction: str, is_reentry: bool = False) -> tuple:
     unfunded and force-close it at market — turning a config change into an
     unintended liquidation.
     """
+    # SHORT and SELL both mean "short entry" here. Every current bot reserves
+    # with SHORT — the SELLs in the fleet are ORDER SIDES (closing a long, a
+    # grid sell level), which never reach this function. Accepting the
+    # synonym anyway means a bot that later adopts that spelling cannot slip
+    # a short past a long-only fleet, which is the kind of gap that is only
+    # discovered after it has been exploited.
     d = (direction or "").upper()
-    if d != "SHORT":
+    if d not in ("SHORT", "SELL"):
         return True, ""
     if is_reentry:
         return True, ""

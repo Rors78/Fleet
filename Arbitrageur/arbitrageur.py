@@ -53,6 +53,14 @@ try:
 except ImportError:
     PortfolioClient = None
 
+# One floor for the fleet, not a copy per bot — see the size check in
+# _open_position. Falls back to the old value if the import fails, so a
+# path problem cannot silently REMOVE the floor.
+try:
+    from command_center import MIN_TRADE_USD as _MIN_TRADE_USD
+except Exception:
+    _MIN_TRADE_USD = 100.0
+
 try:
     from event_publisher import EventPublisher
 except ImportError:
@@ -602,8 +610,11 @@ class ArbitrageurEngine:
 
         # Size: 5% of equity
         size_usd = self.equity * TRADE_SIZE_PCT
-        if size_usd < 100:
-            self._log(f"SKIP {pair}: insufficient equity (${self.equity:.2f})")
+        # Was a hardcoded 100 — a bot-side copy of a fleet constant that went
+        # stale silently when the pool was resized to $210.53 (2026-08-13).
+        if size_usd < _MIN_TRADE_USD:
+            self._log(f"SKIP {pair}: size ${size_usd:.2f} below the "
+                      f"${_MIN_TRADE_USD:.2f} floor (equity ${self.equity:.2f})")
             return
 
         # CHRONOS: temporal bias — soft influence only, never a hard block.

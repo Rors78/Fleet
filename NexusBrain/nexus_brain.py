@@ -51,6 +51,15 @@ try:
     from portfolio_client import PortfolioClient
 except ImportError:
     PortfolioClient = None
+# One floor for the fleet, not a copy per bot. A hardcoded 100 here blocked
+# every entry when the pool was resized to $210.53, independently of
+# Command Center's own MIN_TRADE_USD — the reserve would have been accepted
+# and the bot never asked. Falls back to the old value if the import fails,
+# so a path problem cannot silently REMOVE the floor.
+try:
+    from command_center import MIN_TRADE_USD as _MIN_TRADE_USD
+except Exception:
+    _MIN_TRADE_USD = 100.0
 try:
     from event_publisher import EventPublisher
 except ImportError:
@@ -1369,7 +1378,12 @@ class PaperTrader:
             # Size floor: $100 minimum trade size. Threshold unchanged after
             # fee removal — dust positions produce signals too small to be
             # actionable for subscribers.
-            if size_usd < 100:
+            # Was a hardcoded 100. When the pool was set to $210.53
+            # (2026-08-13) this floor blocked every entry on its own, even
+            # after Command Center's MIN_TRADE_USD was lowered — a bot-side
+            # copy of a fleet-wide constant that went stale silently.
+            # Read the fleet value so there is ONE floor, not three.
+            if size_usd < _MIN_TRADE_USD:
                 return None
 
             # Central portfolio: reserve capital before opening

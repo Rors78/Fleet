@@ -87,9 +87,20 @@ KRAKEN_REST = _FC_KRAKEN_REST
 # Smallest reservation the pool will accept, in dollars. Deliberately absolute
 # rather than a fraction of the pool — see the size-floor check in
 # PortfolioManager.reserve() for why a percentage silently broke the fleet when
-# the pool was resized. Live positions run $550-$1,003; this filters dust
-# without tracking pool size.
-MIN_TRADE_USD = 100.0
+# the pool was resized. This filters dust without tracking pool size.
+#
+# Lowered 100.00 -> 5.00 on 2026-08-13 when the operator set the pool to
+# $210.53. At that size the per-trade cap is $42.11 and TurtleSue's 10%
+# pool share is $21.05 — both BELOW the old floor, so every bot was refused
+# and the fleet was parked. $5 keeps the dust filter meaningful at retail
+# pool sizes while leaving room for the real sizing rules to bind first.
+#
+# Still absolute, deliberately: the comment above records that making this
+# a percentage is what broke the fleet last time the pool was resized. If
+# the pool returns to six figures, raise this by hand — it is a dust
+# filter, not a risk control, and the per-trade/per-pair caps do the
+# actual limiting.
+MIN_TRADE_USD = 5.0
 
 # ---------------------------------------------------------------------------
 # Thread-safe state

@@ -78,6 +78,7 @@ TESTS = [
     "test_silent_handlers.py",
     "test_reaction_templates.py",
     "test_card_threading.py",
+    "test_trade_floor.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

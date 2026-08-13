@@ -9606,7 +9606,14 @@ function buildAegisView(def,b){
   var W_val=comps.whale_divergence!=null?+comps.whale_divergence:0;
   var S_val=comps.portfolio_stress!=null?+comps.portfolio_stress:0;
   var phi_val=comps.phitex_signal!=null?+comps.phitex_signal:0;
-  var rho_val=comps.correlation!=null?+comps.correlation:0;
+  /* Correlation null = UNMEASURED (Brainiac unreachable). `:0` displayed
+     that as "perfectly uncorrelated" — the most reassuring value there is,
+     and the opposite of what absence means. aegis.py takes the FULL penalty
+     (rho=1.0) when unmeasured so a dead endpoint tightens rather than
+     loosens; this panel reconstructs that formula, so it must use the same
+     value or the displayed math diverges from the engine's. */
+  var rho_known=comps.correlation!=null;
+  var rho_val=rho_known?+comps.correlation:1.0;
 
   /* Reconstruct formula pieces — mirrors aegis.py compute_aegis() exactly */
   var tradability=Math.max(0.25,(1-Math.pow(H_val,0.7))*C_val);
@@ -9858,7 +9865,8 @@ function buildAegisView(def,b){
   if(phi_val>0.1) _helps.push({txt:'PHITEX Φ='+fmtNum(phi_val,3)+' — needs < 0.05',col:'#f39c12',done:false});
   else _helps.push({txt:'PHITEX Φ='+fmtNum(phi_val,3)+' (good) ✔',col:'#2ecc71',done:true});
   if(S_val>0.1) _helps.push({txt:'Portfolio stress ('+fmtNum(S_val,3)+') — reduce risk',col:'#e74c3c',done:false});
-  if(rho_val>0.8) _helps.push({txt:'Correlation ('+fmtNum(rho_val,3)+') — herding risk',col:'#e74c3c',done:false});
+  if(!rho_known) _helps.push({txt:'Correlation UNMEASURED — Brainiac unreachable; full penalty assumed',col:'#e67e22',done:false});
+  else if(rho_val>0.8) _helps.push({txt:'Correlation ('+fmtNum(rho_val,3)+') — herding risk',col:'#e74c3c',done:false});
   _helps.slice(0,5).forEach(function(_hl){
     h+='<div style="font-size:9px;color:'+_hl.col+';padding:2px 0;border-bottom:1px solid rgba(30,41,59,0.3)">'+(_hl.done?'● ':'▸ ')+_hl.txt+'</div>';
   });
@@ -9895,9 +9903,14 @@ function buildAegisView(def,b){
      norm:Math.min(1,phi_val/0.1),
      effect:phi_penalty>0.2?"DRAGGING":phi_penalty>0.05?"MINOR DRAG":"HELPING",effC:phi_penalty>0.2?"#e74c3c":phi_penalty>0.05?"#f39c12":"#2ecc71",
      note:"penalty −"+fmtNum(phi_penalty,3)},
-    {sym:"ρ",label:"Correlation",raw:rho_val,rawU:"",norm:rho_val,
-     effect:rho_val>0.8?"DRAGGING":rho_val>0.5?"MINOR":"HELPING",effC:rho_val>0.8?"#e74c3c":rho_val>0.5?"#e67e22":"#2ecc71",
-     note:"penalty −"+fmtNum(corr_penalty,3)}
+    /* When unmeasured, say so — the 1.0 the engine substitutes is a
+       deliberate conservative stand-in, not a reading of the market. */
+    {sym:"ρ",label:"Correlation",raw:rho_known?rho_val:null,rawU:"",
+     norm:rho_known?rho_val:null,
+     effect:!rho_known?"UNMEASURED":rho_val>0.8?"DRAGGING":rho_val>0.5?"MINOR":"HELPING",
+     effC:!rho_known?"#64748b":rho_val>0.8?"#e74c3c":rho_val>0.5?"#e67e22":"#2ecc71",
+     note:(rho_known?"":"Brainiac unreachable — full penalty assumed; ")
+          +"penalty −"+fmtNum(corr_penalty,3)}
   ];
   for(var cbi=0;cbi<_compDefs2.length;cbi++){
     var _cb=_compDefs2[cbi];

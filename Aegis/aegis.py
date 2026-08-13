@@ -213,18 +213,44 @@ def whale_flow_divergence(whale_events: list, trade_events: list) -> float:
 
 def get_correlation_regime():
     """Fetch average absolute correlation from Brainiac.
+
     High correlation = herding, less diversification benefit.
-    Returns 0.0 (uncorrelated) to 1.0 (perfectly correlated).
+    Returns 0.0 (uncorrelated) to 1.0 (perfectly correlated), or None when
+    the correlation could not be MEASURED.
+
+    None, not 0.5. This value flows rho -> corr_penalty -> safety -> the
+    AEGIS score -> the regime -> the fleet's deployment cap. A dead Brainiac
+    endpoint used to fabricate a mid-range 0.5 at three separate points (the
+    except, the .get default for a malformed 200, and the final return), and
+    all three read downstream as a measurement. If true correlation is HIGH
+    -- herding, the genuinely dangerous regime -- the invented 0.5 scores the
+    fleet SAFER than it is and raises the cap.
+
+    Same rule this module already applies to a whale alert with no score and
+    to a missing portfolio total: refuse to invent, and let the caller
+    decide what to do about absence.
     """
     try:
         resp = requests.get(f"{COMMAND_CENTER}/api/brainiac/correlations", timeout=3)
         if resp.status_code == 200:
             data = resp.json()
             if data and data.get("data"):
-                return min(1.0, data["data"].get("avg_abs_correlation", 0.5))
-    except Exception:
-        pass
-    return 0.5  # neutral default
+                _c = data["data"].get("avg_abs_correlation")
+                if isinstance(_c, (int, float)) and _c == _c:  # not NaN
+                    return max(0.0, min(1.0, float(_c)))
+                # Module-level function: no self._log here. The launcher
+                # captures stdout, and the mirror greps for these keywords.
+                print("[aegis] DEGRADED: Brainiac correlations returned no "
+                      "usable avg_abs_correlation (%r) — correlation "
+                      "UNMEASURED" % (_c,), flush=True)
+                return None
+        else:
+            print("[aegis] DEGRADED: Brainiac correlations HTTP %s — "
+                  "correlation UNMEASURED" % resp.status_code, flush=True)
+    except Exception as e:
+        print("[aegis] DEGRADED: Brainiac correlations UNREACHABLE (%s) — "
+              "correlation UNMEASURED" % e, flush=True)
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -302,7 +328,13 @@ def compute_aegis(H, C, W, S, phi, rho=0.5):
     else:
         confidence = max(0.0, min(1.0, 0.75 + 0.25 * W))
     # Safety: high correlation reduces diversification benefit — but crypto is naturally correlated, so weight gently
-    corr_penalty = rho * 0.15  # reduced from 0.30 — correlation ≠ danger, just ≠ diversification
+    # rho None = UNMEASURED (Brainiac unreachable/malformed). Absence must
+    # not RAISE the score: an invented mid-range 0.5 scored the fleet safer
+    # than reality whenever true correlation was high — herding, which is
+    # precisely the regime this component exists to detect. Unmeasured
+    # therefore takes the FULL penalty (rho=1.0), the conservative end, so a
+    # dead endpoint tightens the cap instead of loosening it.
+    corr_penalty = (1.0 if rho is None else rho) * 0.15  # reduced from 0.30 — correlation ≠ danger, just ≠ diversification
     # Cap PHITEX drag: no single component gets more than 0.05 negative influence
     phi_penalty = min(phi * 0.5, 0.05)
     safety = (1.0 - S) * (1.0 - phi_penalty) * (1.0 - corr_penalty)
@@ -351,7 +383,7 @@ class AegisEngine:
         self.W = 0.0       # whale divergence
         self.S = 0.0       # portfolio stress
         self.phi = 0.0     # phitex signal
-        self.rho = 0.5    # cross-pair correlation from Brainiac
+        self.rho = None   # cross-pair correlation from Brainiac; None = UNMEASURED
         self.cycle = 0
         self.scan_duration = 0.0
         self.status = "initializing"
@@ -607,7 +639,11 @@ class AegisEngine:
                         "whale_divergence": round(self.W, 4),
                         "portfolio_stress": round(self.S, 4),
                         "phitex_signal": round(self.phi, 4),
-                        "correlation": round(self.rho, 4),
+                        # None when Brainiac could not be measured — the
+                        # dashboard renders absence as a dash, not as 0.
+                        "correlation": (round(self.rho, 4)
+                                        if isinstance(self.rho, (int, float))
+                                        else None),
                     },
                     "recommended_max_deployed": recommended_max_deployed(self.score),
                     "regime_sources": self._regime_sources,
@@ -634,7 +670,10 @@ class AegisEngine:
                 "whale_divergence": round(self.W, 4),
                 "portfolio_stress": round(self.S, 4),
                 "phitex_signal": round(self.phi, 4),
-                "correlation": round(self.rho, 4),
+                # None = UNMEASURED (Brainiac unreachable), not 0.
+                "correlation": (round(self.rho, 4)
+                                if isinstance(self.rho, (int, float))
+                                else None),
             },
             "regime_sources": self._regime_sources,
             "normalized_regime_sources": self._normalized_regime_sources,

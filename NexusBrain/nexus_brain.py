@@ -154,6 +154,21 @@ class ConfidenceLabel(Enum):
 VERSION = "1.0"
 BOT_NAME = "NexusBrain"
 
+# Share of the central pool this bot uses AS ITS SIZING BASIS — see
+# _sizing_basis(). risk_per_trade_pct and max_position_pct are then applied
+# to it exactly as they were to the fixed $10,000 initial_capital, so the
+# sizing FORMULA is unchanged and only its basis moves with the pool.
+#
+# 100%, like Rubberband and unlike TurtleSue/Confluence's 10%, because
+# max_position_pct (5%) is what actually limits this bot: a 10% share would
+# cap it at $1.05 on a $210 pool, which fleet intel scales to $0.16 — under
+# the dust floor. At 100% the ceiling is 5% of pool, the same fraction the
+# other bots commit, and well inside the 20% per-trade cap.
+#
+# Deliberately a SHARE, not a dollar figure: a hardcoded amount goes stale
+# the moment the pool is resized, which is the defect this replaces.
+POOL_SHARE_PCT = 100.0
+
 # Exchange endpoints
 KRAKEN_REST = "https://api.kraken.com"
 COINGECKO_REST = "https://api.coingecko.com/api/v3"
@@ -1212,6 +1227,40 @@ class PaperTrader:
         if not self._state_unreadable:
             self._save_positions()
 
+    def _sizing_basis(self) -> float:
+        """Equity figure that position sizing is calculated FROM.
+
+        A share of the shared POOL, not this bot's own ledger. Deliberately
+        separate from self.equity, which tracks realized P/L — conflating
+        them would make a losing streak shrink the sizing basis as well as
+        the ledger, penalising twice.
+
+        Reads pool_total(), not available(): available() moves every time
+        another bot opens a position, so sizing off it would resize this
+        bot because something unrelated happened. pool_total() is the
+        stable figure to take a share of.
+
+        Falls back to self.equity when the pool is unreachable, so a
+        Command Center outage degrades to the previous behaviour rather
+        than sizing off a guess. Warned once, not per scan.
+        """
+        share = POOL_SHARE_PCT
+        if not (self._portfolio and share > 0):
+            return self.equity
+        try:
+            total = self._portfolio.pool_total()
+        except Exception:
+            total = None
+        if not isinstance(total, (int, float)) or total <= 0:
+            if not getattr(self, "_pool_basis_warned", False):
+                self._pool_basis_warned = True
+                logger.warning(
+                    "pool total unreachable — sizing off local equity "
+                    "$%.2f instead of %.1f%% of pool", self.equity, share)
+            return self.equity
+        self._pool_basis_warned = False
+        return total * (share / 100.0)
+
     def can_open(self) -> bool:
         """Check if we can open a new position."""
         # Unknown state fails toward ARMED. With positions unreadable, this
@@ -1239,8 +1288,18 @@ class PaperTrader:
                 logger.info(f"SKIP LIVE SHORT {PAIR_DISPLAY.get(signal.pair, signal.pair)}: spot account cannot short")
                 return None
 
-            # Position sizing: risk-based
-            risk_amount = self.equity * (self.cfg.risk_per_trade_pct / 100)
+            # Position sizing: risk-based, off a share of the POOL.
+            #
+            # This used self.equity — a fixed $10,000 initial_capital — so
+            # the bot asked for the same dollars whatever the shared pool
+            # held. It happened to produce a workable request at the current
+            # $210.53 pool only by coincidence (5% of $10k lands near the
+            # cap); at a $500 pool it would ask for the same $500 and be
+            # refused every time. _sizing_basis() reads the live pool;
+            # self.equity keeps tracking realized P/L, which is a different
+            # question and must not be conflated with the sizing basis.
+            _basis = self._sizing_basis()
+            risk_amount = _basis * (self.cfg.risk_per_trade_pct / 100)
             risk_distance = abs(signal.entry_price - signal.stop_loss)
             if risk_distance <= 0:
                 return None
@@ -1261,7 +1320,12 @@ class PaperTrader:
             # operator's call, not a silent fix. What IS fixed here is the
             # multiplier erasure below, which nobody chose.
             _risk_size = risk_amount / risk_distance * signal.entry_price
-            max_size = self.equity * self.cfg.max_position_pct
+            # Same basis as risk_amount above. Computing the ceiling from a
+            # DIFFERENT pool than the risk would make the cap bind at a
+            # ratio nobody chose — the whole point of max_position_pct is
+            # that it is a fraction of the same capital the risk is drawn
+            # from.
+            max_size = _basis * self.cfg.max_position_pct
             size_usd = min(_risk_size, max_size)
 
             # Bus intelligence — fleet context modifies confidence

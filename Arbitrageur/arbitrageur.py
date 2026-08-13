@@ -120,7 +120,13 @@ MAX_LAGGARD_RETURN = 0.005    # laggard must not have already caught up > 0.5%
 FEE_RATE = 0.0                # signal product — subscribers pay their own exchange's fees; P/L is gross
 MIN_GAP_PCT = 0.016           # gross gap floor for entries (same 1.6% threshold the old fee-derived gate enforced)
 LOOKBACK = 60                 # candle window for correlation and z-score computation
-TRADE_SIZE_PCT = 0.05         # 5% of equity per trade (single leg)
+TRADE_SIZE_PCT = 0.05         # 5% of the sizing basis per trade (single leg)
+# Share of the central pool used AS THE SIZING BASIS — see _sizing_basis().
+# 100%, matching Rubberband and NexusBrain: this bot multiplies a flat 5%
+# with no stop divisor, so a 10% share would yield $1.05 on a $210 pool and
+# fleet intel would scale it under the dust floor. 100% x 5% = 5% of pool,
+# the same fraction the other bots commit, well inside the 20% per-trade cap.
+POOL_SHARE_PCT = 100.0
 MAX_POSITIONS = 3             # concurrent positions
 SL_ATR_MULT = 1.5             # stop loss = 1.5x ATR
 TP_CATCHUP_PCT = 0.50         # target 50% gap closure as TP
@@ -279,6 +285,35 @@ class ArbitrageurEngine:
     # -----------------------------------------------------------------------
     # Internal log
     # -----------------------------------------------------------------------
+
+    def _sizing_basis(self) -> float:
+        """Equity figure that position sizing is calculated FROM.
+
+        A share of the shared POOL, not this bot's own ledger. Reads
+        pool_total(), not available(): available() moves every time another
+        bot opens a position, so sizing off it would resize this bot
+        because something unrelated happened.
+
+        Falls back to self.equity when the pool is unreachable, so a
+        Command Center outage degrades to the previous behaviour rather
+        than sizing off a guess. Warned once, not per scan — a silently
+        degraded sizing basis runs for weeks unnoticed.
+        """
+        share = POOL_SHARE_PCT
+        if not (self._portfolio and share > 0):
+            return self.equity
+        try:
+            total = self._portfolio.pool_total()
+        except Exception:
+            total = None
+        if not isinstance(total, (int, float)) or total <= 0:
+            if not getattr(self, "_pool_basis_warned", False):
+                self._pool_basis_warned = True
+                self._log(f"pool total unreachable — sizing off local equity "
+                          f"${self.equity:,.2f} instead of {share:.0f}% of pool")
+            return self.equity
+        self._pool_basis_warned = False
+        return total * (share / 100.0)
 
     def _log(self, msg):
         log.info(msg)
@@ -611,8 +646,14 @@ class ArbitrageurEngine:
         if price <= 0:
             return
 
-        # Size: 5% of equity
-        size_usd = self.equity * TRADE_SIZE_PCT
+        # Size: 5% of a share of the POOL, not of a fixed local balance.
+        #
+        # self.equity is a fixed $10,000 paper balance, so this bot asked
+        # for $500 whatever the shared pool held — on a $210.53 pool that
+        # is more than twice the entire pool and was refused every time.
+        # _sizing_basis() reads the live pool; self.equity keeps tracking
+        # realized P/L for the dashboard, a different question.
+        size_usd = self._sizing_basis() * TRADE_SIZE_PCT
         # Was a hardcoded 100 — a bot-side copy of a fleet constant that went
         # stale silently when the pool was resized to $210.53 (2026-08-13).
         if size_usd < _MIN_TRADE_USD:

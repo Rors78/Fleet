@@ -154,6 +154,8 @@ _POOL_SIZED = {
     "turtlesue":   ("D:/TurtleSue/turtlebot.py",    "equity_pool_share_pct"),
     "confluence":  ("D:/Confluence/confluence.py",  "RISK_POOL_SHARE_PCT"),
     "rubberband":  ("D:/Rubberband/rubberband.py",  "POOL_SHARE_PCT"),
+    "nexusbrain":  ("D:/NexusBrain/nexus_brain.py", "POOL_SHARE_PCT"),
+    "arbitrageur": ("D:/Arbitrageur/arbitrageur.py","POOL_SHARE_PCT"),
 }
 for _bot, (_path, _const) in _POOL_SIZED.items():
     _src = open(_path, encoding="utf-8", errors="replace").read()
@@ -173,10 +175,11 @@ for _bot, (_path, _const) in _POOL_SIZED.items():
 # is the check that would have caught both of my wrong floor values.
 _WORST_MULT = 0.15
 _sizes = {
-    "turtlesue":  POOL * 0.10,                  # share, then risk/N
-    "confluence": POOL * 0.10 * 0.005 / 0.03,   # share * risk / stop_pct
-    "rubberband": POOL * 1.00 * 0.05,           # share * flat risk pct
-    "nexusbrain": POOL * 0.05,                  # max_position_pct of basis
+    "turtlesue":   POOL * 0.10,                  # share, then risk/N
+    "confluence":  POOL * 0.10 * 0.005 / 0.03,   # share * risk / stop_pct
+    "rubberband":  POOL * 1.00 * 0.05,           # share * flat risk pct
+    "nexusbrain":  POOL * 1.00 * 0.05,           # max_position_pct of basis
+    "arbitrageur": POOL * 1.00 * 0.05,           # share * flat risk pct
 }
 _cap = POOL * LIM["max_per_trade_pct"] / 100.0
 for _bot, _req in _sizes.items():

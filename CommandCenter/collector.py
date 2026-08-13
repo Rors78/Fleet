@@ -89,15 +89,45 @@ def get_latest(category, key):
         return None
 
 
+# Last-resort pair list, used only if Command Center's universe cannot be
+# read. Blacklisted pairs are filtered out of it at use time — the static
+# list predates the blacklist and silently reintroduced SOL/USD and DOT/USD.
+_FALLBACK_PAIRS = ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD",
+                   "DOGE/USD", "DOT/USD", "AVAX/USD", "LINK/USD", "LTC/USD"]
+
+
 def _get_universe_pairs():
-    """Fetch universe pairs from Command Center."""
+    """Fetch universe pairs from Command Center.
+
+    The collector starts INSIDE Command Center's own boot, before its HTTP
+    server is listening, so this first call reliably fails and the fallback
+    is what actually runs. That was silent: on 2026-08-13 Brainiac's pair
+    list was byte-identical to the fallback — including SOL/USD and DOT/USD,
+    both blacklisted — while /api/brainiac/health reported healthy True.
+    Collecting depth and trade flow for pairs the fleet refuses to trade,
+    and missing the ones it does.
+
+    Now the degradation is LOUD and the fallback is blacklist-filtered.
+    _refresh_pairs retries every 6h; the caller re-fetches until it wins.
+    """
     try:
         resp = requests.get(f"{CC_URL}/api/universe", timeout=5)
         data = resp.json()
-        return [p["display"] for p in data.get("pairs", [])]
+        pairs = [p["display"] for p in data.get("pairs", [])]
+        if pairs:
+            return pairs
+        log.warning("Brainiac: /api/universe returned no pairs — using "
+                    "fallback list until the next refresh")
+    except Exception as e:
+        log.warning("Brainiac: could not read /api/universe (%s) — using "
+                    "fallback list until the next refresh. Expected during "
+                    "CC boot; persistent failure means Brainiac is "
+                    "collecting the WRONG pairs.", e)
+    try:
+        from fleet_config import is_blacklisted as _is_bl
+        return [p for p in _FALLBACK_PAIRS if not _is_bl(p)]
     except Exception:
-        return ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD",
-                "DOGE/USD", "DOT/USD", "AVAX/USD", "LINK/USD", "LTC/USD"]
+        return list(_FALLBACK_PAIRS)
 
 
 _UNIVERSE_REFRESH_SECONDS = 6 * 3600  # Re-fetch universe every 6 hours
@@ -115,15 +145,31 @@ class BrainiacCollector:
                       "correlations": 0, "funding": 0}
 
     def _refresh_pairs(self):
-        """Re-fetch universe pairs if stale."""
+        """Re-fetch universe pairs if stale.
+
+        While running on the FALLBACK list, retry every 5 minutes rather
+        than every 6 hours. The first fetch happens during CC's own boot,
+        before its HTTP server is up, so it reliably fails — and a 6-hour
+        retry meant Brainiac spent a quarter of a day collecting the wrong
+        pairs before it could self-correct.
+        """
         now = time.time()
-        if now - self._pairs_last_refresh < _UNIVERSE_REFRESH_SECONDS and self.pairs:
+        _on_fallback = getattr(self, "_using_fallback", True)
+        _interval = 300 if _on_fallback else _UNIVERSE_REFRESH_SECONDS
+        if now - self._pairs_last_refresh < _interval and self.pairs:
             return
         new_pairs = _get_universe_pairs()
         if new_pairs:
             with self._pairs_lock:
                 self.pairs = new_pairs
                 self._pairs_last_refresh = now
+                # Detect whether we are still on the static list, so the
+                # retry cadence can tighten and health can disclose it.
+                _fb = set(_FALLBACK_PAIRS)
+                self._using_fallback = set(new_pairs).issubset(_fb)
+                if not self._using_fallback:
+                    log.info("Brainiac: universe acquired — collecting %d "
+                             "live pairs", len(new_pairs))
 
     def _get_pairs(self, limit=None):
         """Get current pairs list, thread-safe, with optional limit."""
@@ -196,9 +242,16 @@ class BrainiacCollector:
                         for t in threads],
             "pairs": self._get_pairs(),
             "pairs_count": len(self._get_pairs()),
+            # Disclosed, and it counts against healthy: collecting the
+            # static fallback means Brainiac is gathering microstructure for
+            # pairs the fleet may not trade and MISSING the ones it does.
+            # Reporting healthy True while on the fallback is the same
+            # comfortable lie as a stale-but-green status.
+            "using_fallback_pairs": bool(getattr(self, "_using_fallback", True)),
             "categories": cats,
             "healthy": (len(threads) > 0
                         and len(alive_names) == len(threads)
+                        and not getattr(self, "_using_fallback", True)
                         and not any(c["stale"] for c in cats.values())),
         }
 

@@ -127,6 +127,10 @@ check(h5['threads_alive'] == 1 and h5['threads_expected'] == 2,
 c3 = fresh_collector()
 c3._threads = [_T('Brainiac-Depth', True)]
 c3._started_at = time.time()
+# Healthy requires the LIVE universe as well as live threads and fresh data
+# (see case 7) — a collector on the static fallback is gathering the wrong
+# pairs no matter how healthy its plumbing looks.
+c3._using_fallback = False
 with C._latest_lock:
     for _cat, _k in (('depth', 'x'), ('trades', 'x'), ('metrics', 'x'),
                      ('correlations', 'x'), ('funding', 'x')):
@@ -134,6 +138,49 @@ with C._latest_lock:
 check(c3.health()['healthy'] is True,
       'live threads plus fresh data in every category must read healthy — '
       'the check must not be permanently pessimistic')
+
+# ── 7. Running on the static FALLBACK pair list is not healthy ──
+# Live 2026-08-13: Brainiac's pair list was byte-identical to the hardcoded
+# fallback — including SOL/USD and DOT/USD, both BLACKLISTED — while
+# /api/brainiac/health reported healthy True. The collector starts inside
+# CC's own boot, before its HTTP server is listening, so the universe fetch
+# reliably fails and the fallback is what actually runs. It was collecting
+# microstructure for pairs the fleet refuses to trade, and missing the ones
+# it does, for 6 hours at a time (the old refresh interval).
+c7 = fresh_collector()
+c7._threads = [_T('Brainiac-Depth', True)]
+c7._started_at = time.time()
+with C._latest_lock:
+    for _cat, _k in (('depth', 'x'), ('trades', 'x'), ('metrics', 'x'),
+                     ('correlations', 'x'), ('funding', 'x')):
+        C._latest_cache[(_cat, _k)] = {'ts': time.time(), 'key': _k, 'data': {}}
+h7 = c7.health()
+check(h7.get('using_fallback_pairs') is True,
+      'a collector that has not acquired the live universe must DISCLOSE '
+      'that it is on the fallback; got %r' % h7.get('using_fallback_pairs'))
+check(h7.get('healthy') is False,
+      'running on the static fallback must NOT read healthy even with live '
+      'threads and fresh data — it is collecting the wrong pairs; got %r'
+      % h7.get('healthy'))
+
+c7._using_fallback = False
+check(c7.health().get('healthy') is True,
+      'once the live universe is acquired the same collector must read '
+      'healthy — the flag must not be permanently pessimistic')
+
+# ── 8. The fallback list itself must be blacklist-filtered ──
+import fleet_config as _fc
+_filtered = [p for p in C._FALLBACK_PAIRS if not _fc.is_blacklisted(p)]
+_bad = [p for p in _filtered if _fc.is_blacklisted(p)]
+check(not _bad, 'the filtered fallback still contains blacklisted pairs: %r'
+      % _bad)
+check(len(_filtered) < len(C._FALLBACK_PAIRS),
+      'sanity: the static fallback predates the blacklist and should lose '
+      'at least one pair to it — otherwise this check proves nothing')
+check('_FALLBACK_PAIRS' in open('D:/CommandCenter/collector.py',
+                                encoding='utf-8', errors='replace').read(),
+      'the fallback must be a named constant so it can be filtered and '
+      'tested, not an inline literal in an except block')
 
 if FAIL:
     for f in FAIL:

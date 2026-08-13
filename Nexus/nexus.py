@@ -1224,6 +1224,71 @@ class NexusEngine:
         # only emits on entry into the warning band or a change in manifold
         # classification, mirroring how a state machine should gate alerts.
         self._prev_manifold_state = {}
+        # Generalization of the same rule to every STATE-ANNOUNCEMENT engine
+        # (see _emit_changed). MANIFOLD_WARNING got the gate; its eight
+        # siblings did not, so a level that simply PERSISTED re-announced
+        # every scan. Measured on the durable bus log 2026-08-13: 86% of
+        # EUCLID_LEVEL, 85% of SCHWARZSCHILD_HORIZON, 88% of CYCLE_DETECTED
+        # were byte-identical repeats -- BTC/USD re-announced the same
+        # support level 388 times in one hour. That padding is why the
+        # /api/events/recent buffer covers under 3 minutes instead of hours.
+        self._emit_state = {}
+
+    # A level that PERSISTS is not a level that keeps being CROSSED. These
+    # engines describe STATE ("price is near support"), and publishing state
+    # every scan turns the bus into a poll log: any consumer that counts
+    # events measures how LONG a condition lasted, not how often anything
+    # happened. Emit on change, re-announce periodically so a consumer that
+    # started late still learns the current state.
+    EMIT_REANNOUNCE_SEC = 900   # 15 min — suppression must EXPIRE, or a
+                                # restarted consumer sees silence and cannot
+                                # tell "no level" from "level never repeated"
+
+    def _emit_changed(self, event_type: str, key: str, payload: dict,
+                      gate_on: tuple = None) -> bool:
+        """Emit only when this key's state CHANGED (or the re-announce is due).
+
+        key identifies the thing being described (usually the pair), so two
+        pairs never suppress each other. Returns True if emitted.
+
+        gate_on names the fields that define "the same announcement". It
+        matters whenever a payload carries a continuously-varying field:
+        EUCLID's distance_pct drifts every scan, so hashing the WHOLE payload
+        would never match and would suppress nothing at all -- a gate that
+        silently does nothing is worse than no gate, because it looks fixed.
+        The full payload is still published; gate_on only decides sameness.
+        Default (None) gates on the entire payload.
+
+        NEVER route a transactional event through this. Two identical
+        TRADE_CLOSE or PORTFOLIO_DENIAL payloads are two real occurrences --
+        gridzilla's denial retries repeat an identical payload every 62s on
+        the durable log, and collapsing those would erase the evidence that a
+        bot is stuck in a denial loop. This is for state announcements only.
+        """
+        if not self._event_pub:
+            return False
+        _sig_src = ({k: payload.get(k) for k in gate_on} if gate_on
+                    else payload)
+        try:
+            sig = json.dumps(_sig_src, sort_keys=True, default=str)
+        except Exception:
+            sig = repr(sorted(_sig_src.items()))  # odd values: still gate
+        now = time.time()
+        k = (event_type, key)
+        prev = self._emit_state.get(k)
+        if prev is not None:
+            prev_sig, prev_ts = prev
+            if prev_sig == sig and (now - prev_ts) < self.EMIT_REANNOUNCE_SEC:
+                return False
+        self._emit_state[k] = (sig, now)
+        try:
+            self._event_pub.emit(event_type, payload)
+            return True
+        except Exception:
+            # Emission failed — drop the memo so the next scan retries rather
+            # than suppressing against a state that never reached the bus.
+            self._emit_state.pop(k, None)
+            return False
 
     def _log(self, msg):
         ts = datetime.now(timezone.utc).strftime("%H:%M:%S")
@@ -1975,13 +2040,18 @@ class NexusEngine:
             for pair_name, nr in newton_results.items():
                 try:
                     if abs(nr["force"]) > 1.0:
-                        self._event_pub.emit("NEWTON_FORCE", {
-                            "pair": pair_name,
-                            "force": nr["force"],
-                            "direction": nr["force_direction"],
-                            "inertia": nr["inertia_score"],
-                            "mass": nr["mass"],
-                        })
+                        # force is continuous; the DIRECTION of the force is
+                        # the state worth announcing.
+                        self._emit_changed(
+                            "NEWTON_FORCE", pair_name,
+                            {
+                                "pair": pair_name,
+                                "force": nr["force"],
+                                "direction": nr["force_direction"],
+                                "inertia": nr["inertia_score"],
+                                "mass": nr["mass"],
+                            },
+                            gate_on=("pair", "direction"))
                 except Exception:
                     pass
 
@@ -1989,14 +2059,19 @@ class NexusEngine:
                 for reaction in nr.get("reaction_pairs", [])[:3]:
                     try:
                         if reaction["force_transfer"] > 1.0:
-                            self._event_pub.emit("NEWTON_REACTION", {
-                                "pair": pair_name,
-                                "trigger_pair": pair_name,
-                                "reactor_pair": reaction["pair"],
-                                "expected_lag": reaction["expected_lag_bars"],
-                                "expected_direction": reaction["expected_direction"],
-                                "force_transfer": reaction["force_transfer"],
-                            })
+                            self._emit_changed(
+                                "NEWTON_REACTION",
+                                f"{pair_name}->{reaction['pair']}",
+                                {
+                                    "pair": pair_name,
+                                    "trigger_pair": pair_name,
+                                    "reactor_pair": reaction["pair"],
+                                    "expected_lag": reaction["expected_lag_bars"],
+                                    "expected_direction": reaction["expected_direction"],
+                                    "force_transfer": reaction["force_transfer"],
+                                },
+                                gate_on=("trigger_pair", "reactor_pair",
+                                         "expected_direction"))
                     except Exception:
                         pass
 
@@ -2004,24 +2079,35 @@ class NexusEngine:
             for pair_name, er in euclid_results.items():
                 try:
                     if er["support_distance_pct"] < 0.5 and er["nearest_support"]:
-                        self._event_pub.emit("EUCLID_LEVEL", {
-                            "pair": pair_name,
-                            "type": "SUPPORT_APPROACHING",
-                            "level": er["nearest_support"]["price"],
-                            "strength": er["nearest_support"]["strength"],
-                            "distance_pct": er["support_distance_pct"],
-                        })
+                        # Gate on the LEVEL, not the distance: distance_pct
+                        # drifts every scan, so hashing the whole payload
+                        # would never match and suppress nothing. What makes
+                        # this the "same announcement" is the same level of
+                        # the same type on the same pair.
+                        self._emit_changed(
+                            "EUCLID_LEVEL", f"{pair_name}:SUPPORT",
+                            {
+                                "pair": pair_name,
+                                "type": "SUPPORT_APPROACHING",
+                                "level": er["nearest_support"]["price"],
+                                "strength": er["nearest_support"]["strength"],
+                                "distance_pct": er["support_distance_pct"],
+                            },
+                            gate_on=("pair", "type", "level"))
                 except Exception:
                     pass
                 try:
                     if er["resistance_distance_pct"] < 0.5 and er["nearest_resistance"]:
-                        self._event_pub.emit("EUCLID_LEVEL", {
-                            "pair": pair_name,
-                            "type": "RESISTANCE_APPROACHING",
-                            "level": er["nearest_resistance"]["price"],
-                            "strength": er["nearest_resistance"]["strength"],
-                            "distance_pct": er["resistance_distance_pct"],
-                        })
+                        self._emit_changed(
+                            "EUCLID_LEVEL", f"{pair_name}:RESISTANCE",
+                            {
+                                "pair": pair_name,
+                                "type": "RESISTANCE_APPROACHING",
+                                "level": er["nearest_resistance"]["price"],
+                                "strength": er["nearest_resistance"]["strength"],
+                                "distance_pct": er["resistance_distance_pct"],
+                            },
+                            gate_on=("pair", "type", "level"))
                 except Exception:
                     pass
 
@@ -2029,13 +2115,16 @@ class NexusEngine:
             for pair_name, ei in einstein_results.items():
                 try:
                     if ei["breakout_potential"] > 10:
-                        self._event_pub.emit("EINSTEIN_ENERGY", {
-                            "pair": pair_name,
-                            "energy": ei["energy"],
-                            "breakout_potential": ei["breakout_potential"],
-                            "time_dilation": ei["time_dilation"],
-                            "interpretation": ei["interpretation"],
-                        })
+                        self._emit_changed(
+                            "EINSTEIN_ENERGY", pair_name,
+                            {
+                                "pair": pair_name,
+                                "energy": ei["energy"],
+                                "breakout_potential": ei["breakout_potential"],
+                                "time_dilation": ei["time_dilation"],
+                                "interpretation": ei["interpretation"],
+                            },
+                            gate_on=("pair", "interpretation"))
                 except Exception:
                     pass
 
@@ -2044,13 +2133,18 @@ class NexusEngine:
                 try:
                     if sh["market_topology"] in ("ESCAPE_TRAJECTORY", "CAPTURED",
                                                    "BINARY_SYSTEM"):
-                        self._event_pub.emit("SCHWARZSCHILD_HORIZON", {
-                            "pair": pair_name,
-                            "topology": sh["market_topology"],
-                            "nearest_horizon": sh["nearest_horizon"],
-                            "momentum": sh["current_momentum"],
-                            "singularities": sh["singularity_count"],
-                        })
+                        # The comment above always said "publish topology
+                        # CHANGES"; the code republished the state every scan.
+                        self._emit_changed(
+                            "SCHWARZSCHILD_HORIZON", pair_name,
+                            {
+                                "pair": pair_name,
+                                "topology": sh["market_topology"],
+                                "nearest_horizon": sh["nearest_horizon"],
+                                "momentum": sh["current_momentum"],
+                                "singularities": sh["singularity_count"],
+                            },
+                            gate_on=("pair", "topology"))
                 except Exception:
                     pass
 
@@ -2090,13 +2184,16 @@ class NexusEngine:
                 for pair_name, topo in topology_results.items():
                     try:
                         if topo.get("cyclicality", 0) > 0.3:
-                            self._event_pub.emit("CYCLE_DETECTED", {
-                                "pair": pair_name,
-                                "cyclicality": topo["cyclicality"],
-                                "complexity": topo["complexity_score"],
-                                "fragmentation": topo["fragmentation"],
-                                "interpretation": topo.get("interpretation", ""),
-                            })
+                            self._emit_changed(
+                                "CYCLE_DETECTED", pair_name,
+                                {
+                                    "pair": pair_name,
+                                    "cyclicality": topo["cyclicality"],
+                                    "complexity": topo["complexity_score"],
+                                    "fragmentation": topo["fragmentation"],
+                                    "interpretation": topo.get("interpretation", ""),
+                                },
+                                gate_on=("pair", "interpretation"))
                     except Exception:
                         pass
 
@@ -2142,12 +2239,16 @@ class NexusEngine:
                 for link in causal_summary.get("strongest_links", [])[:3]:
                     try:
                         if link.get("strength", 0) > 0.5:
-                            self._event_pub.emit("CAUSAL_FLOW", {
-                                "source": link["source"],
-                                "target": link["target"],
-                                "strength": link["strength"],
-                                "lag": link["lag"],
-                            })
+                            self._emit_changed(
+                                "CAUSAL_FLOW",
+                                f"{link['source']}->{link['target']}",
+                                {
+                                    "source": link["source"],
+                                    "target": link["target"],
+                                    "strength": link["strength"],
+                                    "lag": link["lag"],
+                                },
+                                gate_on=("source", "target", "lag"))
                     except Exception:
                         pass
 
@@ -2155,13 +2256,16 @@ class NexusEngine:
                 for pair_name, br in boltzmann_results.items():
                     try:
                         if br.get("phase") in ("BOILING", "PLASMA"):
-                            self._event_pub.emit("BOOK_PHASE", {
-                                "pair": pair_name,
-                                "phase": br["phase"],
-                                "temperature": br["temperature"],
-                                "entropy": br["entropy"],
-                                "interpretation": br.get("interpretation", ""),
-                            })
+                            self._emit_changed(
+                                "BOOK_PHASE", pair_name,
+                                {
+                                    "pair": pair_name,
+                                    "phase": br["phase"],
+                                    "temperature": br["temperature"],
+                                    "entropy": br["entropy"],
+                                    "interpretation": br.get("interpretation", ""),
+                                },
+                                gate_on=("pair", "phase"))
                     except Exception:
                         pass
 
@@ -2169,13 +2273,16 @@ class NexusEngine:
                 for pair_name, lr in lorenz_results.items():
                     try:
                         if lr.get("attractor_departure", 0) > 0.5:
-                            self._event_pub.emit("CHAOS_STATE", {
-                                "pair": pair_name,
-                                "lyapunov_exponent": lr["lyapunov_exponent"],
-                                "attractor_departure": lr["attractor_departure"],
-                                "predictability_horizon": lr["predictability_horizon"],
-                                "interpretation": lr.get("interpretation", ""),
-                            })
+                            self._emit_changed(
+                                "CHAOS_STATE", pair_name,
+                                {
+                                    "pair": pair_name,
+                                    "lyapunov_exponent": lr["lyapunov_exponent"],
+                                    "attractor_departure": lr["attractor_departure"],
+                                    "predictability_horizon": lr["predictability_horizon"],
+                                    "interpretation": lr.get("interpretation", ""),
+                                },
+                                gate_on=("pair", "interpretation"))
                     except Exception:
                         pass
 
@@ -2183,14 +2290,18 @@ class NexusEngine:
                 for pair_name, pr in prigogine_results.items():
                     try:
                         if pr.get("structure_formation_score", 0) > 0.4:
-                            self._event_pub.emit("STRUCTURE_FORMING", {
-                                "pair": pair_name,
-                                "structure_type": pr["structure_type"],
-                                "formation_score": pr["structure_formation_score"],
-                                "bifurcation_type": pr["bifurcation_type"],
-                                "entropy_production": pr["entropy_production_rate"],
-                                "interpretation": pr.get("interpretation", ""),
-                            })
+                            self._emit_changed(
+                                "STRUCTURE_FORMING", pair_name,
+                                {
+                                    "pair": pair_name,
+                                    "structure_type": pr["structure_type"],
+                                    "formation_score": pr["structure_formation_score"],
+                                    "bifurcation_type": pr["bifurcation_type"],
+                                    "entropy_production": pr["entropy_production_rate"],
+                                    "interpretation": pr.get("interpretation", ""),
+                                },
+                                gate_on=("pair", "structure_type",
+                                         "bifurcation_type"))
                     except Exception:
                         pass
 
@@ -2213,13 +2324,21 @@ class NexusEngine:
                 # Shannon: SHANNON_ENTROPY when noise ratio is extreme
                 if shannon_map.get("noise_ratio", 0) > 0.7:
                     try:
-                        self._event_pub.emit("SHANNON_ENTROPY", {
-                            "noise_ratio": shannon_map["noise_ratio"],
-                            "signal_channels": shannon_map.get("signal_channels", 0),
-                            "noise_channels": shannon_map.get("noise_channels", 0),
-                            "total_capacity": shannon_map.get("total_capacity_bits", 0),
-                            "interpretation": "Fleet signal dominated by noise — reduce model confidence",
-                        })
+                        # Fleet-wide, so the key is fixed. NOT gated on
+                        # `interpretation` — that string is a hardcoded
+                        # constant here, so gating on it would suppress this
+                        # event forever after the first emission. The channel
+                        # split is the state that actually moves.
+                        self._emit_changed(
+                            "SHANNON_ENTROPY", "fleet",
+                            {
+                                "noise_ratio": shannon_map["noise_ratio"],
+                                "signal_channels": shannon_map.get("signal_channels", 0),
+                                "noise_channels": shannon_map.get("noise_channels", 0),
+                                "total_capacity": shannon_map.get("total_capacity_bits", 0),
+                                "interpretation": "Fleet signal dominated by noise — reduce model confidence",
+                            },
+                            gate_on=("signal_channels", "noise_channels"))
                     except Exception:
                         pass
 

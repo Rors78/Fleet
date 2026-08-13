@@ -1493,7 +1493,16 @@ class CardFormatter:
         wr = report.get("avg_win_rate")
         wr_s = f"{wr:.0%}" if isinstance(wr, (int, float)) else "\u2014"
         ev = report.get("avg_expectancy")
-        ev_s = f"${ev:+.2f}" if isinstance(ev, (int, float)) else "\u2014"
+        # An omitted-because-misleading figure is a different claim from a
+        # missing one. A bare em dash reads as "we lost the data"; this says
+        # the average would not have meant anything.
+        _ev_why = report.get("expectancy_omitted_reason")
+        if isinstance(ev, (int, float)):
+            ev_s = f"${ev:+.2f}"
+        elif _ev_why:
+            ev_s = "n/a this week"
+        else:
+            ev_s = "\u2014"
         best_day = report.get("best_day", "\u2014")
         worst_day = report.get("worst_day", "\u2014")
         days_pos = report.get("days_positive", "\u2014")
@@ -1525,8 +1534,12 @@ class CardFormatter:
         rows = [f"Week P/L  {pnl_s}", f"Trades    {trades}"]
         if wr_s != "\u2014":
             rows.append(f"Win Rate  {wr_s}")
-        if ev_s != "\u2014":
+        if isinstance(ev, (int, float)):
             rows.append(f"Avg P/L   {ev_s} per trade")
+        elif _ev_why:
+            # "per trade" only makes sense after a number. Say the figure is
+            # unavailable and why, rather than "n/a this week per trade".
+            rows.append("Avg P/L   n/a \u2014 sizing changed mid-week")
         if best_day != "\u2014":
             rows.append(f"Best Day  {best_day}")
         if worst_day != "\u2014":
@@ -3479,6 +3492,30 @@ class WeeklyReportJob:
             _wr_n = sum(n for _, n in win_rates)
             _ev_n = sum(n for _, n in expectancies)
 
+            # A DOLLAR expectancy is only meaningful if the days it averages
+            # were traded at comparable position sizes. On 2026-08-13 the
+            # pool went $1M -> $210.53: days before it carry $7k-$66k
+            # positions, days after carry $6-$14. Averaging both into one
+            # "$X/trade" figure and sending it to subscribers publishes a
+            # number describing neither week.
+            #
+            # No size data lives in the daily records, so this cannot be
+            # normalised here the way the trade cards are. Detect the
+            # discontinuity from the per-day expectancies themselves — a
+            # spread beyond 50x between the largest and smallest non-zero
+            # magnitude is a scale change, not a good week — and OMIT the
+            # figure rather than publish a meaningless average. The card
+            # already renders an em dash for a missing value.
+            _mags = sorted(abs(e) for e, _ in expectancies if e)
+            _ev_spans_eras = bool(_mags and _mags[-1] / _mags[0] > 50)
+            if _ev_spans_eras:
+                log.warning(
+                    "Weekly report: per-day expectancy spans %.0fx "
+                    "($%.4f to $%.2f) — position sizes changed inside the "
+                    "window, so a dollar average describes neither era. "
+                    "Omitting avg_expectancy from the card.",
+                    _mags[-1] / _mags[0], _mags[0], _mags[-1])
+
             report = {
                 # Distinguish "no days recorded" from "days recorded, all
                 # flat". Only the first is unknown; the second is a real $0.00.
@@ -3489,7 +3526,14 @@ class WeeklyReportJob:
                 "avg_win_rate": (sum(w * n for w, n in win_rates) / _wr_n / 100.0
                                  if _wr_n else None),
                 "avg_expectancy": (sum(e * n for e, n in expectancies) / _ev_n
-                                   if _ev_n else None),
+                                   if (_ev_n and not _ev_spans_eras) else None),
+                # Disclosed rather than silently absent: a card that simply
+                # drops a row looks like missing data, which is a different
+                # claim from "this number would mislead".
+                "expectancy_omitted_reason": (
+                    "position sizes changed during the week — a dollar "
+                    "average would describe neither era"
+                    if _ev_spans_eras else None),
                 "best_day": best_day or "\u2014",
                 "worst_day": worst_day or "\u2014",
                 "days_positive": days_positive,

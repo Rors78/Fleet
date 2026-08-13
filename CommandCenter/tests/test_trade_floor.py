@@ -114,11 +114,23 @@ check("PORTFOLIO_TOTAL" not in _decl and "%" not in _decl,
 # ── 5. Config and live state must agree on the pool size ──
 import json
 _pf = json.load(open("D:/CommandCenter/portfolio.json", encoding="utf-8"))
-check(abs(_pf.get("total", 0) - POOL) < 0.01,
+# The live total DRIFTS from the configured one by design: release() does
+# `self.total += pnl`, so realized P/L moves the pool. PORTFOLIO_TOTAL is
+# the STARTING size, not a running one — asserting exact equality would
+# fail the moment the fleet books its first trade, which it did ($210.53 ->
+# $210.62 on +$0.089 of realized P/L).
+#
+# What must hold is that they describe the same POOL, not the same cent. A
+# large divergence means the config was edited without the state file (or
+# vice versa) and deleting the file would silently resize the fleet.
+_live_total = _pf.get("total", 0)
+_drift = abs(_live_total - POOL) / POOL if POOL else 0
+check(_drift < 0.25,
       'portfolio.json total ($%.2f) and fleet_config.PORTFOLIO_TOTAL '
-      '($%.2f) must match — the file wins at runtime, so a divergence '
-      'means deleting it silently changes the pool size'
-      % (_pf.get("total", 0), POOL))
+      '($%.2f) differ by %.0f%% — small drift is realized P/L, but this is '
+      'a config/state divergence, and the file wins at runtime so deleting '
+      'it would silently resize the fleet'
+      % (_live_total, POOL, _drift * 100))
 
 # ── 6. Long-only, set by the operator 2026-08-13 ──
 check(fc.FLEET_LONG_ONLY is True,

@@ -79,6 +79,7 @@ TESTS = [
     "test_reaction_templates.py",
     "test_card_threading.py",
     "test_trade_floor.py",
+    "test_weekly_era.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

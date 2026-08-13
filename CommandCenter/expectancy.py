@@ -281,12 +281,15 @@ class ExpectancyTracker:
         expectancy = ((win_rate * avg_win) + ((1 - win_rate) * avg_loss)
                       if win_rate is not None else None)
 
-        # Profit factor
+        # Profit factor: gross wins / gross losses. With ZERO gross losses
+        # the ratio has no denominator — the old 999 placeholder rendered on
+        # the scoreboard as "999.00", a number that reads as a measurement.
+        # None means "no losing side measured yet"; wins/losses counts carry
+        # the actual information.
         gross_wins = sum(t['gross_pnl'] for t in wins)
         gross_losses = abs(sum(t['gross_pnl'] for t in losses))
         profit_factor = (gross_wins / gross_losses
-                        if gross_losses > 0 else
-                        float('inf') if gross_wins > 0 else 0)
+                         if gross_losses > 0 else None)
 
         # R-multiples
         r_values = [t['r_multiple'] for t in trades
@@ -331,7 +334,8 @@ class ExpectancyTracker:
                                      if expectancy is not None else None),
             'avg_win': round(avg_win, 2),
             'avg_loss': round(avg_loss, 2),
-            'profit_factor': round(min(profit_factor, 999), 2),
+            'profit_factor': (round(profit_factor, 2)
+                              if profit_factor is not None else None),
             'avg_r': round(avg_r, 3) if avg_r is not None else None,
             'best_trade': round(best['gross_pnl'], 2),
             'worst_trade': round(worst['gross_pnl'], 2),

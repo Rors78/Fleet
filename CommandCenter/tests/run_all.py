@@ -79,6 +79,7 @@ JS_TESTS = [
     "hivemind.js",
     "helper_test.js",
     "intel_render.js",
+    "scoreboard_grain.js",
 ]
 
 

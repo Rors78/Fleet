@@ -19771,8 +19771,15 @@ function renderOvScoreboard(){
     var grossPnl = bex && bex.total_gross_pnl != null ? bex.total_gross_pnl : null;
     var expTrade = bex && bex.expectancy_per_trade != null ? bex.expectancy_per_trade : null;
     var profitFactor = bex && bex.profit_factor != null ? bex.profit_factor : null;
-    var trades   = bex ? (bex.total_trades || 0) : (n.total_trades || null);
-    var wr       = bex && bex.win_rate != null ? bex.win_rate : (n.win_rate != null ? n.win_rate : null);
+    /* Trd and WR% must come from the SAME source: mixing the expectancy
+       store's trade count with the bot's own lifetime win rate rendered
+       TurtleSue as "0 trades, 33% WR" (2026-08-13) — a rate with no trades
+       behind it. If the store has an entry for this bot, both cells are the
+       store's; only a bot absent from the store entirely falls back to its
+       own snapshot, for both cells together. */
+    var trades, wr;
+    if(bex){ trades = bex.total_trades || 0; wr = bex.win_rate; }
+    else { trades = n.total_trades != null ? n.total_trades : null; wr = n.win_rate; }
     if(wr != null && wr <= 1.01) wr = wr * 100;
 
     var status = !b ? "offline" : !alive ? "halted" : (n.regime && n.regime.toLowerCase().indexOf("sleep")>=0 ? "sleeping" : (trades>0||n.open_positions>0?"active":"waiting"));

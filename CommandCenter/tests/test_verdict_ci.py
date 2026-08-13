@@ -154,6 +154,24 @@ check(rb['losses'] == 1 and rb['win_rate'] == 0.0,
       'a genuine measured loss must still count as a loss with a real 0%% '
       'rate; got losses=%r win_rate=%r' % (rb['losses'], rb['win_rate']))
 
+# ── 8. Profit factor with no losing side is None, not a 999 placeholder ──
+# Live render (2026-08-13): gridzilla 12W/0L put "999.00" in the scoreboard's
+# PF column — a division-by-zero placeholder wearing the costume of a
+# measurement. The ratio has no denominator; the wins/losses counts already
+# carry the information.
+gz = fs['bot_stats']['gridzilla']          # 5W/0L fixture from case 1
+check(gz['profit_factor'] is None,
+      'profit factor with ZERO gross losses must be None — 999 is a '
+      'placeholder, not a ratio; got %r' % gz['profit_factor'])
+rb2 = fs2['bot_stats']['rubberband']       # case 4: real wins AND losses
+check(rb2['profit_factor'] is not None and rb2['profit_factor'] > 0,
+      'a bot with both sides measured must still get a real profit factor; '
+      'got %r' % rb2['profit_factor'])
+cf = fs['bot_stats']['confluence']         # case 1: one loss, no wins
+check(cf['profit_factor'] == 0.0,
+      'all-losses is a measured 0.0 ratio (numerator zero, denominator '
+      'real), not None; got %r' % cf['profit_factor'])
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

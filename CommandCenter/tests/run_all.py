@@ -63,6 +63,7 @@ TESTS = [
     "test_init_order.py",
     "test_synthetic_disclosure.py",
     "test_writer_guard.py",
+    "test_aegis_hold.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

@@ -329,6 +329,25 @@ class PortfolioManager:
                         if _default is not None and _md < _default:
                             log.info("Restored AEGIS-tightened deployment cap "
                                      "%s%% (config default %s%%)", _md, _default)
+            # Restore the raise-hold clock too — see _save. Only a well-formed
+            # entry whose timestamp is in the PAST is honoured; a future
+            # `since` (clock change, hand-edited file) would grant the raise
+            # immediately, so it is discarded and the hold restarts.
+            global _aegis_raise_pending
+            _pend = data.get("aegis_raise_pending")
+            if isinstance(_pend, dict):
+                _pl, _ps = _pend.get("limit"), _pend.get("since")
+                if (isinstance(_pl, (int, float)) and 0 < _pl <= 100
+                        and isinstance(_ps, (int, float))
+                        and 0 < _ps <= time.time()):
+                    _aegis_raise_pending = {"limit": _pl, "since": _ps}
+                    log.info("Restored AEGIS raise-hold: %s%% pending, %.1f "
+                             "min elapsed of %d min",
+                             _pl, (time.time() - _ps) / 60,
+                             _AEGIS_RAISE_HOLD_SEC // 60)
+                elif _pend:
+                    log.warning("Discarded unusable AEGIS raise-hold state "
+                                "%r — hold restarts", _pend)
         except (FileNotFoundError, json.JSONDecodeError):
             pass
 
@@ -341,6 +360,16 @@ class PortfolioManager:
             "history": self.history[-200:],
             # Durable so an AEGIS-tightened cap survives a restart — see _load.
             "limits": dict(self.limits) if isinstance(self.limits, dict) else {},
+            # ...and so does PROGRESS TOWARD RELEASING it. Persisting only the
+            # tightening made restarts a one-way ratchet: the cap survived,
+            # the raise-hold clock restarted at zero. With restarts every
+            # ~15min against a 20min hold, the raise NEVER applied — the pool
+            # sat at the DEFENSIVE 30% for hours while AEGIS scored CAUTIOUS
+            # (2026-08-13), which is the cap that denied TurtleSue's
+            # re-reserve and forced its position closed.
+            "aegis_raise_pending": (dict(_aegis_raise_pending)
+                                    if isinstance(_aegis_raise_pending, dict)
+                                    else {}),
         }
         tmp = self.filepath + ".tmp"
         with open(tmp, "w") as f:
@@ -2757,6 +2786,7 @@ def _apply_aegis_adjustment():
     # became instantly over-cap when the tier dropped back (TurtleSue UNI
     # pyramid through the 07:36-07:52 window, 2026-07-31).
     global _aegis_raise_pending
+    _pending_before = dict(_aegis_raise_pending)
     _current_limit = None
     for _pm in [_portfolio_paper, _portfolio_live]:
         if _pm:
@@ -2768,6 +2798,10 @@ def _apply_aegis_adjustment():
             log.info(f"AEGIS: raise to {new_limit}% pending {_AEGIS_RAISE_HOLD_SEC // 60}min hold (score={score:.4f})")
             new_limit = _current_limit
         elif now - _aegis_raise_pending.get("since", now) < _AEGIS_RAISE_HOLD_SEC:
+            _elapsed = (now - _aegis_raise_pending.get("since", now)) / 60
+            log.info("AEGIS: raise to %s%% holding — %.1f of %d min elapsed "
+                     "(score=%.4f)", new_limit, _elapsed,
+                     _AEGIS_RAISE_HOLD_SEC // 60, score)
             new_limit = _current_limit
         else:
             log.info(f"AEGIS: raise to {new_limit}% held {_AEGIS_RAISE_HOLD_SEC // 60}min — applying")
@@ -2776,6 +2810,19 @@ def _apply_aegis_adjustment():
         # Not a raise (drop or unchanged): clear any pending hold so a fresh
         # spike must restart its clock.
         _aegis_raise_pending = {}
+
+    # Persist the hold clock whenever it changes, even if the cap itself did
+    # not — that is the whole point: the elapsed time must survive restarts.
+    # Without this the file only ever records the TIGHTENING, and the fleet
+    # ratchets one-way (see PortfolioManager._save).
+    if _aegis_raise_pending != _pending_before:
+        for _pm in [_portfolio_paper, _portfolio_live]:
+            if _pm:
+                try:
+                    _pm._save()
+                except Exception:
+                    log.warning("failed to persist AEGIS raise-hold state",
+                                exc_info=True)
 
     # Apply AEGIS adjustment to BOTH portfolios.
     # old_limit is captured OUTSIDE the loop: reading it inside leaves it bound

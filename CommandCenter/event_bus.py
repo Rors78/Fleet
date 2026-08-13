@@ -22,9 +22,15 @@ Usage from bots:
 """
 
 import json
+import logging
 import os
 import threading
 import time
+
+# This module had no logger at all, so a skipped or malformed reaction had
+# nowhere to report. Command Center configures the root handler; this rides
+# it rather than printing into a hot event path.
+log = logging.getLogger("event_bus")
 from collections import deque
 from typing import List, Optional
 
@@ -282,8 +288,22 @@ class EventBus:
         action = rule.get("action", "broadcast")
         message_template = rule.get("message", {})
 
-        # Template substitution: replace {field} with trigger event values
+        # Template substitution: replace {field} with trigger event values.
+        #
+        # A placeholder that resolves to NOTHING must not silently become an
+        # empty string. `obj.get(p, "")` did exactly that, and the result
+        # reached subscribers: the convergent_signal rule templates
+        # {data.pair} and {data.direction} from a SIGNAL event that carries
+        # NEITHER (reaction-generated SIGNALs have only type/reason/
+        # suggested_action), so it emitted "Fleet convergence on  " with an
+        # empty pair and empty direction 184 times a day, and the broadcaster
+        # rendered each as a HIGH CONVICTION SIGNAL card.
+        #
+        # A reaction whose own message cannot be filled in is not a reaction
+        # worth firing. Skip it and say so once per rule, rather than paging
+        # subscribers with a hollow card.
         message = {}
+        _unresolved = set()
         for k, v in message_template.items():
             if isinstance(v, str) and "{" in v:
                 try:
@@ -292,14 +312,36 @@ class EventBus:
                     for match in set(__import__("re").findall(r"\{([^}]+)\}", v)):
                         parts = match.split(".")
                         obj = trigger_event
+                        _missing = False
                         for p in parts:
-                            obj = obj.get(p, "") if isinstance(obj, dict) else ""
+                            if isinstance(obj, dict) and p in obj:
+                                obj = obj[p]
+                            else:
+                                _missing = True
+                                break
+                        if _missing or obj is None or str(obj).strip() == "":
+                            _unresolved.add(match)
+                            obj = ""
                         result = result.replace(f"{{{match}}}", str(obj))
                     message[k] = result
                 except Exception:
                     message[k] = v
             else:
                 message[k] = v
+
+        if _unresolved:
+            _rn = rule.get("name", "unknown")
+            if not hasattr(self, "_warned_unresolved"):
+                self._warned_unresolved = set()
+            if _rn not in self._warned_unresolved:
+                self._warned_unresolved.add(_rn)
+                log.warning(
+                    "Reaction %r SKIPPED: its message templates %s could not "
+                    "be resolved from the %s trigger — that event does not "
+                    "carry those fields. Firing anyway would emit a message "
+                    "with empty values. (warned once per rule)",
+                    _rn, sorted(_unresolved), trigger_event.get("type"))
+            return
 
         if action == "broadcast":
             # Publish the reaction as a new event (with depth tracking)

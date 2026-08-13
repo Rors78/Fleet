@@ -76,6 +76,7 @@ TESTS = [
     "test_hivemind_weight_cap.py",
     "test_universe_blacklist.py",
     "test_silent_handlers.py",
+    "test_reaction_templates.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

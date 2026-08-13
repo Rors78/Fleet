@@ -30,7 +30,7 @@
     },
     {
       "name": "convergent_signal",
-      "description": "Flag when 3+ bots signal same pair same direction within 60s",
+      "description": "Flag when 3+ bots signal same pair same direction within 60s. REQUIRES the SIGNAL to carry pair AND direction — reaction-generated SIGNALs (see dissipative_structure_forming) carry neither, which rendered 184 'Fleet convergence on  ' cards a day with the templates substituting to empty strings.",
       "trigger": {
         "type": "SIGNAL"
       },
@@ -139,13 +139,13 @@
     },
     {
       "name": "quantum_collapse_convergence",
-      "description": "Quantum state actually collapsed into a NEW definite state. Depends on the nexus.py emitter firing on state CHANGE (fixed 2026-08-06) rather than on a level check — before that it fired every scan forever (2,383/hr, 100% repeats) and any count() threshold here fired on repetition. With a transition-only emitter no extra condition is needed: every event is already a real collapse.",
+      "description": "Quantum state actually collapsed into a NEW definite state. Depends on the nexus.py emitter firing on state CHANGE (fixed 2026-08-06) rather than on a level check — before that it fired every scan forever (2,383/hr, 100% repeats) and any count() threshold here fired on repetition. With a transition-only emitter no extra condition is needed: every event is already a real collapse. RETYPED 2026-08-13: was HIGH_CONVICTION, which presented a regime observation to subscribers as an actionable trade signal (no direction, no entry, no invalidation) under a 'HIGH CONVICTION SIGNAL' header.",
       "trigger": {
         "type": "QUANTUM_COLLAPSE"
       },
       "action": "broadcast",
       "message": {
-        "type": "HIGH_CONVICTION",
+        "type": "REGIME_CHANGE",
         "reason": "Quantum collapse {data.pair}: now {data.dominant_state}",
         "pair": "{data.pair}",
         "confidence": "{data.confidence}",

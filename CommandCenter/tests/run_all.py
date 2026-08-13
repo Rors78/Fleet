@@ -77,6 +77,7 @@ TESTS = [
     "test_universe_blacklist.py",
     "test_silent_handlers.py",
     "test_reaction_templates.py",
+    "test_card_threading.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

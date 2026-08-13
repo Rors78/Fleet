@@ -2097,28 +2097,83 @@ class CardFormatter:
                         return f"{label:<10}{v}\n"
             return ""   # omit rather than print a placeholder
 
+        # Price precision follows the PAIR, not the raw float. "Entry
+        # 8.76393" on an $8 asset is five decimals of noise that reads as
+        # false precision; a sub-cent token genuinely needs them.
+        def _px(v):
+            try:
+                f = float(v)
+            except (TypeError, ValueError):
+                return str(v)
+            if f >= 1000:
+                return f"{f:,.2f}"
+            if f >= 1:
+                return f"{f:.4f}".rstrip("0").rstrip(".")
+            if f >= 0.01:
+                return f"{f:.5f}".rstrip("0").rstrip(".")
+            return f"{f:.8f}".rstrip("0").rstrip(".")
+
         _rg = f"Regime    {regime}\n" if d.get("regime") else ""
+        # SIZE IS DELIBERATELY OMITTED from subscriber cards. "$10,058.82"
+        # is this fleet's own position sizing on a $1M paper pool — a
+        # subscriber cannot use it, and publishing it invites them to mirror
+        # a number scaled to someone else's capital. Direction, entry, stop
+        # and result are the actionable parts; size is ours.
         _close_rows = (_rg
-                       + _row("Entry", "entry_price", "entry", "avg_entry")
-                       + _row("Exit", "exit_price", "exit"))
+                       + _row("Entry", "entry_price", "entry", "avg_entry", fmt=_px)
+                       + _row("Exit", "exit_price", "exit", fmt=_px))
         _open_rows = (_rg
-                      + _row("Entry", "entry_price", "entry", "price")
-                      + _row("Size", "size_usd", "size", "amount",
-                             fmt=lambda v: f"${float(v):,.2f}")
-                      + _row("Stop", "stop_loss", "stop", "sl", "current_stop"))
+                      + _row("Entry", "entry_price", "entry", "price", fmt=_px)
+                      + _row("Stop", "stop_loss", "stop", "sl", "current_stop", fmt=_px))
 
         if is_close:
             pnl = d.get("pnl")
-            pnl_s = f"${pnl:+.2f}" if isinstance(pnl, (int, float)) else "\u2014"
-            pnl_won = isinstance(pnl, (int, float)) and pnl > 0
-            result_glyph = "\u2714 WIN" if pnl_won else "\u2716 LOSS"
+            _measured = isinstance(pnl, (int, float))
+            # A FLAT close is neither a win nor a loss, and an unmeasured
+            # one is neither either. Calling every non-positive close a LOSS
+            # is the same defect the fleet's own expectancy classifier had.
+            if not _measured:
+                result_glyph, pnl_s = "\u2014 UNMEASURED", ""
+            elif pnl > 0:
+                result_glyph, pnl_s = "\u2714 WIN", f"  ${pnl:+,.2f}"
+            elif pnl < 0:
+                result_glyph, pnl_s = "\u2716 LOSS", f"  ${pnl:+,.2f}"
+            else:
+                result_glyph, pnl_s = "\u2500 FLAT", "  $0.00"
+
+            # Return % and holding time are what a subscriber can actually
+            # compare against their own sizing \u2014 the dollar figure is ours.
+            _ret = ""
+            _e = d.get("entry_price") or d.get("entry") or d.get("avg_entry")
+            _x = d.get("exit_price") or d.get("exit")
+            try:
+                if _e and _x and float(_e) > 0:
+                    _pct = (float(_x) - float(_e)) / float(_e) * 100.0
+                    if direction in ("SHORT", "SELL"):
+                        _pct = -_pct
+                    _ret = f"Return    {_pct:+.2f}%\n"
+            except (TypeError, ValueError, ZeroDivisionError):
+                _ret = ""
+            _held = ""
+            _dur = d.get("duration_s") or d.get("duration")
+            try:
+                if _dur and float(_dur) > 0:
+                    _h = float(_dur) / 3600.0
+                    _held = (f"Held      {_h:.1f}h\n" if _h >= 1
+                             else f"Held      {float(_dur)/60:.0f}m\n")
+            except (TypeError, ValueError):
+                _held = ""
+            _sig = f"Signal    {dir_glyph}\n" if direction else ""
             return (
                 f"{_header('POSITION CLOSED', 'TRADE_CLOSE')}\n"
                 f"{_divider()}\n"
                 f"<code>"
                 f"Pair      {pair}\n"
-                f"Result    {result_glyph}  {pnl_s}\n"
+                f"{_sig}"
+                f"Result    {result_glyph}{pnl_s}\n"
+                f"{_ret}"
                 f"{_close_rows}"
+                f"{_held}"
                 f"Bot       {display_name(_v(d, 'source', _v(d, 'bot')))}"
                 f"</code>"
                 f"{_footer(_FOOTER_FREE)}"
@@ -2437,7 +2492,10 @@ class ChannelOps(Transport):
                   event_type: str = "") -> bool:
         if not self._free_chat:
             return False
-        ok = self._send(self._free_chat, message)
+        _reply = self._thread_parent(event_type, message)
+        ok = self._send(self._free_chat, message, reply_to=_reply)
+        if ok:
+            self._remember_open(event_type, message)
         self._log_attempt("free", event_type, event_id, ok)
         with self._stats_lock:
             self._reset_if_new_day()
@@ -2447,6 +2505,48 @@ class ChannelOps(Transport):
             else:
                 self._daily_stats["failed"] += 1
         return ok
+
+    # ── Open/close threading ────────────────────────────────────────────
+    # A close 13 hours after its open is unreadable on its own: the
+    # subscriber sees "POSITION CLOSED ADA/USD" with dozens of unrelated
+    # cards in between and no way back to the entry. Telegram renders a
+    # reply with its parent quoted inline, so threading the close under the
+    # open carries the entry WITH the exit.
+    #
+    # Keyed on the pair parsed from the card text rather than threading a
+    # new argument through five call sites — the pair is already on every
+    # card, and a wrong parse degrades to "no reply", never to a wrong one.
+    _OPEN_TTL_S = 7 * 24 * 3600      # a position open longer than a week
+                                     # is not worth threading to
+
+    def _card_pair(self, message: str):
+        m = re.search(r"Pair\s+([A-Z0-9]{2,10}/[A-Z]{3,5})", message or "")
+        return m.group(1) if m else None
+
+    def _remember_open(self, event_type: str, message: str) -> None:
+        if "TRADE_OPEN" not in (event_type or ""):
+            return
+        mid = getattr(self, "_last_message_id", None)
+        pair = self._card_pair(message)
+        if not (mid and pair):
+            return
+        if not hasattr(self, "_open_msgs"):
+            self._open_msgs = {}
+        self._open_msgs[pair] = (mid, time.time())
+
+    def _thread_parent(self, event_type: str, message: str):
+        if "TRADE_CLOSE" not in (event_type or ""):
+            return None
+        pair = self._card_pair(message)
+        if not pair:
+            return None
+        rec = getattr(self, "_open_msgs", {}).pop(pair, None)
+        if not rec:
+            return None
+        mid, ts = rec
+        if time.time() - ts > self._OPEN_TTL_S:
+            return None
+        return mid
 
     def send_paid(self, message: str, event_id: str = "",
                   event_type: str = "") -> bool:
@@ -2637,7 +2737,9 @@ class ChannelOps(Transport):
             # nothing.
             self._warned_unset_paid = False
 
-    def _send(self, chat_id: str, message: str) -> bool:
+    def _send(self, chat_id: str, message: str,
+              reply_to: Optional[int] = None) -> bool:
+        self._last_message_id = None
         if not self._token:
             log.error("Cannot send: telegram_bot_token is not configured")
             return False
@@ -2649,12 +2751,23 @@ class ChannelOps(Transport):
             return False
 
         url = f"https://api.telegram.org/bot{self._token}/sendMessage"
-        payload = json.dumps({
+        _body = {
             "chat_id": chat_id,
             "text": message,
             "parse_mode": "HTML",
             "disable_web_page_preview": True,
-        }).encode("utf-8")
+        }
+        # Thread a close under its own open. Without this a subscriber sees
+        # "ADA LONG opened", then 13 hours and dozens of cards later a close
+        # with nothing tying them together — they would have to scroll back
+        # through everything to find the entry. Telegram renders a reply with
+        # the parent quoted inline, so the entry travels WITH the exit.
+        if reply_to:
+            _body["reply_to_message_id"] = reply_to
+            # If the parent was deleted or is too old, send it standalone
+            # rather than failing the whole card.
+            _body["allow_sending_without_reply"] = True
+        payload = json.dumps(_body).encode("utf-8")
 
         for attempt in range(2):
             try:
@@ -2665,6 +2778,15 @@ class ChannelOps(Transport):
                 )
                 with urllib.request.urlopen(req, timeout=10) as resp:
                     if resp.status == 200:
+                        # Capture the message_id so a later close can reply
+                        # to this card. The response was previously discarded
+                        # entirely, which is why no threading was possible.
+                        try:
+                            _r = json.loads(resp.read().decode("utf-8"))
+                            self._last_message_id = (
+                                (_r.get("result") or {}).get("message_id"))
+                        except Exception:
+                            self._last_message_id = None
                         log.info("Sent to chat …%s OK", str(chat_id)[-4:])
                         return True
                     log.warning("Telegram returned status %s", resp.status)

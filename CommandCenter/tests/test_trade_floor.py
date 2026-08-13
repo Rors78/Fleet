@@ -144,6 +144,50 @@ for _d in ("SHORT", "SELL"):
           'an already-open %s must be able to re-claim its capital on a '
           'restart, or flipping this flag liquidates live positions' % _d)
 
+# ── 7. Every trading bot must size off the POOL, not a local balance ──
+# Bots sizing off a fixed $10,000 paper balance asked for the same dollars
+# whatever the shared pool held — 6 of the denials in the 20 minutes after
+# the $210.53 resize were bots requesting more than the pool could ever
+# grant. A share of the pool scales with it; a hardcoded balance goes stale
+# at every resize.
+_POOL_SIZED = {
+    "turtlesue":   ("D:/TurtleSue/turtlebot.py",    "equity_pool_share_pct"),
+    "confluence":  ("D:/Confluence/confluence.py",  "RISK_POOL_SHARE_PCT"),
+    "rubberband":  ("D:/Rubberband/rubberband.py",  "POOL_SHARE_PCT"),
+}
+for _bot, (_path, _const) in _POOL_SIZED.items():
+    _src = open(_path, encoding="utf-8", errors="replace").read()
+    check(_const in _src,
+          '[%s] must declare a pool share constant (%s)' % (_bot, _const))
+    check("pool_total()" in _src,
+          '[%s] must read pool_total() — available() moves every time '
+          'another bot opens a position, so sizing off it would resize this '
+          'bot because something unrelated happened' % _bot)
+    check("_sizing_basis" in _src or "_risk_basis" in _src
+          or "sizing_basis" in _src,
+          '[%s] must route sizing through a basis helper so the pool read '
+          'has ONE fallback path, not one per call site' % _bot)
+
+# ── 8. Every bot's smallest POST-SCALE request must clear the floor ──
+# Computed from each bot's real formula at the worst live multiplier. This
+# is the check that would have caught both of my wrong floor values.
+_WORST_MULT = 0.15
+_sizes = {
+    "turtlesue":  POOL * 0.10,                  # share, then risk/N
+    "confluence": POOL * 0.10 * 0.005 / 0.03,   # share * risk / stop_pct
+    "rubberband": POOL * 1.00 * 0.05,           # share * flat risk pct
+    "nexusbrain": POOL * 0.05,                  # max_position_pct of basis
+}
+_cap = POOL * LIM["max_per_trade_pct"] / 100.0
+for _bot, _req in _sizes.items():
+    check(_req * _WORST_MULT >= FLOOR,
+          '[%s] requests $%.2f, which fleet intel scales to $%.2f at the '
+          'worst live multiplier — below the $%.2f floor, so this bot '
+          'cannot trade' % (_bot, _req, _req * _WORST_MULT, FLOOR))
+    check(_req <= _cap,
+          '[%s] requests $%.2f, above the $%.2f per-trade cap — it would be '
+          'refused before sizing even applies' % (_bot, _req, _cap))
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

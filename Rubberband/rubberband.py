@@ -148,6 +148,35 @@ MIN_RR_RATIO = 2.0           # Minimum GROSS reward:risk (no fee term — see be
 # Risk
 MAX_POSITIONS = 1             # Start conservative — scale to 3 after 20 profitable trades
 TRADE_RISK_PCT = 0.05         # 5% per trade
+# Share of the central pool this bot uses AS ITS EQUITY BASIS — see
+# _sizing_basis(). TRADE_RISK_PCT above is then applied to it exactly as it
+# was to the old fixed $10,000 balance, so the sizing FORMULA is unchanged
+# and only its basis moves with the pool.
+#
+# 10% matches TurtleSue's equity_pool_share_pct and Confluence's
+# RISK_POOL_SHARE_PCT, so the fleet has ONE convention rather than a
+# different number per bot.
+#
+# This bot lands SMALLER than those two for the same share, because they
+# divide by a stop distance (size = share * risk / stop_pct) which recovers
+# a full notional from a small risk figure, while Rubberband multiplies a
+# flat 5% with no divisor. At 10% that is $1.05 on a $210 pool, which fleet
+# intel scales to $0.16 — under any floor that still filters real dust.
+#
+# So the share carries the whole notional here: 100% of pool x 5% = 5% of
+# pool, which is the same fraction of capital the other bots commit and is
+# well inside the 20% per-trade cap. It is NOT "this bot may use the whole
+# pool" — TRADE_RISK_PCT is what actually sizes the position, and the
+# per-trade/per-pair caps still bind above it.
+#
+# I first raised this to 50% to clear a $1 floor, then reverted it and
+# fixed the floor instead; the floor had been set from the per-trade cap
+# rather than from the smallest legitimate POST-SCALE size. Both moved in
+# the end, for different reasons: the floor was measured wrong, and this
+# share was the wrong basis for a formula with no stop divisor.
+POOL_SHARE_PCT = 100.0
+# Fallback only — used when Command Center is unreachable and the pool
+# cannot be read.
 PAPER_BALANCE = 10_000.0
 SCAN_INTERVAL = 60
 UNIVERSE_LIMIT = 15
@@ -362,6 +391,45 @@ class RubberbandEngine:
                     # Get current price for closing
                     current_price = self.prices.get(pos.pair, pos.entry_price)
                     self.close_position(pos, current_price, "stale_reservation")
+
+    # -- Sizing basis ---------------------------------------------------------
+
+    def _sizing_basis(self) -> float:
+        """Equity figure that position sizing is calculated FROM.
+
+        A share of the shared POOL, not this bot's own ledger. Deliberately
+        separate from self.equity, which tracks realized P/L for the
+        drawdown rule and the dashboard — conflating them would make a
+        losing streak shrink the pool share as well as the ledger, applying
+        the drawdown penalty twice.
+
+        Reads pool_total(), not available(): available() moves every time
+        another bot opens a position, so sizing off it would resize this bot
+        because something unrelated happened. pool_total() is the stable
+        figure to take a share of.
+
+        Falls back to self.equity when the pool is unreachable, so a
+        Command Center outage degrades to the previous behaviour rather than
+        sizing off a guess. Warned once, not per scan: a silently degraded
+        sizing basis is the kind of thing that runs for weeks unnoticed.
+        """
+        share = POOL_SHARE_PCT
+        if not (self._portfolio_client and share > 0):
+            return self.equity
+        try:
+            total = self._portfolio_client.pool_total()
+        except Exception:
+            total = None
+        if not isinstance(total, (int, float)) or total <= 0:
+            if not getattr(self, "_pool_basis_warned", False):
+                self._pool_basis_warned = True
+                self._log(
+                    f"pool total unreachable — sizing off local equity "
+                    f"${self.equity:,.2f} instead of {share:.1f}% of pool",
+                    "WARNING")
+            return self.equity
+        self._pool_basis_warned = False
+        return total * (share / 100.0)
 
     # -- Logging helper -------------------------------------------------------
 
@@ -837,9 +905,18 @@ class RubberbandEngine:
             self._log(f"Bus veto for {pair}: {veto}", "DEBUG")
             return False
 
-        # Position sizing: 3% of equity
+        # Position sizing: a share of the POOL, not this bot's local ledger.
+        #
+        # Sizing off self.equity (a fixed $10,000 paper balance) meant this
+        # bot asked for the same dollars whatever the shared pool held. On a
+        # $210.53 pool that is a $10.53 request against a $42.11 cap — it
+        # happened to fit — but on the previous $1M pool the same 5% was
+        # $500 while the pool could support far more, and every resize left
+        # it stale in one direction or the other. _sizing_basis() reads the
+        # live pool; self.equity keeps tracking realized P/L for the
+        # drawdown rule and the dashboard, which is a different question.
         with self._lock:
-            size_usd = self.equity * TRADE_RISK_PCT
+            size_usd = self._sizing_basis() * TRADE_RISK_PCT
 
         # CHRONOS: temporal bias — soft influence only, never a hard block.
         # A fresh (<1h) statistically-gated TIME_ANOMALY opposing this trade's

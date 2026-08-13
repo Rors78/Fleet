@@ -110,7 +110,7 @@ KRAKEN_REST = _FC_KRAKEN_REST
 # the pool returns to six figures, raise this by hand — it is a dust
 # filter, not a risk control, and the per-trade/per-pair caps do the
 # actual limiting.
-MIN_TRADE_USD = 1.0
+MIN_TRADE_USD = 0.25
 
 # ---------------------------------------------------------------------------
 # Thread-safe state

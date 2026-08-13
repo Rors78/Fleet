@@ -62,7 +62,7 @@ except Exception:
     # Fallback matches the CURRENT fleet floor. Pinning the old 100.0
     # here would silently re-park a $210 pool if the import ever
     # failed — the fallback must be safe AND usable.
-    _MIN_TRADE_USD = 1.0
+    _MIN_TRADE_USD = 0.25
 try:
     from event_publisher import EventPublisher
 except ImportError:

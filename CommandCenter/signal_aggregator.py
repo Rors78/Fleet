@@ -32,6 +32,7 @@ Usage:
 """
 
 import json
+import logging
 import math
 import os
 import time
@@ -331,11 +332,38 @@ class SignalAggregator:
             pass
 
     def _load_state(self):
-        """Load persisted source accuracy."""
+        """Load persisted source accuracy, purging artifact sources.
+
+        A bug iterated the characters of a signals STRING, crediting
+        phantom sources like "trekbot:n" / "trekbot:2" with real trade
+        outcomes. Ingest now drops single-character signal names; this
+        mirrors that rule for rows already persisted — fabricated
+        attribution should not survive a restart just because it reached
+        disk. (The live store held ONLY artifact sources on 2026-08-13:
+        six trekbot:<char> rows, zero real ones.)
+        """
         try:
             if os.path.exists(self.PERSIST_PATH):
                 with open(self.PERSIST_PATH) as f:
                     state = json.load(f)
-                self.source_accuracy = state.get('source_accuracy', {})
+                acc = state.get('source_accuracy', {})
+                purged = [s for s in acc
+                          if ':' in s and len(s.split(':', 1)[1]) <= 1]
+                for s in purged:
+                    acc.pop(s)
+                self.source_accuracy = acc
+                if purged:
+                    logging.warning(
+                        "signal_aggregator: purged %d artifact source(s) "
+                        "from persisted accuracy (single-char signal names "
+                        "from the char-iteration bug): %s",
+                        len(purged), ", ".join(sorted(purged)))
+                    self._save_state()
         except Exception:
-            pass
+            # Unreadable is not empty: say so. Weights re-learn from live
+            # outcomes, so starting empty is safe — but a corrupt file
+            # should never LOOK like a clean first run.
+            logging.warning(
+                "signal_aggregator: could not load persisted state from "
+                "%s — starting with empty accuracy (weights will re-learn)",
+                self.PERSIST_PATH, exc_info=True)

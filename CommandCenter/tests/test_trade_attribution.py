@@ -67,6 +67,11 @@ check('direction = edata.get("direction", "LONG").upper()' not in src,
 # ── 4. Behavioural: the aggregator must reject unmeasured confidence ──
 import signal_aggregator as sa
 importlib.reload(sa)
+# Isolate from the LIVE aggregator_state.json: _load_state now purges and
+# RE-SAVES at load, so constructing against the real path would mutate
+# live fleet state from inside a test.
+sa.SignalAggregator.PERSIST_PATH = os.path.join(tempfile.mkdtemp(),
+                                                'agg_iso.json')
 agg = sa.SignalAggregator()
 
 check(agg.submit_proposal('trinity', 'BTC/USD', 'LONG', 0.8) is True,
@@ -223,6 +228,48 @@ for _name, (_block, _var) in _blocks.items():
     check(n4['_signal_aggregator'].calls == [('X/USD', 'LONG', True, 12.5)],
           '[%s] a measured close must still reach record_outcome, got %r'
           % (_name, n4['_signal_aggregator'].calls))
+
+# ── 7. Persisted artifact sources are purged at load; unreadable ≠ empty ──
+# The durable aggregator_state.json held ONLY char-iteration artifacts on
+# 2026-08-13 (six trekbot:<char> rows, zero real sources) — fabricated
+# attribution that survived every restart because only INGEST was guarded.
+import json as _json
+
+_tmpd = tempfile.mkdtemp()
+_pp = os.path.join(_tmpd, 'agg.json')
+with open(_pp, 'w') as _f:
+    _json.dump({'source_accuracy': {
+        'trekbot:n': {'wins': 3, 'losses': 0, 'total_pnl': 32.6, 'trades': 3},
+        'confluence:oracle_conf': {'wins': 1, 'losses': 1,
+                                   'total_pnl': 5.0, 'trades': 2},
+    }}, _f)
+_orig_pp = sa.SignalAggregator.PERSIST_PATH
+sa.SignalAggregator.PERSIST_PATH = _pp
+try:
+    agg2 = sa.SignalAggregator()
+finally:
+    sa.SignalAggregator.PERSIST_PATH = _orig_pp
+check('trekbot:n' not in agg2.source_accuracy,
+      'a single-char artifact source must be purged at load, got %r'
+      % sorted(agg2.source_accuracy))
+check('confluence:oracle_conf' in agg2.source_accuracy,
+      'a real source must survive the purge')
+with open(_pp) as _f:
+    _ondisk = _json.load(_f).get('source_accuracy', {})
+check('trekbot:n' not in _ondisk and 'confluence:oracle_conf' in _ondisk,
+      'the purge must be persisted back to disk, got %r' % sorted(_ondisk))
+
+_pp2 = os.path.join(_tmpd, 'corrupt.json')
+with open(_pp2, 'w') as _f:
+    _f.write('{not json')
+sa.SignalAggregator.PERSIST_PATH = _pp2
+try:
+    agg3 = sa.SignalAggregator()
+finally:
+    sa.SignalAggregator.PERSIST_PATH = _orig_pp
+check(agg3.source_accuracy == {},
+      'a corrupt state file must start empty without crashing, got %r'
+      % agg3.source_accuracy)
 
 if FAIL:
     for f in FAIL:

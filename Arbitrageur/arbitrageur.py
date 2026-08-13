@@ -772,8 +772,13 @@ class ArbitrageurEngine:
                     size_usd=pos.size_usd, duration=pos.age_hours() * 3600,
                     fee_rate=0.0,  # gross expectancy — signal product, no fee accounting
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                # Swallowed, this drops the trade from the DURABLE store
+                # while realized_pnl/equity above are already updated — the
+                # bot's tally and /api/expectancy diverge silently.
+                log.error("EXPECTANCY RECORD FAILED for %s: %s: %s — trade "
+                          "is in this bot's tally but NOT in the durable "
+                          "store", pos.pair, type(_e).__name__, _e)
 
         # "fees" key kept at 0.0 for record-shape compatibility (P/L is gross)
         record = {**pos.to_dict(), "exit_reason": reason, "exit_price": round(exit_price, 6),

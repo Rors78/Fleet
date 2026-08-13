@@ -1592,8 +1592,15 @@ class PaperTrader:
                         size_usd=pos.size_usd,
                         duration=time.time() - pos.entry_time,
                     )
-                except Exception:
-                    pass
+                except Exception as _e:
+                    # Swallowed, this drops the trade from the DURABLE store
+                    # while self.trades.append() above already booked it
+                    # locally — the two sources diverge with nothing saying
+                    # which is short.
+                    logger.error(
+                        "EXPECTANCY RECORD FAILED for %s: %s: %s — trade is "
+                        "in this bot's tally but NOT in the durable store",
+                        pair, type(_e).__name__, _e)
 
             # Central portfolio: release reservation
             if self._portfolio and pos.reservation_id:

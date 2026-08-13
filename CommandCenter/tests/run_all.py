@@ -75,6 +75,7 @@ TESTS = [
     "test_sentinel_conviction.py",
     "test_hivemind_weight_cap.py",
     "test_universe_blacklist.py",
+    "test_silent_handlers.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

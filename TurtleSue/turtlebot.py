@@ -1523,8 +1523,16 @@ class TurtleEngine:
                     size_usd=pos.total_size * pos.avg_entry,
                     duration=int(time.time()) - pos.opened_at,
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                # Swallowed, this drops the trade from the DURABLE store
+                # while trade_log.record() above already booked it locally —
+                # the two sources diverge with nothing indicating which is
+                # short. The write guard above decides WHETHER to record;
+                # this must not silently decide it did not happen.
+                logging.error(
+                    "[turtlesue] EXPECTANCY RECORD FAILED for %s: %s: %s — "
+                    "trade is in the local log but NOT in the durable store",
+                    pair, type(_e).__name__, _e)
 
         # getattr, not a bare attribute: this method is reachable from
         # _reconcile_positions() during __init__, and a bare access here is

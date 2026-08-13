@@ -988,8 +988,16 @@ class RubberbandEngine:
                     duration=duration,
                     fee_rate=0.0,  # gross — signal product, no fee accounting
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                # A swallowed failure here DROPS the trade from the durable
+                # store while self.wins/losses below still increment, so the
+                # bot's own tally and /api/expectancy silently diverge and
+                # nothing indicates which is short. Recording must not block
+                # the close, but it must not vanish either.
+                self._log(f"EXPECTANCY RECORD FAILED for {pos.pair}: "
+                          f"{type(_e).__name__}: {_e} — trade is in this "
+                          f"bot's tally but NOT in the durable store",
+                          "ERROR")
 
         with self._lock:
             self.equity += pnl
@@ -1391,16 +1399,32 @@ def main():
     finally:
         engine.shutdown_event.set()
         engine.status = "stopped"
-        # Release portfolio reservations for any open positions
+        # Release portfolio reservations for any open positions.
+        #
+        # A FAILED release here strands capital in the pool for a position
+        # this process is about to forget, and the old `except: pass` left
+        # no trace that it had even been attempted — the exact leak shape
+        # the fleet's stale-reservation sweep exists to clean up hours
+        # later. Report each failure and summarise, so a shutdown that
+        # leaked is visible in the log rather than inferred from a pool
+        # that will not balance.
         if engine._portfolio_client:
+            _failed = []
             with engine._lock:
                 for pos in engine.positions:
                     if pos.reservation_id:
                         try:
                             engine._portfolio_client.release(pos.reservation_id, pnl=0.0)
                             print(f"  Released reservation {pos.reservation_id}")
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            _failed.append((pos.reservation_id, pos.pair, _e))
+                            print(f"  RELEASE FAILED {pos.reservation_id} "
+                                  f"({pos.pair}): {type(_e).__name__}: {_e}")
+            if _failed:
+                print(f"  WARNING: {len(_failed)} reservation(s) NOT released "
+                      f"on shutdown — capital stays committed in the pool "
+                      f"until the stale sweep reclaims it: "
+                      f"{[r for r, _p, _e in _failed]}")
         server.server_close()
 
     # Final stats

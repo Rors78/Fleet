@@ -2824,8 +2824,26 @@ def _apply_aegis_adjustment():
     norm = aegis_data.get("normalized") or {}
     # AEGIS raw uses "score"; normalizer copies it to "aegis_score".
     # Check both dicts × both keys so older/newer AEGIS versions both work.
+    # Never adjust the fleet cap from a score AEGIS has not computed.
+    # AEGIS now publishes score None until its first scan completes, but
+    # this side must not depend on that: on 2026-08-13 04:15:26 an AEGIS
+    # restart put "raise to 80% pending 20min hold (score=0.5000)" in this
+    # log — the init seed, mapped straight to the NORMAL tier. The raise
+    # hold absorbed it by luck; a DROP applies instantly with no hold.
+    _st = str(_first_available(raw, norm, "status") or "").lower()
+    _cyc = _first_available(raw, norm, "cycle")
+    if _st in ("initializing", "starting") or (
+            isinstance(_cyc, (int, float)) and _cyc < 1):
+        log.info("AEGIS not yet scanned (status=%r cycle=%r) — deployment "
+                 "cap unchanged", _st or None, _cyc)
+        return
+
     score = _first_available(raw, norm, "score", "aegis_score")
     if score is None:
+        return
+    if not isinstance(score, (int, float)) or score != score:
+        log.warning("AEGIS score %r is not a usable number — deployment cap "
+                    "unchanged", score)
         return
 
     # Base deployment limit from AEGIS score

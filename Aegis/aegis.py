@@ -342,6 +342,8 @@ def compute_aegis(H, C, W, S, phi, rho=0.5):
 
 
 def aegis_regime(score):
+    if score is None:
+        return None          # not yet computed — "NORMAL" would be a lie
     # Bands aligned 2026-07-31 (Jeremy: hysteresis/mismatch not intended).
     # These MUST match the enforcing layer (command_center.py's AEGIS
     # limit mapping, 0.2/0.5/0.8) and the dashboard's published threshold
@@ -359,6 +361,12 @@ def aegis_regime(score):
 
 def recommended_max_deployed(score):
     # Same canonical bands as aegis_regime — keep in lockstep.
+    # An UNMEASURED score recommends the most DEFENSIVE cap, not the
+    # loosest. Absence must never buy deployment headroom; the caller
+    # should prefer to publish nothing at all (see the None checks in the
+    # snapshot paths), and this is the backstop if one is ever missed.
+    if score is None:
+        return 30
     if score >= 0.8:
         return 90
     elif score >= 0.5:
@@ -376,8 +384,17 @@ class AegisEngine:
     """Fleet Sensor Fusion Engine."""
 
     def __init__(self):
-        self.score = 0.5
-        self.regime = "NORMAL"
+        # None until the first scan COMPUTES one. The old seed was 0.5,
+        # which is not a neutral placeholder: 0.5 lands on the NORMAL tier
+        # and Command Center's _apply_aegis_adjustment maps it straight to
+        # an 80% deployment cap without checking status or cycle. Observed
+        # live 2026-08-13 04:15:26 during an AEGIS restart —
+        # "AEGIS: raise to 80% pending 20min hold (score=0.5000)" — a cap
+        # request from a number no scan produced. The 20-minute raise hold
+        # happened to absorb it, but that hold exists to damp genuine tier
+        # spikes, and a DROP applies instantly with no hold at all.
+        self.score = None
+        self.regime = None
         self.H = 0.0       # consensus entropy
         self.C = 0.5       # signal coherence
         self.W = 0.0       # whale divergence
@@ -522,8 +539,13 @@ class AegisEngine:
             self._log("DEGRADED: Command Center UNREACHABLE — using last known (STALE) state")
             self.status = "stale"
             self.scan_duration = time.time() - t0
-            # Still publish with last known values so dashboard has something
-            if self._event_pub:
+            # Still publish with last known values so dashboard has
+            # something — but ONLY if a scan has actually produced them.
+            # Before the first successful cycle there is no "last known":
+            # publishing the init value would put a score on the bus that
+            # no measurement produced, and CC's cap adjuster reads that
+            # field without checking status.
+            if self._event_pub and self.score is not None:
                 try:
                     self._event_pub.emit("AEGIS_UPDATE", {
                         "score": self.score, "regime": self.regime,

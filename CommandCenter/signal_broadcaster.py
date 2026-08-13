@@ -941,8 +941,11 @@ _ENGINE_NAMES = {
 
 _FOOTER_PAID = "GoldenEye Intelligence"
 _FOOTER_FREE = "Fleet Pulse"
-_LINE  = "\u2501" * 32   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-_LINE2 = "\u2500" * 32   # ────────────────────────────────  (thin divider)
+# 32 chars overflowed the bubble on a phone and wrapped, which is most
+# of why these read as console output rather than a financial note. 22
+# sits inside the narrowest common Telegram bubble at default text size.
+_LINE  = "\u2501" * 22   # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+_LINE2 = "\u2500" * 22   # ────────────────────────────────  (thin divider)
 
 
 # Shared with card_renderer via bot_names — see the import at the top.
@@ -1164,24 +1167,30 @@ def format_regime_or_aegis_narrator(data: dict, event_type: str):
         return pulse_text, intel_text
 
 # Color-coded emoji per event type
+# Coloured circle emoji (blue/green/white dots) read as clip-art and
+# carry no meaning — every trade card opened with the same dot whatever
+# it said. These glyphs encode the EVENT: direction for trades, a
+# warning triangle for risk, a shield for the risk engine. They also
+# render as text rather than as a colour swatch, which is most of the
+# difference between a notification and a terminal dump.
 _TYPE_EMOJI = {
-    "HIGH_CONVICTION":     "\U0001f7e2",  # 🟢
-    "TRADE_OPEN":          "\U0001f535",  # 🔵
-    "TRADE_CLOSE":         "\u26aa",      # ⚪
-    "WHALE_ALERT":         "\U0001f7e0",  # 🟠
-    "REGIME_CHANGE":       "\U0001f7e3",  # 🟣
-    "AEGIS_UPDATE":        "\U0001f7e3",  # 🟣
-    "CATASTROPHE_WARNING": "\U0001f534",  # 🔴
-    "EMERGENCY_REDUCE":    "\U0001f534",  # 🔴
-    "SIGNAL":              "\U0001f7e2",  # 🟢
-    "BOOK_PHASE":          "\U0001f7e1",  # 🟡
-    "FLEET_ALERT":         "\U0001f534",  # 🔴
-    "STRUCTURE_FORMING":   "\U0001f535",  # 🔵
-    "CHAOS_STATE":         "\U0001f534",  # 🔴
-    "MANIFOLD_WARNING":    "\U0001f7e1",  # 🟡
-    "CYCLE_DETECTED":      "\U0001f7e3",  # 🟣
-    "CAUSAL_FLOW":         "\U0001f7e2",  # 🟢
-    "EUCLID_LEVEL":        "\U0001f7e1",  # 🟡
+    "HIGH_CONVICTION":     "\u25c9",      # (*) filled target
+    "TRADE_OPEN":          "\u25b8",      # > position opened
+    "TRADE_CLOSE":         "\u25aa",      # . position closed
+    "WHALE_ALERT":         "\u25c6",      # <> size on the tape
+    "REGIME_CHANGE":       "\u21bb",      # cycle arrow
+    "AEGIS_UPDATE":        "\u25b3",      # shield / risk engine
+    "CATASTROPHE_WARNING": "\u26a0",      # warning
+    "EMERGENCY_REDUCE":    "\u26a0",      # warning
+    "SIGNAL":              "\u25b8",
+    "BOOK_PHASE":          "\u25ab",
+    "FLEET_ALERT":         "\u26a0",
+    "STRUCTURE_FORMING":   "\u25ab",
+    "CHAOS_STATE":         "\u26a0",
+    "MANIFOLD_WARNING":    "\u25ab",
+    "CYCLE_DETECTED":      "\u21bb",
+    "CAUSAL_FLOW":         "\u25b8",
+    "EUCLID_LEVEL":        "\u25ab",
 }
 
 def _pct_to_fraction(v):
@@ -2194,14 +2203,21 @@ class CardFormatter:
                              else f"Held      {float(_dur)/60:.0f}m\n")
             except (TypeError, ValueError):
                 _held = ""
-            _sig = f"Signal    {dir_glyph}\n" if direction else ""
+            # Headline first: the trade itself, in bold, readable at a
+            # glance in a notification preview. The label grid below is
+            # supporting detail, not the message. A row of fixed-width
+            # "Pair / Result / Entry" cells reads as console output.
+            _dir_word = ("LONG" if direction in ("LONG", "BUY")
+                         else "SHORT" if direction in ("SHORT", "SELL")
+                         else "")
+            _head = f"{pair} {_dir_word}".strip()
+            _verdict = (f"{result_glyph}{pnl_s}" if pnl_s
+                        else result_glyph)
             return (
                 f"{_header('POSITION CLOSED', 'TRADE_CLOSE')}\n"
+                f"<b>{_head}</b>  <b>{_verdict}</b>"
                 f"{_divider()}\n"
                 f"<code>"
-                f"Pair      {pair}\n"
-                f"{_sig}"
-                f"Result    {result_glyph}{pnl_s}\n"
                 f"{_ret}"
                 f"{_close_rows}"
                 f"{_held}"
@@ -2209,12 +2225,15 @@ class CardFormatter:
                 f"</code>"
                 f"{_footer(_FOOTER_FREE)}"
             )
+        _dir_word = ("LONG" if direction in ("LONG", "BUY")
+                     else "SHORT" if direction in ("SHORT", "SELL")
+                     else "")
+        _head = f"{pair} {_dir_word}".strip()
         return (
             f"{_header('POSITION OPENED', 'TRADE_OPEN')}\n"
+            f"<b>{_head}</b>"
             f"{_divider()}\n"
             f"<code>"
-            f"Pair      {pair}\n"
-            f"Signal    {dir_glyph}\n"
             f"{_open_rows}"
             f"Bot       {display_name(_v(d, 'source', _v(d, 'bot')))}"
             f"</code>"
@@ -2551,7 +2570,25 @@ class ChannelOps(Transport):
                                      # is not worth threading to
 
     def _card_pair(self, message: str):
-        m = re.search(r"Pair\s+([A-Z0-9]{2,10}/[A-Z]{3,5})", message or "")
+        """Extract the pair from a rendered card, for open/close threading.
+
+        Reads BOTH layouts. The headline redesign (2026-08-13) moved the
+        pair out of a "Pair  ADA/USD" row and into a bold headline
+        "<b>ADA/USD LONG</b>" — which silently broke threading, because
+        this parser only knew the row form. The card looked better and the
+        close stopped finding its open. Caught by test_card_threading,
+        which is exactly what it is for.
+
+        Matching both means a future layout change degrades to "no reply"
+        rather than to a wrong one, and old cards still thread.
+        """
+        _t = message or ""
+        # Headline form: <b>ADA/USD LONG</b> or <b>ADA/USD</b>
+        m = re.search(r"<b>\s*([A-Z0-9]{2,10}/[A-Z]{3,5})\b", _t)
+        if m:
+            return m.group(1)
+        # Legacy row form: "Pair      ADA/USD"
+        m = re.search(r"Pair\s+([A-Z0-9]{2,10}/[A-Z]{3,5})", _t)
         return m.group(1) if m else None
 
     def _remember_open(self, event_type: str, message: str) -> None:

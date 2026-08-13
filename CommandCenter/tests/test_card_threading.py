@@ -156,6 +156,23 @@ _unk = strip(fmt._free_trade("TRADE_CLOSE", {
 check("LOSS" not in _unk and "UNMEASURED" in _unk,
       'a close with no P/L is UNMEASURED, not a LOSS; got:\n%s' % _unk)
 
+# ── 8b. The pair parser must survive a layout change ──
+# The headline redesign moved the pair out of a "Pair  ADA/USD" row into a
+# bold "<b>ADA/USD LONG</b>" headline, and threading silently broke: the
+# card looked better and the close stopped finding its open. Both forms
+# must parse, so a future restyle degrades to "no reply" rather than to a
+# wrong one — and old cards still thread.
+_c = ch()
+check(call(_c, "_card_pair", "<b>ADA/USD LONG</b>\nEntry 0.18") == "ADA/USD",
+      'the HEADLINE layout must parse — this is the shipped format')
+check(call(_c, "_card_pair", "<b>XMR/USD</b>\nEntry 180") == "XMR/USD",
+      'a headline with no direction word must still parse')
+check(call(_c, "_card_pair", "<code>Pair      ADA/USD\n</code>") == "ADA/USD",
+      'the legacy ROW layout must still parse — cards already sent to '
+      'Telegram use it, and their closes have not arrived yet')
+check(call(_c, "_card_pair", "<b>POSITION CLOSED</b>\nno pair here") is None,
+      'a card with no pair must yield None, not a partial match')
+
 # ── 9. Synthetic test probes must never reach a subscriber ──
 # Observed live 2026-08-13: two "POSITION CLOSED ZZPROBE645420B/USD — WIN
 # +$12.34" cards were delivered to 8 real subscribers. Command Center has

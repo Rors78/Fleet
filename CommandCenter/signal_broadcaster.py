@@ -683,11 +683,42 @@ class TierRouter:
     """
 
     @staticmethod
+    def _is_probe_pair(pair) -> bool:
+        """Synthetic pairs from test harnesses exercising the live path.
+
+        Same predicate as command_center._is_probe_pair — every probe uses a
+        marker prefix no real market carries. Command Center has filtered
+        these from /api/trades since 2026-08-07 (50 of 73 rows were probes
+        contributing +$617 of fabricated P/L, flipping the sign of the
+        fleet's trade feed), but the SUBSCRIBER path never got the filter.
+
+        Observed 2026-08-13: two "POSITION CLOSED ZZPROBE645420B/USD — WIN
+        +$12.34" cards reached 8 live subscribers. Publishing a fabricated
+        win to paying readers is the worst version of this defect, because
+        it is the one that leaves the building.
+        """
+        p = str(pair or "").upper()
+        if p.startswith(("ZZPROBE", "ZZ", "NFNOK")):
+            return True
+        # NF<digits>... e.g. NF138587OK/USD
+        return p.startswith("NF") and len(p) > 2 and p[2].isdigit()
+
+    @staticmethod
     def route(event: dict, config: dict) -> Optional[dict]:
         event_type = event.get("type", "")
         data = event.get("data", {}) if isinstance(event.get("data"), dict) else {}
         source = event.get("source", data.get("source", "unknown"))
         pair = data.get("pair", "fleet")
+
+        # Test probes must never reach a subscriber. Checked FIRST, before
+        # any whitelist decision — a probe TRADE_CLOSE is otherwise
+        # indistinguishable from a real one and rides the trade path
+        # straight out.
+        if TierRouter._is_probe_pair(pair):
+            log.info("Suppressed %s for synthetic probe pair %r — test "
+                     "harness data must not reach subscribers",
+                     event_type or "card", pair)
+            return None
 
         min_conviction = config.get("min_conviction_threshold", 0.8)
         free_delay_s = int(config.get("free_delay_hours", 4) * 3600)

@@ -156,6 +156,38 @@ _unk = strip(fmt._free_trade("TRADE_CLOSE", {
 check("LOSS" not in _unk and "UNMEASURED" in _unk,
       'a close with no P/L is UNMEASURED, not a LOSS; got:\n%s' % _unk)
 
+# ── 9. Synthetic test probes must never reach a subscriber ──
+# Observed live 2026-08-13: two "POSITION CLOSED ZZPROBE645420B/USD — WIN
+# +$12.34" cards were delivered to 8 real subscribers. Command Center has
+# filtered probe pairs from /api/trades since 2026-08-07 (50 of 73 rows
+# were probes worth +$617 of fabricated P/L, flipping the sign of the
+# fleet's trade feed) — the SUBSCRIBER path never got the same filter, and
+# that is the one that leaves the building.
+_cfg = {"min_conviction_threshold": 0.8, "free_delay_hours": 4,
+        "routing_overrides": {}}
+_R = sb.TierRouter
+
+for _p in ("ZZPROBE645420B/USD", "ZZTEST/USD", "NFNOK1/USD", "NF138587OK/USD"):
+    _ev = {"type": "TRADE_CLOSE",
+           "data": {"pair": _p, "pnl": 12.34, "direction": "LONG",
+                    "entry_price": 4.1, "exit_price": 4.21}}
+    check(_R.route(_ev, _cfg) is None,
+          'probe pair %r must be suppressed before routing — it reached 8 '
+          'live subscribers as a fabricated WIN' % _p)
+
+# ...and a real pair with the SAME shape must still route.
+_real_ev = {"type": "TRADE_CLOSE",
+            "data": {"pair": "ADA/USD", "pnl": 41.27, "direction": "LONG",
+                     "entry_price": 0.1832, "exit_price": 0.1904}}
+check(_R.route(_real_ev, _cfg) is not None,
+      'a real priced close must still route — the probe filter must not '
+      'suppress genuine trades')
+
+# The predicate must not over-match real tickers that merely start with N/NF.
+for _ok in ("NEAR/USD", "NFT/USD", "BTC/USD", "ADA/USD"):
+    check(_R._is_probe_pair(_ok) is False,
+          '%r is a real pair and must NOT be treated as a probe' % _ok)
+
 if FAIL:
     for f in FAIL:
         print('FAIL  ' + f)

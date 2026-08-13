@@ -767,6 +767,111 @@ class FleetLogger:
 
     # ── Daily summary ──
 
+    def _canonical_trades_for(self, date_str):
+        """Deduped closed trades for one UTC date, or None if unreadable.
+
+        None and [] mean different things and must not collapse. [] is "the
+        canonical log was read and that day genuinely has no trades"; None is
+        "we could not read it", which must fall back to the accumulator
+        rather than silently score the day zero. This is the same distinction
+        that let the daily files report a flat, healthy-looking week.
+        """
+        try:
+            from command_center import _collect_closed_trades, _is_probe_pair
+        except Exception:
+            return None
+        try:
+            rows = _collect_closed_trades()
+        except Exception:
+            return None
+        if not isinstance(rows, list):
+            return None
+
+        out = []
+        for t in rows:
+            if not isinstance(t, dict):
+                continue
+            ts = t.get("ts", t.get("timestamp"))
+            if not isinstance(ts, (int, float)):
+                continue
+            try:
+                day = datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%d")
+            except (ValueError, OSError, OverflowError):
+                continue
+            if day != date_str:
+                continue
+            # _collect_closed_trades() returns EVERYTHING; the probe filter
+            # lives at the /api/trades handler, which tags rows synthetic
+            # rather than dropping them. Sourcing from the collector directly
+            # therefore inherits the test harness's output unless we filter
+            # here. Measured on the first draft of this fix: 29 of Aug 7's 34
+            # rows were ZZPROBE pairs, each carrying an identical fabricated
+            # $12.34, which is what produced a 97.1% win rate on a day whose
+            # five real trades were 4 wins and 1 loss.
+            if _is_probe_pair(t.get("pair")):
+                continue
+            # Normalize to the accumulator's event shape so everything
+            # downstream (per-bot stats, win/loss/flat classification) reads
+            # one schema rather than branching per producer.
+            out.append({
+                "ts": ts,
+                "bot": t.get("bot", t.get("source", "unknown")),
+                "type": "TRADE_CLOSE",
+                "pair": t.get("pair"),
+                "pnl": t.get("pnl"),
+                "gross_pnl": t.get("gross_pnl", t.get("pnl")),
+                "fees": 0.0,
+                "size_usd": t.get("size_usd"),
+                "size_usd_known": isinstance(t.get("size_usd"), (int, float)),
+                "duration_s": t.get("duration_s", t.get("duration", 0)),
+                "exit_reason": t.get("exit_reason", "unknown"),
+                "direction": t.get("direction", ""),
+                "reservation_id": t.get("reservation_id"),
+                "id": t.get("id"),
+            })
+        return out
+
+    @staticmethod
+    def _merge_trades(accum, canon):
+        """Union of accumulator and canonical rows, deduped.
+
+        The canonical row wins on conflict: it carries the realized pnl from
+        the release path, while the accumulator's came from a possibly-stale
+        unrealized_pnl at the last poll. Keys tried in order of strength —
+        reservation_id, then event id, then (bot, pair, 600s) which is what
+        command_center's own stage-3 uses for legacy rows with neither. The
+        90s same-pair open cooldown makes faster legitimate turnover on one
+        pair impossible, so the window cannot merge two distinct trades.
+        """
+        merged = list(canon)
+        for a in accum:
+            if not isinstance(a, dict):
+                continue
+            rid = a.get("reservation_id")
+            eid = a.get("id")
+            a_ts = a.get("ts")
+            a_bot = a.get("bot")
+            a_pair = str(a.get("pair") or "").replace("/", "").upper()
+            dup = False
+            for c in canon:
+                if rid and c.get("reservation_id") == rid:
+                    dup = True
+                    break
+                if eid and c.get("id") == eid:
+                    dup = True
+                    break
+                if (a_bot and c.get("bot") == a_bot
+                        and a_pair
+                        and str(c.get("pair") or "").replace("/", "").upper() == a_pair
+                        and isinstance(a_ts, (int, float))
+                        and isinstance(c.get("ts"), (int, float))
+                        and abs(c["ts"] - a_ts) <= 600):
+                    dup = True
+                    break
+            if not dup:
+                merged.append(a)
+        return merged
+
     def _write_daily_summary(self, date_str, daily_data=None, trades_list=None):
         """Generate and write the daily summary JSON for a given date.
 
@@ -782,6 +887,34 @@ class FleetLogger:
             with self._daily_lock:
                 d = self._daily.copy()
                 trades = list(d["trades"])
+
+        # The accumulator is fed by ONE producer: _detect_events observing a
+        # position present in one 60s poll and absent in the next. That is an
+        # inference, not a record, and it misses two whole classes of trade:
+        #
+        #   - anything opened and closed inside one poll interval. Every one
+        #     of Gridzilla's 15 fills carries duration 0, so its positions
+        #     never exist across two polls and the diff can never see them.
+        #   - anything a bot closes through its own TRADE_CLOSE emit while
+        #     the snapshot is stale or the bot is briefly unreachable.
+        #
+        # Measured 2026-08-13: the daily files for Aug 7-12 all read
+        # "total_trades": 0 / "daily_pnl": 0, while the canonical collector
+        # holds 34 trades on Aug 7, 10 on Aug 8, and 2 on Aug 12. The weekly
+        # scorecard reads these files, so it was about to tell subscribers
+        # "the fleet stayed on the sidelines this week - no trades met our
+        # standards" about a week containing 14 real trades. A comfortable
+        # zero over a real gap, which is the shape that hides longest.
+        #
+        # Command Center already solves this: _collect_closed_trades() reads
+        # the durable event logs from BOTH producers and dedups in three
+        # stages (event id, reservation_id, then a bot+pair+600s heuristic
+        # for legacy snapshot-diff rows). Source the summary from it and keep
+        # the accumulator only as a fallback, so a day is never scored zero
+        # merely because the canonical path was unavailable.
+        _canon = self._canonical_trades_for(date_str)
+        if _canon is not None:
+            trades = self._merge_trades(trades, _canon)
 
         # Get current state for ending equity
         try:

@@ -1247,6 +1247,32 @@ def _discover_universe():
             if vol >= min_vol:
                 qualified.append(p)
 
+        # Drop blacklisted pairs at the SOURCE.
+        #
+        # The reserve path already refuses them (gate 1), so no capital was
+        # ever at risk — but the universe is what every bot SCANS, so a
+        # blacklisted pair still consumed scan cycles, OHLC fetches and
+        # Brainiac depth/trade collection for a pair the fleet can never
+        # trade. Observed 2026-08-13: SOL/USD was blacklisted and still
+        # served in all 50 universe entries, with zero denials on the bus
+        # because nothing ever got far enough to be refused.
+        #
+        # Note this also covers `pin`: a pinned pair that is blacklisted
+        # must stay out, or the pin would reintroduce it below.
+        try:
+            from fleet_config import is_blacklisted as _is_bl
+            _before = len(qualified)
+            qualified = [p for p in qualified if not _is_bl(p["display"])]
+            if len(qualified) != _before:
+                log.info("Universe: dropped %d blacklisted pair(s)",
+                         _before - len(qualified))
+        except Exception:
+            # Never let a blacklist import failure empty the universe —
+            # the reserve gate is still the binding enforcement.
+            log.warning("Universe: blacklist filter unavailable, serving "
+                        "unfiltered (reserve gate still enforces)",
+                        exc_info=True)
+
         # Deduplicate by display name
         seen = set()
         deduped = []

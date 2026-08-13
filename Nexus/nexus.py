@@ -1244,6 +1244,34 @@ class NexusEngine:
                                 # restarted consumer sees silence and cannot
                                 # tell "no level" from "level never repeated"
 
+    # Levels are quantized into RELATIVE buckets, not to a fixed number of
+    # digits. Euclid recomputes from a rolling window, so its level wanders
+    # by a few tenths of a percent between scans (1878.315 -> 1880.937 in
+    # 83s, 0.14%). A significant-figure rounding is still an exact-match
+    # test at a finer scale -- two values either side of a boundary differ
+    # no matter how few digits are kept.
+    #
+    # 0.25% buckets: comfortably wider than observed recomputation jitter,
+    # and half the 0.5% proximity band these engines fire in, so a level far
+    # enough away to be a genuinely different level lands in a different
+    # bucket. Scale-free by construction: works on BTC at 63418 and on a
+    # sub-dollar pair at 1.0157 alike.
+    EMIT_BUCKET_PCT = 0.0025
+
+    @classmethod
+    def _quantize(cls, v: float) -> float:
+        """Map v into a relative bucket, for signature purposes only.
+
+        Returns the bucket INDEX, not a rounded price -- callers use it to
+        decide sameness; the full unrounded payload is what gets published.
+        """
+        import math
+        if v == 0 or v != v or v in (float('inf'), float('-inf')):
+            return v          # 0, NaN and infinities: nothing to bucket
+        # log-space bucketing gives constant RELATIVE width at every scale
+        return math.floor(math.log(abs(v)) / math.log1p(cls.EMIT_BUCKET_PCT)) \
+            * (1 if v > 0 else -1)
+
     def _emit_changed(self, event_type: str, key: str, payload: dict,
                       gate_on: tuple = None) -> bool:
         """Emit only when this key's state CHANGED (or the re-announce is due).
@@ -1269,6 +1297,17 @@ class NexusEngine:
             return False
         _sig_src = ({k: payload.get(k) for k in gate_on} if gate_on
                     else payload)
+        # Bucket floats. Euclid recomputes its levels from a rolling window
+        # every scan, so `level` drifts continuously (1878.315 -> 1880.937 in
+        # 83s) and an exact-match signature NEVER matches -- the gate emits
+        # every cycle while looking correct. Measured live 2026-08-13: 79%
+        # duplicates AFTER deploying an exact-match gate, against 86% before.
+        # Bucketing makes "the same level" mean "the same level to within
+        # measurement noise". Same trap as distance_pct, reached for again
+        # one field over -- which is why the drill now carries the real
+        # drifting values from the bus log.
+        _sig_src = {k: (self._quantize(v) if isinstance(v, float) else v)
+                    for k, v in _sig_src.items()}
         try:
             sig = json.dumps(_sig_src, sort_keys=True, default=str)
         except Exception:

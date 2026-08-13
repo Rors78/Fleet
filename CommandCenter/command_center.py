@@ -285,7 +285,21 @@ class PortfolioManager:
     # ── Persistence ──
 
     def _load(self) -> None:
-        """Load state from portfolio.json if it exists."""
+        """Load state from portfolio.json if it exists.
+
+        Sets self.state_unreadable when the file EXISTS but cannot be parsed.
+        Absent and corrupt used to produce the same result, and that result
+        is the LOOSEST possible state: max_deployed_pct falls back to the 80%
+        config default (discarding an AEGIS tightening to 30%), reservations
+        come back empty so deployed() reports 0.00 and the ENTIRE pool reads
+        as available, and the raise-hold clock resets. A truncated write
+        would hand the fleet a $1M unreserved pool at the loosest cap in the
+        regime AEGIS had just scored defensive.
+
+        Unreadable therefore fails toward ARMED: reserve() refuses new
+        capital until a human looks, and the file is preserved.
+        """
+        self.state_unreadable = False
         try:
             with open(self.filepath, "r") as f:
                 data = json.load(f)
@@ -329,6 +343,26 @@ class PortfolioManager:
                         if _default is not None and _md < _default:
                             log.info("Restored AEGIS-tightened deployment cap "
                                      "%s%% (config default %s%%)", _md, _default)
+            # Restore the cooldown gates. Only entries with a numeric past
+            # timestamp are honoured — a future ts would hold the cooldown
+            # open indefinitely, which is the SAFE direction here (it blocks
+            # entries) but is still nonsense, so it is dropped and the gate
+            # simply re-arms from the next open/close.
+            _now_ts = time.time()
+            for _attr, _key in (("_pair_cooldowns", "pair_cooldowns"),
+                                ("_pair_opens", "pair_opens")):
+                _saved_cd = data.get(_key)
+                if isinstance(_saved_cd, dict):
+                    _clean = {}
+                    for _p, _v in _saved_cd.items():
+                        if (isinstance(_v, dict)
+                                and isinstance(_v.get("ts"), (int, float))
+                                and 0 < _v["ts"] <= _now_ts):
+                            _clean[_p] = _v
+                    if _clean:
+                        setattr(self, _attr, _clean)
+                        log.info("Restored %d %s entr(ies) — the burst-entry "
+                                 "gate survives this restart", len(_clean), _key)
             # Restore the raise-hold clock too — see _save. Only a well-formed
             # entry whose timestamp is in the PAST is honoured; a future
             # `since` (clock change, hand-edited file) would grant the raise
@@ -348,8 +382,26 @@ class PortfolioManager:
                 elif _pend:
                     log.warning("Discarded unusable AEGIS raise-hold state "
                                 "%r — hold restarts", _pend)
-        except (FileNotFoundError, json.JSONDecodeError):
-            pass
+        except FileNotFoundError:
+            pass          # genuinely absent — a real first run
+        except Exception as e:
+            # The file exists and could not be read. Restoring "nothing" here
+            # is the loosest possible state, not a safe one — see the
+            # docstring. Arm, preserve the bytes, and say so loudly.
+            self.state_unreadable = True
+            self.reservations = {}
+            log.error(
+                "UNREADABLE PORTFOLIO STATE %s: %s — reservations and the "
+                "AEGIS cap are UNKNOWN. New reservations are refused until "
+                "this is resolved; the file is not overwritten.",
+                self.filepath, e)
+            try:
+                _q = "%s.corrupt_%d" % (self.filepath, int(time.time()))
+                os.replace(self.filepath, _q)
+                log.error("Preserved unreadable portfolio state as %s", _q)
+            except Exception:
+                log.error("Could not quarantine %s", self.filepath,
+                          exc_info=True)
 
     def _save(self) -> None:
         """Atomic write to portfolio.json."""
@@ -370,6 +422,14 @@ class PortfolioManager:
             "aegis_raise_pending": (dict(_aegis_raise_pending)
                                     if isinstance(_aegis_raise_pending, dict)
                                     else {}),
+            # Cooldowns are SAFETY state and were memory-only, so every CC
+            # restart silently re-opened the burst-entry window the OPEN gate
+            # exists to close (it was written for 4xENJ/USD opens in 60s).
+            # With restarts as frequent as they are here, the gate was
+            # effectively disarmed most of the time — and absent looked
+            # exactly like "no pair has traded recently".
+            "pair_cooldowns": dict(self._pair_cooldowns),
+            "pair_opens": dict(self._pair_opens),
         }
         tmp = self.filepath + ".tmp"
         with open(tmp, "w") as f:
@@ -439,6 +499,17 @@ class PortfolioManager:
         from fleet_config import is_blacklisted
         pair = normalize_pair(pair) or pair  # canonical format for per-pair limits
         with self._lock:
+            # Unknown state fails toward ARMED. With portfolio.json unreadable
+            # the reservation book is UNKNOWN — deployed() would report 0.00
+            # and every downstream limit is computed against that, so the
+            # whole pool would read as free. Refuse rather than allocate
+            # against a number we cannot vouch for. Releases still work, so
+            # a bot can always return capital.
+            if getattr(self, "state_unreadable", False):
+                return {"ok": False, "reason":
+                        "Portfolio state unreadable — reservations UNKNOWN. "
+                        "New capital refused until the state file is "
+                        "restored or removed."}
             # 0a. Per-pair OPEN-time cooldown — blocks burst re-entry on the same pair before
             #     any trade has closed (the CLOSE cooldown can't fire if nothing closed yet).
             #     Catches e.g. 4×ENJ/USD opens in 60 s — entry 1 allowed, entries 2-4 blocked.

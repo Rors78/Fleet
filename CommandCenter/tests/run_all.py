@@ -66,6 +66,7 @@ TESTS = [
     "test_aegis_hold.py",
     "test_emit_on_change.py",
     "test_unreadable_siblings.py",
+    "test_portfolio_unreadable.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

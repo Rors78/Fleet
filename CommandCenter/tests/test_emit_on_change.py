@@ -54,14 +54,27 @@ class _Pub:
         self.sent.append((et, data))
 
 
+# Extract BOTH shipped methods — _emit_changed calls _quantize, so a
+# stand-in with only the former tests a function that cannot run.
+_mq = re.search(r'\n    @classmethod\n    def _quantize\(cls.*?\n(?=\n    def _emit_changed)',
+                SRC, re.S)
 _m = re.search(r'\n    def _emit_changed\(self.*?\n(?=    def _log\()', SRC, re.S)
 check(_m is not None, 'could not locate _emit_changed in the shipped nexus.py')
+check(_mq is not None, 'could not locate _quantize in the shipped nexus.py')
 
-if _m:
+if _m and _mq:
     import json
     import textwrap
     _ns = {'json': json, 'time': time}
-    exec('class _N:\n    EMIT_REANNOUNCE_SEC = 900\n'
+    # Pull the tuning constants from the SHIPPED source rather than
+    # restating them — a stand-in that declares its own values silently
+    # tests different behaviour from what runs.
+    _consts = '\n'.join(
+        '    ' + ln.strip() for ln in SRC.split('\n')
+        if re.match(r'\s*EMIT_[A-Z_]+ = ', ln))
+    check(_consts.strip() != '', 'no EMIT_* constants found in nexus.py')
+    exec('class _N:\n' + _consts + '\n'
+         + textwrap.indent(textwrap.dedent(_mq.group(0)), '    ')
          + textwrap.indent(textwrap.dedent(_m.group(0)), '    '), _ns)
     _N = _ns['_N']
 
@@ -100,6 +113,48 @@ if _m:
           % len(n._event_pub.sent))
     check(n._event_pub.sent[0][1]['distance_pct'] == 0.30,
           'the FULL payload must still be published, drifting field included')
+
+    # 2b. THE CASE THAT ESCAPED THE FIRST DEPLOY. The gated field itself
+    # drifts: Euclid recomputes support from a rolling window every scan, so
+    # `level` moved 1878.315 -> 1880.937 in 83 seconds (real values from the
+    # bus log). An exact-match signature never matches, so the gate emitted
+    # every cycle while every test passed — 79% duplicates live AFTER deploy
+    # vs 86% before. Case 2 caught this for distance_pct; the same trap was
+    # reached for one field over, which is why the fix must quantize.
+    n = fresh()
+    for lvl in (1878.315, 1878.9, 1879.44, 1880.01, 1880.937):
+        n._emit_changed('EUCLID_LEVEL', 'ETH/USD:SUPPORT',
+                        {'pair': 'ETH/USD', 'type': 'SUPPORT_APPROACHING',
+                         'level': lvl, 'strength': 0.8},
+                        gate_on=('pair', 'type', 'level'))
+    check(len(n._event_pub.sent) == 1,
+          'a level JITTERING within 0.15%% is the SAME level — recomputation '
+          'noise must not defeat the gate (this is what shipped broken); '
+          'got %d emissions' % len(n._event_pub.sent))
+
+    # ...but a genuinely different level must still be reported.
+    n = fresh()
+    for lvl in (1878.315, 1795.0):     # ~4.4% apart — a different level
+        n._emit_changed('EUCLID_LEVEL', 'ETH/USD:SUPPORT',
+                        {'pair': 'ETH/USD', 'type': 'SUPPORT_APPROACHING',
+                         'level': lvl}, gate_on=('pair', 'type', 'level'))
+    check(len(n._event_pub.sent) == 2,
+          'a genuinely NEW level must still emit — quantization must not '
+          'blind the gate to real moves; got %d' % len(n._event_pub.sent))
+
+    # Quantization must be scale-free: it has to work on BTC (63418) and on
+    # a sub-dollar pair (1.0157) alike.
+    check(_N._quantize(63418.0) == _N._quantize(63420.0),
+          'BTC-scale jitter must quantize together, got %r vs %r'
+          % (_N._quantize(63418.0), _N._quantize(63420.0)))
+    check(_N._quantize(1.01570) == _N._quantize(1.01573),
+          'sub-dollar jitter must quantize together, got %r vs %r'
+          % (_N._quantize(1.01570), _N._quantize(1.01573)))
+    check(_N._quantize(63418.0) != _N._quantize(61200.0),
+          'genuinely different BTC levels must NOT collapse')
+    for _degen in (0.0, float('inf'), float('-inf')):
+        check(_N._quantize(_degen) == _degen or _degen != _degen,
+              'degenerate float %r must pass through without raising' % _degen)
 
     # 3. A real change emits.
     n = fresh()

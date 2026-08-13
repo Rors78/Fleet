@@ -20139,7 +20139,26 @@ function renderOvFeeAnalysis(){
        legitimate and they answer different questions, but shown side by
        side with no label they read as one number contradicting itself
        (17 vs 12 on 2026-08-06). */
-    subEl.innerHTML = (trades > 0 ? trades + " trades recorded" : "no trades recorded") + _cov;
+    /* The dollar mean averages across positions whose notionals differ by
+       many multiples, so ONE large loser can outweigh a dozen smaller
+       winners. On 2026-08-13 the panel read -$19.28/trade while the
+       size-normalized mean of the SAME 16 trades was +0.28%/trade — the
+       two disagreed in SIGN, and only the dollar figure was on screen.
+       expectancy_pct exists for exactly this; publish it beside the
+       dollars whenever the signs disagree, so the artifact cannot be
+       read as the fleet's edge. */
+    var _pct = ex.expectancy_pct, _pctN = ex.expectancy_pct_n;
+    var _pctHtml = '';
+    if(expKnown && typeof _pct === "number" && !isNaN(_pct)
+       && typeof _pctN === "number" && _pctN > 0
+       && (_pct < 0) !== (exp < 0)){
+      var _pctSign = _pct < 0 ? '-' : '+';
+      var _pctColor = _pct < 0 ? '#ef4444' : '#22c55e';
+      _pctHtml = ' <span style="color:var(--ov-dim)">· size-normalized: '
+        + '<span style="color:' + _pctColor + '">' + _pctSign
+        + Math.abs(_pct).toFixed(2) + '%</span>/trade (n=' + _pctN + ')</span>';
+    }
+    subEl.innerHTML = (trades > 0 ? trades + " trades recorded" : "no trades recorded") + _cov + _pctHtml;
   }
 
   var wrColor = !wrKnownOv ? "#475569"

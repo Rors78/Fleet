@@ -80,6 +80,7 @@ JS_TESTS = [
     "helper_test.js",
     "intel_render.js",
     "scoreboard_grain.js",
+    "expectancy_panel.js",
 ]
 
 

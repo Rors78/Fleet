@@ -146,6 +146,62 @@ check("genuine orphan IS released", "orphan" in rids, f"released={sorted(rids)}"
 check("live reservation still held", "live_xlm" in pm.reservations)
 
 print()
+print("=== CASE 7: a non-reporting bot's aged reservation is HELD, not swept ===")
+# Live defect (2026-08-13): the boot-cycle sweep fired 9s after launch, while
+# TurtleSue was still starting. Not alive -> no protection keys -> its two
+# >48h XRP reservations ($25.8k) were released under a live 3-unit position.
+# Absence of a report is not a report of absence.
+pm2 = cc.PortfolioManager.__new__(cc.PortfolioManager)
+pm2._lock = threading.RLock()
+pm2.history = []
+pm2._save = lambda: None
+pm2.reservations = {
+    "booting_xrp": {"bot_id": "turtlesue", "pair": "XRP/USD", "amount": 15220.0,
+                    "direction": "SHORT", "reserved_at": old},
+    "true_orphan": {"bot_id": "confluence", "pair": "DOT/USD", "amount": 500.0,
+                    "direction": "LONG", "reserved_at": old},
+}
+# Poll state: turtlesue has NOT answered (still booting); confluence has,
+# and reports nothing -> its aged reservation is a genuine orphan.
+bots_boot = {
+    "turtlesue": {"alive": False},
+    "confluence": {"alive": True, "raw": {"positions": []}},
+}
+active2 = cc._active_position_keys(bots_boot)
+reporting = {b for b, v in bots_boot.items() if v.get("alive")}
+released2 = pm2.force_release_stale(max_age_hours=48, active_positions=active2,
+                                    reporting_bots=reporting)
+rids2 = {r["reservation_id"] for r in released2}
+check("booting bot's reservation HELD", "booting_xrp" not in rids2,
+      f"released={sorted(rids2)}")
+check("still in the pool", "booting_xrp" in pm2.reservations)
+check("reporting bot's genuine orphan still released", "true_orphan" in rids2,
+      f"released={sorted(rids2)}")
+
+# The inverse direction: once the bot reports (and shows no such position),
+# the same reservation IS sweepable — the guard defers, it does not immortalize.
+bots_up = {"turtlesue": {"alive": True, "raw": {"positions": {}}}}
+released3 = pm2.force_release_stale(
+    max_age_hours=48,
+    active_positions=cc._active_position_keys(bots_up),
+    reporting_bots={"turtlesue"})
+check("after the bot reports it gone, it IS released",
+      {r["reservation_id"] for r in released3} == {"booting_xrp"},
+      f"released={[r['reservation_id'] for r in released3]}")
+
+print()
+print("=== CASE 8: the first sweep must not fire on the boot cycle ===")
+# _last_stale_cleanup seeded to 0 made `time.time() - 0 > 3600` true on the
+# very first poll (~9s after launch, fleet still booting). Pin the shipped
+# source: the seed must be time.time(), not 0.
+import inspect
+src = inspect.getsource(cc._poll_loop)
+check("sweep timer seeded to now, not 0",
+      "_last_stale_cleanup = time.time()" in src
+      and "_last_stale_cleanup = 0" not in src)
+check("sweep passes reporting_bots", "reporting_bots=_reporting" in src)
+
+print()
 if fails:
     print(f"{len(fails)} FAILED: {fails}")
     raise SystemExit(1)

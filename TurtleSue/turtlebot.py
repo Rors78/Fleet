@@ -1494,12 +1494,24 @@ class TurtleEngine:
         # rate" from two cleanups that measured nothing. Same rule as
         # Command Center's release path (`_priced`): nothing measurable,
         # nothing recorded.
+        # A stale_reservation exit is unmeasurable even when priced: the
+        # reconcile sets its exit price TO pos.avg_entry, so P/L is zero by
+        # construction — a tautology, not a break-even. On 2026-08-13 one of
+        # these landed in the store as a "flat" with exit_price 1.0157 while
+        # the position's real unrealized P/L was simply discarded.
+        _fabricated_exit = exit_info.get("type") == "stale_reservation"
         _measurable = (pos.avg_entry and pos.avg_entry > 0
-                       and pos.total_size and pos.total_size > 0)
+                       and pos.total_size and pos.total_size > 0
+                       and not _fabricated_exit)
         if _expectancy and not _measurable:
-            logging.info("[turtlesue] %s close not recorded to expectancy: "
-                         "unpriced capital movement (entry=%r size=%r)",
-                         pair, pos.avg_entry, pos.total_size)
+            logging.warning("[turtlesue] %s close not recorded to expectancy: "
+                            "%s (entry=%r size=%r reason=%r)",
+                            pair,
+                            "forced exit at fabricated price"
+                            if _fabricated_exit else
+                            "unpriced capital movement",
+                            pos.avg_entry, pos.total_size,
+                            exit_info.get("type"))
         if _expectancy and _measurable:
             try:
                 _expectancy.record_trade(

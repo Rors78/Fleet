@@ -673,7 +673,8 @@ class PortfolioManager:
                     "available": self.available(), "reservation": res}
 
     def force_release_stale(self, max_age_hours: int = 24,
-                            active_positions: set | None = None) -> list:
+                            active_positions: set | None = None,
+                            reporting_bots: set | None = None) -> list:
         """Release reservations older than max_age_hours.
 
         active_positions: {(bot_id_lower, PAIRNOSLASH)} of positions alive
@@ -683,6 +684,16 @@ class PortfolioManager:
         from under two 66h swing positions, 2026-07-30). Pass None to skip
         the check (legacy behavior).
 
+        reporting_bots: {bot_id_lower} of bots that actually answered this
+        poll cycle. A bot that did NOT report contributes nothing to
+        active_positions, which the check above reads as "holds nothing" —
+        absence of a report is not a report of absence. On 2026-08-13 the
+        boot-cycle sweep released $25.8k of TurtleSue's XRP reservations 9s
+        after launch, while the bot was still starting; the position was
+        live with 3 units. Reservations of non-reporting bots are HELD:
+        held capital is recoverable, capital released under a live position
+        is not. Pass None to skip (legacy behavior).
+
         Returns list of released reservation dicts (each has bot_id, pair,
         amount, direction, reserved_at). Callers should record these to the
         expectancy tracker so P&L attribution is not lost.
@@ -690,9 +701,14 @@ class PortfolioManager:
         with self._lock:
             cutoff = time.time() - max_age_hours * 3600
             stale = []
+            held_unreported = []
             for rid, r in self.reservations.items():
                 if r["reserved_at"] >= cutoff:
                     continue
+                if reporting_bots is not None and \
+                        str(r["bot_id"]).lower() not in reporting_bots:
+                    held_unreported.append(rid)
+                    continue  # bot didn't answer — unknown, not orphaned
                 if active_positions is not None:
                     # Same derivation as _active_position_keys — see
                     # _position_key. Deriving the two sides differently is
@@ -701,6 +717,11 @@ class PortfolioManager:
                     if key in active_positions:
                         continue  # bot still holds this position
                 stale.append(rid)
+            if held_unreported:
+                log.warning(
+                    "Stale sweep HELD %d aged reservation(s) whose bot did "
+                    "not report this cycle: %s — will re-check next sweep",
+                    len(held_unreported), ", ".join(held_unreported))
             released = []
             for rid in stale:
                 res = self.reservations.pop(rid)
@@ -2867,7 +2888,12 @@ def _active_position_keys(bots: dict) -> set:
 
 def _poll_loop():
     """Continuously fetch, normalize, aggregate, and store state."""
-    _last_stale_cleanup = 0
+    # Seeded to NOW, not 0: with 0 the first sweep fires on the first poll
+    # cycle (~9s after launch) while most of the fleet is still booting, so
+    # every aged reservation is unprotected — that boot race released $25.8k
+    # under TurtleSue's live XRP position on 2026-08-13. The fleet has an
+    # hour to come up before the first sweep.
+    _last_stale_cleanup = time.time()
     while True:
         _poll_all_bots()
         try:
@@ -2886,10 +2912,13 @@ def _poll_loop():
             with _lock:
                 _bots_now = dict(_state["bots"])
             _active = _active_position_keys(_bots_now)
+            _reporting = {str(_bid).lower() for _bid, _b in _bots_now.items()
+                          if _b.get("alive")}
             for _pm_label, _pm in [("paper", _portfolio_paper), ("live", _portfolio_live)]:
                 if _pm:
                     released_list = _pm.force_release_stale(
-                        max_age_hours=48, active_positions=_active)
+                        max_age_hours=48, active_positions=_active,
+                        reporting_bots=_reporting)
                     if released_list:
                         log.info("Auto-released %d stale %s reservation(s) (>48h old)", len(released_list), _pm_label)
                         for _sr in released_list:

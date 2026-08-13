@@ -470,10 +470,47 @@ def run_hive_mind(
             if consensus[idx] > 0 and np.sum(consensus > 0) > config.max_assets:
                 consensus[idx] = 0
 
-    # Final renormalization
+    # Final renormalization — cap-preserving.
+    #
+    # This was a single `consensus /= total`, which UNDID the max_weight cap
+    # applied above: capping removes mass, so total < 1.0, and dividing
+    # scales every weight back up — including the ones just capped. With
+    # max_weight 0.35 and a dominant asset, 0.35 came back out as 0.4667:
+    # a 33% breach of the declared ceiling, returned to callers that trust
+    # max_weight as an invariant for position sizing.
+    #
+    # Cap and renormalize alternately until the cap holds. Each pass pins
+    # the capped names at exactly max_weight and redistributes the excess
+    # across the UNCAPPED ones, which is what the cap was for. Converges in
+    # a few passes; the bound is a guard, not an expectation.
     total = np.sum(consensus)
     if total > 0:
         consensus /= total
+        _cap = getattr(config, "max_weight", None)
+        if isinstance(_cap, (int, float)) and 0 < _cap < 1.0:
+            # A cap below 1/n_active is unsatisfiable — every weight would
+            # have to be capped and they cannot then sum to 1. Leave the
+            # simple normalization in that case rather than looping to no
+            # effect, and say so.
+            _active = int(np.sum(consensus > 0))
+            if _active > 0 and _cap * _active < 1.0 - 1e-9:
+                print("  WARNING: max_weight %.3f is unsatisfiable for %d "
+                      "active assets (needs >= %.3f) -- weights normalized "
+                      "without the cap" % (_cap, _active, 1.0 / _active))
+            else:
+                for _ in range(50):
+                    _over = consensus > _cap + 1e-12
+                    if not _over.any():
+                        break
+                    consensus = np.minimum(consensus, _cap)
+                    _slack = 1.0 - float(np.sum(consensus))
+                    _free = (consensus > 0) & ~_over
+                    _free_sum = float(np.sum(consensus[_free]))
+                    if _slack <= 1e-12 or _free_sum <= 1e-12:
+                        break
+                    # Distribute the freed mass proportionally across the
+                    # names that are NOT at the cap.
+                    consensus[_free] += consensus[_free] / _free_sum * _slack
     else:
         consensus = np.ones(n_assets) / n_assets
 

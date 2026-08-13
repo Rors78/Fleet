@@ -29,11 +29,36 @@ def check(name, cond, detail=""):
 # (bot, state file, keys that must be present, max age in seconds)
 # Age budgets are the bot's scan cadence plus slack — a file older than that
 # means the checkpoint is not firing.
+#
+# Coverage audit 2026-08-13: this list held only two bots while four more
+# persist safety state. Extending it surfaced the reason age budgets are
+# hard here — see EVENT_DRIVEN below.
 TARGETS = [
     ("turtlesue", r"D:\TurtleSue\turtle_positions.json",
      ["positions", "equity", "peak_equity", "trades"], 900),
     ("confluence", r"D:\Confluence\confluence_state.json",
      ["positions", "realized_pnl", "wins", "losses"], 900),
+    ("rubberband", r"D:\Rubberband\rubberband_state.json",
+     ["positions", "equity", "peak_equity", "sl_cooldowns"], 900),
+    # Gridzilla now checkpoints every 5 min from its scan loop; before that
+    # its file went 55 minutes stale while the bot was perfectly healthy,
+    # because all four save sites were event-driven.
+    ("gridzilla", r"D:\Gridzilla\gridzilla_state.json",
+     ["active_grids", "total_pnl"], 900),
+]
+
+# Bots whose state file is written ONLY on a position change. For these an
+# old file is not evidence of a stalled writer: arbitrageur's was 12.9 days
+# old on 2026-08-13 and entirely correct — it holds `positions: []` and the
+# bot has genuinely had no position in that time. Asserting a freshness
+# budget on these would fail on a healthy idle bot, which is a false RED
+# and just as damaging as a false green.
+#
+# They are still checked for SHAPE and parseability; only the age assertion
+# is skipped, and the age is printed so a human can eyeball it.
+EVENT_DRIVEN = [
+    ("arbitrageur", r"D:\Arbitrageur\arbitrageur_state.json", ["positions"]),
+    ("nexusbrain", r"D:\NexusBrain\nexus_positions.json", ["positions"]),
 ]
 
 print("=== state files carry their safety fields ===")
@@ -51,8 +76,25 @@ for bot, path, keys, _budget in TARGETS:
           f"missing {missing}" if missing else "")
 
 print()
-print("=== state files are FRESH — the checkpoint actually fires ===")
+print("=== event-driven state files carry their fields (age not asserted) ===")
 now = time.time()
+for bot, path, keys in EVENT_DRIVEN:
+    if not os.path.exists(path):
+        check(f"{bot}: state file exists", False, path)
+        continue
+    try:
+        d = json.load(open(path, encoding="utf-8"))
+    except Exception as e:
+        check(f"{bot}: state file parses", False, f"{type(e).__name__}: {e}")
+        continue
+    missing = [k for k in keys if k not in d]
+    _age = now - os.path.getmtime(path)
+    check(f"{bot}: carries {', '.join(keys)}", not missing,
+          (f"missing {missing}" if missing
+           else f"{_age / 3600:.1f}h old — event-driven, age not asserted"))
+
+print()
+print("=== state files are FRESH — the checkpoint actually fires ===")
 for bot, path, _keys, budget in TARGETS:
     if not os.path.exists(path):
         continue

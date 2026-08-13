@@ -1410,12 +1410,36 @@ class GridzillaEngine:
         logging.info(f"Gridzilla running on port {self.config['port']}")
 
         # Main loop
+        _last_checkpoint = 0.0
         while self.running:
             try:
                 self._scan_cycle()
             except Exception as e:
                 logging.error(f"Scan cycle error: {e}")
                 traceback.print_exc()
+
+            # Periodic checkpoint — makes the state file's AGE a real
+            # liveness signal.
+            #
+            # All four other _save_state() calls are event-driven (deploy,
+            # fill, removal, reservation-id stamp), so a quiet market and a
+            # hung writer produce IDENTICAL staleness. Observed 2026-08-13:
+            # gridzilla_state.json was 55 minutes old while the bot was
+            # perfectly healthy — the file matched live state exactly, it
+            # just had nothing new to record. That ambiguity is the same
+            # absent-vs-broken confusion this fleet keeps hitting, and it
+            # defeats any age-based staleness check over this file.
+            #
+            # A write every 5 minutes is negligible (one small atomic JSON
+            # write) and means an age beyond that is genuinely a stalled
+            # loop rather than a calm one.
+            _now = time.time()
+            if _now - _last_checkpoint >= 300:
+                try:
+                    self.executor._save_state()
+                    _last_checkpoint = _now
+                except Exception:
+                    logging.warning("periodic checkpoint failed", exc_info=True)
 
             time.sleep(self.config["scan_interval"])
 

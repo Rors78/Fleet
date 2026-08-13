@@ -72,6 +72,7 @@ TESTS = [
     "test_aegis_seed.py",
     "test_sizing_multiplier.py",
     "test_grid_risk_gates.py",
+    "test_sentinel_conviction.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

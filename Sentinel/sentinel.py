@@ -96,7 +96,33 @@ DRIFT_REF_VOL = 0.012 / math.sqrt(60)
 # Hard cap on drift expressed in sigma-per-minute. 0.05 keeps a 4h forecast
 # well short of certainty even with every term maxed, so no combination of
 # fleet inputs can produce a 100% call.
+#
+# Measured 2026-08-13: this cap NEVER BINDS. The four drift terms sum to at
+# most base 1e-5 + book 5e-6 + whale 5e-6 + reversion ~1e-6 = 2.1e-5, which
+# is drift_snr 0.0136 — 27% of this cap. The cap is a real backstop for a
+# future term, not a live constraint, and is left alone deliberately.
 DRIFT_SNR_CAP = 0.05
+# High-conviction gate, in direction probability at the 4h horizon.
+#
+# Was 0.65, which NO market condition could reach. Measured by running the
+# shipped monte_carlo_paths/compute_distribution at the true drift ceiling
+# (snr 0.0136): max achievable P(up) is 0.482 — an 0.168 gap the inputs
+# cannot close, so self.high_conviction was permanently empty and every
+# downstream consumer (bus_listener, card_renderer, signal_broadcaster,
+# signal_decay) received nothing from this path. Confirmed on the durable
+# bus log: 2,602 HIGH_CONVICTION events in 24h, ALL from event_bus reaction
+# rules, ZERO from sentinel.
+#
+# 0.65 was correct against the pre-2026-07-29 drift scale and was left
+# behind when drift was rescaled into sigma units — the same shape as the
+# other findings in this audit.
+#
+# 0.45 sits inside the achievable range while still requiring a genuine
+# directional tilt: P(up) 0.45 against P(down) ~0.33 at the same reading,
+# with the rest in the flat band. Raising the drift terms instead would
+# manufacture conviction the inputs do not support, which is the opposite
+# of the fix.
+HIGH_CONVICTION_PROB = 0.45
 # Forecast the full CC universe, not just the top slice by volume.
 #
 # At 20 this covered only 14 of Oracle's scanned pairs, leaving 13 that CC
@@ -643,7 +669,7 @@ class SentinelEngine:
                 prob_up = dp.get("up", 0.5)
                 prob_down = dp.get("down", 0.5)
 
-                if prob_up > 0.65 or prob_down > 0.65:
+                if prob_up > HIGH_CONVICTION_PROB or prob_down > HIGH_CONVICTION_PROB:
                     # Skip blacklisted pairs — still forecast for intel,
                     # but don't emit high-conviction signals that traders act on
                     if _is_blacklisted(pair):

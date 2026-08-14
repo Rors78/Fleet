@@ -4742,6 +4742,27 @@ function renderHeader(agg){
      trade as a real edge. */
   wrEl.textContent=wrVal!=null&&agg.total_trades>0
     ?fmtPct(wrVal)+" (n="+agg.total_trades+")":"--%";
+  /* This chip and the EXPECTANCY panel below it BOTH claim to be the
+     fleet win rate and they disagree on screen: 55.3% (n=38) here against
+     73.1% (n=27) there, same instant. Neither is wrong. They measure
+     different windows.
+
+       header : each bot's own lifetime wins/losses counters, restored from
+                its state file across restarts. Confluence's reach back to
+                2026-07-28.
+       panel  : logs/expectancy.json, whose earliest record is 2026-08-06.
+
+     Eight Confluence trades closed before 2026-08-07 12:28 exist in the
+     bot's records and not in the store, which is the whole of the gap.
+     Two honest measurements over different spans, presented as one
+     quantity with no way to tell them apart. Name the window on the chip
+     so the difference reads as scope rather than as a contradiction. */
+  if(wrVal!=null&&agg.total_trades>0){
+    wrEl.title="Fleet win rate over each bot's LIFETIME counters (n="
+      +agg.total_trades+", restored across restarts). The EXPECTANCY panel"
+      +" measures the trade store instead, which begins 2026-08-06 - a"
+      +" shorter window, so the two figures differ legitimately.";
+  }
   if(wrVal!=null&&agg.total_trades>0){
     if(wrVal<15){wrEl.style.color="#ff4466";wrEl.style.textShadow="0 0 8px rgba(255,68,102,0.4)";}
     else if(wrVal<30){wrEl.style.color="#fbbf24";wrEl.style.textShadow="0 0 8px rgba(251,191,36,0.3)";}
@@ -20478,6 +20499,20 @@ function renderOvFeeAnalysis(){
   if(ratioPctEl){
     ratioPctEl.innerHTML = wrKnownOv ? (Math.round(winRate)+"%"+_wrTrendHtml) : "--";
     ratioPctEl.style.color = wrColor;
+    /* The header chip shows a DIFFERENT fleet win rate from this one -
+       55.3% (n=38) against 73.1% (n=27) on the same screen. The header
+       reads each bot's lifetime counters; this reads the trade store,
+       which begins 2026-08-06. Eight Confluence trades closed before
+       2026-08-07 sit in the bot's records and not in the store, and that
+       is the entire difference. Name the window here too, so a viewer
+       comparing the two sees scope rather than a contradiction. */
+    if(wrKnownOv){
+      ratioPctEl.title = "Win rate over the recorded trade store (n="
+        +(ex.total_trades!=null?ex.total_trades:"?")
+        +"), whose earliest record is 2026-08-06. The header chip measures"
+        +" each bot's lifetime counters over a longer window, so the two"
+        +" figures differ legitimately.";
+    }
   }
   if(gaugeEl){
     var pct = wrKnownOv ? Math.min(100, Math.max(0, winRate)) : 0;

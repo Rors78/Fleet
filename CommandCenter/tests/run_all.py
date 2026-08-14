@@ -82,6 +82,7 @@ TESTS = [
     "test_weekly_era.py",
     "test_daily_source.py",
     "test_wr_windows.py",
+    "test_causal_stats.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

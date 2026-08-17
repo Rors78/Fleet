@@ -384,11 +384,28 @@ class BrainiacCollector:
                         corr = pearson_correlation(raw_a, raw_b)
                         matrix[f"{pairs_list[i]}|{pairs_list[j]}"] = round(corr, 4)
 
-                avg_abs = sum(abs(v) for v in matrix.values()) / max(len(matrix), 1)
+                # None, not 0.0, when NO pair had enough samples to correlate.
+                # `max(len(matrix), 1)` turned an empty matrix into 0.0/1 =
+                # 0.0000 and published it as "the fleet is perfectly
+                # uncorrelated" -- the most PERMISSIVE risk reading there is.
+                #
+                # AEGIS consumes this (aegis.py:233) and its guard cannot
+                # catch it: 0.0 passes isinstance, passes the NaN check, and
+                # clamps into range like any real measurement. It correctly
+                # refuses a MISSING correlation and has no way to refuse a
+                # fabricated one.
+                #
+                # Reachable: the outer guard needs only 3 pairs with >2
+                # closes, while the per-pair filter above requires 10
+                # samples -- so every pair can be skipped while the outer
+                # check passes.
+                avg_abs = ((sum(abs(v) for v in matrix.values()) / len(matrix))
+                           if matrix else None)
                 _store("correlations", "matrix", {
                     "pairs_count": n,
                     "correlations_count": len(matrix),
-                    "avg_abs_correlation": round(avg_abs, 4),
+                    "avg_abs_correlation": (round(avg_abs, 4)
+                                            if avg_abs is not None else None),
                     "top_correlated": sorted(matrix.items(), key=lambda x: abs(x[1]), reverse=True)[:5],
                     "least_correlated": sorted(matrix.items(), key=lambda x: abs(x[1]))[:5],
                 })

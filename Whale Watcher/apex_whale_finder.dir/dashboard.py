@@ -1,6 +1,22 @@
 import json
 import threading
 import time
+
+
+def _num(v):
+    """A finite float, or None.
+
+    NOT `float(x or 0)`: bool(nan) is True, so that idiom lets NaN straight
+    through and every downstream comparison silently evaluates False. An
+    unmeasurable indicator must read as absent so callers can fall back,
+    rather than as a neutral value they cannot distinguish from a reading.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if f == f and f not in (float("inf"), float("-inf")) else None
+
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from datetime import datetime
 from typing import Dict, Any, List, Optional
@@ -95,9 +111,19 @@ class ScannerBackend:
                 # strength of. Without them the brain had to infer direction
                 # from a short price-average comparison, which could never
                 # fire (see get_trend_direction). (2026-07-29 audit)
-                'plus_di': float(latest.get('+DI', 0) or 0),
-                'minus_di': float(latest.get('-DI', 0) or 0),
-                'chopiness': float(latest.get('chopiness', 50)),
+                # `or 0` does NOT neutralise NaN: bool(nan) is True, so
+                # float(nan or 0) is nan. It then passes the `(pdi or mdi)`
+                # guard in get_trend_direction, every comparison against
+                # `spread = nan` is False, and the result is "neutral" --
+                # indistinguishable from a measured directionless market, AND
+                # it blocks the price-average fallback that would have
+                # worked. _calculate_di_pandas yields a NaN tail whenever
+                # TR.rolling(14).sum() is 0, which is routine on flat or
+                # zero-range bars for thin alt pairs at 1m.
+                'plus_di': _num(latest.get('+DI')),
+                'minus_di': _num(latest.get('-DI')),
+                # None, not 50. Chopiness 50 is a real mid-range reading.
+                'chopiness': _num(latest.get('chopiness')),
                 'volume_surge': float(latest.get('volume_surge', 0)),
                 'whale_score': float(latest.get('whale_score', 0)),
                 'close': float(latest['close']),

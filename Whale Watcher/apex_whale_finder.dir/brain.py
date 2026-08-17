@@ -89,7 +89,15 @@ class Brain:
         pdi = latest.get('plus_di')
         mdi = latest.get('minus_di')
         adx = latest.get('adx', 0) or 0
-        if pdi is not None and mdi is not None and (pdi or mdi):
+        # Require FINITE values. A NaN +DI (routine when TR.rolling(14).sum()
+        # is 0 on flat bars) used to pass `pdi is not None and (pdi or mdi)`,
+        # then every comparison against `spread = nan` evaluated False and
+        # this returned "neutral" -- while also blocking the price-average
+        # fallback below, which would have produced a real answer.
+        _di_ok = (isinstance(pdi, (int, float)) and pdi == pdi
+                  and isinstance(mdi, (int, float)) and mdi == mdi
+                  and (pdi or mdi))
+        if _di_ok:
             # Below ADX 20 there is no trend to have a direction.
             if adx < 20:
                 return "neutral"

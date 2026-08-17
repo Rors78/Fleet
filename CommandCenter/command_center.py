@@ -920,7 +920,19 @@ class PortfolioManager:
                     r.pop("unconfirmed_since", None)
                     confirmed += 1
                     continue
-                if now - r.get("reserved_at", now) < self.LEASE_OPEN_GRACE_SEC:
+                # A reservation with NO reserved_at is not a brand-new one.
+                # Defaulting to `now` made its age exactly 0, so it sat inside
+                # the open grace window on every single sweep and could never
+                # expire — capital stranded permanently, and invisibly,
+                # because the sweep reported it as merely young.
+                #
+                # Missing means unknown, and unknown must be sweepable: treat
+                # it as old enough to proceed to the confirmation gates below,
+                # which still protect anything the bot actually reports
+                # holding (see the active_positions check).
+                _resv_at = r.get("reserved_at")
+                if isinstance(_resv_at, (int, float)) and \
+                        now - _resv_at < self.LEASE_OPEN_GRACE_SEC:
                     continue
                 if "unconfirmed_since" not in r:
                     r["unconfirmed_since"] = now
@@ -2034,7 +2046,14 @@ def _alert_feed_entries(raw: dict, bot_id: str, entries: list) -> None:
         atype = alert.get("type", "")
         suggestion = alert.get("suggestion", "")
         msg = f"{atype}: {suggestion}" if suggestion else atype
-        entries.append({"time": alert.get("timestamp", time.time()), "bot_id": bot_id, "bot_name": name, "message": msg, "bot_color": color})
+        # None, not now(). Stamping render time onto an entry whose real
+        # time is unknown makes it sort as the newest thing in the feed --
+        # and with a dead bot's payload carried forward each cycle, the same
+        # stale signals reappear at the top forever, looking fresh.
+        _at = alert.get("timestamp")
+        entries.append({"time": _at if isinstance(_at, (int, float)) else None,
+                        "bot_id": bot_id, "bot_name": name, "message": msg,
+                        "bot_color": color})
 
 
 def _extract_feed(bots_data: dict) -> list[dict]:
@@ -2069,9 +2088,10 @@ def _extract_feed(bots_data: dict) -> list[dict]:
         conf = sig.get("confluence", 0)
         bias = sig.get("bias", "")
         regime = sig.get("regime", "")
-        t = sig.get("timestamp") or time.time()
-        if isinstance(t, str):
-            t = time.time()
+        # Unknown stays unknown -- see the note in _alert_feed_entries.
+        t = sig.get("timestamp")
+        if not isinstance(t, (int, float)):
+            t = None
         if bias and bias != "NEUTRAL":
             msg = f"{bias} {sym} conf={conf:.2f} regime={regime}"
             entries.append({"time": t, "bot_id": "trinity", "bot_name": name, "message": msg, "bot_color": color})
@@ -2115,7 +2135,12 @@ def _extract_feed(bots_data: dict) -> list[dict]:
         pnl = t.get("pnl", 0)
         result = "WIN" if pnl > 0 else "LOSS"
         msg = f"{result} {t.get('direction', '')} {t.get('pair', '')} ${pnl:+.2f} [{t.get('exit_reason', '')}]"
-        entries.append({"time": t.get("closed_at", time.time()), "bot_id": "rubberband", "bot_name": name, "message": msg, "bot_color": color})
+        # None, not now(): a trade with no close time has not just
+        # closed. See the note in _alert_feed_entries.
+        _ct = t.get("closed_at")
+        entries.append({"time": _ct if isinstance(_ct, (int, float)) else None,
+                        "bot_id": "rubberband", "bot_name": name,
+                        "message": msg, "bot_color": color})
 
     # Contrarian sentiment alerts
     _alert_feed_entries((bots_data.get("contrarian") or {}).get("raw") or {}, "contrarian", entries)
@@ -2127,7 +2152,12 @@ def _extract_feed(bots_data: dict) -> list[dict]:
         pnl = t.get("pnl", 0)
         result = "WIN" if pnl > 0 else "LOSS"
         msg = f"SPREAD {result} {t.get('pair_key', '')} z={t.get('entry_z', 0):.1f}->{t.get('exit_z', 0):.1f} ${pnl:+.2f} [{t.get('reason', '')}]"
-        entries.append({"time": t.get("closed_at", time.time()), "bot_id": "arbitrageur", "bot_name": name, "message": msg, "bot_color": color})
+        # None, not now(): a trade with no close time has not just
+        # closed. See the note in _alert_feed_entries.
+        _ct = t.get("closed_at")
+        entries.append({"time": _ct if isinstance(_ct, (int, float)) else None,
+                        "bot_id": "arbitrageur", "bot_name": name,
+                        "message": msg, "bot_color": color})
 
     # Chronos session alerts
     _alert_feed_entries((bots_data.get("chronos") or {}).get("raw") or {}, "chronos", entries)
@@ -2144,10 +2174,17 @@ def _extract_feed(bots_data: dict) -> list[dict]:
         rr_str = f" R:R={rr:.1f}" if isinstance(rr, (int, float)) and rr else ""
         if direction != "NEUTRAL" and pair:
             msg = f"{direction} {pair} [{strategy}] score={score:.1f}{rr_str}"
-            entries.append({"time": or_raw.get("timestamp", time.time()), "bot_id": "oracle", "bot_name": name, "message": msg, "bot_color": color})
+            _ot = or_raw.get("timestamp")
+            entries.append({"time": _ot if isinstance(_ot, (int, float)) else None,
+                            "bot_id": "oracle", "bot_name": name,
+                            "message": msg, "bot_color": color})
 
     # Sort newest first, cap at MAX_FEED_SIZE
-    entries.sort(key=lambda e: e.get("time", 0), reverse=True)
+    # Undated entries sort to the BOTTOM (not the top, which is where a
+    # fabricated now() put them). -inf keeps the comparison total.
+    entries.sort(key=lambda e: (e.get("time")
+                                if isinstance(e.get("time"), (int, float))
+                                else float("-inf")), reverse=True)
     return entries[:MAX_FEED_SIZE]
 
 
@@ -2808,10 +2845,22 @@ def _poll_all_bots() -> None:
                 "raw": raw, "normalized": normalized,
             }
         except Exception:
+            # The bot did not answer, and we are carrying forward its LAST
+            # payload. Omitting data_stale here let the consumer's
+            # .get("data_stale", False) publish "fresh" for a dead bot
+            # serving a previous cycle's data — the freshness flag read clean
+            # in exactly the case it exists to catch. It is set explicitly,
+            # and the age is measured from the last successful contact so the
+            # staleness grows for as long as the bot stays down.
+            _prev_seen = prev.get("last_seen")
+            _age = ((time.time() - _prev_seen)
+                    if isinstance(_prev_seen, (int, float)) else None)
             new_bots[bid] = {
                 "id": bid, "name": bot["name"], "port": bot["port"],
                 "color": bot["color"], "alive": False,
-                "last_seen": prev.get("last_seen"), "latency_ms": None,
+                "last_seen": _prev_seen, "latency_ms": None,
+                "data_stale": True,
+                "stale_age_s": (round(_age, 1) if _age is not None else None),
                 "raw": prev.get("raw"), "normalized": prev.get("normalized"),
             }
 

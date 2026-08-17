@@ -724,8 +724,20 @@ class GridExecutor:
             # Restore grid state
             grid_state = {
                 "design": g.get("design", {}),
-                "status": g.get("status", "ACTIVE"),
-                "deployed_at": g.get("deployed_at", time.time()),
+                # NOT "ACTIVE" by default. ACTIVE is the permissive value:
+                # it is what gates check_range_break and check_drawdown_kill,
+                # so an unreadable status resurrected a grid that may have
+                # been KILLED and re-armed it for trading. Unknown status
+                # fails toward the safe side.
+                "status": (g.get("status")
+                           if isinstance(g.get("status"), str) and g.get("status")
+                           else "UNKNOWN"),
+                # None, not now(). Defaulting to now made an OLD grid's
+                # uptime_min read as brand new, hiding exactly the grids that
+                # have been running longest.
+                "deployed_at": (g.get("deployed_at")
+                                if isinstance(g.get("deployed_at"), (int, float))
+                                else None),
                 "levels": g.get("levels", []),
                 "fills": g.get("fills", []),
                 "cycles_completed": g.get("cycles_completed", 0),
@@ -734,7 +746,9 @@ class GridExecutor:
                 "peak_pnl": g.get("peak_pnl", 0),
                 "max_drawdown": g.get("max_drawdown", 0),
                 "range_breaks": g.get("range_breaks", 0),
-                "last_check": g.get("last_check", time.time()),
+                "last_check": (g.get("last_check")
+                               if isinstance(g.get("last_check"), (int, float))
+                               else None),
                 "reservation_id": rid,
             }
             self.active_grids[pair] = grid_state
@@ -1242,7 +1256,11 @@ class GridExecutor:
                     "fees": 0.0,  # legacy field — gross accounting (signal product)
                     "net_pnl": round(g["grid_pnl"], 4),  # net == gross now; key kept for consumers
                     "max_dd": round(g["max_drawdown"], 4),
-                    "uptime_min": round((time.time() - g["deployed_at"]) / 60, 1),
+                    # None when deployed_at could not be restored: an
+                    # unknown start time is not an uptime of zero.
+                    "uptime_min": (round((time.time() - g["deployed_at"]) / 60, 1)
+                                   if isinstance(g.get("deployed_at"), (int, float))
+                                   else None),
                 }
                 for pair, g in self.active_grids.items()
             }

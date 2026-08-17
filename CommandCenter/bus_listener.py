@@ -38,15 +38,33 @@ _HALF_LIVES = {
 
 
 def _decay_strength(event, half_life=None):
-    """Exponential decay: strength = exp(-ln(2) * age / half_life)."""
+    """Exponential decay: strength = exp(-ln(2) * age / half_life).
+
+    Returns 0.0 -- fully decayed -- when the event's age cannot be
+    determined. This used to return 1.0, MAXIMUM freshness, which is the
+    exact inverse of the correct reading: an event of unknown age was
+    treated as if it had just arrived.
+
+    That is not academic. whale_tier() below gates on `_decay_strength(best)
+    < 0.2`, so a timestamp-less WHALE_ALERT sailed through at full strength
+    and was delivered as current to every consumer of this module
+    (Arbitrageur, Confluence, Contrarian, Gridzilla, NexusBrain, Rubberband,
+    TurtleSue). event_bus.publish uses setdefault, which PRESERVES an
+    explicit ts of 0, and disk-replayed events carry no guarantee at all.
+
+    A negative age means a clock disagreement, not freshness, so it decays
+    too rather than reading as brand new.
+    """
     ts = event.get("ts", event.get("timestamp", 0))
-    if not ts:
-        return 1.0
+    if not isinstance(ts, (int, float)) or ts <= 0:
+        return 0.0
     etype = event.get("type", "")
     hl = half_life or _HALF_LIVES.get(etype, 900)
     age = time.time() - ts
     if age < 0:
-        return 1.0
+        # Future-stamped: a clock skew or a corrupt record. Treat as
+        # unusable rather than maximally fresh.
+        return 0.0
     return math.exp(-_LN2 * age / hl)
 
 

@@ -3968,7 +3968,21 @@ class Broadcaster:
                 config.update(user)
                 log.info("Config loaded from %s", self._config_path)
             except Exception as e:
-                log.warning("Failed to load config: %s, using defaults", e)
+                # An unreadable config must not silently restore permissive
+                # defaults. `enabled` is the master kill switch for publishing
+                # to subscribers: if someone set it false and the file then
+                # picked up a JSON syntax error, falling back to the defaults
+                # would turn broadcasting back ON without anyone asking.
+                #
+                # Unreadable fails ARMED here — publishing is suspended until
+                # the config parses. A silent fleet is recoverable; an
+                # unintended broadcast to paying subscribers is not.
+                log.error("Failed to load config: %s — DISABLING broadcast "
+                          "until the file parses. Defaults are not applied "
+                          "to `enabled`, because a corrupt file must not "
+                          "re-enable a switch someone turned off.", e)
+                config["enabled"] = False
+                config["_config_unreadable"] = True
         else:
             log.info("No config file at %s, using defaults", self._config_path)
         return config
@@ -4088,7 +4102,7 @@ class Broadcaster:
             "polling": self._poller.stats(),
             "channel": self._channel.stats(),
             "config": {
-                "enabled": self._config.get("enabled", True),
+                "enabled": self._config.get("enabled", False),
                 "free_delay_hours": self._config.get("free_delay_hours", 4),
                 "min_conviction": self._config.get("min_conviction_threshold", 0.8),
                 "rate_limit": self._config.get("rate_limit_per_minute", 30),
@@ -4120,7 +4134,10 @@ class Broadcaster:
         }
 
     def _on_event(self, event: dict) -> None:
-        if not self._config.get("enabled", True):
+        # Default False, not True. `enabled` is always present in
+        # _DEFAULT_CONFIG, so this default only fires when the config dict is
+        # damaged -- exactly the case where publishing must NOT proceed.
+        if not self._config.get("enabled", False):
             return
 
         try:
@@ -4250,6 +4267,19 @@ class Broadcaster:
                                 _ba = edata.get("bots_alive")
                                 self._card_renderer.set_bots_alive(
                                     _ba if isinstance(_ba, int) else None)
+                                # Stamp the EVENT's time, not the render time.
+                                # Card builders read data.get("timestamp"),
+                                # but a bus event carries `ts` at the TOP
+                                # level and its `data` has no timestamp at
+                                # all -- so every card fell through to
+                                # datetime.now() in card_renderer and
+                                # presented a delayed or replayed event as
+                                # current, to paying subscribers.
+                                if "timestamp" not in edata:
+                                    _ets = event.get("ts")
+                                    if isinstance(_ets, (int, float)) and _ets > 0:
+                                        edata["timestamp"] = datetime.fromtimestamp(
+                                            _ets, timezone.utc).strftime("%H:%M UTC")
                                 if etype == "TRADE_OPEN":
                                     png = self._card_renderer.render_trade_open(edata)
                                     copyable = self._card_renderer.copyable_trade_open(edata)

@@ -144,9 +144,13 @@ class CardRenderer:
         draw.text((tx, y + 28), subtitle, fill=_hex(TEXT_SEC),
                   font=self._f("sans_13"))
 
-        # Timestamp top-right
+        # Timestamp top-right. NOT datetime.now(): stamping render time onto
+        # an event whose real time is unknown presents a delayed or replayed
+        # signal as current, to paying subscribers. The caller passes the bus
+        # event's own `ts`; when it genuinely has none, the card shows no
+        # time rather than a false one.
         if timestamp is None:
-            timestamp = datetime.now(timezone.utc).strftime("%H:%M UTC")
+            timestamp = ""
         ts_font = self._f("mono_11")
         ts_bbox = draw.textbbox((0, 0), timestamp, font=ts_font)
         ts_w = ts_bbox[2] - ts_bbox[0]
@@ -227,9 +231,9 @@ class CardRenderer:
         draw.text(((CANVAS_W - cw) // 2, y), center_text,
                   fill=_hex(TEXT_SEC), font=gf)
 
-        # Right: timestamp
+        # Right: timestamp — same rule as the header. Absent beats invented.
         if timestamp is None:
-            timestamp = datetime.now(timezone.utc).strftime("%H:%M UTC")
+            timestamp = ""
         tf = self._f("mono_10")
         tb = draw.textbbox((0, 0), timestamp, font=tf)
         tw = tb[2] - tb[0]

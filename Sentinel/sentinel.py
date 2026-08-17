@@ -438,8 +438,15 @@ def get_fleet_context():
         "phitex_pairs": {},
         "whale_pairs": {},
         "book_imbalance": {},
-        "aegis_score": 0.5,
-        "correlation": 0.5,
+        # None, not 0.5. Nothing currently READS these two -- they are
+        # populated below and go unused -- but 0.5 is a real mid-range
+        # reading for both (AEGIS scores 0-1, avg_abs_correlation 0-1), so
+        # whoever wires them up next would inherit a fabrication that is
+        # indistinguishable from a measurement. Left in place rather than
+        # deleted because the fetches are wired and working; made honest so
+        # they are safe to consume.
+        "aegis_score": None,
+        "correlation": None,
     }
 
     # Gaussian fusion regime from Nexus (via CC proxy)
@@ -485,12 +492,14 @@ def get_fleet_context():
     aegis_bot = fetch_json(f"{CC_URL}/api/bot/aegis")
     aegis = (aegis_bot or {}).get("raw") or {}
     if aegis:
-        ctx["aegis_score"] = aegis.get("score", 0.5)
+        _as = aegis.get("score")
+        ctx["aegis_score"] = _as if isinstance(_as, (int, float)) else None
 
     # Brainiac correlation
     corr = fetch_json(f"{CC_URL}/api/brainiac/correlations")
     if corr and corr.get("data"):
-        ctx["correlation"] = corr["data"].get("avg_abs_correlation", 0.5)
+        _c = corr["data"].get("avg_abs_correlation")
+        ctx["correlation"] = _c if isinstance(_c, (int, float)) else None
 
     return ctx
 

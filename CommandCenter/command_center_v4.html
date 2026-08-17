@@ -6362,8 +6362,13 @@ function buildSentinelView(def,b){
   h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.15em;text-transform:uppercase;margin-bottom:5px">NEXUS GAUSSIAN FUSION</div>';
   h+='<div style="font-family:\'Share Tech Mono\',var(--font-mono);font-size:1.4rem;color:'+regC+';letter-spacing:0.15em">'+escHtml(regStr)+'</div>';
   h+='<div style="display:flex;align-items:center;gap:8px;margin-top:5px">';
-  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted)">'+fmtNum((fleet.regime_confidence||0)*100,0)+'% conf</div>';
-  h+='<div style="flex:1;height:4px;background:rgba(0,0,0,0.3);border-radius:2px"><div style="height:4px;width:'+fmtNum((fleet.regime_confidence||0)*100,0)+'%;background:'+regC+';border-radius:2px;transition:width 0.5s"></div></div>';
+  /* No `||0`: an unscored pair has not been assessed at 0% confidence, it
+     has not been assessed. "0% conf" with an empty bar reads as certainty
+     about uncertainty. Render "-- conf" and leave the bar unfilled. */
+  var _rcKnown=(typeof fleet.regime_confidence==='number'&&isFinite(fleet.regime_confidence));
+  var _rcPct=_rcKnown?fleet.regime_confidence*100:null;
+  h+='<div style="font-family:var(--font-mono);font-size:0.65rem;color:var(--text-muted)">'+(_rcKnown?fmtNum(_rcPct,0)+'% conf':'-- conf')+'</div>';
+  h+='<div style="flex:1;height:4px;background:rgba(0,0,0,0.3);border-radius:2px"><div style="height:4px;width:'+(_rcKnown?fmtNum(_rcPct,0):'0')+'%;background:'+regC+';border-radius:2px;transition:width 0.5s"></div></div>';
   h+='</div></div>';
 
   /* PHITEX fleet gauge */

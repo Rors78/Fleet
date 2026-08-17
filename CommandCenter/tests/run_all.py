@@ -89,6 +89,7 @@ TESTS = [
     "test_null_basis_guards.py",
     "test_unmeasured_averages.py",
     "test_no_live_writes.py",
+    "test_component_renorm.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

@@ -311,21 +311,26 @@ class Config:
 
 @dataclass
 class SignalComponents:
-    ema_alignment: float = 0.5
-    rsi_momentum: float = 0.5
-    macd_momentum: float = 0.5
-    bollinger_pos: float = 0.5
-    volume_confirm: float = 0.5
-    regime_align: float = 0.5
+    # Default None, not 0.5. An unset component is UNMEASURED; 0.5 is a real
+    # neutral reading that several scorers legitimately produce, so seeding
+    # it here made the two indistinguishable before anything was computed.
+    ema_alignment: Optional[float] = None
+    rsi_momentum: Optional[float] = None
+    macd_momentum: Optional[float] = None
+    bollinger_pos: Optional[float] = None
+    volume_confirm: Optional[float] = None
+    regime_align: Optional[float] = None
 
     def to_dict(self) -> Dict[str, float]:
+        def _r(v):
+            return None if v is None else round(v, 4)
         return {
-            "ema_alignment": round(self.ema_alignment, 4),
-            "rsi_momentum": round(self.rsi_momentum, 4),
-            "macd_momentum": round(self.macd_momentum, 4),
-            "bollinger_pos": round(self.bollinger_pos, 4),
-            "volume_confirm": round(self.volume_confirm, 4),
-            "regime_align": round(self.regime_align, 4),
+            "ema_alignment": _r(self.ema_alignment),
+            "rsi_momentum": _r(self.rsi_momentum),
+            "macd_momentum": _r(self.macd_momentum),
+            "bollinger_pos": _r(self.bollinger_pos),
+            "volume_confirm": _r(self.volume_confirm),
+            "regime_align": _r(self.regime_align),
         }
 
 
@@ -490,13 +495,21 @@ def volume_momentum(candles: List[Candle], period: int = 20) -> float:
     on 2026-04-08 blaming "too conservative", when the real fault was here.
     (2026-07-29 audit.)
     """
+    # None, not 1.0, for both unmeasurable cases. A ratio of exactly 1.0
+    # means "this bar's volume equals its trailing average" -- a real and
+    # unremarkable reading -- so returning it for "cannot measure" collapsed
+    # two states into one. It lands in the > 0.8 bucket below, scoring 0.50:
+    # a mid-range CONFIRMATION derived from no data, into a component
+    # carrying 0.15 weight in the trade-gating confluence score.
+    #
+    # avg_vol == 0 is routine for thin pairs, so this is not a corner case.
     if len(candles) < period + 2:
-        return 1.0
+        return None
     # Last completed bar, and the `period` completed bars before it.
     recent = candles[-2].volume
     avg_vol = sum(c.volume for c in candles[-period - 2:-2]) / period
     if avg_vol == 0:
-        return 1.0
+        return None
     return recent / avg_vol
 
 
@@ -680,9 +693,15 @@ def score_bollinger_position(closes: List[float], price: float) -> float:
         return 0.50 + (0.50 - bb_pct) * 0.3
 
 
-def score_volume_confirmation(candles: List[Candle]) -> float:
-    """Volume confirmation score -- higher volume validates moves."""
+def score_volume_confirmation(candles: List[Candle]):
+    """Volume confirmation score -- higher volume validates moves.
+
+    None when volume could not be measured. The caller drops the component
+    and renormalises rather than folding in a fabricated mid-range score.
+    """
     vol_mom = volume_momentum(candles)
+    if vol_mom is None:
+        return None
 
     if vol_mom > 2.5:
         return 0.95
@@ -765,26 +784,47 @@ def score_single_timeframe(candles: List[Candle], price: float, regime: Regime) 
     }
     regime_score = score_regime_alignment(regime, other_scores)
 
+    def _clamp(v):
+        # None survives the clamp: max(0.0, min(1.0, None)) would raise, and
+        # coercing it to 0.0 would be worse than the old 1.0 -- an unmeasured
+        # component would drag the confluence score DOWN as if measured bad.
+        return None if v is None else max(0.0, min(1.0, v))
+
     return SignalComponents(
-        ema_alignment=max(0.0, min(1.0, ema_score)),
-        rsi_momentum=max(0.0, min(1.0, rsi_score)),
-        macd_momentum=max(0.0, min(1.0, macd_score)),
-        bollinger_pos=max(0.0, min(1.0, bb_score)),
-        volume_confirm=max(0.0, min(1.0, vol_score)),
-        regime_align=max(0.0, min(1.0, regime_score)),
+        ema_alignment=_clamp(ema_score),
+        rsi_momentum=_clamp(rsi_score),
+        macd_momentum=_clamp(macd_score),
+        bollinger_pos=_clamp(bb_score),
+        volume_confirm=_clamp(vol_score),
+        regime_align=_clamp(regime_score),
     )
 
 
 def compute_confluence(components: SignalComponents) -> float:
-    """Compute weighted confluence score from components."""
-    score = (
-        components.ema_alignment * COMPONENT_WEIGHTS["ema_alignment"]
-        + components.rsi_momentum * COMPONENT_WEIGHTS["rsi_momentum"]
-        + components.macd_momentum * COMPONENT_WEIGHTS["macd_momentum"]
-        + components.bollinger_pos * COMPONENT_WEIGHTS["bollinger_pos"]
-        + components.volume_confirm * COMPONENT_WEIGHTS["volume_confirm"]
-        + components.regime_align * COMPONENT_WEIGHTS["regime_align"]
-    )
+    """Compute weighted confluence score from components.
+
+    A None component is DROPPED and the remaining weights renormalised, so an
+    unmeasurable input neither inflates the score (the old behaviour: volume
+    returned a fabricated 1.0, scoring 0.50 -- a mid-range "confirmation"
+    from no data) nor deflates it (treating None as 0.0 would fail the gate
+    for a reason nobody measured).
+
+    Returns None when NOTHING could be measured: a confluence score with no
+    inputs is not 0.0.
+    """
+    parts = [
+        (components.ema_alignment, COMPONENT_WEIGHTS["ema_alignment"]),
+        (components.rsi_momentum, COMPONENT_WEIGHTS["rsi_momentum"]),
+        (components.macd_momentum, COMPONENT_WEIGHTS["macd_momentum"]),
+        (components.bollinger_pos, COMPONENT_WEIGHTS["bollinger_pos"]),
+        (components.volume_confirm, COMPONENT_WEIGHTS["volume_confirm"]),
+        (components.regime_align, COMPONENT_WEIGHTS["regime_align"]),
+    ]
+    live = [(v, w) for v, w in parts if isinstance(v, (int, float))]
+    total_w = sum(w for _, w in live)
+    if not live or total_w <= 0:
+        return None
+    score = sum(v * w for v, w in live) / total_w
     return max(0.0, min(1.0, score))
 
 
@@ -825,8 +865,18 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
                 break
     regime = detect_regime(regime_candles, cfg) if regime_candles else Regime.RANGE
 
-    # Score each timeframe and combine
-    combined = SignalComponents(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    # Score each timeframe and combine.
+    #
+    # Weight is tracked PER COMPONENT, not once for the whole timeframe: a
+    # component can be None on one timeframe (thin volume, say) and real on
+    # another, and it must then be normalised by only the timeframes that
+    # actually measured it. Dividing by a shared total_weight would silently
+    # scale a real reading down toward zero in proportion to how often it was
+    # missing -- a measured value corrupted by an absence elsewhere.
+    _FIELDS = ("ema_alignment", "rsi_momentum", "macd_momentum",
+               "bollinger_pos", "volume_confirm", "regime_align")
+    _sums = {f: 0.0 for f in _FIELDS}
+    _weights = {f: 0.0 for f in _FIELDS}
     total_weight = 0.0
 
     for tf_name, tf_cfg in TIMEFRAMES.items():
@@ -838,33 +888,29 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
         w = tf_cfg["weight"]
         total_weight += w
 
-        combined.ema_alignment += tf_components.ema_alignment * w
-        combined.rsi_momentum += tf_components.rsi_momentum * w
-        combined.macd_momentum += tf_components.macd_momentum * w
-        combined.bollinger_pos += tf_components.bollinger_pos * w
-        combined.volume_confirm += tf_components.volume_confirm * w
-        combined.regime_align += tf_components.regime_align * w
+        for f in _FIELDS:
+            v = getattr(tf_components, f)
+            if isinstance(v, (int, float)):
+                _sums[f] += v * w
+                _weights[f] += w
 
     if total_weight == 0:
         return None
 
-    # Normalize by total weight
-    combined.ema_alignment /= total_weight
-    combined.rsi_momentum /= total_weight
-    combined.macd_momentum /= total_weight
-    combined.bollinger_pos /= total_weight
-    combined.volume_confirm /= total_weight
-    combined.regime_align /= total_weight
-
-    # Clamp to [0, 1]
-    combined.ema_alignment = max(0.0, min(1.0, combined.ema_alignment))
-    combined.rsi_momentum = max(0.0, min(1.0, combined.rsi_momentum))
-    combined.macd_momentum = max(0.0, min(1.0, combined.macd_momentum))
-    combined.bollinger_pos = max(0.0, min(1.0, combined.bollinger_pos))
-    combined.volume_confirm = max(0.0, min(1.0, combined.volume_confirm))
-    combined.regime_align = max(0.0, min(1.0, combined.regime_align))
+    combined = SignalComponents()
+    for f in _FIELDS:
+        if _weights[f] > 0:
+            setattr(combined, f, max(0.0, min(1.0, _sums[f] / _weights[f])))
+        else:
+            # Measured on no timeframe at all. None, not 0.0 -- compute_
+            # confluence drops it and renormalises the rest.
+            setattr(combined, f, None)
 
     confluence = compute_confluence(combined)
+    if confluence is None:
+        # Nothing on this pair could be measured on any timeframe. A
+        # confluence score of 0.0 would be a claim; no signal is the truth.
+        return None
 
     # Short confluence — the mirror of the same evidence, component by
     # component. The four directional components score bullish > 0.5 and
@@ -877,11 +923,16 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
     #   regime_align — already a regime-consistency measure (in TREND_DOWN it
     #     scores bearish evidence HIGH, see score_regime_alignment); inverting
     #     would punish a short for agreeing with a downtrend.
+    def _inv(v):
+        # An unmeasured component has no mirror image. None stays None so
+        # compute_confluence drops it from BOTH sides symmetrically.
+        return None if v is None else 1.0 - v
+
     short_combined = SignalComponents(
-        ema_alignment=1.0 - combined.ema_alignment,
-        rsi_momentum=1.0 - combined.rsi_momentum,
-        macd_momentum=1.0 - combined.macd_momentum,
-        bollinger_pos=1.0 - combined.bollinger_pos,
+        ema_alignment=_inv(combined.ema_alignment),
+        rsi_momentum=_inv(combined.rsi_momentum),
+        macd_momentum=_inv(combined.macd_momentum),
+        bollinger_pos=_inv(combined.bollinger_pos),
         volume_confirm=combined.volume_confirm,
         regime_align=combined.regime_align,
     )
@@ -899,7 +950,7 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
             _shorts_ok, _ = _fc.direction_allowed("SHORT")
         except Exception:
             _shorts_ok = False
-    if _shorts_ok and short_confluence > confluence:
+    if _shorts_ok and short_confluence is not None and short_confluence > confluence:
         direction = "SHORT"
         confluence = short_confluence
         combined = short_combined

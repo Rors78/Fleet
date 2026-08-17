@@ -69,7 +69,12 @@ class FleetIntelScore:
         """Compute intelligence score for a single pair."""
         score = {
             "pair": pair,
-            "regime_confidence": 0.5,
+            # None, not 0.5 — a pair that reaches the aggregate with no
+            # engine setting a confidence has not been assessed at 50%, it
+            # has not been assessed. get_score() below was already hardened
+            # to return None for the unscored case; this seed was missed, so
+            # the two paths disagreed about the same field.
+            "regime_confidence": None,
             "regime_type": "UNKNOWN",
             "trade_bias": 0.0,
             "risk_multiplier": 1.0,
@@ -192,8 +197,9 @@ class FleetIntelScore:
                     score["active_warnings"].append("BOOK: volatile GAS phase")
                 elif phase == "SOLID":
                     score["regime_type"] = "RANGING"
-                    score["regime_confidence"] = max(score["regime_confidence"],
-                                                     0.7)
+                    _prev = score["regime_confidence"]
+                    score["regime_confidence"] = (0.7 if _prev is None
+                                                  else max(_prev, 0.7))
                 elif phase == "LIQUID":
                     pass  # normal — no adjustment
                 score["contributing_engines"].append("boltzmann")
@@ -277,8 +283,12 @@ class FleetIntelScore:
                 f"NOISE: fleet signal {noise_ratio:.0%} noise")
             score["contributing_engines"].append("shannon")
         elif noise_ratio < 0.3 and sh.get("n_series", 0) > 0:
-            score["regime_confidence"] = min(1.0,
-                                              score["regime_confidence"] + 0.15)
+            # A boost applies to an EXISTING confidence. With none set, this
+            # engine is the first to speak, so its own floor stands rather
+            # than 0 + 0.15 (which would read as a near-zero assessment).
+            _prev = score["regime_confidence"]
+            score["regime_confidence"] = (0.15 if _prev is None
+                                          else min(1.0, _prev + 0.15))
             score["contributing_engines"].append("shannon")
 
         # --- CAUSAL FLOW: directional bias from causal links ---
@@ -309,7 +319,9 @@ class FleetIntelScore:
             max(0.0, min(2.0, score["risk_multiplier"])), 3)
         score["trade_bias"] = round(
             max(-1.0, min(1.0, score["trade_bias"])), 3)
-        score["regime_confidence"] = round(score["regime_confidence"], 3)
+        score["regime_confidence"] = (
+            round(score["regime_confidence"], 3)
+            if score["regime_confidence"] is not None else None)
 
         return score
 

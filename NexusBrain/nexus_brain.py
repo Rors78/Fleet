@@ -238,7 +238,17 @@ class Config:
     """All tunables in one place."""
     # Position management
     max_positions: int = 5
-    initial_capital: float = 10000.0
+    # BACKTEST ONLY. A backtest needs a starting capital to express a return
+    # percentage; the LIVE bot has none, because there is ONE pool and this
+    # bot holds no money of its own.
+    #
+    # This was `initial_capital: float = 10000.0` and the live path seeded
+    # self.capital/self.equity from it, which then became the sizing fallback
+    # whenever the pool could not be read -- roughly 476x too large against
+    # the real pool. Default is now 0.0 so nothing can silently inherit a
+    # fictional balance: backtest entry points set it explicitly from
+    # --capital, and the live ledgers start at zero and report pure P/L.
+    initial_capital: float = 0.0
     risk_per_trade_pct: float = 1.0
     max_position_pct: float = 0.05   # 5% of capital — raised from 3% on 2026-04-07 to clear 5% pool floor ($500 min)
 
@@ -1068,8 +1078,11 @@ class PaperTrader:
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
-        self.capital = cfg.initial_capital
-        self.equity = cfg.initial_capital
+        # Realized-P/L ledgers, not balances. They start at zero because this
+        # bot has no capital of its own; the pool is the only capital there
+        # is. Sizing reads the pool directly (_sizing_basis), never these.
+        self.capital = 0.0
+        self.equity = 0.0
         # Central portfolio client
         self._portfolio = None
         if cfg.use_central_portfolio and PortfolioClient:
@@ -1090,8 +1103,8 @@ class PaperTrader:
                 self._kraken = None
         self.positions: Dict[str, Position] = {}
         self.trades: List[Trade] = []
-        self.equity_curve: List[float] = [cfg.initial_capital]
-        self.peak_equity = cfg.initial_capital
+        self.equity_curve: List[float] = [0.0]
+        self.peak_equity = 0.0
         self.lock = threading.Lock()
         self._last_close: Dict[str, float] = {}  # {pair: timestamp}
         self._min_reentry_sec = 3600.0  # raised 2026-04-03: was 10s; churn guard kept post fee-removal (rapid re-entry was noise, not signal)
@@ -1240,26 +1253,39 @@ class PaperTrader:
         bot because something unrelated happened. pool_total() is the
         stable figure to take a share of.
 
-        Falls back to self.equity when the pool is unreachable, so a
-        Command Center outage degrades to the previous behaviour rather
-        than sizing off a guess. Warned once, not per scan.
+        Returns None when the pool cannot be read. This used to fall back to
+        self.equity and call that "degrading to the previous behaviour rather
+        than sizing off a guess" — but self.equity was seeded from a fixed
+        $10,000 initial_capital, so the fallback WAS the guess, and a large
+        one: against the real ~$210 pool it sizes roughly 476x too big.
+
+        There is one pool and one mind. A bot does not hold capital of its
+        own, so there is no smaller truth to fall back to. An unreadable pool
+        is unknown, and the only safe response to an unknown basis is to not
+        trade on it.
         """
         share = POOL_SHARE_PCT
         if not (self._portfolio and share > 0):
-            return self.equity
+            self._warn_no_basis("no portfolio client")
+            return None
         try:
             total = self._portfolio.pool_total()
-        except Exception:
-            total = None
+        except Exception as e:
+            self._warn_no_basis("pool_total() raised %r" % (e,))
+            return None
         if not isinstance(total, (int, float)) or total <= 0:
-            if not getattr(self, "_pool_basis_warned", False):
-                self._pool_basis_warned = True
-                logger.warning(
-                    "pool total unreachable — sizing off local equity "
-                    "$%.2f instead of %.1f%% of pool", self.equity, share)
-            return self.equity
+            self._warn_no_basis("pool_total() returned %r" % (total,))
+            return None
         self._pool_basis_warned = False
         return total * (share / 100.0)
+
+    def _warn_no_basis(self, why: str) -> None:
+        """Say it once per outage, not every scan."""
+        if not getattr(self, "_pool_basis_warned", False):
+            self._pool_basis_warned = True
+            logger.warning(
+                "pool total unreadable (%s) — NOT sizing. Trades are skipped "
+                "until the pool reads again.", why)
 
     def can_open(self) -> bool:
         """Check if we can open a new position."""
@@ -1299,6 +1325,14 @@ class PaperTrader:
             # self.equity keeps tracking realized P/L, which is a different
             # question and must not be conflated with the sizing basis.
             _basis = self._sizing_basis()
+            if not isinstance(_basis, (int, float)) or _basis <= 0:
+                # Pool unreadable. There is no bot-local capital to fall back
+                # on — one pool, one mind — so there is no honest basis and
+                # the trade is skipped rather than sized off a stand-in.
+                logger.warning(
+                    "SKIP %s: pool unreadable, no sizing basis",
+                    PAIR_DISPLAY.get(signal.pair, signal.pair))
+                return None
             risk_amount = _basis * (self.cfg.risk_per_trade_pct / 100)
             risk_distance = abs(signal.entry_price - signal.stop_loss)
             if risk_distance <= 0:
@@ -1800,7 +1834,12 @@ class PaperTrader:
                 if dd < max_dd:
                     max_dd = dd
 
-        return_pct = (self.equity - self.cfg.initial_capital) / self.cfg.initial_capital * 100
+        # Live has no starting capital (initial_capital is backtest-only and
+        # defaults to 0.0), so a return PERCENTAGE has no denominator and is
+        # None rather than a fabricated 0.0 or a ZeroDivisionError. Absence
+        # must read as absence; total_pnl above carries the real figure.
+        _ic = self.cfg.initial_capital
+        return_pct = ((self.equity - _ic) / _ic * 100) if _ic else None
 
         return {
             "total_trades": len(self.trades),
@@ -1808,7 +1847,9 @@ class PaperTrader:
             "losers": len(losers),
             "win_rate": round(sf(win_rate), 4),
             "total_pnl": round(sf(total_pnl), 2),
-            "return_pct": round(sf(return_pct), 4),
+            # Deliberately NOT through sf(): sf(None) returns 0.0, which would
+            # render "there is no denominator" as a confident 0.00% return.
+            "return_pct": (round(return_pct, 4) if return_pct is not None else None),
             "sharpe_ratio": round(sf(sharpe), 4),
             "max_drawdown_pct": round(sf(max_dd), 4),
             "profit_factor": round(sf(profit_factor), 4),

@@ -16,7 +16,8 @@ trades.
 Signal: leader gained > 2% in 4h while laggard gained < 0.5% → BUY laggard
 Exit:   TP at 50% gap closure, SL at 1.5x ATR, time stop 12h
 
-Max 5 spread positions, 4% per leg, paper balance $10,000.
+Max 5 spread positions, 4% per leg. No balance of its own: sizing takes a
+share of the ONE shared pool (see _sizing_basis).
 Scans every 120 seconds.
 
 Usage: python arbitrageur.py
@@ -131,7 +132,11 @@ MAX_POSITIONS = 3             # concurrent positions
 SL_ATR_MULT = 1.5             # stop loss = 1.5x ATR
 TP_CATCHUP_PCT = 0.50         # target 50% gap closure as TP
 TIME_STOP_HOURS = 12          # 12h (was 48h — too generous)
-INITIAL_EQUITY = 10_000.0     # paper balance
+# No paper balance. This was INITIAL_EQUITY = 10_000.0, which seeded
+# self.equity and became the sizing fallback whenever the pool could not be
+# read — ~476x too large against the real pool. There is ONE pool; this bot
+# holds no capital of its own. self.equity below is a realized-P/L ledger
+# starting at zero.
 
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "arbitrageur.log")
 
@@ -240,7 +245,8 @@ class ArbitrageurEngine:
         self.scan_duration = 0.0
 
         # Paper balance
-        self.equity = INITIAL_EQUITY
+        # Realized-P/L ledger, not a balance. Starts at zero.
+        self.equity = 0.0
         self.realized_pnl = 0.0
 
         # v2: single-leg positions
@@ -286,34 +292,42 @@ class ArbitrageurEngine:
     # Internal log
     # -----------------------------------------------------------------------
 
-    def _sizing_basis(self) -> float:
-        """Equity figure that position sizing is calculated FROM.
+    def _sizing_basis(self):
+        """Capital sizing is calculated FROM: a share of the shared POOL.
 
-        A share of the shared POOL, not this bot's own ledger. Reads
-        pool_total(), not available(): available() moves every time another
-        bot opens a position, so sizing off it would resize this bot
+        Reads pool_total(), not available(): available() moves every time
+        another bot opens a position, so sizing off it would resize this bot
         because something unrelated happened.
 
-        Falls back to self.equity when the pool is unreachable, so a
-        Command Center outage degrades to the previous behaviour rather
-        than sizing off a guess. Warned once, not per scan — a silently
-        degraded sizing basis runs for weeks unnoticed.
+        Returns None when the pool cannot be read. It used to fall back to
+        self.equity, seeded from a fixed $10,000 paper balance, and called
+        that "degrading rather than sizing off a guess" — but the fallback
+        WAS the guess, roughly 476x too large against the real ~$210 pool.
+
+        There is ONE pool and one mind. This bot holds no capital of its own,
+        so there is no smaller truth to degrade to: unknown must refuse.
         """
         share = POOL_SHARE_PCT
         if not (self._portfolio and share > 0):
-            return self.equity
+            self._warn_no_basis("no portfolio client")
+            return None
         try:
             total = self._portfolio.pool_total()
-        except Exception:
-            total = None
+        except Exception as e:
+            self._warn_no_basis(f"pool_total() raised {e!r}")
+            return None
         if not isinstance(total, (int, float)) or total <= 0:
-            if not getattr(self, "_pool_basis_warned", False):
-                self._pool_basis_warned = True
-                self._log(f"pool total unreachable — sizing off local equity "
-                          f"${self.equity:,.2f} instead of {share:.0f}% of pool")
-            return self.equity
+            self._warn_no_basis(f"pool_total() returned {total!r}")
+            return None
         self._pool_basis_warned = False
         return total * (share / 100.0)
+
+    def _warn_no_basis(self, why):
+        """Say it once per outage, not every scan."""
+        if not getattr(self, "_pool_basis_warned", False):
+            self._pool_basis_warned = True
+            self._log(f"pool total unreadable ({why}) — NOT sizing. Trades "
+                      f"are skipped until the pool reads again.")
 
     def _log(self, msg):
         log.info(msg)
@@ -646,19 +660,20 @@ class ArbitrageurEngine:
         if price <= 0:
             return
 
-        # Size: 5% of a share of the POOL, not of a fixed local balance.
-        #
-        # self.equity is a fixed $10,000 paper balance, so this bot asked
-        # for $500 whatever the shared pool held — on a $210.53 pool that
-        # is more than twice the entire pool and was refused every time.
-        # _sizing_basis() reads the live pool; self.equity keeps tracking
-        # realized P/L for the dashboard, a different question.
-        size_usd = self._sizing_basis() * TRADE_SIZE_PCT
+        # Size: 5% of a share of the POOL. There is no local balance to size
+        # against — this bot holds no capital, and the pool is the only
+        # capital there is. A None basis means the pool could not be read, so
+        # the trade is skipped rather than sized off a stand-in.
+        _basis = self._sizing_basis()
+        if not isinstance(_basis, (int, float)) or _basis <= 0:
+            self._log(f"SKIP {pair}: pool unreadable, no sizing basis")
+            return
+        size_usd = _basis * TRADE_SIZE_PCT
         # Was a hardcoded 100 — a bot-side copy of a fleet constant that went
         # stale silently when the pool was resized to $210.53 (2026-08-13).
         if size_usd < _MIN_TRADE_USD:
             self._log(f"SKIP {pair}: size ${size_usd:.2f} below the "
-                      f"${_MIN_TRADE_USD:.2f} floor (equity ${self.equity:.2f})")
+                      f"${_MIN_TRADE_USD:.2f} floor (basis ${_basis:.2f})")
             return
 
         # CHRONOS: temporal bias — soft influence only, never a hard block.
@@ -928,6 +943,14 @@ class ArbitrageurEngine:
 
     def snapshot(self):
         """Full bot state for /api/snapshot."""
+        # The pool is the only capital; it is the denominator for pnl_pct.
+        # None when unreadable — not a fabricated zero. Read BEFORE the lock:
+        # _sizing_basis does a network call to Command Center and holding the
+        # scan lock across it would stall the scan loop on every snapshot.
+        _basis_now = self._sizing_basis()
+        _pool_now = (_basis_now / (POOL_SHARE_PCT / 100.0)
+                     if isinstance(_basis_now, (int, float))
+                     and POOL_SHARE_PCT else None)
         with self._lock:
             positions = {}
             for pos in self.open_positions:
@@ -947,12 +970,15 @@ class ArbitrageurEngine:
                 "scan_count": self.scan_count,
                 "scan_interval": SCAN_INTERVAL,
                 "equity": round(self.equity, 2),
-                "initial_equity": INITIAL_EQUITY,
                 "open_positions": len(self.open_positions),
                 "total_trades": len(self.closed_trades),
                 "win_rate": self._win_rate(),
                 "pnl": round(self.realized_pnl, 2),
-                "pnl_pct": round(self.realized_pnl / INITIAL_EQUITY * 100, 2),
+                # Against the live pool, the only capital there is.
+                # None when unreadable: a percentage with no
+                # denominator is unknown, not 0.0.
+                "pnl_pct": (round(self.realized_pnl / _pool_now * 100, 2)
+                            if _pool_now else None),
                 "correlation_pairs": len(self.all_correlations),
                 "high_corr_pairs": sum(1 for v in self.all_correlations.values() if v >= CORR_THRESHOLD),
                 "opportunities": self.opportunities[:5],
@@ -1082,7 +1108,7 @@ def main():
     print("  ARBITRAGEUR v2.0 -- Correlation-Alpha (Leader-Follower Catch-Up)")
     print(f"  Port: {PORT}")
     print(f"  Accent: {ACCENT}")
-    print(f"  Equity: ${INITIAL_EQUITY:,.0f} (paper)")
+    print("  Capital: shared pool (this bot holds none)")
     print(f"  Scan interval: {SCAN_INTERVAL}s")
     print(f"  Correlation threshold: {CORR_THRESHOLD}")
     print(f"  Catch-up gap: {CATCH_UP_THRESHOLD:.1%} min, {TP_CATCHUP_PCT:.0%} TP target")

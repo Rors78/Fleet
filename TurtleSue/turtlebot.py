@@ -119,10 +119,12 @@ CLEAR     = f"{ESC}2J{ESC}H"
 CONFIG = {
     # ── Account ──
     # Fallback only. When use_central_portfolio is on and Command Center is
-    # reachable, the sizing basis is a SHARE of the live pool instead (see
-    # equity_pool_share_pct below) — otherwise this bot sizes a $10k account
-    # while drawing on a pool 100x that, risking $50/unit on $1,000,000.
-    "starting_equity": 10000.00,
+    # No starting equity. This bot holds no capital of its own: there is ONE
+    # pool, and the sizing basis is a share of it (see equity_pool_share_pct
+    # below). This was "starting_equity": 10000.00, which seeded self.equity
+    # and became the sizing fallback whenever the pool could not be read —
+    # ~476x too large against the real pool — and was also the DENOMINATOR of
+    # the drawdown rule, so a real size cut was computed from a fake base.
 
     # Share of the central pool this bot sizes against, as a percent.
     # 10% of $1,000,000 = a $100,000 sizing basis, so 0.5% risk/unit = $500
@@ -695,10 +697,13 @@ class TurtleEngine:
     """Core trading engine implementing ALL original Turtle rules."""
 
     def __init__(self):
-        self.equity = CONFIG["starting_equity"]
-        self.starting_equity = CONFIG["starting_equity"]
-        self.notional_equity = CONFIG["starting_equity"]  # For drawdown adj
-        self.peak_equity = CONFIG["starting_equity"]
+        # Realized-P/L ledgers, not balances. Zero-based: this bot holds no
+        # capital, so there is no starting balance. The drawdown rule now
+        # measures against the live pool (see _adjusted_equity).
+        self.equity = 0.0
+        self.starting_equity = 0.0
+        self.notional_equity = 0.0
+        self.peak_equity = 0.0
         self.positions: Dict[str, Position] = {}
         self.trade_log = TradeLog()
         self.data = KrakenData()
@@ -790,12 +795,25 @@ class TurtleEngine:
             _tr = data.get("trades")
             if isinstance(_tr, list) and getattr(self, "trade_log", None) is not None:
                 self.trade_log.trades = [t for t in _tr if isinstance(t, dict)]
+            # One-time rebase. These ledgers used to start at a fixed
+            # $10,000 and state files written before that constant was
+            # removed still carry it, so the fiction survives on disk even
+            # though it is gone from the code. Subtract the old base rather
+            # than zeroing: realized P/L is real history and must be kept.
+            #
+            # Detected by magnitude, not by a flag: a zero-based P/L ledger
+            # near $10,000 would mean this bot made 47x the entire pool,
+            # which cannot happen. Idempotent — after the first rebase the
+            # value is small and the branch stops firing.
+            _LEGACY_BASE = 10000.0
+            def _rebase(v):
+                return v - _LEGACY_BASE if v > _LEGACY_BASE / 2 else v
             _eq = data.get("equity")
             if isinstance(_eq, (int, float)):
-                self.equity = float(_eq)
+                self.equity = _rebase(float(_eq))
             _pk = data.get("peak_equity")
             if isinstance(_pk, (int, float)):
-                self.peak_equity = float(_pk)
+                self.peak_equity = _rebase(float(_pk))
             if loaded > 0 or _tr or _eq is not None:
                 # Read back through getattr: this log line must never be the
                 # thing that raises, or a perfectly good state file gets
@@ -926,20 +944,22 @@ class TurtleEngine:
         the ledger — the drawdown reduction below already handles that, and
         applying it twice is not the original rule.
 
-        Falls back to self.equity whenever the pool is unreachable or the
-        share is not configured, so an unreachable Command Center degrades to
-        the previous behaviour instead of sizing off a guess. Cached per scan:
-        unit sizing is called several times per cycle and must not produce a
-        different basis within one scan.
+        Returns None when the pool cannot be read. It used to fall back to
+        self.equity and call that "degrading instead of sizing off a guess" —
+        but self.equity was seeded from a fixed $10,000 starting_equity, so
+        the fallback WAS the guess, roughly 476x too large against the real
+        ~$210 pool.
+
+        There is ONE pool and one mind. This bot holds no capital of its own,
+        so there is no smaller truth to degrade to: unknown must refuse.
+
+        Cached per scan: unit sizing is called several times per cycle and
+        must not produce a different basis within one scan.
         """
         share = CONFIG.get("equity_pool_share_pct")
         if not self._portfolio_client or not isinstance(share, (int, float)) or share <= 0:
-            return self.equity
-
-        basis = self._pool_basis_cached
-        if basis is None:
-            return self.equity
-        return basis
+            return None
+        return self._pool_basis_cached
 
     def _refresh_pool_basis(self) -> None:
         """Fetch the pool total once per scan and cache the derived basis."""
@@ -957,25 +977,39 @@ class TurtleEngine:
             if not self._pool_basis_warned:
                 self._pool_basis_warned = True
                 self.errors.append(
-                    "pool total unreachable — sizing off local equity "
-                    f"${self.equity:,.2f} instead of {share:.1f}% of pool")
+                    "pool total unreadable — NOT sizing. Trades are skipped "
+                    "until the pool reads again; this bot holds no capital "
+                    "of its own to fall back on.")
             self._pool_basis_cached = None
             return
         self._pool_basis_warned = False
         self._pool_basis_cached = total * (share / 100.0)
 
     # ── Drawdown Adjustment (Original Rule) ──
-    def _adjusted_equity(self) -> float:
-        """Reduce notional equity by 20% for each 10% drawdown.
+    def _adjusted_equity(self):
+        """Reduce the sizing basis by 20% for each 10% drawdown.
 
-        The drawdown is measured on this bot's own P/L (self.equity vs
-        starting_equity) but applied to the sizing basis, so a pool-sized bot
-        still de-risks after losses exactly as the original rule intends.
+        The rule is unchanged; its DENOMINATOR is. Drawdown used to be
+        measured as (starting_equity - equity)/starting_equity against a
+        fixed $10,000 constant — a real size cut computed from a fake base,
+        so a $50 loss read as 0.5% drawdown when against the actual ~$210
+        pool it is nearly 24%. It is now measured against the pool, which is
+        the only capital there is.
+
+        Returns None when the pool is unreadable, propagating the refusal:
+        an unknown basis cannot be de-risked into a known one.
         """
         basis = self._sizing_basis()
+        if not isinstance(basis, (int, float)) or basis <= 0:
+            return None
+        share = CONFIG.get("equity_pool_share_pct")
+        pool = (basis / (share / 100.0)
+                if isinstance(share, (int, float)) and share > 0 else None)
         drawdown_pct = 0.0
-        if self.starting_equity > 0:
-            drawdown_pct = (self.starting_equity - self.equity) / self.starting_equity * 100
+        if pool:
+            # self.equity is this bot's realized P/L ledger; a negative
+            # balance is the drawdown.
+            drawdown_pct = max(0.0, -self.equity) / pool * 100
 
         reductions = int(drawdown_pct / CONFIG["drawdown_threshold_pct"])
         if reductions <= 0:
@@ -1284,6 +1318,10 @@ class TurtleEngine:
                 _bus_mult = 1.0
 
         adj_equity = self._adjusted_equity()
+        if not isinstance(adj_equity, (int, float)) or adj_equity <= 0:
+            # Pool unreadable — no capital of this bot's own to fall back on.
+            self.errors.append("Entry skipped: pool unreadable, no sizing basis")
+            return
         unit_coins = TurtleMath.unit_size(adj_equity, n, CONFIG["risk_per_unit_pct"])
         unit_coins *= _bus_mult
         cost = unit_coins * price
@@ -1299,6 +1337,9 @@ class TurtleEngine:
         # every pool-sized unit back down to ~$2.5k and silently undone the
         # pool share entirely.
         _basis = self._sizing_basis()
+        if not isinstance(_basis, (int, float)) or _basis <= 0:
+            self.errors.append("Entry skipped: pool unreadable, no sizing basis")
+            return
         if cost > _basis * 0.95:
             unit_coins = (_basis * 0.25) / price
             if unit_coins <= 0:
@@ -1373,12 +1414,18 @@ class TurtleEngine:
         n = signal["n"]
         price = signal["price"]
         adj_equity = self._adjusted_equity()
+        if not isinstance(adj_equity, (int, float)) or adj_equity <= 0:
+            self.errors.append("Pyramid skipped: pool unreadable, no sizing basis")
+            return
         unit_coins = TurtleMath.unit_size(adj_equity, n, CONFIG["risk_per_unit_pct"])
         cost = unit_coins * price
 
         # Pyramid clamp — same reasoning as the entry clamp: measure against
         # the sizing basis, not the local ledger.
         _basis = self._sizing_basis()
+        if not isinstance(_basis, (int, float)) or _basis <= 0:
+            self.errors.append("Pyramid skipped: pool unreadable, no sizing basis")
+            return
         if cost > _basis * 0.25:
             unit_coins = (_basis * 0.10) / price
             if unit_coins <= 0:
@@ -1657,22 +1704,36 @@ class TurtleEngine:
         dd_from_peak = ((self.peak_equity - self.equity) / self.peak_equity * 100
                         if self.peak_equity > 0 else 0)
 
+        # Both are None when the pool is unreadable. round(None) raises, and
+        # a fabricated 0.0 would read as a real basis, so they stay None:
+        # absence must read as absence.
+        _adj_now = self._adjusted_equity()
+        _basis_now = self._sizing_basis()
+        _share = CONFIG.get("equity_pool_share_pct")
+        _pool_now = (_basis_now / (_share / 100.0)
+                     if isinstance(_basis_now, (int, float))
+                     and isinstance(_share, (int, float)) and _share > 0
+                     else None)
         result = {
             "equity": round(self.equity, 2),
-            "starting_equity": self.starting_equity,
             "peak_equity": round(self.peak_equity, 2),
-            "adjusted_equity": round(self._adjusted_equity(), 2),
-            # What sizing is actually calculated from, and whether it came
-            # from the pool or fell back to the local ledger. Without this the
-            # dashboard shows $10k equity while the bot trades $100k units,
-            # and nobody can tell which number is driving the trades.
-            "sizing_basis": round(self._sizing_basis(), 2),
+            "adjusted_equity": (round(_adj_now, 2)
+                                if isinstance(_adj_now, (int, float)) else None),
+            # What sizing is actually calculated from, and whether the pool
+            # was readable at all. There is no "local_equity" source any
+            # more — this bot holds no capital, so an unreadable pool means
+            # no basis, not a smaller one.
+            "sizing_basis": (round(_basis_now, 2)
+                             if isinstance(_basis_now, (int, float)) else None),
             "sizing_basis_source": ("pool_share"
-                                    if self._pool_basis_cached is not None
-                                    else "local_equity"),
-            "equity_pool_share_pct": CONFIG.get("equity_pool_share_pct"),
-            "pnl": round(self.equity - self.starting_equity, 2),
-            "pnl_pct": round((self.equity - self.starting_equity) / self.starting_equity * 100, 2),
+                                    if isinstance(_basis_now, (int, float))
+                                    else "unreadable"),
+            "equity_pool_share_pct": _share,
+            "pnl": round(self.equity, 2),
+            # Against the live pool — the only capital there is. None when
+            # unreadable: a percentage with no denominator is unknown.
+            "pnl_pct": (round(self.equity / _pool_now * 100, 2)
+                        if _pool_now else None),
             "drawdown_pct": round(dd_from_peak, 2),
             "scan_count": self.scan_count,
             "last_scan_time": self.last_scan_time,

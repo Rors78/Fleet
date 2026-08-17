@@ -38,9 +38,11 @@ class StubClient:
 def fresh_engine(total, share=10.0):
     """Build an engine without touching disk, network or Kraken."""
     e = tb.TurtleEngine.__new__(tb.TurtleEngine)
-    e.equity = tb.CONFIG["starting_equity"]
-    e.starting_equity = tb.CONFIG["starting_equity"]
-    e.peak_equity = e.starting_equity
+    # Zero-based realized-P/L ledgers. There is no starting_equity any more:
+    # this bot holds no capital, and CONFIG no longer carries a balance.
+    e.equity = 0.0
+    e.starting_equity = 0.0
+    e.peak_equity = 0.0
     e.positions = {}
     e.errors = []
     e._pool_basis_cached = None
@@ -55,7 +57,7 @@ print("=== CASE 1: pool reachable — basis is a share of the pool ===")
 e = fresh_engine(1_000_000.0, share=10.0)
 basis = e._sizing_basis()
 check("basis is 10% of $1M", basis == 100_000.0, f"got ${basis:,.2f}")
-check("local ledger untouched", e.equity == 10_000.0, f"equity=${e.equity:,.2f}")
+check("local ledger untouched", e.equity == 0.0, f"equity=${e.equity:,.2f}")
 check("no error logged", not e.errors)
 
 risk = tb.CONFIG["risk_per_unit_pct"]
@@ -70,11 +72,20 @@ check("unit notional in the $8k-20k band", 8_000 < notional < 20_000,
       f"${notional:,.2f}")
 
 print()
-print("=== CASE 2: pool unreachable — degrade to local equity, loudly ===")
+print("=== CASE 2: pool unreadable — REFUSE to size, loudly ===")
+# This case used to assert `_sizing_basis() == 10_000.0` under the heading
+# "degrade to local equity". It was green the whole time and encoded the
+# defect as the specification: that $10,000 came from a fixed
+# CONFIG["starting_equity"], so against the real ~$210 pool it sized ~476x
+# too large. Degrading toward a LARGER basis than reality is not degrading
+# safely. One pool, one mind: unknown must refuse.
 e = fresh_engine(None)
 e._portfolio_client = StubClient(None)   # client present, returns None
 e._refresh_pool_basis()
-check("falls back to local equity", e._sizing_basis() == 10_000.0)
+check("refuses to size", e._sizing_basis() is None,
+      f"got {e._sizing_basis()!r} — must be None, not a guessed basis")
+check("drawdown adjustment propagates the refusal",
+      e._adjusted_equity() is None, f"got {e._adjusted_equity()!r}")
 check("warns once", len(e.errors) == 1, f"errors={e.errors}")
 e._refresh_pool_basis()
 check("does not spam the warning", len(e.errors) == 1, f"errors={len(e.errors)}")
@@ -82,13 +93,17 @@ check("does not spam the warning", len(e.errors) == 1, f"errors={len(e.errors)}"
 print()
 print("=== CASE 3: no portfolio client at all (standalone) ===")
 e = fresh_engine(None)
-check("standalone uses local equity", e._sizing_basis() == 10_000.0)
+check("standalone refuses to size", e._sizing_basis() is None,
+      f"got {e._sizing_basis()!r}")
 check("standalone logs nothing", not e.errors)
 
 print()
 print("=== CASE 4: drawdown rule still applies, now to the basis ===")
 e = fresh_engine(1_000_000.0, share=10.0)
-e.equity = 8_000.0          # -20% on the local ledger => 2 reductions
+# Drawdown is now measured against the POOL, not a fake $10k base. equity is
+# a zero-based realized-P/L ledger, so -$200,000 on a $1,000,000 pool is a
+# 20% drawdown => 2 reductions at the 10% threshold.
+e.equity = -200_000.0
 adj = e._adjusted_equity()
 expected = 100_000.0 * (0.8 ** 2)
 check("drawdown reduces the basis", abs(adj - expected) < 0.01,
@@ -115,7 +130,9 @@ check("sizing calls do not re-fetch", e._portfolio_client.calls == before,
 print()
 print("=== CASE 7: share of 0 or missing disables the feature ===")
 e = fresh_engine(1_000_000.0, share=0)
-check("share=0 uses local equity", e._sizing_basis() == 10_000.0)
+check("share=0 refuses to size", e._sizing_basis() is None,
+      f"got {e._sizing_basis()!r} — a disabled share is not a licence to "
+      f"size off a stand-in")
 
 print()
 if fails:

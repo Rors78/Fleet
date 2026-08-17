@@ -1992,7 +1992,14 @@ def _compute_aggregate(bots_data: dict) -> dict:
     return {
         "bots_alive": alive_count,
         "bots_total": len(bots_data),  # polled bots only, not all registered
-        "total_equity": sum(v for _, v in equities) if equities else None,
+        # No fleet "equity" figure. There is ONE pool (portfolio.total) and no
+        # bot holds capital of its own, so there is nothing to sum. This used
+        # to add up five bots' internal balances -- each seeded from a fixed
+        # $10,000 -- and published $49,631.58 against a $209.88 pool, which
+        # three dashboard sites then rendered as the POOL. The bot 'equity'
+        # fields are now zero-based realized-P/L ledgers; summing those gives
+        # fleet P/L, which is already reported as total_pnl below.
+        "total_equity": None,
         "total_pnl": sum(v for _, v in pnls) if pnls else None,
         "avg_win_rate": global_wr,  # Global WR = total_wins / total_trades (not an unweighted mean)
         "total_open_positions": sum(v for _, v in open_pos) if open_pos else None,

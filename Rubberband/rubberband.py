@@ -175,9 +175,11 @@ TRADE_RISK_PCT = 0.05         # 5% per trade
 # the end, for different reasons: the floor was measured wrong, and this
 # share was the wrong basis for a formula with no stop divisor.
 POOL_SHARE_PCT = 100.0
-# Fallback only — used when Command Center is unreachable and the pool
-# cannot be read.
-PAPER_BALANCE = 10_000.0
+# No paper balance. This was PAPER_BALANCE = 10_000.0, which seeded
+# self.equity and became the sizing fallback whenever the pool could not
+# be read — ~476x too large against the real pool. There is ONE pool; this
+# bot holds no capital of its own. The ledgers below start at zero and
+# report realized P/L.
 SCAN_INTERVAL = 60
 UNIVERSE_LIMIT = 15
 
@@ -324,9 +326,11 @@ class RubberbandEngine:
         self.status = "starting"
 
         # Paper portfolio
-        self.starting_equity = PAPER_BALANCE
-        self.equity = PAPER_BALANCE
-        self.peak_equity = PAPER_BALANCE
+        # Realized-P/L ledgers, not balances. Zero-based: this bot holds
+        # no capital, so there is no starting balance to report.
+        self.starting_equity = 0.0
+        self.equity = 0.0
+        self.peak_equity = 0.0
         self.equity_curve: List[dict] = []
 
         # Positions and trades
@@ -408,28 +412,36 @@ class RubberbandEngine:
         because something unrelated happened. pool_total() is the stable
         figure to take a share of.
 
-        Falls back to self.equity when the pool is unreachable, so a
-        Command Center outage degrades to the previous behaviour rather than
-        sizing off a guess. Warned once, not per scan: a silently degraded
-        sizing basis is the kind of thing that runs for weeks unnoticed.
+        Returns None when the pool cannot be read. It used to fall back to
+        self.equity and call that "degrading rather than sizing off a guess"
+        — but self.equity was seeded from PAPER_BALANCE, a fixed $10,000, so
+        the fallback WAS the guess and roughly 476x too large against the
+        real ~$210 pool.
+
+        There is ONE pool and one mind. This bot holds no capital of its own,
+        so there is no smaller truth to degrade to: unknown must refuse.
         """
         share = POOL_SHARE_PCT
         if not (self._portfolio_client and share > 0):
-            return self.equity
+            self._warn_no_basis("no portfolio client")
+            return None
         try:
             total = self._portfolio_client.pool_total()
-        except Exception:
-            total = None
+        except Exception as e:
+            self._warn_no_basis(f"pool_total() raised {e!r}")
+            return None
         if not isinstance(total, (int, float)) or total <= 0:
-            if not getattr(self, "_pool_basis_warned", False):
-                self._pool_basis_warned = True
-                self._log(
-                    f"pool total unreachable — sizing off local equity "
-                    f"${self.equity:,.2f} instead of {share:.1f}% of pool",
-                    "WARNING")
-            return self.equity
+            self._warn_no_basis(f"pool_total() returned {total!r}")
+            return None
         self._pool_basis_warned = False
         return total * (share / 100.0)
+
+    def _warn_no_basis(self, why: str):
+        """Say it once per outage, not every scan."""
+        if not getattr(self, "_pool_basis_warned", False):
+            self._pool_basis_warned = True
+            self._log(f"pool total unreadable ({why}) — NOT sizing. Trades "
+                      f"are skipped until the pool reads again.", "WARNING")
 
     # -- Logging helper -------------------------------------------------------
 
@@ -461,9 +473,11 @@ class RubberbandEngine:
             `.get(pair, 0)` — a missing entry is a 1970 timestamp, so
             sl_elapsed is ~1.7 billion seconds and the cooldown ALWAYS
             passes. The bot re-enters the pair that just stopped it out.
-          - self.equity falls back to PAPER_BALANCE, forgiving the entire
-            realized drawdown and restoring full position size, because
-            sizing is `self.equity * TRADE_RISK_PCT`.
+          - self.equity used to fall back to a fixed PAPER_BALANCE,
+            forgiving the entire realized drawdown and restoring full
+            position size. That constant is gone (sizing now reads the pool
+            and refuses when it is unreadable), but the cooldown hazard
+            above still stands, so this gate remains.
 
         Unreadable therefore fails toward ARMED: new entries are refused
         and the file is preserved. Mirrors TurtleSue's _load_positions.
@@ -508,10 +522,23 @@ class RubberbandEngine:
                 _v = data.get(_k)
                 if isinstance(_v, int):
                     setattr(self, _k, _v)
+            # One-time rebase. These ledgers used to start at PAPER_BALANCE
+            # ($10,000) and state files written before that constant was
+            # removed still carry it, so the fiction survives on disk even
+            # though it is gone from the code. Subtract the old base rather
+            # than zeroing: realized P/L is real history and must be kept.
+            #
+            # Detected by magnitude, not by a flag: a zero-based P/L ledger
+            # near $10,000 would mean this bot made 47x the entire pool,
+            # which cannot happen. Idempotent — after the first rebase the
+            # value is small and the branch stops firing.
+            _LEGACY_BASE = 10000.0
             for _k in ("equity", "peak_equity"):
                 _v = data.get(_k)
                 if isinstance(_v, (int, float)):
-                    setattr(self, _k, float(_v))
+                    _v = float(_v)
+                    setattr(self, _k,
+                            _v - _LEGACY_BASE if _v > _LEGACY_BASE / 2 else _v)
             if loaded > 0 or _cd:
                 self._log(
                     f"Restored {loaded} position(s), "
@@ -880,8 +907,8 @@ class RubberbandEngine:
         """Open a new paper position from a signal."""
         # Unknown state fails toward ARMED. With the state file unreadable
         # both safety gates below are disarmed at once: the SL cooldown
-        # always passes (missing entry = 1970) and equity has silently
-        # reset to PAPER_BALANCE, restoring full size after a drawdown.
+        # always passes (missing entry = 1970). The equity half of this
+        # hazard is gone with PAPER_BALANCE, but the cooldown half remains.
         if getattr(self, "_state_unreadable", False):
             return False
         pair = signal["pair"]
@@ -916,7 +943,15 @@ class RubberbandEngine:
         # live pool; self.equity keeps tracking realized P/L for the
         # drawdown rule and the dashboard, which is a different question.
         with self._lock:
-            size_usd = self._sizing_basis() * TRADE_RISK_PCT
+            _basis = self._sizing_basis()
+        if not isinstance(_basis, (int, float)) or _basis <= 0:
+            # Pool unreadable. There is no bot-local capital to fall back on
+            # — one pool, one mind — so the trade is skipped rather than
+            # sized off a stand-in.
+            self._log(f"SKIP {pair}: pool unreadable, no sizing basis",
+                      "WARNING")
+            return False
+        size_usd = _basis * TRADE_RISK_PCT
 
         # CHRONOS: temporal bias — soft influence only, never a hard block.
         # A fresh (<1h) statistically-gated TIME_ANOMALY opposing this trade's
@@ -1259,13 +1294,24 @@ class RubberbandEngine:
 
     def snapshot(self) -> dict:
         """Build full state snapshot for /api/snapshot."""
+        # Read the pool BEFORE taking the lock: _sizing_basis does a network
+        # call to Command Center, and holding the scan lock across it would
+        # stall the scan loop for the duration of every snapshot.
+        _basis_now = self._sizing_basis()
+        _pool_now = (_basis_now / (POOL_SHARE_PCT / 100.0)
+                     if isinstance(_basis_now, (int, float))
+                     and POOL_SHARE_PCT else None)
         with self._lock:
             open_pos = [p.to_dict() for p in self.positions]
             recent = [t.to_dict() for t in self.trades[-10:]]
             total_trades = self.wins + self.losses
             win_rate = (self.wins / total_trades * 100) if total_trades else 0.0
+            # equity IS realized P/L now (zero-based ledger), so pnl is just
+            # equity. The percentage is taken against the live pool — the only
+            # capital there is — and is None when the pool cannot be read: a
+            # percentage with no denominator is unknown, not 0.0.
             pnl = self.equity - self.starting_equity
-            pnl_pct = (pnl / self.starting_equity * 100) if self.starting_equity else 0.0
+            pnl_pct = (pnl / _pool_now * 100) if _pool_now else None
             dd = self.peak_equity - self.equity
             dd_pct = (dd / self.peak_equity * 100) if self.peak_equity else 0.0
             eq = self.equity
@@ -1437,7 +1483,7 @@ def main():
     print(f"\n{'='*60}")
     print(f"  {BOT_NAME} v{VERSION} -- Trend-Aligned Mean Reversion (long + short)")
     print(f"  Strategy: Bollinger Band ({BB_PERIOD}, {BB_STD}) + RSI ({RSI_PERIOD}) + ADX ({ADX_PERIOD})")
-    print(f"  Port: {port} | Paper Balance: ${PAPER_BALANCE:,.0f}")
+    print(f"  Port: {port} | Capital: shared pool (this bot holds none)")
     print(f"  Max Positions: {MAX_POSITIONS} | Risk/Trade: {TRADE_RISK_PCT*100:.0f}%")
     print(f"{'='*60}\n")
 

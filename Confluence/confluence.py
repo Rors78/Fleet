@@ -144,11 +144,12 @@ RISK_PER_TRADE_PCT = 0.5       # of that share — $500 at a $100k basis
 # An unreadable pool is not a $10,000 pool. Unreadable must fail ARMED:
 # _sizing_basis returns None and the trade is skipped.
 
-# Denominator for the reported pnl_pct, and the base of the notional "equity"
-# index in snapshot(). This bot holds no capital of its own; both figures are
-# presentational. Nothing may size against these, and nothing may sum them
-# across bots as if they were money.
-NOTIONAL_PNL_BASE = 10000.0
+# No balance constant of any kind lives here. An earlier pass replaced
+# FALLBACK_EQUITY_USD with NOTIONAL_PNL_BASE = 10000.0 and justified it as
+# "presentational" -- that was the same fiction with a new name, and it kept
+# feeding Command Center's aggregate.total_equity. This bot holds no capital:
+# there is ONE pool. `equity` now reports realized P/L, and pnl_pct is taken
+# against the live pool or reported as None when the pool cannot be read.
 
 # Guard rails on the derived size. A near-zero stop would otherwise divide its
 # way to an enormous position; a huge stop would produce dust.
@@ -1233,20 +1234,21 @@ class ConfluenceEngine:
         with self._lock:
             total = self.wins + self.losses
             wr = (self.wins / total * 100.0) if total else 0.0
-            # NOT an account balance. This bot holds no capital of its own —
-            # it sizes against a share of the shared CC pool (~$210). This is
-            # a notional index: a fixed base plus realized P/L, so the number
-            # moves the right way and by the right amount. It is reported
-            # only so pnl_pct has a stable denominator.
-            #
-            # It must never be summed as if it were money. Command Center's
-            # aggregate.total_equity does exactly that across five bots and
-            # gets ~$49,631, which the dashboard then used as a fallback POOL
-            # figure — 236x the real pool. See tests/test_pool_absent.py.
-            equity = NOTIONAL_PNL_BASE + self.realized_pnl
+            # Realized P/L, not a balance. This bot holds no capital of its
+            # own; the shared pool is the only capital there is. Reporting a
+            # fixed base plus P/L here is what made Command Center publish
+            # aggregate.total_equity = $49,631 against a $210 pool.
+            equity = self.realized_pnl
             # Cheap: _sizing_basis does one CC call, and snapshot is polled
             # once per CC cycle, not per candidate.
             _basis_now = self._sizing_basis()
+            # The pool this bot's share was taken from — the denominator for
+            # pnl_pct. Derived from the basis rather than fetched again so
+            # both figures come from ONE reading; a second call could return
+            # a different pool mid-snapshot.
+            _pool_now = (_basis_now / (RISK_POOL_SHARE_PCT / 100.0)
+                         if isinstance(_basis_now, (int, float))
+                         and RISK_POOL_SHARE_PCT else None)
             return {
                 "timestamp": _now(),
                 "bot_name": BOT_NAME,
@@ -1279,7 +1281,11 @@ class ConfluenceEngine:
                                        if isinstance(_basis_now, (int, float)) else None),
                 "risk_per_trade_pct": RISK_PER_TRADE_PCT,
                 "pnl": round(self.realized_pnl, 2),
-                "pnl_pct": round(self.realized_pnl / NOTIONAL_PNL_BASE * 100.0, 3),
+                # Against the live pool, which is the only capital there is.
+                # None when the pool is unreadable: a percentage with no
+                # denominator is not 0.0, it is unknown.
+                "pnl_pct": (round(self.realized_pnl / _pool_now * 100.0, 3)
+                            if _pool_now else None),
                 "win_rate": round(wr, 1),
                 "open_positions": len(self.positions),
                 "total_trades": total,

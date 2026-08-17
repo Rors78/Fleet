@@ -3475,7 +3475,8 @@ function _drawMetricsBar(ctx,W){
       if(nd.id!=="cc"&&nd.id!=="brainiac"){totalCount++;if(nd.alive)aliveCount++;}}
   }
   /* Pool: portfolio.total is the real pool. There is NO usable fallback --
-     agg.total_equity is the sum of bot-INTERNAL account equity (five bots
+     agg.total_equity is gone (permanently null): it summed bot-INTERNAL
+     account equity (five bots
      carry a $10,000 demo balance, ~$49,631 total) and is not a pool figure
      at all. Substituting it here rendered a 236x-too-large number into the
      always-on HUD, indistinguishable from a genuine reading. null = the

@@ -323,10 +323,15 @@ def cmd_regime(args):
         print(f"{'='*60}")
         print(f"  Regime:     {regime.regime.upper()}")
         print(f"  Confidence: {regime.confidence:.0%}")
-        print(f"  Hurst:      {regime.hurst:.4f} ", end="")
-        if regime.hurst > 0.55:
+        # None when unmeasurable -- "--", never the 0.5 that means
+        # "random walk", which is a finding rather than an absence.
+        if regime.hurst is None:
+            print("  Hurst:      --  (insufficient data)")
+        else:
+            print(f"  Hurst:      {regime.hurst:.4f} ", end="")
+        if regime.hurst is not None and regime.hurst > 0.55:
             print("(trending)")
-        elif regime.hurst < 0.45:
+        elif regime.hurst is not None and regime.hurst < 0.45:
             print("(mean-reverting)")
         else:
             print("(random walk)")
@@ -366,7 +371,8 @@ def _build_snapshot(result, names, variants, objectives, args, backtest_data=Non
             "confidence": round(result.regime.confidence, 3),
             "volatility": round(result.regime.volatility, 4),
             "trend": round(result.regime.trend, 4),
-            "hurst": round(result.regime.hurst, 4),
+            "hurst": (round(result.regime.hurst, 4)
+                      if result.regime.hurst is not None else None),
         },
         "consensus": {
             "weights": {name: round(float(w), 6) for name, w in zip(names, result.consensus_weights)},

@@ -14,7 +14,7 @@ Additional features:
 """
 
 import numpy as np
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, field, replace
 import time
 
@@ -37,7 +37,7 @@ class MarketRegime:
     confidence: float     # 0-1
     volatility: float     # annualized vol
     trend: float          # annualized return
-    hurst: float          # Hurst exponent estimate
+    hurst: Optional[float]  # Hurst exponent estimate; None when unmeasurable
     details: Dict[str, float] = field(default_factory=dict)
 
 
@@ -51,7 +51,12 @@ def estimate_hurst(returns: np.ndarray, max_lag: int = 20) -> float:
     """
     n = len(returns)
     if n < max_lag * 2:
-        return 0.5  # insufficient data
+        # None, not 0.5. Read the docstring three lines up: "H = 0.5: random
+        # walk" is a FINDING -- the canonical value for an efficient,
+        # unpredictable market. Returning it as the insufficient-data
+        # sentinel makes "we could not measure this" byte-identical to "we
+        # measured it and the market is a random walk".
+        return None
 
     lags = range(2, min(max_lag + 1, n // 2))
     rs_values = []
@@ -70,7 +75,9 @@ def estimate_hurst(returns: np.ndarray, max_lag: int = 20) -> float:
             rs_values.append((np.log(lag), np.log(np.mean(rs_list))))
 
     if len(rs_values) < 3:
-        return 0.5
+        # Same reasoning as the length guard above: too few valid R/S points
+        # is an absence, not a random walk.
+        return None
 
     # Linear regression in log-log space
     x = np.array([v[0] for v in rs_values])
@@ -120,7 +127,7 @@ def detect_regime(returns: np.ndarray, window: int = 60) -> MarketRegime:
     if ann_vol > 1.5 or max_dd < -0.30:
         regime = "crisis"
         confidence = min(1.0, ann_vol / 2.0)
-    elif ann_return > 0.30 and hurst > 0.55:
+    elif ann_return > 0.30 and hurst is not None and hurst > 0.55:
         regime = "bull"
         # HM-1 (same treatment as bear): tanh instead of a hard min(1.0, x)
         # clamp. Expressed on the old linear score so the shape matches the
@@ -225,7 +232,7 @@ class HiveMindResult:
             "",
             f"  Market Regime: {self.regime.regime.upper()} "
             f"(confidence={self.regime.confidence:.0%})",
-            f"  Hurst: {self.regime.hurst:.3f}  "
+            f"  Hurst: {self.regime.hurst:.3f}  " if self.regime.hurst is not None else "  Hurst: --  "
             f"Vol: {self.regime.volatility*100:.1f}%  "
             f"Trend: {self.regime.trend*100:+.1f}%",
             "",
@@ -330,7 +337,9 @@ def run_hive_mind(
         print(f"  HIVE MIND -- Running Ensemble Optimization")
         print(f"{'='*60}")
         print(f"  Regime: {regime.regime.upper()} "
-              f"(conf={regime.confidence:.0%}, H={regime.hurst:.3f})")
+              f"(conf={regime.confidence:.0%}, "
+              f"H={regime.hurst:.3f})" if regime.hurst is not None
+              else f"(conf={regime.confidence:.0%}, H=--)")
         print(f"  Variants: {[v.value for v in config.variants]}")
         print(f"  Objectives: {config.objectives}")
 

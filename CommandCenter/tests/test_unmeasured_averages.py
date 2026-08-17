@@ -39,6 +39,7 @@ Same asymmetry again: fifteen lines above, risk_level/deployed_pct/bot_count
 were hardened in an earlier pass under the comment "None, not a plausible
 default". This line sat in the same function and was missed.
 """
+import os
 import re
 import sys
 
@@ -53,7 +54,23 @@ def check(cond, msg):
 
 
 # ── 1. Behavioural: a zero-loss bot must not publish an average loss ──
+import tempfile
+
 from expectancy import ExpectancyTracker
+
+# Redirect persistence to a throwaway file BEFORE recording anything.
+#
+# The first version of this test built the tracker with __new__ to "avoid
+# disk" -- but record_trade() calls _save() itself, so it wrote two probe
+# bots straight over logs/expectancy.json and erased the real history for
+# gridzilla, confluence and turtlesue. It had to be rebuilt from the durable
+# event_bus TRADE_CLOSE record.
+#
+# A test must never be able to touch live state. PERSIST_PATH is a class
+# attribute, so pointing it at a temp file makes that structural rather than
+# a matter of remembering.
+_tmpdir = tempfile.mkdtemp(prefix='expectancy_test_')
+ExpectancyTracker.PERSIST_PATH = os.path.join(_tmpdir, 'expectancy.json')
 
 _t = ExpectancyTracker.__new__(ExpectancyTracker)
 _t.trades = {}

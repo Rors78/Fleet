@@ -1657,9 +1657,17 @@ class TurtleEngine:
             hi55, lo55 = TurtleMath.donchian_channel(
                 candles, CONFIG["s2_entry_days"], len(candles))
             strength = TurtleMath.market_strength(candles, n, 60)
+            # Display only — show what a unit WOULD be. None when the pool is
+            # unreadable, so the panel renders unknown rather than a size
+            # derived from nothing.
             adj_eq = self._adjusted_equity()
-            unit_coins = TurtleMath.unit_size(adj_eq, n, CONFIG["risk_per_unit_pct"])
-            unit_usd = unit_coins * price
+            if isinstance(adj_eq, (int, float)) and adj_eq > 0:
+                unit_coins = TurtleMath.unit_size(
+                    adj_eq, n, CONFIG["risk_per_unit_pct"])
+                unit_usd = unit_coins * price
+            else:
+                unit_coins = None
+                unit_usd = None
 
             # Build mini sparkline data (last 20 closes)
             spark = [c["close"] for c in candles[-20:]] if len(candles) >= 20 else []
@@ -1673,7 +1681,8 @@ class TurtleEngine:
                 "hi55": round(hi55, 2),
                 "lo55": round(lo55, 2),
                 "strength": round(strength, 2),
-                "unit_usd": round(unit_usd, 2),
+                "unit_usd": (round(unit_usd, 2)
+                             if unit_usd is not None else None),
                 "in_position": pair in self.positions,
                 "volume_24h": round(ticker.get("volume", 0), 2),
                 "sparkline": spark,
@@ -1730,10 +1739,12 @@ class TurtleEngine:
                                     else "unreadable"),
             "equity_pool_share_pct": _share,
             "pnl": round(self.equity, 2),
-            # Against the live pool — the only capital there is. None when
-            # unreadable: a percentage with no denominator is unknown.
-            "pnl_pct": (round(self.equity / _pool_now * 100, 2)
-                        if _pool_now else None),
+            # No pnl_pct. It divided lifetime P/L by the CURRENT
+            # pool and read -175%, which is not a return -- the
+            # P/L accumulated across a $1M pool era (until
+            # 2026-08-13) and the pool is now ~$210. A percentage
+            # spanning that resize has no single denominator, so
+            # the dollar figure above is the honest one.
             "drawdown_pct": round(dd_from_peak, 2),
             "scan_count": self.scan_count,
             "last_scan_time": self.last_scan_time,
@@ -1940,10 +1951,11 @@ class Display:
 
     @staticmethod
     def account_panel(engine: TurtleEngine):
+        # equity IS realized P/L now (zero-based). No percentage: it would
+        # divide lifetime P/L by a pool that has been resized ($1M -> $210 on
+        # 2026-08-13), which is not a return.
         eq = engine.equity
-        start = engine.starting_equity
-        pnl = eq - start
-        pnl_pct = (pnl / start * 100) if start > 0 else 0
+        pnl = eq
         adj_eq = engine._adjusted_equity()
         dd_from_peak = ((engine.peak_equity - eq) / engine.peak_equity * 100
                         if engine.peak_equity > 0 else 0)
@@ -1953,7 +1965,7 @@ class Display:
         print(f"\n{BOLD}{BWHITE} ACCOUNT{RESET}")
         Display.dline()
         print(f"  {'Equity:':<20}{BOLD}{BWHITE}${eq:>12,.2f}{RESET}"
-              f"    {'P&L:':<6}{color}${pnl:>+10,.2f} ({pnl_pct:+.1f}%){RESET}")
+              f"    {'P&L:':<6}{color}${pnl:>+10,.2f}{RESET}")
         print(f"  {'Notional (adj):':<20}{CYAN}${adj_eq:>12,.2f}{RESET}"
               f"    {'DD:':<6}{dd_color}{dd_from_peak:>10.1f}%{RESET}")
         print(f"  {'Peak Equity:':<20}{DIM}${engine.peak_equity:>12,.2f}{RESET}"
@@ -2451,13 +2463,11 @@ def main():
 
         tl = engine.trade_log
         eq = engine.equity
-        start = engine.starting_equity
-        pnl = eq - start
-        pnl_pct = (pnl / start * 100) if start > 0 else 0
+        pnl = eq
 
-        print(f"  {'Final Equity:':<20}${eq:>12,.2f}")
+        print(f"  {'Realized P/L:':<20}${eq:>12,.2f}")
         print(f"  {'Total P&L:':<20}"
-              f"{'%s$%+.2f (%+.1f%%)%s' % (GREEN if pnl >= 0 else RED, pnl, pnl_pct, RESET)}")
+              f"{'%s$%+.2f%s' % (GREEN if pnl >= 0 else RED, pnl, RESET)}")
         print(f"  {'Total Trades:':<20}{len(tl.trades)}")
         if tl.trades:
             print(f"  {'Win Rate:':<20}{tl.win_rate:.1f}%")

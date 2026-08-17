@@ -5414,7 +5414,11 @@ function amnesiaGuard(botId, rawEq, rawPnl, rawDd, startEq, botStats) {
   var _ddKnown = typeof rawDd === 'number' && !isNaN(rawDd);
   var eq = _eqKnown ? rawEq : null, pnl = _pnlKnown ? rawPnl : null,
       dd = _ddKnown ? rawDd : null;
-  var start = startEq || 10000;
+  /* startEq is IGNORED. Every caller used to pass a hardcoded 10000 (six
+     sites did), which was the dashboard's own copy of the per-bot fake
+     balance now purged from the bots themselves. Bot 'equity' is a
+     zero-based realized-P/L ledger, so equity IS pnl and there is no
+     starting capital to add. */
   /* Math.abs(null) is 0, so an UNREPORTED pnl used to satisfy the
      "bot claims flat" test as readily as a genuine 0.00. Require the bot to
      have actually reported a flat figure before overriding it. */
@@ -5424,10 +5428,15 @@ function amnesiaGuard(botId, rawEq, rawPnl, rawDd, startEq, botStats) {
                  Math.abs(stats.total_pnl) >= 0.01);
   if (amnesia) {
     pnl = stats.total_pnl;
-    eq  = start + pnl;
-    /* Drawdown from starting capital — a floor, not true peak-to-trough, but
-       strictly better than the 0.0% a restarted bot reports. */
-    dd  = pnl < 0 ? Math.abs(pnl) / start * 100 : 0;
+    eq  = pnl;
+    /* Drawdown needs the POOL as its denominator — the only capital there
+       is. It used to divide by the fake $10,000 start, so a $50 loss read
+       as 0.5% when against the real ~$210 pool it is nearly 24%. Null when
+       the pool is unreadable: a percentage with no denominator is unknown,
+       not zero. */
+    var _pool = (state.portfolio && typeof state.portfolio.total === 'number'
+                 && state.portfolio.total > 0) ? state.portfolio.total : null;
+    dd = (pnl < 0 && _pool) ? Math.abs(pnl) / _pool * 100 : (pnl < 0 ? null : 0);
   }
   return {eq: eq, pnl: pnl, dd: dd, amnesia: amnesia, stats: stats};
 }
@@ -6878,7 +6887,7 @@ function buildHiveMindView(def,b){
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Max FES</span><span class="dv2-kv-v">'+(cfg.max_fes||"--").toLocaleString()+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Assets</span><span class="dv2-kv-v">'+(cfg.min_assets||"?")+'\u2013'+(cfg.max_assets||"?")+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Risk/Trade</span><span class="dv2-kv-v">'+(cfg.risk_per_trade_pct||"?")+'%</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Default Eq</span><span class="dv2-kv-v" style="color:'+c+'">'+fmt$(cfg.default_equity||10000)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Default Eq</span><span class="dv2-kv-v" style="color:'+c+'">'+(typeof cfg.default_equity==='number'?fmt$(cfg.default_equity):'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Status</span><span class="dv2-kv-v" style="color:'+(raw.status==="complete"?'#34d399':'var(--gold)')+'">'+escHtml(raw.status||"--")+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Mode</span><span class="dv2-kv-v">'+escHtml(raw.mode||"--")+'</span></div>';
   h+='</div>';
@@ -7936,13 +7945,18 @@ function buildNexusBrainView(def,b){
   var eqCurve=raw.equity_curve||[];
   var exp=raw.expectancy||{};
   var cfg=raw.config||{};
-  var equity=perf.final_equity||perf.initial_capital||10000;
+  /* No ||10000 fallback: no bot holds a balance, and a fabricated $10k
+     here is ~48x the real pool. Unknown renders as unknown. */
+  var equity=(typeof perf.final_equity==='number'&&isFinite(perf.final_equity))
+             ?perf.final_equity
+             :((typeof perf.initial_capital==='number'&&perf.initial_capital>0)
+               ?perf.initial_capital:null);
   var totalPnl=perf.total_pnl||0;
   var wrKnown=typeof perf.win_rate==='number'&&!isNaN(perf.win_rate);
   var wrPct=wrKnown?perf.win_rate*100:null;
   /* Restart-amnesia guard — see amnesiaGuard(). */
   var _nbRawEq=equity;
-  var _nbG=amnesiaGuard('nexusbrain',equity,totalPnl,0,perf.initial_capital||10000,{});
+  var _nbG=amnesiaGuard('nexusbrain',equity,totalPnl,0,null,{});
   equity=_nbG.eq; totalPnl=_nbG.pnl;
   if(_nbG.amnesia){ wrPct=_nbG.stats.win_rate*100; }
 
@@ -8595,7 +8609,7 @@ function buildGridzillaView(def,b){
      so only NET PNL is corrected. Its logged closes are currently $0.00 each,
      so this is a no-op today; it exists so a future realized loss can't be
      hidden by a restart the way TurtleSue's was. */
-  var _gzG=amnesiaGuard('gridzilla',0,np,0,10000,{});
+  var _gzG=amnesiaGuard('gridzilla',0,np,0,null,{});
   if(_gzG.amnesia) np=_gzG.pnl;
   var npc=!npKnown?'#64748b':(np>=0?'#16a085':'#ef4444');
   var grossPnl=exp.total_gross_pnl;
@@ -9121,11 +9135,13 @@ function buildTurtleSueView(def,b){
   var signals=raw.signals||[];
   var trades=raw.trades||[];
   var riskLimits=raw.risk_limits||{};
-  var eq=raw.equity||10000;
+  /* No ||10000: bot equity is a zero-based realized-P/L ledger now, and a
+     fabricated $10k is ~48x the real pool. */
+  var eq=(typeof raw.equity==='number'&&isFinite(raw.equity))?raw.equity:null;
   var pnl=raw.pnl||0;
   var dd=raw.drawdown_pct||0;
   var _tsRawEq=eq;
-  var _tsG=amnesiaGuard('turtlesue',eq,pnl,dd,raw.starting_equity||10000,raw.trade_stats||{});
+  var _tsG=amnesiaGuard('turtlesue',eq,pnl,dd,null,raw.trade_stats||{});
   eq=_tsG.eq; pnl=_tsG.pnl; dd=_tsG.dd;
   var _tsAmnesia=_tsG.amnesia, _tsDur=_tsG.stats;
   var sc=raw.scan_count||0;
@@ -9443,7 +9459,9 @@ function drawTurtleSuePanel(){
   var markets=raw.markets||[];
   var positions=raw.positions||{};
   var equityCurve=raw.equity_curve||[];
-  var startEq=raw.starting_equity||10000;
+  /* starting_equity is gone fleet-wide — no bot has starting capital. */
+  var startEq=(typeof raw.starting_equity==='number'&&raw.starting_equity>0)
+              ?raw.starting_equity:null;
   /* ── Channel canvas ── */
   var cc=document.getElementById('ts-channel-canvas');
   if(cc){
@@ -9556,17 +9574,21 @@ function drawTurtleSuePanel(){
     var ePts=equityCurve.length;
     function epx(i){return i/(ePts-1)*EW;}
     function epy(v){return EH-(v-eMin)/(eMax-eMin)*EH;}
-    /* Start equity reference line */
-    var yStart=epy(startEq);
+    /* Break-even reference line. The curve is a zero-based realized-P/L
+       ledger now, so the reference is 0, not a starting balance — there is
+       none. startEq is honoured only if a bot genuinely reports one, so an
+       old-style curve still draws its own baseline. */
+    var _base=(typeof startEq==='number'&&isFinite(startEq))?startEq:0;
+    var yStart=epy(_base);
     ectx.save(); ectx.strokeStyle='rgba(74,70,61,0.3)'; ectx.lineWidth=1;
     ectx.setLineDash([2,4]); ectx.beginPath(); ectx.moveTo(0,yStart); ectx.lineTo(EW,yStart); ectx.stroke(); ectx.restore();
     /* Fill above/below start */
     var curEq=equityCurve[equityCurve.length-1];
-    var fillC=curEq>=startEq?'rgba(74,222,128,0.12)':'rgba(248,113,113,0.12)';
+    var fillC=curEq>=_base?'rgba(74,222,128,0.12)':'rgba(248,113,113,0.12)';
     ectx.save(); ectx.beginPath(); ectx.moveTo(0,epy(equityCurve[0]));
     equityCurve.forEach(function(v,i){ectx.lineTo(epx(i),epy(v));}); ectx.lineTo(EW,yStart); ectx.lineTo(0,yStart); ectx.closePath(); ectx.fillStyle=fillC; ectx.fill(); ectx.restore();
     /* Line */
-    var lineC=curEq>=startEq?'rgba(74,222,128,0.8)':'rgba(248,113,113,0.8)';
+    var lineC=curEq>=_base?'rgba(74,222,128,0.8)':'rgba(248,113,113,0.8)';
     ectx.save(); ectx.strokeStyle=lineC; ectx.lineWidth=1.5; ectx.setLineDash([]);
     ectx.beginPath(); ectx.moveTo(0,epy(equityCurve[0]));
     equityCurve.forEach(function(v,i){ectx.lineTo(epx(i),epy(v));}); ectx.stroke(); ectx.restore();
@@ -10319,9 +10341,16 @@ function buildRubberbandView(def,b){
   var positions=raw.positions||{};
   var posKeys=Object.keys(positions);
   var strat=raw.strategy||{};
-  var eq=raw.equity||raw.paper_balance||0;
-  var pnl=raw.pnl||0;
-  var pnlPct=raw.pnl_pct||0;
+  /* No `||0` on any of these three. Bots now report realized P/L (zero-based)
+     and send null when a figure could not be measured; `||0` turns "unknown"
+     back into a confident 0.00, which is the exact lie the backend fix
+     removed. paper_balance is gone fleet-wide — no bot holds a balance. */
+  var eq=(typeof raw.equity==='number'&&isFinite(raw.equity))?raw.equity:null;
+  var pnl=(typeof raw.pnl==='number'&&isFinite(raw.pnl))?raw.pnl:null;
+  /* pnl_pct is deliberately null fleet-wide: dividing lifetime P/L by the
+     CURRENT pool spans the $1M -> $210 resize (2026-08-13) and is not a
+     return. The dollar figure is the honest one. */
+  var pnlPct=(typeof raw.pnl_pct==='number'&&isFinite(raw.pnl_pct))?raw.pnl_pct:null;
   /* Backend now sends null when total_trades is 0; `||0` re-fabricated
      the very zero that fix removed, and wr<45 paints it red. */
   var wrKnown=typeof raw.win_rate==='number'&&!isNaN(raw.win_rate);
@@ -10331,7 +10360,7 @@ function buildRubberbandView(def,b){
   var dd=raw.drawdown_pct||0;
   /* Restart-amnesia guard — see amnesiaGuard(). */
   var _rbRawEq=eq;
-  var _rbG=amnesiaGuard('rubberband',eq,pnl,dd,raw.starting_equity||raw.initial_capital||10000,{});
+  var _rbG=amnesiaGuard('rubberband',eq,pnl,dd,null,{});
   eq=_rbG.eq; pnl=_rbG.pnl; dd=_rbG.dd;
   if(_rbG.amnesia){ wr=_rbG.stats.win_rate*100; }
   var equityCurve=raw.equity_curve||[];
@@ -11419,7 +11448,7 @@ function buildArbitrageurView(def,b){
   /* Restart-amnesia guard — see amnesiaGuard(). Arbitrageur self-reports
      0 trades / 0.0 while the event log holds a closed +3.26 trade. */
   var _arbRawEq=eq;
-  var _arbG=amnesiaGuard('arbitrageur',eq,pnl,0,raw.starting_equity||raw.initial_capital||10000,{});
+  var _arbG=amnesiaGuard('arbitrageur',eq,pnl,0,null,{});
   eq=_arbG.eq; pnl=_arbG.pnl;
   if(_arbG.amnesia){ wr=_arbG.stats.win_rate*100; }
   /* 2026-07-31 audit (A1-A4): this whole view was built for a retired
@@ -11747,7 +11776,12 @@ function buildChronosView(def,b){
   var c=def.color; /* #ffab00 amber */
   var raw=(_botDataCache.chronos)||{};
   var sessions=raw.active_sessions||[];
-  var hourBias=raw.hour_bias||0;
+  /* No `||0`: hour_bias is a percentage of bullish hours, so 0 reads as
+     "0% bullish — strongly bearish", a measurement, when it actually means
+     no samples for this hour yet. The Chronos detail view already guards
+     this with _chrIsNeutral(); this path did not. */
+  var hourBias=(typeof raw.hour_bias==="number"&&isFinite(raw.hour_bias))
+               ?raw.hour_bias:null;
   var hourUTC=raw.current_hour_utc||new Date().getUTCHours();
   var profile=raw.hourly_profile||{};
   var alerts=raw.recent_alerts||[];
@@ -12133,8 +12167,8 @@ function buildChronosView(def,b){
   h+='<div style="font-family:var(--font-mono);font-size:0.62rem;color:var(--text-muted);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:4px">CURRENT HOUR SNAPSHOT</div>';
   var _curHourData=profile[hourUTC]||profile[String(hourUTC)]||{};
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Hour</span><span class="dv2-kv-v" style="color:'+c+'">'+hourUTC+':00 UTC</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Bull %</span><span class="dv2-kv-v" style="color:'+biasC+'">'+fmtNum(_curHourData.bull_pct||hourBias,1)+'%</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Bear %</span><span class="dv2-kv-v" style="color:#f87171">'+fmtNum(_curHourData.bear_pct||100-hourBias,1)+'%</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Bull %</span><span class="dv2-kv-v" style="color:'+biasC+'">'+((_curHourData.bull_pct!=null?_curHourData.bull_pct:hourBias)!=null?fmtNum(_curHourData.bull_pct!=null?_curHourData.bull_pct:hourBias,1)+'%':'--')+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Bear %</span><span class="dv2-kv-v" style="color:#f87171">'+((_curHourData.bear_pct!=null?_curHourData.bear_pct:(hourBias!=null?100-hourBias:null))!=null?fmtNum(_curHourData.bear_pct!=null?_curHourData.bear_pct:100-hourBias,1)+'%':'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Samples</span><span class="dv2-kv-v">'+(_curHourData.samples||raw.hour_sample_size||0)+'</span></div>';
   h+='</div>';
   h+='</div></div>'; /* /card R2C2 */
@@ -12479,7 +12513,7 @@ function buildConfluenceView(def,b){
   var wrKnown=typeof raw.win_rate==='number'&&!isNaN(raw.win_rate);
   var wr=wrKnown?raw.win_rate:null;
   var _cfRawEq=eq;
-  var _cfG=amnesiaGuard('confluence',eq,pnl,0,10000,{});
+  var _cfG=amnesiaGuard('confluence',eq,pnl,0,null,{});
   eq=_cfG.eq; pnl=_cfG.pnl;
   if(_cfG.amnesia){ wr=_cfG.stats.win_rate*100; }
   var positions=raw.positions||[];
@@ -13019,7 +13053,11 @@ function buildDetailView(def,b){
   h+=buildPlanetHeroHTML(def.id,def,b,raw);
   h+='<div class="dv-grid">';
   var health=raw.health||{};
-  var equity=health.paper_balance||n.equity;
+  /* health.paper_balance is a DEAD field: the only bot that ever published
+     it was trekbot, which no longer exists (it sits in the Recycle Bin).
+     Reading it here silently preferred a phantom balance over the real
+     figure. No bot holds a balance — n.equity is realized P/L. */
+  var equity=n.equity;
   if(equity!=null) h+='<div class="dv-stat"><div class="label">Equity</div><div class="value" style="color:'+c+'">'+fmt$(equity)+'</div></div>';
   var pnl=health.circuit_breaker_daily_pnl||n.pnl;
   if(pnl!=null){var pc=pnl>=0?"var(--green)":"var(--red)";h+='<div class="dv-stat"><div class="label">Daily PnL</div><div class="value" style="color:'+pc+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div></div>';}

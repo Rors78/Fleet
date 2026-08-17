@@ -1045,7 +1045,7 @@ def format_whale_narrator(data: dict):
         f"\u25b8 Magnitude: {tier} \u00b7 Volume: {vol_str}",
     ]
     intel_text = (f"{header}\n\n{narrator}\n\n"
-                  + "\n".join(intel_details)
+                  + "\n".join(d for d in intel_details if d)
                   + f"\n\nFleet Intelligence \u00b7 {ts}")
 
     return pulse_text, intel_text
@@ -1112,7 +1112,7 @@ def format_regime_or_aegis_narrator(data: dict, event_type: str):
             f"\u25b8 Deployed: {deployed_pct:.0f}%",
         ]
         intel_text = (f"{header}\n\n{narrator}\n\n"
-                      + "\n".join(intel_details)
+                      + "\n".join(d for d in intel_details if d)
                       + f"\n\nFleet Intelligence \u00b7 {ts}")
         return None, intel_text  # None = do not send to Fleet Pulse
 
@@ -1121,7 +1121,16 @@ def format_regime_or_aegis_narrator(data: dict, event_type: str):
         source_bot = data.get("source_bot") or data.get("source") or "The fleet"
         old_regime = data.get("old_regime") or data.get("from") or ""
         new_regime = data.get("new_regime") or data.get("to") or ""
-        confidence = data.get("confidence", 0) or 0
+        # None, not 0 — same rule as risk_level/deployed_pct/bot_count above,
+        # which were hardened in an earlier pass while this line was missed.
+        # It matters more here: the `{confidence:.0%}` format renders a
+        # missing field as "Confidence: 0%", which does not read as absent —
+        # it reads as an ASSERTION that the regime change is worthless.
+        # Oracle (server.py:194) and Trinity (overwatch.py:931) emit
+        # REGIME_CHANGE with no confidence key at all, so this fired on
+        # every regime card either bot produced, to paying subscribers.
+        _cf = data.get("confidence")
+        confidence = _cf if isinstance(_cf, (int, float)) else None
 
         old_h = _human_regime(old_regime).lower()
         new_h = _human_regime(new_regime).lower()
@@ -1154,14 +1163,18 @@ def format_regime_or_aegis_narrator(data: dict, event_type: str):
         intel_details = [
             f"\u25b8 Detected by: {source_bot}",
             f"\u25b8 Shift: {old_regime} \u2192 {new_regime}",
-            f"\u25b8 Confidence: {confidence:.0%}",
+            # Omitted entirely when the emitter sent no confidence. Printing
+            # "Confidence: 0%" would be worse than saying nothing: it asserts
+            # the shift is worthless rather than admitting it was not scored.
+            (f"\u25b8 Confidence: {confidence:.0%}"
+             if confidence is not None else None),
             (f"\u25b8 Fleet: {bot_count} bots \u00b7 {deployed_pct:.0f}% deployed"
              f" \u00b7 Risk {risk_level} {risk_emoji}"
              if None not in (bot_count, deployed_pct, risk_level)
              else "\u25b8 Fleet: status unavailable"),
         ]
         intel_text = (f"{header}\n\n{narrator}\n\n"
-                      + "\n".join(intel_details)
+                      + "\n".join(d for d in intel_details if d)
                       + f"\n\nFleet Intelligence \u00b7 {ts}")
 
         return pulse_text, intel_text

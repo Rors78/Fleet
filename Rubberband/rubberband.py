@@ -1294,13 +1294,6 @@ class RubberbandEngine:
 
     def snapshot(self) -> dict:
         """Build full state snapshot for /api/snapshot."""
-        # Read the pool BEFORE taking the lock: _sizing_basis does a network
-        # call to Command Center, and holding the scan lock across it would
-        # stall the scan loop for the duration of every snapshot.
-        _basis_now = self._sizing_basis()
-        _pool_now = (_basis_now / (POOL_SHARE_PCT / 100.0)
-                     if isinstance(_basis_now, (int, float))
-                     and POOL_SHARE_PCT else None)
         with self._lock:
             open_pos = [p.to_dict() for p in self.positions]
             recent = [t.to_dict() for t in self.trades[-10:]]
@@ -1311,7 +1304,6 @@ class RubberbandEngine:
             # capital there is — and is None when the pool cannot be read: a
             # percentage with no denominator is unknown, not 0.0.
             pnl = self.equity - self.starting_equity
-            pnl_pct = (pnl / _pool_now * 100) if _pool_now else None
             dd = self.peak_equity - self.equity
             dd_pct = (dd / self.peak_equity * 100) if self.peak_equity else 0.0
             eq = self.equity
@@ -1360,7 +1352,12 @@ class RubberbandEngine:
             "equity": round(eq, 2),
             "starting_equity": self.starting_equity,
             "pnl": round(pnl, 2),
-            "pnl_pct": round(pnl_pct, 2),
+            # No pnl_pct. It divided lifetime P/L by the CURRENT
+            # pool and read -175%, which is not a return -- the
+            # P/L accumulated across a $1M pool era (until
+            # 2026-08-13) and the pool is now ~$210. A percentage
+            # spanning that resize has no single denominator, so
+            # the dollar figure above is the honest one.
             "drawdown_pct": round(dd_pct, 2),
             "open_positions": len(open_pos),
             "total_trades": total_trades,

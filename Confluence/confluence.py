@@ -135,21 +135,22 @@ MAX_OPEN_POSITIONS = 3
 # so every position risks the same dollars regardless of where the stop sits.
 RISK_POOL_SHARE_PCT = 10.0     # share of the CC pool this bot sizes against
 RISK_PER_TRADE_PCT = 0.5       # of that share — $500 at a $100k basis
-# There is deliberately NO fallback equity constant. FALLBACK_EQUITY_USD =
-# 10000.0 used to stand here as the "basis when CC is unreachable"; against
-# the real $209.88 pool it sized positions 476x too large — a single position
-# at 12x the entire pool ($2,500 vs $5.25). MAX_POSITION_PCT_OF_POOL did not
-# contain it, because _position_size back-derives its bounds from the basis
-# it is handed, so the ceiling inflated from $31.48 to $15,000 in lockstep.
-# An unreadable pool is not a $10,000 pool. Unreadable must fail ARMED:
-# _sizing_basis returns None and the trade is skipped.
-
-# No balance constant of any kind lives here. An earlier pass replaced
-# FALLBACK_EQUITY_USD with NOTIONAL_PNL_BASE = 10000.0 and justified it as
-# "presentational" -- that was the same fiction with a new name, and it kept
-# feeding Command Center's aggregate.total_equity. This bot holds no capital:
-# there is ONE pool. `equity` now reports realized P/L, and pnl_pct is taken
-# against the live pool or reported as None when the pool cannot be read.
+# NO balance constant of any kind lives here, and none may be added.
+# FALLBACK_EQUITY_USD = 10000.0 stood here as the "basis when CC is
+# unreachable"; against the real ~$210 pool it sized positions 476x too large
+# — one position at 12x the entire pool ($2,500 vs $5.25).
+# MAX_POSITION_PCT_OF_POOL did not contain it, because _position_size
+# back-derives its bounds from the basis it is handed, so the ceiling
+# inflated from $31.48 to $15,000 in lockstep.
+#
+# Removing it once was not enough: the next pass reintroduced the identical
+# fiction as NOTIONAL_PNL_BASE = 10000.0, justified as "presentational", and
+# it kept feeding Command Center's aggregate.total_equity ($49,631 against a
+# $210 pool). Renaming a fake balance does not retire it.
+#
+# ONE pool, ONE mind. `equity` reports realized P/L. An unreadable pool is
+# not a $10,000 pool — _sizing_basis returns None and the trade is skipped.
+# Guarded by CommandCenter/tests/test_one_pool.py.
 
 # Guard rails on the derived size. A near-zero stop would otherwise divide its
 # way to an enormous position; a huge stop would produce dust.
@@ -1242,13 +1243,6 @@ class ConfluenceEngine:
             # Cheap: _sizing_basis does one CC call, and snapshot is polled
             # once per CC cycle, not per candidate.
             _basis_now = self._sizing_basis()
-            # The pool this bot's share was taken from — the denominator for
-            # pnl_pct. Derived from the basis rather than fetched again so
-            # both figures come from ONE reading; a second call could return
-            # a different pool mid-snapshot.
-            _pool_now = (_basis_now / (RISK_POOL_SHARE_PCT / 100.0)
-                         if isinstance(_basis_now, (int, float))
-                         and RISK_POOL_SHARE_PCT else None)
             return {
                 "timestamp": _now(),
                 "bot_name": BOT_NAME,
@@ -1281,11 +1275,12 @@ class ConfluenceEngine:
                                        if isinstance(_basis_now, (int, float)) else None),
                 "risk_per_trade_pct": RISK_PER_TRADE_PCT,
                 "pnl": round(self.realized_pnl, 2),
-                # Against the live pool, which is the only capital there is.
-                # None when the pool is unreadable: a percentage with no
-                # denominator is not 0.0, it is unknown.
-                "pnl_pct": (round(self.realized_pnl / _pool_now * 100.0, 3)
-                            if _pool_now else None),
+                # No pnl_pct. It divided lifetime P/L by the CURRENT
+                # pool and read -175%, which is not a return -- the
+                # P/L accumulated across a $1M pool era (until
+                # 2026-08-13) and the pool is now ~$210. A percentage
+                # spanning that resize has no single denominator, so
+                # the dollar figure above is the honest one.
                 "win_rate": round(wr, 1),
                 "open_positions": len(self.positions),
                 "total_trades": total,

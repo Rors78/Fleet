@@ -436,10 +436,18 @@ def detect_correlation_breakdown(corr_data, prev_corr_data):
 def compute_sentiment_state(fear_greed):
     """Map fear_greed score (0-100) to a named sentiment state.
 
-    Returns (state_name, score).
+    Returns (state_name, score), or (None, None) when there is no reading.
+
+    It used to return ("NEUTRAL", 50) for a missing input. That is byte-
+    identical to a genuinely measured neutral market (40-60 maps to NEUTRAL),
+    so an unreachable Fear & Greed source published a confident reading of a
+    market nobody looked at -- and it HAS fired: contrarian.log carries
+    "F&G=None, state=NEUTRAL, score=50" followed by a SENTIMENT_EXTREME
+    publish. The raw fear_greed field was already served honestly as None;
+    the derived pair was not.
     """
     if fear_greed is None:
-        return "NEUTRAL", 50
+        return None, None
 
     score = int(fear_greed)
     score = max(0, min(100, score))
@@ -469,8 +477,11 @@ class ContrarianEngine:
         self._lock = threading.Lock()
         self.scan_count = 0
         self.status = "initializing"
-        self.sentiment_state = "NEUTRAL"
-        self.sentiment_score = 50
+        # Not "NEUTRAL"/50 — a freshly started bot has measured nothing,
+        # and seeding a plausible reading means the first snapshot after a
+        # restart publishes an assessment that never happened.
+        self.sentiment_state = None
+        self.sentiment_score = None
         self.fear_greed = None
         self.regime = "UNKNOWN"
         self.alerts = deque(maxlen=MAX_ALERTS)
@@ -625,8 +636,14 @@ class ContrarianEngine:
             state, score = compute_sentiment_state(fear_greed)
             with self._lock:
                 self.fear_greed = fear_greed
-                self.sentiment_state = state
-                self.sentiment_score = score
+                # Keep the LAST GOOD reading when this fetch failed rather
+                # than blanking it: a transient API miss should not erase a
+                # sentiment measured 60s ago. But never replace a real
+                # reading with a fabricated neutral, which is what the old
+                # ("NEUTRAL", 50) return did.
+                if state is not None:
+                    self.sentiment_state = state
+                    self.sentiment_score = score
 
             log.info(f"F&G={fear_greed}, state={state}, score={score}, "
                      f"pairs={len(pairs)}")

@@ -553,11 +553,27 @@ def detect_regime(candles: List[Candle], cfg: Config) -> Regime:
 # SIGNAL SCORING ENGINE
 # ═══════════════════════════════════════════════════════════════════════
 
+# The longest lookback any component needs (the EMA-50). Both gates below
+# use it so they cannot drift apart again: the callers used to admit a
+# timeframe at >= 30 candles while score_ema_alignment needed 50, so any
+# timeframe holding 30-49 candles passed the gate and got a FABRICATED 0.5
+# for a component carrying 0.20 weight in the trade-gating confluence score.
+# 0.5 is also what a genuinely mixed EMA stack returns (see the `else`
+# branch below), so the fabrication was indistinguishable from a reading,
+# and on SHORT signals the 1.0 - x inversion maps 0.5 back to 0.5 -- it
+# could not even be spotted by asymmetry.
+MIN_CANDLES_FOR_SCORING = 50
+
+
 def score_ema_alignment(candles: List[Candle], price: float) -> float:
     """EMA alignment score: how well EMAs are stacked for trend."""
     closes = [c.close for c in candles]
-    if len(closes) < 50:
-        return 0.5
+    if len(closes) < MIN_CANDLES_FOR_SCORING:
+        # Unreachable from score_single_timeframe, which now gates on the
+        # same constant. Kept as a guard for direct callers; raising is
+        # better than returning a number nobody measured.
+        raise ValueError("score_ema_alignment needs >= %d candles, got %d"
+                         % (MIN_CANDLES_FOR_SCORING, len(closes)))
 
     ema_8 = ema(closes, 8)
     ema_21 = ema(closes, 21)
@@ -729,7 +745,9 @@ def score_regime_alignment(regime: Regime, other_scores: Dict[str, float]) -> fl
 def score_single_timeframe(candles: List[Candle], price: float, regime: Regime) -> SignalComponents:
     """Score all 6 components for a single timeframe."""
     closes = [c.close for c in candles]
-    if len(closes) < 30:
+    if len(closes) < MIN_CANDLES_FOR_SCORING:
+        # Was < 30 while score_ema_alignment needed 50 -- a 20-candle window
+        # where a fabricated 0.5 entered a live trade gate.
         return SignalComponents()
 
     ema_score = score_ema_alignment(candles, price)
@@ -813,7 +831,7 @@ def generate_signal(pair: str, pair_data: PairData, cfg: Config) -> Optional[Sig
 
     for tf_name, tf_cfg in TIMEFRAMES.items():
         candles = pair_data.candles.get(tf_name, [])
-        if not candles or len(candles) < 30:
+        if not candles or len(candles) < MIN_CANDLES_FOR_SCORING:
             continue
 
         tf_components = score_single_timeframe(candles, price, regime)

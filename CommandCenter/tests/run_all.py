@@ -86,6 +86,8 @@ TESTS = [
     "test_pool_absent.py",
     "test_sizing_fallback.py",
     "test_one_pool.py",
+    "test_null_basis_guards.py",
+    "test_unmeasured_averages.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but
@@ -104,6 +106,7 @@ JS_TESTS = [
     "intel_render.js",
     "scoreboard_grain.js",
     "expectancy_panel.js",
+    "dash_no_fake_balance.js",
 ]
 
 

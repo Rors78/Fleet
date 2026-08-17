@@ -272,13 +272,26 @@ class ExpectancyTracker:
         # reads as "measured, and it lost every trade".
         win_rate = (win_count / decided) if decided else None
 
-        # Average win/loss (gross price movement)
-        avg_win = sum(t['gross_pnl'] for t in wins) / win_count if wins else 0
-        avg_loss = sum(t['gross_pnl'] for t in losses) / loss_count if losses else 0
+        # Average win/loss (gross price movement). None, not 0, when that
+        # side has no trades: "the average losing trade lost $0.00" is a
+        # claim, and a false one. Gridzilla sits at 15W/0L and published
+        # avg_loss 0 straight to the dashboard.
+        #
+        # win_rate, expectancy and profit_factor immediately around this
+        # block all already return None on exactly this condition, each with
+        # a comment explaining why. These two were the ones left behind.
+        avg_win = (sum(t['gross_pnl'] for t in wins) / win_count
+                   if wins else None)
+        avg_loss = (sum(t['gross_pnl'] for t in losses) / loss_count
+                    if losses else None)
 
         # EXPECTANCY: THE NUMBER — per decided trade; None when nothing
-        # was decided (a flat-only bot has not been measured).
-        expectancy = ((win_rate * avg_win) + ((1 - win_rate) * avg_loss)
+        # was decided (a flat-only bot has not been measured). A missing
+        # side contributes zero to the sum: with no losses the expectancy
+        # IS the win side, which is a real (if optimistic) measurement, and
+        # win_rate carries the sample it rests on.
+        expectancy = (((win_rate * (avg_win or 0.0))
+                       + ((1 - win_rate) * (avg_loss or 0.0)))
                       if win_rate is not None else None)
 
         # Profit factor: gross wins / gross losses. With ZERO gross losses
@@ -311,10 +324,12 @@ class ExpectancyTracker:
         # Time analysis
         win_durations = [t['duration'] for t in wins]
         loss_durations = [t['duration'] for t in losses]
+        # None, not 0: "winners are held 0.0 hours" is a claim about trades
+        # that do not exist.
         avg_win_time = (sum(win_durations) / len(win_durations)
-                       if win_durations else 0)
+                        if win_durations else None)
         avg_loss_time = (sum(loss_durations) / len(loss_durations)
-                        if loss_durations else 0)
+                         if loss_durations else None)
 
         # Total P/L — gross only. total_net_pnl is kept as an output key
         # for consumer compatibility but now equals the gross total.
@@ -332,16 +347,18 @@ class ExpectancyTracker:
                          if win_rate is not None else None),
             'expectancy_per_trade': (round(expectancy, 2)
                                      if expectancy is not None else None),
-            'avg_win': round(avg_win, 2),
-            'avg_loss': round(avg_loss, 2),
+            'avg_win': (round(avg_win, 2) if avg_win is not None else None),
+            'avg_loss': (round(avg_loss, 2) if avg_loss is not None else None),
             'profit_factor': (round(profit_factor, 2)
                               if profit_factor is not None else None),
             'avg_r': round(avg_r, 3) if avg_r is not None else None,
             'best_trade': round(best['gross_pnl'], 2),
             'worst_trade': round(worst['gross_pnl'], 2),
             'max_consecutive_losses': max_consec_losses,
-            'avg_win_duration_hours': round(avg_win_time / 3600, 1),
-            'avg_loss_duration_hours': round(avg_loss_time / 3600, 1),
+            'avg_win_duration_hours': (round(avg_win_time / 3600, 1)
+                                       if avg_win_time is not None else None),
+            'avg_loss_duration_hours': (round(avg_loss_time / 3600, 1)
+                                        if avg_loss_time is not None else None),
             'total_net_pnl': round(total_net, 2),
             'total_gross_pnl': round(total_gross_pnl, 2),
             'total_fees': round(total_fees, 2),
@@ -411,12 +428,14 @@ class ExpectancyTracker:
         _fleet_decided = len(wins) + len(losses)
         win_rate = (len(wins) / _fleet_decided) if _fleet_decided else None
 
+        # None, not 0 — same rule as the per-bot block above.
         avg_win = (sum(t['gross_pnl'] for t in wins) / len(wins)
-                  if wins else 0)
+                   if wins else None)
         avg_loss = (sum(t['gross_pnl'] for t in losses) / len(losses)
-                   if losses else 0)
+                    if losses else None)
 
-        fleet_expectancy = ((win_rate * avg_win + (1 - win_rate) * avg_loss)
+        fleet_expectancy = (((win_rate * (avg_win or 0.0))
+                             + ((1 - win_rate) * (avg_loss or 0.0)))
                             if win_rate is not None else None)
 
         # Size-normalized expectancy. The dollar mean weights each trade by
@@ -503,8 +522,8 @@ class ExpectancyTracker:
             'fleet_decided': _fleet_decided,
             'fleet_expectancy': (round(fleet_expectancy, 2)
                                  if fleet_expectancy is not None else None),
-            'avg_win': round(avg_win, 2),
-            'avg_loss': round(avg_loss, 2),
+            'avg_win': (round(avg_win, 2) if avg_win is not None else None),
+            'avg_loss': (round(avg_loss, 2) if avg_loss is not None else None),
             'total_net_pnl': round(total_net, 2),
             'total_gross_pnl': round(total_gross, 2),
             # Fee fields report 0 permanently (signal product) — kept in

@@ -943,14 +943,6 @@ class ArbitrageurEngine:
 
     def snapshot(self):
         """Full bot state for /api/snapshot."""
-        # The pool is the only capital; it is the denominator for pnl_pct.
-        # None when unreadable — not a fabricated zero. Read BEFORE the lock:
-        # _sizing_basis does a network call to Command Center and holding the
-        # scan lock across it would stall the scan loop on every snapshot.
-        _basis_now = self._sizing_basis()
-        _pool_now = (_basis_now / (POOL_SHARE_PCT / 100.0)
-                     if isinstance(_basis_now, (int, float))
-                     and POOL_SHARE_PCT else None)
         with self._lock:
             positions = {}
             for pos in self.open_positions:
@@ -974,11 +966,12 @@ class ArbitrageurEngine:
                 "total_trades": len(self.closed_trades),
                 "win_rate": self._win_rate(),
                 "pnl": round(self.realized_pnl, 2),
-                # Against the live pool, the only capital there is.
-                # None when unreadable: a percentage with no
-                # denominator is unknown, not 0.0.
-                "pnl_pct": (round(self.realized_pnl / _pool_now * 100, 2)
-                            if _pool_now else None),
+                # No pnl_pct. It divided lifetime P/L by the CURRENT
+                # pool and read -175%, which is not a return -- the
+                # P/L accumulated across a $1M pool era (until
+                # 2026-08-13) and the pool is now ~$210. A percentage
+                # spanning that resize has no single denominator, so
+                # the dollar figure above is the honest one.
                 "correlation_pairs": len(self.all_correlations),
                 "high_corr_pairs": sum(1 for v in self.all_correlations.values() if v >= CORR_THRESHOLD),
                 "opportunities": self.opportunities[:5],

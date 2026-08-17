@@ -1879,8 +1879,13 @@ _NORMALIZERS = {
         "open_positions": None, "total_trades": None,
         "regime": raw.get("sentiment_state", raw.get("regime")),
         "signals_count": len(raw.get("recent_alerts", [])),
-        "sentiment_score": raw.get("sentiment_score", 50),
-        "fear_greed": raw.get("fear_greed", 50),
+        # None, not 50 — the neighbours above already do this. A default of
+        # 50 is a MEASUREMENT ("perfectly neutral market"), and it actively
+        # defeated the one defence that existed: Contrarian deliberately
+        # serves fear_greed None when its source is unreachable, and this
+        # line converted that honesty back into a confident reading.
+        "sentiment_score": raw.get("sentiment_score"),
+        "fear_greed": raw.get("fear_greed"),
         "uptime": None,
     },
     "arbitrageur": lambda raw: {
@@ -1899,7 +1904,8 @@ _NORMALIZERS = {
         "open_positions": None, "total_trades": None,
         "regime": raw.get("regime"),
         "signals_count": len(raw.get("recent_alerts", [])),
-        "hour_bias": raw.get("hour_bias", 50),
+        # None, not 50 — same rule. 50 reads as "an even hour", measured.
+        "hour_bias": raw.get("hour_bias"),
         "active_sessions": raw.get("active_sessions", []),
         "uptime": None,
     },
@@ -2823,17 +2829,25 @@ def _poll_all_bots() -> None:
         if or_data.get("alive"):
             for sig in ((or_data.get("raw") or {}).get("top_signals") or [])[:5]:
                 direction = sig.get("direction", "NEUTRAL")
-                if direction in ("LONG", "SHORT"):
+                # An unscored signal is not a 50-scored signal. The old
+                # `.get("score", 50)` submitted a fabricated 0.5 CONVICTION
+                # into the aggregator and the decomposition log — a number
+                # nobody computed, entering the decision path. Skip instead:
+                # Oracle always scores what it publishes, so a missing score
+                # means the payload is malformed, not neutral.
+                _score = sig.get("score")
+                if direction in ("LONG", "SHORT") and isinstance(
+                        _score, (int, float)):
+                    _conf = min(1.0, _score / 100)
                     _signal_aggregator.submit_proposal(
                         source="oracle",
                         pair=sig.get("pair", ""),
                         direction=direction,
-                        confidence=min(1.0, (sig.get("score", 50) / 100)),
+                        confidence=_conf,
                         metadata={"strategy": sig.get("strategy", "")},
                     )
                     _signal_decomposition.log_signal(
-                        "oracle", sig.get("pair", ""), direction,
-                        min(1.0, (sig.get("score", 50) / 100)),
+                        "oracle", sig.get("pair", ""), direction, _conf,
                         metadata={"strategy": sig.get("strategy", "")},
                     )
     except Exception:

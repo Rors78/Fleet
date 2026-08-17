@@ -83,6 +83,8 @@ TESTS = [
     "test_daily_source.py",
     "test_wr_windows.py",
     "test_causal_stats.py",
+    "test_pool_absent.py",
+    "test_sizing_fallback.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

@@ -3474,8 +3474,14 @@ function _drawMetricsBar(ctx,W){
     for(var id in _orbNodes){var nd=_orbNodes[id];
       if(nd.id!=="cc"&&nd.id!=="brainiac"){totalCount++;if(nd.alive)aliveCount++;}}
   }
-  /* Pool: use portfolio.total (real pool), fallback to aggregate equity */
-  var pool=port.total!=null?port.total:(agg.total_equity||0);
+  /* Pool: portfolio.total is the real pool. There is NO usable fallback --
+     agg.total_equity is the sum of bot-INTERNAL account equity (five bots
+     carry a $10,000 demo balance, ~$49,631 total) and is not a pool figure
+     at all. Substituting it here rendered a 236x-too-large number into the
+     always-on HUD, indistinguishable from a genuine reading. null = the
+     pool is unknown; downstream must render it as unavailable, same as the
+     sibling pnl treatment noted below. */
+  var pool=port.total!=null?port.total:null;
   /* WR: use avg_win_rate (0-100 scale), normalize to fraction */
   var wr=(agg.avg_win_rate!=null&&agg.total_trades>0)?agg.avg_win_rate:0;
   if(wr>1) wr=wr/100;
@@ -3505,7 +3511,11 @@ function _drawMetricsBar(ctx,W){
   ctx.fillText("Fleet: "+aliveCount+"/"+totalCount,xp,y);xp+=ctx.measureText("Fleet: "+aliveCount+"/"+totalCount).width+18;
   /* Pool */
   ctx.fillStyle="rgba(201,162,39,0.55)";
-  ctx.fillText("Pool: $"+pool.toFixed(0),xp,y);xp+=ctx.measureText("Pool: $"+pool.toFixed(0)).width+18;
+  /* pool is null when it could not be read. This is canvas draw code: an
+     exception here kills the frame and takes the always-on HUD down, so the
+     null case is handled rather than allowed to throw on .toFixed(). */
+  var _poolTxt=(pool!=null&&isFinite(pool))?("Pool: $"+pool.toFixed(0)):"Pool: --";
+  ctx.fillText(_poolTxt,xp,y);xp+=ctx.measureText(_poolTxt).width+18;
   /* WR */
   /* Always show the sample size next to WR. "WR: 100.0%" on a single closed
      trade reads as "this system wins everything" — it is the most misleading
@@ -4732,7 +4742,18 @@ function renderHeader(agg){
     hf.textContent=fmt$(p.available);
     hf.style.color="";
   } else {
-    poolEl.textContent=fmt$(agg.total_equity);
+    /* No portfolio in the payload = the pool could not be read, so we say
+       so. There is deliberately NO fallback to the aggregate equity figure:
+       that sums each bot's INTERNAL notional balance (five bots sit at a
+       $10,000 base, ~$49,631 together) and has no relationship to the fleet
+       pool (~$209.88) -- a 236x category error, rendered in the same style
+       as a real reading. hFree already degraded honestly to "--" while
+       hPool fabricated a number: two adjacent chips disagreeing about
+       whether data exists, and the confident one lying.
+       Also clear _prevPoolVal, or the next good tick draws a $49k delta
+       arrow against a stale baseline. */
+    poolEl.textContent="--";
+    _prevPoolVal=null;
     document.getElementById("hFree").textContent="--";
   }
   /* WR with color coding */
@@ -4966,8 +4987,11 @@ function renderHeroStats(agg,bots){
   if(el) el.innerHTML='<span class="accent">'+alive+'</span>';
   var el2=document.getElementById("statPool");
   if(el2){
+    /* No fallback to aggregate equity here: it sums bot-INTERNAL notional
+       balances (~$49,631) and is not the pool (~$209.88). Unknown renders
+       as unknown. */
     var p=state.portfolio;
-    el2.textContent=p?fmt$(p.total):(agg?fmt$(agg.total_equity):"--");
+    el2.textContent=(p&&p.total!=null)?fmt$(p.total):"--";
   }
   var el3=document.getElementById("statTrades");
   if(el3) el3.textContent=agg&&agg.total_trades!=null?agg.total_trades:"--";

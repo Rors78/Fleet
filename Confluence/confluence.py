@@ -135,7 +135,20 @@ MAX_OPEN_POSITIONS = 3
 # so every position risks the same dollars regardless of where the stop sits.
 RISK_POOL_SHARE_PCT = 10.0     # share of the CC pool this bot sizes against
 RISK_PER_TRADE_PCT = 0.5       # of that share — $500 at a $100k basis
-FALLBACK_EQUITY_USD = 10000.0  # basis when CC is unreachable
+# There is deliberately NO fallback equity constant. FALLBACK_EQUITY_USD =
+# 10000.0 used to stand here as the "basis when CC is unreachable"; against
+# the real $209.88 pool it sized positions 476x too large — a single position
+# at 12x the entire pool ($2,500 vs $5.25). MAX_POSITION_PCT_OF_POOL did not
+# contain it, because _position_size back-derives its bounds from the basis
+# it is handed, so the ceiling inflated from $31.48 to $15,000 in lockstep.
+# An unreadable pool is not a $10,000 pool. Unreadable must fail ARMED:
+# _sizing_basis returns None and the trade is skipped.
+
+# Denominator for the reported pnl_pct, and the base of the notional "equity"
+# index in snapshot(). This bot holds no capital of its own; both figures are
+# presentational. Nothing may size against these, and nothing may sum them
+# across bots as if they were money.
+NOTIONAL_PNL_BASE = 10000.0
 
 # Guard rails on the derived size. A near-zero stop would otherwise divide its
 # way to an enormous position; a huge stop would produce dust.
@@ -268,28 +281,42 @@ class ConfluenceEngine:
         self._load_state()
 
     # ── position sizing ──
-    def _sizing_basis(self) -> float:
+    def _sizing_basis(self):
         """Capital this bot sizes against: a share of the CC pool.
 
-        Falls back to FALLBACK_EQUITY_USD when the pool is unreachable, and
-        says so once rather than every scan. Never sizes off a guess.
+        Returns None when the pool cannot be read. That is the whole point:
+        this used to return FALLBACK_EQUITY_USD (10000.0), which against the
+        real ~$210 pool sized positions 476x too large and put a single
+        position at 12x the entire pool. The bounds in _position_size are
+        derived from this basis, so a wrong basis inflates its own safety cap
+        and the guard reads as protective while measuring against the lie.
+
+        An unreadable pool is not a large pool. It is an unknown one, and the
+        only safe response to an unknown basis is to not trade on it.
         """
         if not self._portfolio or RISK_POOL_SHARE_PCT <= 0:
-            return FALLBACK_EQUITY_USD
+            self._warn_no_basis("no portfolio client")
+            return None
         total = None
         try:
             total = self._portfolio.pool_total()
-        except Exception:
-            total = None
+        except Exception as e:
+            self._warn_no_basis(f"pool_total() raised {e!r}")
+            return None
         if not isinstance(total, (int, float)) or total <= 0:
-            if not self._pool_basis_warned:
-                self._pool_basis_warned = True
-                self._log(
-                    f"Pool total unreachable — sizing off ${FALLBACK_EQUITY_USD:,.0f} "
-                    f"instead of {RISK_POOL_SHARE_PCT:.0f}% of pool", "WARNING")
-            return FALLBACK_EQUITY_USD
+            self._warn_no_basis(f"pool_total() returned {total!r}")
+            return None
         self._pool_basis_warned = False
         return total * (RISK_POOL_SHARE_PCT / 100.0)
+
+    def _warn_no_basis(self, why: str):
+        """Say it once per outage, not every scan."""
+        if not self._pool_basis_warned:
+            self._pool_basis_warned = True
+            self._log(
+                f"Pool total unreadable ({why}) — NOT sizing. Trades are "
+                f"skipped until the pool reads again; sizing off a guess "
+                f"would put one position at many times the pool.", "WARNING")
 
     def _position_size(self, entry: float, stop: float) -> tuple:
         """Risk-normalized size in USD. Returns (size, basis, risk_usd, stop_pct).
@@ -298,6 +325,11 @@ class ConfluenceEngine:
         notional, not the other way round.
         """
         basis = self._sizing_basis()
+        if not isinstance(basis, (int, float)) or basis <= 0:
+            # Pool unreadable. Return a zero size with a None basis so the
+            # caller can tell "could not size" from "sized small" — those are
+            # different facts and must not share a representation.
+            return 0.0, None, 0.0, 0.0
         risk_usd = basis * (RISK_PER_TRADE_PCT / 100.0)
 
         stop_pct = abs(entry - stop) / entry if entry else STOP_LOSS_PCT
@@ -970,6 +1002,14 @@ class ConfluenceEngine:
             stop = cand.get("stop") or entry * (1 - STOP_LOSS_PCT)
             target = cand.get("target") or entry * (1 + STOP_LOSS_PCT * 2)
         size, _basis, _risk_usd, _stop_pct = self._position_size(entry, stop)
+        if _basis is None or size <= 0:
+            # The pool could not be read, so there is no honest basis to size
+            # against. Skip rather than guess: the old fallback basis put a
+            # single position at 12x the whole pool.
+            self._log(
+                f"SKIP {pair}: pool unreadable, no sizing basis — not "
+                f"opening a position on a guessed basis", "WARNING")
+            return False
         self._log(
             f"SIZE {pair}: ${size:,.0f} — risking ${_risk_usd:,.0f} "
             f"({RISK_PER_TRADE_PCT}% of ${_basis:,.0f}) on a {_stop_pct * 100:.2f}% stop",
@@ -1193,7 +1233,17 @@ class ConfluenceEngine:
         with self._lock:
             total = self.wins + self.losses
             wr = (self.wins / total * 100.0) if total else 0.0
-            equity = 10000.0 + self.realized_pnl
+            # NOT an account balance. This bot holds no capital of its own —
+            # it sizes against a share of the shared CC pool (~$210). This is
+            # a notional index: a fixed base plus realized P/L, so the number
+            # moves the right way and by the right amount. It is reported
+            # only so pnl_pct has a stable denominator.
+            #
+            # It must never be summed as if it were money. Command Center's
+            # aggregate.total_equity does exactly that across five bots and
+            # gets ~$49,631, which the dashboard then used as a fallback POOL
+            # figure — 236x the real pool. See tests/test_pool_absent.py.
+            equity = NOTIONAL_PNL_BASE + self.realized_pnl
             # Cheap: _sizing_basis does one CC call, and snapshot is polled
             # once per CC cycle, not per candidate.
             _basis_now = self._sizing_basis()
@@ -1217,13 +1267,19 @@ class ConfluenceEngine:
                 # What sizing is actually calculated from, and where it came
                 # from. Without this the dashboard shows ~$10k equity while
                 # the bot opens $25k positions and nothing says why.
-                "sizing_basis": round(_basis_now, 2),
-                "sizing_basis_source": ("pool_share" if not self._pool_basis_warned
-                                        and self._portfolio else "local_equity"),
-                "risk_per_trade_usd": round(_basis_now * RISK_PER_TRADE_PCT / 100.0, 2),
+                # None when the pool is unreadable: that is not a basis of
+                # zero and not a basis of $10,000, it is the absence of one,
+                # and it must not round() its way into a confident number.
+                "sizing_basis": (round(_basis_now, 2)
+                                 if isinstance(_basis_now, (int, float)) else None),
+                "sizing_basis_source": ("pool_share"
+                                        if isinstance(_basis_now, (int, float))
+                                        else "unreadable"),
+                "risk_per_trade_usd": (round(_basis_now * RISK_PER_TRADE_PCT / 100.0, 2)
+                                       if isinstance(_basis_now, (int, float)) else None),
                 "risk_per_trade_pct": RISK_PER_TRADE_PCT,
                 "pnl": round(self.realized_pnl, 2),
-                "pnl_pct": round(self.realized_pnl / 10000.0 * 100.0, 3),
+                "pnl_pct": round(self.realized_pnl / NOTIONAL_PNL_BASE * 100.0, 3),
                 "win_rate": round(wr, 1),
                 "open_positions": len(self.positions),
                 "total_trades": total,

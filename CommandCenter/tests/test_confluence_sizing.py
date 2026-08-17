@@ -89,20 +89,38 @@ check("bounds are pool-relative, not hardcoded dollars",
       "MIN/MAX_POSITION_USD must be gone")
 
 print()
-print("=== CASE 4: unreachable pool degrades safely and warns once ===")
+print("=== CASE 4: unreachable pool REFUSES to size, and warns once ===")
+# This case used to assert `_sizing_basis() == FALLBACK_EQUITY_USD` under the
+# heading "degrades safely". It was green the whole time, and it encoded the
+# defect as the specification: falling back to a $10,000 basis against the
+# real ~$210 pool sized positions 476x too large -- one position at 12x the
+# entire pool ($2,500 vs $5.25). MAX_POSITION_PCT_OF_POOL did not contain it,
+# because _position_size back-derives its bounds from the basis it is handed,
+# so the cap inflated from $31.48 to $15,000 alongside it.
+#
+# Degrading toward a LARGER basis than reality is not safe degradation. An
+# unreadable pool is an unknown pool, and the only safe basis is no basis.
 b2 = bare_bot(None)
 b2._portfolio = StubPortfolio(None)
-check("falls back", b2._sizing_basis() == cf.FALLBACK_EQUITY_USD)
+check("refuses to size", b2._sizing_basis() is None,
+      f"got {b2._sizing_basis()!r} — must be None, not a guessed basis")
 warns = [m for lvl, m in b2.logs if lvl == "WARNING"]
 check("warns once", len(warns) == 1, f"{len(warns)} warnings")
 b2._sizing_basis()
 warns = [m for lvl, m in b2.logs if lvl == "WARNING"]
 check("does not spam", len(warns) == 1, f"{len(warns)} warnings")
 
+# And the caller must not trade on it: size 0, basis None, distinguishable
+# from "sized small".
+_sz, _bs, _rk, _st = b2._position_size(100.0, 98.0)
+check("no position on an unknown basis", _sz == 0.0 and _bs is None,
+      f"size={_sz} basis={_bs!r}")
+
 print()
 print("=== CASE 5: no portfolio client at all ===")
 b3 = bare_bot(None)
-check("standalone uses fallback", b3._sizing_basis() == cf.FALLBACK_EQUITY_USD)
+check("standalone refuses to size", b3._sizing_basis() is None,
+      f"got {b3._sizing_basis()!r}")
 
 print()
 print("=== CASE 6: pool resize flows through ===")

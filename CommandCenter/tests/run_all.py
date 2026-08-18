@@ -110,6 +110,7 @@ JS_TESTS = [
     "scoreboard_grain.js",
     "expectancy_panel.js",
     "dash_no_fake_balance.js",
+    "cosmos_lighting.js",
 ]
 
 

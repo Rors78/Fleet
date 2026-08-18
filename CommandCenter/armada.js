@@ -56,6 +56,16 @@ const FLEET = {
 
 const TRADER_IDS = Object.keys(FLEET);
 
+// Layer bit used to mark emissive-only geometry (engine glow/plume, beam
+// core/glow/flare/halo/spark, station core/superlaser, escort engine glow)
+// as bloom-eligible. Kept as a plain object bit (THREE.Layers is a 32-bit
+// mask) — layer 0 is the default "everything" layer every object already
+// belongs to, so tagging an object with BLOOM_LAYER via .layers.enable()
+// makes it visible on BOTH the normal camera (layer 0) and a
+// bloom-restricted camera (layer BLOOM_LAYER only), without needing to
+// touch every other mesh in the scene.
+const BLOOM_LAYER = 1;
+
 // ---------------------------------------------------------------
 // Quality presets
 // ---------------------------------------------------------------
@@ -66,6 +76,15 @@ const QUALITY = {
     exhaustParticles: 14,
     shadows: false,
     lights: 3,
+    // SOTA UPSCALE (2026-08-18): selective bloom on emissive geometry only
+    // (engine glow, beam plasma, superlaser, running lights) — see
+    // BloomPipeline below. Cost is O(screen resolution), NOT O(mesh count),
+    // because the bright pass renders with camera.layers restricted to
+    // BLOOM_LAYER (most of the ~500-mesh scene is simply not drawn on that
+    // pass) and the blur/composite run on a quarter-resolution offscreen
+    // target. This is what makes it affordable on a modest GPU (RX 6400)
+    // even with the heavy per-ship geometry from the adult-grade rebuild.
+    bloom: { enabled: true, resScale: 0.5, blurIterations: 2 },
   },
   medium: {
     pixelRatioCap: 1.5,
@@ -73,6 +92,10 @@ const QUALITY = {
     exhaustParticles: 6,
     shadows: false,
     lights: 2,
+    // Bloom fully off on medium — this tier exists specifically for a
+    // struggling machine to degrade INTO, so it must shed the most
+    // expensive optional effect first, not just shrink it.
+    bloom: { enabled: false, resScale: 0.35, blurIterations: 1 },
   },
 };
 
@@ -95,6 +118,7 @@ let _station = null; // CC mothership station rig (Task 3, 2026-07-30)
 let _lastCCMeta = { health: 1, eventRate: 0, aegisScore: 0.02, pnlSign: 0 };
 let _pendingCCNode = null;
 let _disposed = true;
+let _bloom = null; // BloomPipeline instance, built lazily in init()
 
 // ============================================================
 // Small deterministic PRNG so identical seeds always yield the
@@ -471,6 +495,7 @@ function addEngineNozzle(group, x, y, z, radius, colorHex, facing = new THREE.Ve
   });
   const glow = new THREE.Mesh(glowGeo, glowMat);
   glow.position.copy(mountPos);
+  glow.layers.enable(BLOOM_LAYER); // SOTA upscale — engine glow blooms
   group.add(glow);
 
   // Exhaust plume — a cone stretched along the facing axis, additive,
@@ -498,6 +523,7 @@ function addEngineNozzle(group, x, y, z, radius, colorHex, facing = new THREE.Ve
     plume.rotation.x = Math.PI;
   }
   plume.scale.z = 0.15; // near-invisible at idle; _tick grows this with speed
+  plume.layers.enable(BLOOM_LAYER); // SOTA upscale — exhaust plume blooms
   group.add(plume);
 
   return { nozzle, glow, glowMat, plume, plumeMat, facing: facingN };
@@ -508,6 +534,7 @@ function addRunningLight(group, x, y, z, colorHex, size = 0.35) {
   const mat = new THREE.MeshBasicMaterial({ color: colorHex });
   const dot = new THREE.Mesh(geo, mat);
   dot.position.set(x, y, z);
+  dot.layers.enable(BLOOM_LAYER); // SOTA upscale — running lights bloom
   group.add(dot);
   return dot;
 }
@@ -2087,18 +2114,21 @@ function buildStation(seed) {
   });
   const core = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), coreMat);
   core.position.y = -0.05;
+  core.layers.enable(BLOOM_LAYER); // SOTA upscale — station core blooms
   dishGroup.add(core);
   const coreGlowMat = new THREE.MeshBasicMaterial({
     color: 0x5a9aff, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const coreGlow = new THREE.Mesh(new THREE.SphereGeometry(0.62, 12, 10), coreGlowMat);
   coreGlow.position.y = -0.05;
+  coreGlow.layers.enable(BLOOM_LAYER);
   dishGroup.add(coreGlow);
   const coreHaloMat = new THREE.MeshBasicMaterial({
     color: 0x3a6fd0, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const coreHalo = new THREE.Mesh(new THREE.SphereGeometry(1.0, 12, 10), coreHaloMat);
   coreHalo.position.y = -0.05;
+  coreHalo.layers.enable(BLOOM_LAYER);
   dishGroup.add(coreHalo);
 
   dishGroup.position.copy(dishDir.clone().multiplyScalar(4.72));
@@ -2139,6 +2169,7 @@ function buildStation(seed) {
     const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.10, segLen, 5, 1, true), slRimMat);
     seg.position.copy(from.clone().add(focal).multiplyScalar(0.5));
     seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), focal.clone().sub(from).normalize());
+    seg.layers.enable(BLOOM_LAYER); // SOTA upscale — charge-up rim beams bloom
     slGroup.add(seg);
   }
   const slFlareMat = new THREE.MeshBasicMaterial({
@@ -2146,6 +2177,7 @@ function buildStation(seed) {
   });
   const slFlare = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), slFlareMat);
   slFlare.position.copy(focal);
+  slFlare.layers.enable(BLOOM_LAYER);
   slGroup.add(slFlare);
   // Lance = gradient-textured PLANE strips, not cones. Screenshot-confirmed
   // defect: open-ended additive cones viewed side-on are brightest at their
@@ -2192,6 +2224,7 @@ function buildStation(seed) {
   });
   const slMain = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.05, 55, 8, 1, true), slMainMat);
   slMain.position.set(0, focal.y + 27.5, 0);
+  slMain.layers.enable(BLOOM_LAYER); // SOTA upscale — fired lance blooms (the "blinding" cue)
   slGroup.add(slMain);
   const slGlowMat = new THREE.MeshBasicMaterial({
     color: SL_COLOR, transparent: true, opacity: 0,
@@ -2199,6 +2232,7 @@ function buildStation(seed) {
   });
   const slGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.16, 55, 10, 1, true), slGlowMat);
   slGlow.position.set(0, focal.y + 27.5, 0);
+  slGlow.layers.enable(BLOOM_LAYER);
   slGroup.add(slGlow);
 
   // City lights — small emissive points scattered on the hull surface
@@ -2388,10 +2422,12 @@ function buildBeam(colorHex, particleCount) {
   coreMat.alphaMap = _beamFade;
   glowMat.alphaMap = _beamFade;
   const core = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.05, 1, 8, 1, true), coreMat);
+  core.layers.enable(BLOOM_LAYER); // SOTA upscale — beam core blooms
   group.add(core);
 
   // outer volumetric glow: wider tapered cone, softer
   const glow = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.13, 1, 10, 1, true), glowMat);
+  glow.layers.enable(BLOOM_LAYER);
   group.add(glow);
 
   // traveling pulse rings — 3 thin tori riding the beam axis from
@@ -2405,6 +2441,7 @@ function buildBeam(colorHex, particleCount) {
   for (let ri = 0; ri < 3; ri++) {
     const ring = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.035, 6, 16), ringMat);
     ring.rotation.x = Math.PI / 2; // torus axis onto local Y (beam axis)
+    ring.layers.enable(BLOOM_LAYER);
     group.add(ring);
     rings.push(ring);
   }
@@ -2414,11 +2451,13 @@ function buildBeam(colorHex, particleCount) {
     color: colorHex, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const flare = new THREE.Mesh(new THREE.SphereGeometry(0.28, 10, 8), flareMat);
+  flare.layers.enable(BLOOM_LAYER);
   group.add(flare);
   const haloMat = new THREE.MeshBasicMaterial({
     color: colorHex, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const flareHalo = new THREE.Mesh(new THREE.SphereGeometry(0.6, 10, 8), haloMat);
+  flareHalo.layers.enable(BLOOM_LAYER);
   group.add(flareHalo);
 
   // radial spark lines at the impact point (item 1d's third flare layer —
@@ -2432,6 +2471,7 @@ function buildBeam(colorHex, particleCount) {
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const sparks = new THREE.LineSegments(sparkLinesGeometry(), sparkMat);
+  sparks.layers.enable(BLOOM_LAYER);
   group.add(sparks);
 
   // emitter glow — small hot point at the ship end so the beam visibly
@@ -2440,6 +2480,7 @@ function buildBeam(colorHex, particleCount) {
     color: colorHex, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false,
   });
   const emitter = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 6), emitterMat);
+  emitter.layers.enable(BLOOM_LAYER);
   group.add(emitter);
 
   // extraction particles flowing from impact point back to the ship
@@ -2455,6 +2496,7 @@ function buildBeam(colorHex, particleCount) {
     blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true,
   });
   const points = new THREE.Points(pGeo, pMat);
+  points.layers.enable(BLOOM_LAYER);
   group.add(points);
 
   return { group, core, glow, flare, flareHalo, sparks, rings, emitter, points, seeds,
@@ -2707,6 +2749,7 @@ function buildEscort() {
   // glows" spec line.
   const engineGlow = new THREE.Mesh(new THREE.PlaneGeometry(0.16, 0.16), tpl.engineMat.clone());
   engineGlow.position.set(0, -0.02, -0.66);
+  engineGlow.layers.enable(BLOOM_LAYER); // SOTA upscale — escort engine glow blooms
   group.add(engineGlow);
   return { group, engineGlow };
 }
@@ -3041,6 +3084,212 @@ function worldToScene(wx, wy, view, cssW, cssH) {
 }
 
 // ============================================================
+// BLOOM PIPELINE (SOTA upscale, 2026-08-18)
+// ============================================================
+// Selective bloom on emissive-only geometry (engine glow/plume, beam
+// core/glow/flare/halo/spark, station core/coreGlow/coreHalo, superlaser
+// rim/flare/main/glow, escort engine glow) — everything currently rendering
+// as flat emissive color with zero light spill into the surrounding dark
+// space canvas. This is the single biggest legibility+drama lever available
+// without touching per-ship geometry: a glowing engine or a firing
+// superlaser that visibly blooms reads as "real light source," a flat
+// emissive quad reads as "colored sticker."
+//
+// COST MODEL (why this is safe on a modest GPU): the bright pass restricts
+// the CAMERA to BLOOM_LAYER, not a brightness threshold shader — objects
+// not on that layer are never submitted to the GPU at all on that pass, so
+// the ~500-mesh scene collapses to just the handful of glow/beam/core
+// meshes for that draw. The blur+composite passes run at resScale (0.5 on
+// high, i.e. quarter-area) of the already-pixelRatio-capped canvas, so
+// total added fragment work is bounded by SCREEN AREA, not scene
+// complexity — it does not get more expensive as more ships/escorts are
+// added or as hull mesh counts grow.
+//
+// Technique: bright-pass (camera.layers restricted) -> N-pass separable
+// (horizontal+vertical) box blur at half-res -> additive composite over
+// the normal full-scene render. No addon files (UnrealBloomPass etc. live
+// in three/examples/jsm/postprocessing, NOT vendored here — pulling them in
+// would mean new vendored files + importmap changes, more invasive than
+// this self-contained approach). Built entirely from core THREE primitives
+// already imported (WebGLRenderTarget, ShaderMaterial, OrthographicCamera).
+class BloomPipeline {
+  constructor(renderer, width, height, resScale) {
+    this.renderer = renderer;
+    this.resScale = resScale;
+    this.width = Math.max(2, Math.round(width * resScale));
+    this.height = Math.max(2, Math.round(height * resScale));
+
+    const rtOpts = {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      // HalfFloat avoids banding on the additive composite of a handful of
+      // very bright emissive sources — cheap on a discrete GPU, and the
+      // targets are quarter-res so the memory/bandwidth cost is trivial.
+      type: THREE.HalfFloatType,
+      depthBuffer: false,
+      stencilBuffer: false,
+    };
+    this.rtBright = new THREE.WebGLRenderTarget(this.width, this.height, rtOpts);
+    this.rtBlurA = new THREE.WebGLRenderTarget(this.width, this.height, rtOpts);
+    this.rtBlurB = new THREE.WebGLRenderTarget(this.width, this.height, rtOpts);
+
+    // Full-screen-quad plumbing: one shared ortho camera + a single
+    // reusable PlaneGeometry, both used for every blur/composite step by
+    // swapping the material's uniforms.texture and the render target.
+    this.quadCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    this.quadScene = new THREE.Scene();
+    const quadGeo = new THREE.PlaneGeometry(2, 2);
+
+    this.blurMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tDiffuse: { value: null },
+        direction: { value: new THREE.Vector2(1, 0) },
+        texel: { value: new THREE.Vector2(1 / this.width, 1 / this.height) },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+      `,
+      // 9-tap separable Gaussian, run once horizontal + once vertical per
+      // iteration. Two iterations (high quality) = 4 texture-sampling
+      // passes total at quarter-res — cheap relative to the main scene pass.
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform sampler2D tDiffuse;
+        uniform vec2 direction;
+        uniform vec2 texel;
+        void main() {
+          vec2 uv = vUv;
+          vec4 sum = vec4(0.0);
+          float weights[5];
+          weights[0] = 0.227027; weights[1] = 0.1945946; weights[2] = 0.1216216;
+          weights[3] = 0.054054; weights[4] = 0.016216;
+          sum += texture2D(tDiffuse, uv) * weights[0];
+          for (int i = 1; i < 5; i++) {
+            vec2 off = direction * texel * float(i) * 1.5;
+            sum += texture2D(tDiffuse, uv + off) * weights[i];
+            sum += texture2D(tDiffuse, uv - off) * weights[i];
+          }
+          gl_FragColor = sum;
+        }
+      `,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.blurQuad = new THREE.Mesh(quadGeo, this.blurMat);
+    this.quadScene.add(this.blurQuad);
+
+    this.compositeMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tBloom: { value: null },
+        intensity: { value: 1.15 },
+      },
+      vertexShader: `
+        varying vec2 vUv;
+        void main() { vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }
+      `,
+      fragmentShader: `
+        varying vec2 vUv;
+        uniform sampler2D tBloom;
+        uniform float intensity;
+        void main() {
+          vec4 b = texture2D(tBloom, vUv);
+          gl_FragColor = vec4(b.rgb * intensity, b.a);
+        }
+      `,
+      transparent: true,
+      blending: THREE.AdditiveBlending,
+      depthTest: false,
+      depthWrite: false,
+    });
+    this.compositeQuad = new THREE.Mesh(quadGeo, this.compositeMat);
+  }
+
+  setSize(width, height) {
+    this.width = Math.max(2, Math.round(width * this.resScale));
+    this.height = Math.max(2, Math.round(height * this.resScale));
+    this.rtBright.setSize(this.width, this.height);
+    this.rtBlurA.setSize(this.width, this.height);
+    this.rtBlurB.setSize(this.width, this.height);
+    this.blurMat.uniforms.texel.value.set(1 / this.width, 1 / this.height);
+  }
+
+  // Renders bloom-eligible geometry only (camera restricted to BLOOM_LAYER)
+  // into rtBright, blurs it `iterations` times into rtBlurA/B ping-pong,
+  // then additively composites rtBlurA onto whatever is CURRENTLY bound as
+  // the render target (the caller is expected to have already rendered the
+  // full scene there first). Restores renderer state (target, autoClear,
+  // camera.layers) before returning.
+  render(scene, camera, iterations) {
+    const renderer = this.renderer;
+    const prevTarget = renderer.getRenderTarget();
+    const prevAutoClear = renderer.autoClear;
+    const prevMask = camera.layers.mask;
+
+    // 1. Bright pass — camera sees ONLY BLOOM_LAYER objects. This is what
+    // keeps the pass cheap: everything else in the ~500-mesh scene is
+    // skipped at the GPU submission level, not just shaded transparent.
+    camera.layers.set(BLOOM_LAYER);
+    renderer.setRenderTarget(this.rtBright);
+    renderer.autoClear = true;
+    renderer.setClearColor(0x000000, 0);
+    renderer.clear(true, true, true);
+    renderer.render(scene, camera);
+
+    // 2. Separable blur, ping-ponging between rtBlurA/B.
+    let readRT = this.rtBright;
+    let writeRT = this.rtBlurA;
+    for (let i = 0; i < iterations; i++) {
+      this.blurMat.uniforms.tDiffuse.value = readRT.texture;
+      this.blurMat.uniforms.direction.value.set(1, 0);
+      renderer.setRenderTarget(writeRT);
+      renderer.clear(true, true, true);
+      renderer.render(this.quadScene, this.quadCamera);
+
+      readRT = writeRT;
+      writeRT = (writeRT === this.rtBlurA) ? this.rtBlurB : this.rtBlurA;
+      this.blurMat.uniforms.tDiffuse.value = readRT.texture;
+      this.blurMat.uniforms.direction.value.set(0, 1);
+      renderer.setRenderTarget(writeRT);
+      renderer.clear(true, true, true);
+      renderer.render(this.quadScene, this.quadCamera);
+
+      readRT = writeRT;
+      writeRT = (writeRT === this.rtBlurA) ? this.rtBlurB : this.rtBlurA;
+    }
+
+    // 3. Additive composite onto whatever target was bound before this
+    // call (the caller's already-rendered full scene — usually null, i.e.
+    // the canvas itself).
+    this.compositeMat.uniforms.tBloom.value = readRT.texture;
+    renderer.setRenderTarget(prevTarget);
+    renderer.autoClear = false;
+    this.quadScene.remove(this.blurQuad);
+    this.quadScene.add(this.compositeQuad);
+    renderer.render(this.quadScene, this.quadCamera);
+    this.quadScene.remove(this.compositeQuad);
+    this.quadScene.add(this.blurQuad);
+
+    // Restore renderer/camera state exactly as found.
+    renderer.autoClear = prevAutoClear;
+    camera.layers.mask = prevMask;
+    renderer.setRenderTarget(prevTarget);
+  }
+
+  dispose() {
+    this.rtBright.dispose();
+    this.rtBlurA.dispose();
+    this.rtBlurB.dispose();
+    this.blurMat.dispose();
+    this.compositeMat.dispose();
+    this.blurQuad.geometry.dispose();
+    // compositeQuad shares the same geometry instance as blurQuad
+    // (both built from the single `quadGeo` above) — do not dispose twice.
+  }
+}
+
+// ============================================================
 // Public API
 // ============================================================
 const Armada = {
@@ -3145,6 +3394,13 @@ const Armada = {
     _station = new StationRig(9001);
     _station.attachToScene(_scene);
 
+    // Bloom pipeline (SOTA upscale, 2026-08-18) — built any time the
+    // current quality tier wants it; setQuality() below also owns
+    // enabling/disabling this without a full re-init.
+    if (_quality.bloom && _quality.bloom.enabled) {
+      _bloom = new BloomPipeline(_renderer, _worldW, _worldH, _quality.bloom.resScale);
+    }
+
     _disposed = false;
     this._initialized = true;
 
@@ -3166,6 +3422,7 @@ const Armada = {
     _worldW = rect.width; _worldH = rect.height;
     updateCamera(_worldW, _worldH);
     _renderer.setSize(_worldW, _worldH, false);
+    if (_bloom) _bloom.setSize(_worldW, _worldH);
   },
 
   setQuality(level) {
@@ -3175,6 +3432,20 @@ const Armada = {
     _qualityLevel = level;
     _renderer && _renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, q.pixelRatioCap));
     for (const id in _ships) _ships[id].setQuality(q);
+
+    // Bloom on/off + resolution follow the quality tier. Rebuilt rather
+    // than mutated in place when the enabled state or resScale changes —
+    // render targets are cheap to recreate (quarter-res, only 3 of them)
+    // and this guarantees no stale-size target survives a tier switch.
+    const wantBloom = !!(q.bloom && q.bloom.enabled);
+    const curResScale = _bloom ? _bloom.resScale : null;
+    if (!wantBloom && _bloom) {
+      _bloom.dispose();
+      _bloom = null;
+    } else if (wantBloom && (!_bloom || curResScale !== q.bloom.resScale)) {
+      if (_bloom) _bloom.dispose();
+      _bloom = _renderer ? new BloomPipeline(_renderer, _worldW, _worldH, q.bloom.resScale) : null;
+    }
   },
 
   getQuality() { return _qualityLevel; },
@@ -3377,6 +3648,7 @@ const Armada = {
     _ships = {};
     if (_station) { _station.dispose(); _station = null; }
     _pendingCCNode = null;
+    if (_bloom) { _bloom.dispose(); _bloom = null; }
     if (_renderer) {
       _renderer.dispose();
       if (_canvas && _canvas.parentElement) _canvas.parentElement.removeChild(_canvas);
@@ -3393,6 +3665,7 @@ const Armada = {
       quality: _qualityLevel,
       worldW: _worldW, worldH: _worldH,
       view: _lastView,
+      bloomEnabled: !!_bloom,
     };
   },
 
@@ -3740,6 +4013,11 @@ const Armada = {
     // render — acceptable 1-frame lag, imperceptible at 60fps)
     _scene.updateMatrixWorld(true);
     _renderer.render(_scene, _camera);
+    // Bloom composite (SOTA upscale, 2026-08-18) — additive pass on top of
+    // the normal render just performed above. See BloomPipeline for the
+    // cost model; disabled entirely on the medium quality tier via
+    // setQuality(), so a struggling machine sheds this first.
+    if (_bloom) _bloom.render(_scene, _camera, (_quality.bloom && _quality.bloom.blurIterations) || 1);
   },
 };
 

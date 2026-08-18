@@ -2494,6 +2494,49 @@ var PLANET_VISUALS = {
 
 /* --- ILLUMINATED PLANET RENDERER — NASA-quality lighting --- */
 
+/* ═══════════════════════════════════════════════════════════════════════
+   THE LIGHT BUDGET (2026-08-18)
+   ───────────────────────────────────────────────────────────────────────
+   There is no sun in this scene. The "sunX/sunY" every draw call passes is
+   CC's position -- and CC is the Death Star, a dark battle station that
+   emits no starlight. Every body was nonetheless being lit as though a star
+   sat at the centre of the system:
+
+     - base sphere brightened to baseColor+35 on the "sunward" side
+     - a WHITE specular highlight, rgba(255,255,250) -- a sun reflection
+     - a WHITE sheen on top of it, rgba(255,252,244) -- a second one
+
+   Two white sun-glints per body, cast by an object that produces no light.
+   That is what read as "each object has a lamp pointed at it".
+
+   What ACTUALLY emits in this scene, and roughly how much:
+
+     STARLIGHT      the void field / cosmic backdrop. Real, but weak and
+                    OMNIDIRECTIONAL -- it fills shadow, it does not model a
+                    body. This is the floor, and in deep space it is most of
+                    what you get.
+     SELF-EMISSION  bodies that genuinely glow: Aegis, the crystal, the
+                    plasma/flare bodies, ship engines, the superlaser. These
+                    light THEMSELVES and their neighbours (already handled by
+                    the planetshine pass in _ibPlanetshine).
+     CC's OWN GLOW  the convergence core does emit a little -- the lattice
+                    and core glow are real light in-fiction -- but it is a
+                    dim data-lattice, not a G-type star.
+
+   So the key light is kept, because CC does glow and the scene needs SOME
+   modelling cue, but it is cut to a fraction of its old strength and
+   RECOLOURED to CC's actual amber lattice rather than white sunlight. The
+   white specular highlights are removed outright: they were pure fiction.
+   Ambient starlight rises slightly to compensate, so bodies do not simply
+   go black -- deep space is dark, not invisible.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+/* Fraction of the old stellar key light that CC's lattice can justify. */
+var _LIGHT_KEY = 0.30;
+/* Omnidirectional starlight floor — fills the shadow side so a body reads
+   as a sphere in the dark rather than vanishing. */
+var _LIGHT_AMBIENT = 0.16;
+
 function drawPlanet(ctx, body, sunX, sunY, now, planetType) {
     var x = body.x, y = body.y;
     var r = Math.max(1, body.currentRadius || body.currentSize || 8);
@@ -2513,26 +2556,37 @@ function drawPlanet(ctx, body, sunX, sunY, now, planetType) {
         x + offX, y + offY, 0,
         x - offX * 0.3, y - offY * 0.3, r * 1.05
     );
-    baseG.addColorStop(0, 'rgb(' + Math.min(255,br+35) + ',' + Math.min(255,bg+25) + ',' + Math.min(255,bb+15) + ')');
-    baseG.addColorStop(0.25, 'rgb(' + br + ',' + bg + ',' + bb + ')');
-    baseG.addColorStop(0.5, 'rgb(' + (br*0.6|0) + ',' + (bg*0.5|0) + ',' + (bb*0.45|0) + ')');
-    baseG.addColorStop(0.75, 'rgb(' + (br*0.2|0) + ',' + (bg*0.15|0) + ',' + (bb*0.12|0) + ')');
-    baseG.addColorStop(1, 'rgb(' + (br*0.05|0) + ',' + (bg*0.04|0) + ',' + (bb*0.03|0) + ')');
+    /* Key light is CC's amber lattice at _LIGHT_KEY strength, not a star:
+       +35/+25/+15 becomes a much smaller, WARM-biased lift. The shadow side
+       no longer falls to near-black (0.05) but to the starlight floor, so a
+       body in shadow is dark yet still legible -- which is what deep space
+       actually looks like when nothing is pointing a lamp at you. */
+    var _kl = _LIGHT_KEY, _am = _LIGHT_AMBIENT;
+    var _lit = function(f) {
+        /* f = 1 at the key-facing pole, 0 on the far side. */
+        var m = _am + (1 - _am) * f * (0.55 + _kl);
+        return 'rgb(' + Math.min(255, (br * m + 12 * _kl * f) | 0) + ','
+                      + Math.min(255, (bg * m + 9  * _kl * f) | 0) + ','
+                      + Math.min(255, (bb * m + 4  * _kl * f) | 0) + ')';
+    };
+    baseG.addColorStop(0,    _lit(1.00));
+    baseG.addColorStop(0.25, _lit(0.78));
+    baseG.addColorStop(0.5,  _lit(0.46));
+    baseG.addColorStop(0.75, _lit(0.20));
+    baseG.addColorStop(1,    _lit(0.06));
 
     ctx.fillStyle = baseG;
     ctx.beginPath();
     ctx.arc(x, y, r, 0, Math.PI * 2);
     ctx.fill();
 
-    /* ═══ SPECULAR — tiny, subtle, offset toward light ═══ */
-    var specX = x + offX * 0.7, specY = y + offY * 0.7;
-    var specG = ctx.createRadialGradient(specX, specY, 0, specX, specY, r * 0.25);
-    specG.addColorStop(0, 'rgba(255,255,250,0.06)');
-    specG.addColorStop(1, 'rgba(0,0,0,0)');
-    ctx.fillStyle = specG;
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
+    /* SPECULAR REMOVED (2026-08-18). A specular highlight is a mirror image
+       of the light source. rgba(255,255,250) is the reflection of a WHITE
+       STAR -- there isn't one. On a body lit only by a dim amber lattice and
+       ambient starlight there is no glint to see, and drawing one was the
+       single strongest "studio lamp" cue in the scene. Bodies that genuinely
+       shine supply their own highlight through their surface/overlay
+       functions, which is the honest place for it. */
 
     /* ═══ ATMOSPHERIC LIMB — colored, brighter on sun side ═══ */
     if (vis.atmosphere) {
@@ -2622,11 +2676,14 @@ function drawPlanet(ctx, body, sunX, sunY, now, planetType) {
         ctx.fillRect(x - r, y - r, r * 2, r * 2);
         ctx.restore();
 
-        /* 3. Specular sheen toward the sun */
+        /* 3. Key-side sheen. Was rgba(255,252,244) at 0.10 -- a second white
+           sun-glint. Recoloured to CC's amber lattice and cut to a third of
+           its old strength: enough to say "the light comes from over there",
+           not enough to claim a star. */
         var spX = x + lx * r * 0.42, spY = y + ly * r * 0.42;
         var shG = ctx.createRadialGradient(spX, spY, 0, spX, spY, r * 0.78);
-        shG.addColorStop(0, 'rgba(255,252,244,0.10)');
-        shG.addColorStop(0.45, 'rgba(255,250,238,0.035)');
+        shG.addColorStop(0, 'rgba(236,206,150,' + (0.10 * _LIGHT_KEY).toFixed(3) + ')');
+        shG.addColorStop(0.45, 'rgba(228,198,142,' + (0.035 * _LIGHT_KEY).toFixed(3) + ')');
         shG.addColorStop(1, 'rgba(0,0,0,0)');
         ctx.save();
         ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();

@@ -4014,8 +4014,29 @@ function _orbRender(timestamp){
   if(!_cosmicCanvas) _cosmicCanvas=new CosmicCanvas(W,H);
   var _cosmicRegime=(typeof aegisState!=="undefined"&&aegisState.regime)||"NORMAL";
   var _cosmicZEff=_orbIsFS?(1+(_orbZoom-1)*0.18):1;
-  if(_cosmicZEff!==1){
+  /* PAN PARALLAX (2026-08-18) — the missing half of the fix above.
+     The zoom axis was made parallax-aware (0.18 above) but the PAN axis was
+     not, and this layer draws INSIDE the world setTransform at line ~3971,
+     which carries the full _orbPanX/_orbPanY. So dragging the view slid the
+     most distant backdrop in the scene 1:1 with the nearest bodies -- the
+     exact inverse of parallax, and the reason panning felt like moving a
+     sticker sheet rather than a camera.
+
+     The correction subtracts back most of the world pan, leaving this layer
+     with only ~18% of it -- matching the zoom factor deliberately, so both
+     axes recede at the same rate and the backdrop reads as one coherent
+     distance rather than near in X and far in Z.
+
+     Divided by _orbZoom because the translate happens inside an already-
+     scaled transform: without that, the correction would over- or
+     under-shoot at any zoom other than 1. */
+  var _cosmicPK=_orbIsFS?0.18:1;              /* 1 = no correction */
+  var _cosmicPX=_orbIsFS?(-_orbPanX*(1-_cosmicPK))/_orbZoom:0;
+  var _cosmicPY=_orbIsFS?(-_orbPanY*(1-_cosmicPK))/_orbZoom:0;
+  var _cosmicNeedsWrap=(_cosmicZEff!==1)||_cosmicPX!==0||_cosmicPY!==0;
+  if(_cosmicNeedsWrap){
     ctx.save();
+    ctx.translate(_cosmicPX,_cosmicPY);
     ctx.translate(W/2,H*0.48);
     ctx.scale(_cosmicZEff,_cosmicZEff);
     ctx.translate(-W/2,-H*0.48);

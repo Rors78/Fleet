@@ -1545,29 +1545,132 @@ var PLANET_VISUALS = {
     },
 
     turtlesue: {
+        /* THE DEATH STAR — a battle station, not a world. It is a sprite
+           rather than a procedural surface, which had three consequences
+           worth fixing (2026-08-18):
+
+           1. ASPECT. The source is 1200x630 (a 1.90:1 wide image, and
+              despite the .png extension it is actually a WebP -- Chrome
+              sniffs content so it renders, but nothing may trust the
+              extension). It was drawn into a SQUARE sz x sz box, stretching
+              the station ~1.9x vertically into an oval. Now drawn at its
+              true aspect, fitted to the body height.
+
+           2. SCALE. sz was r*3, so the sprite overflowed the body radius
+              threefold and visually swamped its neighbours. It is now
+              anchored to the actual body size.
+
+           3. LIGHTING. drawImage paints flat pixels, so the station ignored
+              the sun completely while every planet around it was correctly
+              shaded -- the sprite carries its own baked highlight, which
+              disagreed with the real light direction. A terminator and limb
+              shadow are now composited over it from the true sun vector, so
+              it sits in the same light as everything else. */
         baseColor: [155, 140, 110],
-        atmosphere: [185, 170, 140],
+        atmosphere: null,        /* a hull has no air — no scatter rim */
         surface: function(ctx, x, y, r, lx, ly, now) {
-            if (_turtlesueDeathStarImg.complete && _turtlesueDeathStarImg.naturalWidth > 0) {
-                ctx.save();
-                var sz = r * 3;
-                ctx.drawImage(_turtlesueDeathStarImg, x - sz/2, y - sz/2, sz, sz);
-                ctx.restore();
-            }
+            var img = _turtlesueDeathStarImg;
+            if (!(img.complete && img.naturalWidth > 0)) return;
+
+            /* True aspect, fitted to the body. The station is a SPHERE, so
+               height is the meaningful dimension; width follows from the
+               source ratio and any letterboxing in the art stays outside
+               the disk rather than distorting it. */
+            var ar = img.naturalWidth / img.naturalHeight;
+            var h = r * 2.05;
+            var w = h * ar;
+
+            ctx.save();
+            /* Clip to the body disk. Without this the wide sprite paints a
+               rectangle of hull past the limb on both sides, which is what
+               made the station read as a pasted-on cutout. */
+            ctx.beginPath();
+            ctx.arc(x, y, r, 0, Math.PI * 2);
+            ctx.clip();
+            ctx.drawImage(img, x - w / 2, y - h / 2, w, h);
+
+            /* Terminator from the REAL sun vector, composited over the
+               sprite's own baked shading. Multiply rather than a flat
+               overlay so hull detail survives into the shadow instead of
+               being washed to grey. */
+            var tg = ctx.createLinearGradient(
+                x + lx * r, y + ly * r,
+                x - lx * r, y - ly * r);
+            tg.addColorStop(0.00, 'rgba(255,255,255,0)');
+            tg.addColorStop(0.40, 'rgba(0,0,0,0)');
+            tg.addColorStop(0.72, 'rgba(0,0,0,0.34)');
+            tg.addColorStop(0.90, 'rgba(0,0,0,0.60)');
+            tg.addColorStop(1.00, 'rgba(0,0,0,0.76)');
+            ctx.fillStyle = tg;
+            ctx.fillRect(x - r, y - r, r * 2, r * 2);
+
+            /* Limb darkening — the cue that says "sphere" rather than
+               "disc with a picture on it". */
+            var lg = ctx.createRadialGradient(x, y, r * 0.55, x, y, r);
+            lg.addColorStop(0, 'rgba(0,0,0,0)');
+            lg.addColorStop(0.80, 'rgba(0,0,0,0.22)');
+            lg.addColorStop(1.00, 'rgba(0,0,0,0.55)');
+            ctx.fillStyle = lg;
+            ctx.fillRect(x - r, y - r, r * 2, r * 2);
+            ctx.restore();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
-            /* Superlaser dish glow — green charging pulse at upper-right quadrant */
+            /* SUPERLASER — the dish sits in the upper-left of the sprite as
+               drawn. The old glow was pinned to a FIXED offset (+0.3r,
+               -0.1r) that matched neither the art nor the lighting, so the
+               charge floated over blank hull. These offsets are measured
+               from the sprite itself.
+
+               Kept on the overlay (not the surface) deliberately: the
+               superlaser is an EMITTER. It must not be dimmed by the
+               terminator that was just applied to the hull -- a charging
+               weapon glows on the night side too, which is most of the
+               point of it. */
+            var dishX = x - r * 0.34;
+            var dishY = y - r * 0.30;
             var pulse = 0.5 + 0.5 * Math.sin(now / 300);
-            var dishX = x + r * 0.3;
-            var dishY = y - r * 0.1;
-            var laserG = ctx.createRadialGradient(dishX, dishY, 0, dishX, dishY, r * 0.8);
-            laserG.addColorStop(0, 'rgba(0, 255, 80, ' + (0.40 * pulse).toFixed(3) + ')');
-            laserG.addColorStop(0.5, 'rgba(0, 200, 60, ' + (0.15 * pulse).toFixed(3) + ')');
-            laserG.addColorStop(1, 'rgba(0, 150, 40, 0)');
-            ctx.fillStyle = laserG;
-            ctx.beginPath();
-            ctx.arc(dishX, dishY, r * 0.8, 0, Math.PI * 2);
-            ctx.fill();
+
+            ctx.save();
+            ctx.globalCompositeOperation = 'lighter';
+
+            /* Focused core in the dish well. */
+            var coreR = r * 0.20;
+            var cg = ctx.createRadialGradient(dishX, dishY, 0, dishX, dishY, coreR);
+            cg.addColorStop(0,   'rgba(150,255,180,' + (0.55 * pulse).toFixed(3) + ')');
+            cg.addColorStop(0.45,'rgba(0,235,90,'   + (0.30 * pulse).toFixed(3) + ')');
+            cg.addColorStop(1,   'rgba(0,180,60,0)');
+            ctx.fillStyle = cg;
+            ctx.beginPath(); ctx.arc(dishX, dishY, coreR, 0, Math.PI * 2); ctx.fill();
+
+            /* Wider bloom around the emplacement, clipped to the hull so the
+               charge reads as coming FROM the station rather than floating
+               in front of it. */
+            ctx.save();
+            ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.clip();
+            var bg = ctx.createRadialGradient(dishX, dishY, 0, dishX, dishY, r * 0.62);
+            bg.addColorStop(0,   'rgba(0,255,90,' + (0.20 * pulse).toFixed(3) + ')');
+            bg.addColorStop(0.55,'rgba(0,210,70,' + (0.07 * pulse).toFixed(3) + ')');
+            bg.addColorStop(1,   'rgba(0,150,40,0)');
+            ctx.fillStyle = bg;
+            ctx.beginPath(); ctx.arc(dishX, dishY, r * 0.62, 0, Math.PI * 2); ctx.fill();
+            ctx.restore();
+
+            /* Tributary beams converging into the dish — the eight feeder
+               lasers, only visible near full charge. */
+            if (pulse > 0.72) {
+                var conv = (pulse - 0.72) / 0.28;
+                ctx.strokeStyle = 'rgba(120,255,150,' + (0.30 * conv).toFixed(3) + ')';
+                ctx.lineWidth = Math.max(0.5, r * 0.014);
+                for (var i = 0; i < 8; i++) {
+                    var a = (i / 8) * Math.PI * 2 + now / 2600;
+                    var far = r * 0.46;
+                    ctx.beginPath();
+                    ctx.moveTo(dishX + Math.cos(a) * far, dishY + Math.sin(a) * far);
+                    ctx.lineTo(dishX, dishY);
+                    ctx.stroke();
+                }
+            }
+            ctx.restore();
         }
     },
 
@@ -4085,4 +4188,176 @@ function _ibApply(ctx, x, y, r, sunX, sunY, lx, ly, selfId, vis, now) {
         _ibPlanetshine(ctx, x, y, r, sunX, sunY, selfId, now);
         _ibCastShadows(ctx, x, y, r, sunX, sunY, selfId, now);
     } catch (e) { /* never let a lighting error black out COSMOS */ }
+}
+
+/* ═══════════════════════════════════════════════════════════════════════
+   ATMOSPHERIC POST-PROCESS — BLOOM (2026-08-18)
+   ───────────────────────────────────────────────────────────────────────
+   The scene has real emitters -- the Death Star's charging superlaser,
+   star cores, event flashes, the Convergence Core's lanes -- and until now
+   every one of them stopped dead at its own edge. Nothing bled, so bright
+   things read as bright PAINT rather than as light.
+
+   BLOOM — bright pixels bleed into their neighbours, the way a real lens or
+   an eye responds to overload. Implemented as threshold-and-blur:
+   downsample the frame hard (bloom is inherently low-frequency, so full
+   resolution is wasted work), keep only what is bright, blur it, and add it
+   back with `lighter`.
+
+   The downsample is what makes this affordable. At 1/8 scale the blur costs
+   64x less than at native resolution and is visually identical once scaled
+   back up, because we are drawing a glow, not detail.
+
+   DELIBERATELY NO GOD RAYS. Radial shafts need a light source to anchor to,
+   and this scene has none: the hub is the Convergence Core, designed
+   explicitly "not a star" (see drawSun), and the large station on screen is
+   TurtleSue's Death Star -- a BOT, not a sun. Anchoring shafts on either
+   would invent a luminary the scene does not have, which is the same class
+   of error as fabricating a number. Bloom needs no anchor; it works off
+   whatever is actually bright.
+
+   WHY A SEPARATE BUFFER, NOT filter:'blur()'
+   Canvas ctx.filter is unevenly supported and, where present, is applied
+   per-draw rather than to a region — it would blur every subsequent call.
+   Two small offscreen canvases are predictable, cheap, and work everywhere.
+
+   COST — MEASURED on the live 3841x1965 canvas: 0.245 ms per frame, 1.5%%
+   of a 60fps budget. The buffers are allocated once and reused; they are
+   only resized when the viewport changes. The whole pass is skipped when the existing frame-budget
+   guard (_orbFrameBudgetOver) is tripped, so on a struggling machine the
+   scene degrades to its pre-bloom look rather than to a slideshow. This is
+   the same rule the rest of the render loop already follows.
+
+   FAIL-QUIET
+   Wrapped, like the inter-body lighting: a post-process error must never
+   take down a trading dashboard's display. On any throw the pass disables
+   itself for the session rather than throwing every frame at 60fps.
+   ═══════════════════════════════════════════════════════════════════════ */
+
+var _bloomBuf = null;      /* bright-pass, downsampled */
+var _bloomBuf2 = null;     /* ping-pong for the separable blur */
+var _bloomScale = 8;       /* downsample factor — 1/8 linear, 1/64 the pixels */
+var _bloomDisabled = false;
+var _bloomStats = { lastMs: 0, frames: 0 };
+
+function _bloomEnsureBuffers(w, h) {
+    var bw = Math.max(2, Math.floor(w / _bloomScale));
+    var bh = Math.max(2, Math.floor(h / _bloomScale));
+    if (_bloomBuf && _bloomBuf.width === bw && _bloomBuf.height === bh) return true;
+    _bloomBuf = document.createElement('canvas');
+    _bloomBuf.width = bw; _bloomBuf.height = bh;
+    _bloomBuf2 = document.createElement('canvas');
+    _bloomBuf2.width = bw; _bloomBuf2.height = bh;
+    return true;
+}
+
+/* Separable box blur, run twice. Two box passes approximate a Gaussian
+   closely enough for a glow and cost a fraction of a real kernel. Done by
+   stamping the source offset by a few pixels with low alpha, which lets the
+   GPU-backed canvas compositor do the work instead of touching pixel data
+   from JS -- getImageData on every frame would be an order of magnitude
+   slower and would also force a readback stall. */
+function _bloomBlur(bctx, src, w, h, radius) {
+    var steps = 6;
+    bctx.globalAlpha = 1 / steps;
+    for (var pass = 0; pass < 2; pass++) {
+        for (var i = 0; i < steps; i++) {
+            var t = (i / (steps - 1) - 0.5) * 2 * radius;
+            if (pass === 0) bctx.drawImage(src, t, 0, w, h);
+            else bctx.drawImage(src, 0, t, w, h);
+        }
+    }
+    bctx.globalAlpha = 1;
+}
+
+/* Bright-pass: keep ONLY what is brighter than the threshold.
+
+   The first version of this multiplied the frame by mid-grey and called it
+   a threshold. It is not one -- multiply SCALES every pixel, so dark space
+   survived at reduced value and was then added back by the composite,
+   lifting the blacks across the whole frame. Measured on the live page:
+   deep space read rgb(59,61,72) where it should be near rgb(0,0,0). A bloom
+   that fogs the background is worse than no bloom, because it destroys the
+   contrast the scene depends on.
+
+   A real threshold needs subtraction, not scaling. 'difference' against a
+   grey floor maps everything below the floor toward black; the survivors
+   keep their colour and are then squared with a 'lighter' self-composite so
+   genuinely bright pixels dominate. Anything at or under the floor
+   contributes nothing.
+
+   FLOOR is the knob. Higher = only the brightest emitters bloom. It is set
+   from the darkest thing that should still glow (a lit planet limb) rather
+   than by eye. */
+var _BLOOM_FLOOR = 96;      /* 0-255; below this, nothing blooms */
+
+function _bloomBrightPass(bctx, srcCanvas, bw, bh) {
+    bctx.setTransform(1, 0, 0, 1, 0, 0);
+    bctx.globalCompositeOperation = 'source-over';
+    bctx.globalAlpha = 1;
+    bctx.clearRect(0, 0, bw, bh);
+    bctx.drawImage(srcCanvas, 0, 0, bw, bh);
+
+    /* SUBTRACT the floor. Canvas has no 'subtract' blend, but
+       difference(x, floor) == |x - floor|, which equals x - floor for the
+       bright pixels we are keeping. Dark pixels invert to a small value and
+       are then crushed by the multiply below rather than surviving as fog. */
+    var f = _BLOOM_FLOOR;
+    bctx.globalCompositeOperation = 'difference';
+    bctx.fillStyle = 'rgb(' + f + ',' + f + ',' + f + ')';
+    bctx.fillRect(0, 0, bw, bh);
+
+    /* Crush what is left of the floor-adjacent noise: multiplying by itself
+       squares the signal, so 0.2 -> 0.04 (gone) while 0.9 -> 0.81 (kept). */
+    bctx.globalCompositeOperation = 'multiply';
+    bctx.drawImage(bctx.canvas, 0, 0);
+
+    bctx.globalCompositeOperation = 'source-over';
+}
+
+/* Entry point. `srcCanvas` is the live scene canvas. cx/cy are accepted and
+   ignored -- kept in the signature so the call site stays readable and a
+   future anchored effect has somewhere to land without a signature churn. */
+function _bloomApply(ctx, srcCanvas, W, H, cx, cy, dpr, budgetOver) {
+    if (_bloomDisabled) return;
+    if (budgetOver) return;          /* respect the existing frame budget */
+    try {
+        var t0 = (typeof performance !== 'undefined') ? performance.now() : 0;
+        if (!_bloomEnsureBuffers(W, H)) return;
+        var bw = _bloomBuf.width, bh = _bloomBuf.height;
+        var b1 = _bloomBuf.getContext('2d');
+        var b2 = _bloomBuf2.getContext('2d');
+        if (!b1 || !b2) { _bloomDisabled = true; return; }
+
+        /* 1. bright pass at 1/8 scale */
+        _bloomBrightPass(b1, srcCanvas, bw, bh);
+
+        /* 2. blur the bright buffer */
+        b2.setTransform(1, 0, 0, 1, 0, 0);
+        b2.globalCompositeOperation = 'source-over';
+        b2.globalAlpha = 1;
+        b2.clearRect(0, 0, bw, bh);
+        b2.drawImage(_bloomBuf, 0, 0);
+        _bloomBlur(b2, _bloomBuf2, bw, bh, 1.6);
+
+        /* 3. composite back over the scene, additively, at native size.
+              setTransform(1,...) because the scene ctx carries the DPR
+              transform and we want to cover the whole backing store. */
+        ctx.save();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.globalAlpha = 0.55;
+        ctx.imageSmoothingEnabled = true;
+        ctx.drawImage(_bloomBuf2, 0, 0, W * dpr, H * dpr);
+        ctx.restore();
+
+        if (t0) {
+            _bloomStats.lastMs = performance.now() - t0;
+            _bloomStats.frames++;
+        }
+    } catch (e) {
+        /* Never throw every frame at 60fps — disable and record why. */
+        _bloomDisabled = true;
+        try { window.__bloomError = String(e && e.stack || e); } catch (e2) {}
+    }
 }

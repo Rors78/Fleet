@@ -4493,6 +4493,24 @@ function _orbRender(timestamp){
     ctx.strokeStyle="rgba(201,162,39,0.5)";ctx.strokeRect(vpx,vpy,vpw,vph);
   }
 
+  /* POST-PROCESS — BLOOM (2026-08-18).
+     Runs on the composited frame, after every scene layer and BEFORE the
+     minimap: the minimap is a UI readout, not part of the scene, and
+     blooming it would smear the very thing it exists to make legible.
+
+     Bloom only — NO god rays. There is no sun at the centre of this scene:
+     the hub is the Convergence Core (deliberately "not a star", see
+     drawSun), and the large station in view is TurtleSue's Death Star, a
+     BOT. Radial shafts anchored on either would be inventing a light source
+     the scene does not have. What bloom does earn here is the emitters the
+     fleet genuinely has: the superlaser charge, star cores, event flashes.
+
+     Skipped when _orbFrameBudgetOver is set, so a struggling machine
+     degrades to the pre-bloom look rather than to a slideshow. */
+  if(typeof _bloomApply==="function"){
+    _bloomApply(ctx, $orbitalCanvas, W, H, cx, cy, _dpr, _orbFrameBudgetOver);
+  }
+
   }catch(e){
     console.error("Orbital render error:",e);
     /* Hard reset transform — no save/restore stack to corrupt */

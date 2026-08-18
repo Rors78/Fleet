@@ -1572,22 +1572,35 @@ var PLANET_VISUALS = {
             var img = _turtlesueDeathStarImg;
             if (!(img.complete && img.naturalWidth > 0)) return;
 
-            /* True aspect, fitted to the body. The station is a SPHERE, so
-               height is the meaningful dimension; width follows from the
-               source ratio and any letterboxing in the art stays outside
-               the disk rather than distorting it. */
-            var ar = img.naturalWidth / img.naturalHeight;
-            var h = r * 2.05;
-            var w = h * ar;
+            /* MEASURED from the artwork, not assumed. Scanning the sprite's
+               own luminance (see the notes below) shows the station disc
+               occupies x 266-745, y 3-484 of the 1200x630 frame: centre
+               (506, 244), radius 240. It is NOT centred in the image.
+
+               Centring the FRAME therefore put the station off-centre on the
+               body and mis-sized it. These constants map the station's own
+               disc onto the body disc, so the sprite's sphere and the
+               engine's sphere are the same sphere. */
+            var SP_W = 1200, SP_H = 630;          /* source frame */
+            var ST_CX = 506, ST_CY = 244;         /* station centre in frame */
+            var ST_R  = 240;                      /* station radius in frame */
+
+            /* Scale so the station's radius matches the body's radius. */
+            var k = r / ST_R;
+            var w = SP_W * k, h = SP_H * k;
+            /* Offset so the station centre lands on the body centre. */
+            var dx = x - ST_CX * k;
+            var dy = y - ST_CY * k;
 
             ctx.save();
-            /* Clip to the body disk. Without this the wide sprite paints a
-               rectangle of hull past the limb on both sides, which is what
-               made the station read as a pasted-on cutout. */
+            /* Clip to the body disk. The source is fully opaque edge to edge
+               (189,000 opaque pixels, no transparent background), so without
+               this the sprite paints a rectangle of dark frame over the
+               scene -- which is most of what made it read as a sticker. */
             ctx.beginPath();
             ctx.arc(x, y, r, 0, Math.PI * 2);
             ctx.clip();
-            ctx.drawImage(img, x - w / 2, y - h / 2, w, h);
+            ctx.drawImage(img, dx, dy, w, h);
 
             /* Terminator from the REAL sun vector, composited over the
                sprite's own baked shading. Multiply rather than a flat
@@ -1626,19 +1639,62 @@ var PLANET_VISUALS = {
                terminator that was just applied to the hull -- a charging
                weapon glows on the night side too, which is most of the
                point of it. */
-            var dishX = x - r * 0.34;
-            var dishY = y - r * 0.30;
+            /* Dish position MEASURED from the sprite: the darkest patch
+               inside the lit disc sits at (488, 138) in frame pixels, which
+               against the station centre (506, 244) and radius 240 is an
+               offset of (-0.073, -0.441) radii -- near the TOP of the
+               station, barely left of centre.
+
+               The previous guess of (-0.34, -0.30) put the charge over blank
+               hull well to the left of the emplacement. That is the second
+               time this overlay has been positioned by eye; it is now
+               derived from the artwork and will stay correct if the body is
+               resized. */
+            var dishX = x - r * 0.073;
+            var dishY = y - r * 0.441;
             var pulse = 0.5 + 0.5 * Math.sin(now / 300);
+
+            /* WHY THE WELL IS DARKENED FIRST.
+               The charge used to be a single 'lighter' fill, and it rendered
+               SALMON PINK rather than green. That is not a colour choice, it
+               is arithmetic: 'lighter' ADDS, and the hull under the dish is
+               neutral grey -- measured rgb(130,126,123) straight from the
+               sprite. Adding green (90,255,120) gives (220,255,243), which
+               is a desaturated near-white with the red channel at 220. You
+               cannot get a saturated colour by adding to a bright base.
+
+               Recessing the well first fixes both problems at once: it is
+               what a dish physically IS (a concave emplacement, darker than
+               the hull around it), and it gives the emission something dark
+               to sit against so the green survives. */
+            ctx.save();
+            var wellR = r * 0.19;
+            var wg = ctx.createRadialGradient(dishX, dishY, 0, dishX, dishY, wellR);
+            wg.addColorStop(0,   'rgba(6,10,8,0.82)');
+            wg.addColorStop(0.62,'rgba(8,12,10,0.55)');
+            wg.addColorStop(1,   'rgba(10,14,12,0)');
+            ctx.fillStyle = wg;
+            ctx.beginPath(); ctx.arc(dishX, dishY, wellR, 0, Math.PI * 2); ctx.fill();
+
+            /* Rim catchlight on the sunward side of the well — the cue that
+               says "recessed" rather than "painted dark spot". */
+            var rimA = Math.atan2(ly, lx);
+            ctx.strokeStyle = 'rgba(200,215,225,0.20)';
+            ctx.lineWidth = Math.max(0.5, r * 0.018);
+            ctx.beginPath();
+            ctx.arc(dishX, dishY, wellR * 0.92, rimA - 1.1, rimA + 1.1);
+            ctx.stroke();
+            ctx.restore();
 
             ctx.save();
             ctx.globalCompositeOperation = 'lighter';
 
-            /* Focused core in the dish well. */
-            var coreR = r * 0.20;
+            /* Focused core, now emitting into a dark well. */
+            var coreR = r * 0.15;   /* tighter — a well, not a smear */
             var cg = ctx.createRadialGradient(dishX, dishY, 0, dishX, dishY, coreR);
-            cg.addColorStop(0,   'rgba(150,255,180,' + (0.55 * pulse).toFixed(3) + ')');
-            cg.addColorStop(0.45,'rgba(0,235,90,'   + (0.30 * pulse).toFixed(3) + ')');
-            cg.addColorStop(1,   'rgba(0,180,60,0)');
+            cg.addColorStop(0,   'rgba(120,255,150,' + (0.80 * pulse).toFixed(3) + ')');
+            cg.addColorStop(0.40,'rgba(0,235,80,'    + (0.46 * pulse).toFixed(3) + ')');
+            cg.addColorStop(1,   'rgba(0,170,55,0)');
             ctx.fillStyle = cg;
             ctx.beginPath(); ctx.arc(dishX, dishY, coreR, 0, Math.PI * 2); ctx.fill();
 

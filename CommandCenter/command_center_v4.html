@@ -4491,8 +4491,21 @@ function _orbRender(timestamp){
     ctx.restore();
   }
 
-  /* Metrics bar — always visible, top of screen */
-  _drawMetricsBar(ctx,W);
+  /* Metrics bar — small in-page widget ONLY (2026-08-18).
+     Was unconditional ("always visible, top of screen"), which painted a
+     COMMAND CENTER | Fleet | Pool | WR | PnL bar across the top of the
+     fullscreen cosmos. Fullscreen is the cosmos and nothing else: the
+     numbers already live in the .v3-header DOM bar in the normal view (and
+     that header is restored on exit, since fullscreen hides .app rather
+     than unmounting it), so nothing is lost by dropping the canvas copy
+     here — it was a duplicate of chrome that is one ESC away.
+
+     Deliberately NOT deleted: this same _orbRender draws the small orbital
+     widget embedded in the page, where the bar is the widget's own header
+     and has no DOM equivalent beside it. Guarding on !_orbIsFS is what
+     keeps that view intact. The ZOOM readout and the close/fullscreen
+     button below are controls, not chrome, and stay in both views. */
+  if(!_orbIsFS) _drawMetricsBar(ctx,W);
 
   /* HUD — outside transform */
   if(Math.abs(_orbZoom-1)>0.02){

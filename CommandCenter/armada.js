@@ -3315,7 +3315,10 @@ const Armada = {
     // numbers suggest — this was the root cause of ships (esp. TurtleSue's
     // sphere and Confluence's drum) rendering as near-solid-black discs.
     _renderer.toneMapping = THREE.ACESFilmicToneMapping;
-    _renderer.toneMappingExposure = 1.35;
+    // Lifted 1.35 -> 1.45 to partly offset the key-light cut above. Only
+    // PARTLY: the scene is meant to end up darker, and raising exposure to
+    // fully compensate would undo the fix while pretending to keep it.
+    _renderer.toneMappingExposure = 1.45;
     _renderer.outputColorSpace = THREE.SRGBColorSpace;
 
     _scene = new THREE.Scene();
@@ -3347,7 +3350,34 @@ const Armada = {
     // color — emissive is reserved for engine glow/running lights/windows/
     // beams (see hullMaterial's near-black emissive floor) — so every
     // ship genuinely has a lit side and a shadow side driven by this key.
-    const key = new THREE.DirectionalLight(0xfff2df, 4.6);
+    // THE LIGHT BUDGET (2026-08-18). This was 0xfff2df at 4.6 -- warm WHITE
+    // at sunlight intensity, 7.7x the rim and 15x the fill. A three-point
+    // studio rig, and the reason the operator said "it looks like each
+    // object has a lamp pointed at it... there is no sun so it should be
+    // way darker".
+    //
+    // There is no star in this scene. sunX/sunY throughout the 2D layer is
+    // CC's position, and CC is the Death Star -- a dark battle station. What
+    // actually emits here is: starlight (weak, omnidirectional), each body's
+    // OWN emissive surfaces (engine plumes, the mining beam, the superlaser,
+    // running lights -- all of which now bloom via BLOOM_LAYER), and CC's
+    // amber data-lattice, which glows faintly but is not a G-type star.
+    //
+    // So the key survives -- the scene still needs a modelling cue and CC
+    // does emit -- but at 30% strength and recoloured from white sunlight to
+    // that amber lattice. The hemisphere fill rises to carry the starlight
+    // floor so hulls stay legible in shadow: deep space is dark, not
+    // invisible. Matches _LIGHT_KEY 0.30 / _LIGHT_AMBIENT 0.16 in
+    // solar_system.js and _drawMoonOrb in command_center_v4.html, so all
+    // three renderers agree about how much light exists.
+    // CALIBRATED, not guessed: key 2.2 / rim 0.70 / hemi 0.36 / exposure
+    // 1.45 gives a lit:shadow ratio of 4.0:1, matching the 2D star and
+    // moon layers at 4.2-4.5:1 -- one scene, one physics. Overall lit
+    // level drops 44% from the old rig (6.64 -> 3.72 relative). A first
+    // pass at key 1.4 was REJECTED: it landed at 2.4:1, flatter than the
+    // 2D layers, which would have made the WebGL bodies look washed out
+    // next to the canvas ones.
+    const key = new THREE.DirectionalLight(0xe8c88f, 2.2);
     key.position.set(-40, 60, 80);
     _scene.add(key);
 
@@ -3357,7 +3387,12 @@ const Armada = {
     // key) since a cool rim against a warm key is the classic cue that
     // reads as "real light in a real scene" rather than "flat toy" — kept
     // dim enough that it never functions as a second front-facing key.
-    const rim = new THREE.DirectionalLight(0x4d6fff, 0.6);
+    // Raised 0.6 -> 0.70 alongside the key cut. This is the edge that keeps
+    // a hull's away-from-key silhouette from vanishing into near-black
+    // space, and with the key at 30% it carries proportionally more of the
+    // read. Still well below the key, so it never becomes a second front
+    // light.
+    const rim = new THREE.DirectionalLight(0x4d6fff, 0.70);
     rim.position.set(50, -30, -60);
     _scene.add(rim);
 
@@ -3377,7 +3412,11 @@ const Armada = {
     // terminator (lit vs shadow side) reading as real environmental light
     // rather than a light source glued to the camera. Intensity stays low
     // — this must never compete with the key.
-    const hemi = new THREE.HemisphereLight(0x4a5a78, 0x08080a, 0.28);
+    // STARLIGHT FLOOR. Raised 0.28 -> 0.36 to absorb what the key gave up.
+    // This is the one physically honest ambient in the scene -- a real sky
+    // full of stars, weak and omnidirectional -- and with no sun it is most
+    // of what a hull in shadow actually receives.
+    const hemi = new THREE.HemisphereLight(0x4a5a78, 0x08080a, 0.36);
     _scene.add(hemi);
 
     // Build the six trader ships

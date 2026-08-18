@@ -16724,26 +16724,55 @@ function _drawComet(ctx,x,y,size,color,sunX,sunY,bounceClock,pnlColor,now){
 /* ═══ CINEMA MOON RENDERERS — unique identity per support bot ═══ */
 
 /* Base celestial orb — gives depth and glow to all moons */
+/* THE LIGHT BUDGET, APPLIED TO THE MOONS (2026-08-18).
+   Companion to the same fix in solar_system.js drawPlanet. This is the
+   shared base-sphere painter for ALL EIGHT moons, and it was the real
+   source of the "each object has a lamp pointed at it" look -- the
+   drawPlanet fix reached only the 3 stars, because moons render through
+   bespoke cinema renderers (see "L15: Moons -- cinema renderers always")
+   and the 6 traders are WebGL.
+
+   The lighting here was the same fiction: brightened to base+30 on the
+   "sunward" side, falling to base*0.1 on the far side, plus a bright limb
+   at base+60 -- all keyed off sunX/sunY, which is CC's position. CC is the
+   Death Star: a dark station that emits no starlight. There is no sun.
+
+   Same budget as drawPlanet: key light cut to 30% and recoloured to CC's
+   amber lattice glow (which does emit, faintly), with an ambient starlight
+   floor at 0.16 so the shadow side reads dark rather than absent. Deep
+   space is dark, not invisible. */
 function _drawMoonOrb(ctx,x,y,s,baseR,baseG,baseB,sunX,sunY){
   var lx=(sunX-x),ly=(sunY-y);
   var ld=Math.sqrt(lx*lx+ly*ly)||1;lx/=ld;ly/=ld;
   var offX=lx*s*0.25,offY=ly*s*0.25;
+  var KL=0.30, AM=0.16;   /* mirrors _LIGHT_KEY / _LIGHT_AMBIENT */
   /* Atmospheric glow */
   var ag=ctx.createRadialGradient(x,y,s*0.6,x,y,s*1.6);
   ag.addColorStop(0,"rgba("+baseR+","+baseG+","+baseB+",0.06)");
   ag.addColorStop(0.5,"rgba("+baseR+","+baseG+","+baseB+",0.025)");
   ag.addColorStop(1,"rgba(0,0,0,0)");
   ctx.fillStyle=ag;ctx.beginPath();ctx.arc(x,y,s*1.6,0,Math.PI*2);ctx.fill();
-  /* Base sphere with directional lighting */
+  /* Base sphere. f = 1 at the key-facing pole, 0 on the far side; the warm
+     term is CC's amber lattice, not white sunlight. */
+  function _mlit(f,a){
+    var m=AM+(1-AM)*f*(0.55+KL);
+    return "rgba("+Math.min(255,(baseR*m+12*KL*f)|0)+","
+                  +Math.min(255,(baseG*m+9*KL*f)|0)+","
+                  +Math.min(255,(baseB*m+4*KL*f)|0)+","+a+")";
+  }
   var bg=ctx.createRadialGradient(x+offX,y+offY,0,x-offX*0.2,y-offY*0.2,s*1.05);
-  bg.addColorStop(0,"rgba("+Math.min(255,baseR+30)+","+Math.min(255,baseG+20)+","+Math.min(255,baseB+15)+",0.65)");
-  bg.addColorStop(0.4,"rgba("+baseR+","+baseG+","+baseB+",0.5)");
-  bg.addColorStop(0.75,"rgba("+(baseR*0.4|0)+","+(baseG*0.35|0)+","+(baseB*0.3|0)+",0.4)");
-  bg.addColorStop(1,"rgba("+(baseR*0.1|0)+","+(baseG*0.08|0)+","+(baseB*0.06|0)+",0.3)");
+  bg.addColorStop(0,_mlit(1.00,0.65));
+  bg.addColorStop(0.4,_mlit(0.62,0.5));
+  bg.addColorStop(0.75,_mlit(0.26,0.4));
+  bg.addColorStop(1,_mlit(0.08,0.3));
   ctx.fillStyle=bg;ctx.beginPath();ctx.arc(x,y,s,0,Math.PI*2);ctx.fill();
-  /* Bright limb on sun side */
+  /* Key-side limb. Was base+60 -- a stellar rim-light. Cut to the same 30%
+     and warmed, so it reads as a faint lattice-lit edge rather than a sun
+     catching the horizon. */
   var limbA=Math.atan2(ly,lx);
-  ctx.strokeStyle="rgba("+Math.min(255,baseR+60)+","+Math.min(255,baseG+50)+","+Math.min(255,baseB+40)+",0.12)";
+  ctx.strokeStyle="rgba("+Math.min(255,(baseR+60*KL)|0)+","
+                        +Math.min(255,(baseG+50*KL)|0)+","
+                        +Math.min(255,(baseB+40*KL)|0)+",0.12)";
   ctx.lineWidth=1.2;
   ctx.beginPath();ctx.arc(x,y,s,limbA-0.5,limbA+0.5);ctx.stroke();
 }

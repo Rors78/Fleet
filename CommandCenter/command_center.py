@@ -72,6 +72,7 @@ from fleet_config import (
     bot_registry_list,
 )
 import fleet_config as _fleet_config
+from win_rate_scale import to_percent
 
 # ---------------------------------------------------------------------------
 # Bot Registry — sourced from fleet_config.py (single source of truth)
@@ -2033,9 +2034,13 @@ def _compute_aggregate(bots_data: dict) -> dict:
         tc = n.get("total_trades") or 0
         if wr is None or tc <= 0:
             continue
-        # Normalize scale: TurtleSue/Gridzilla raw passthrough may be 0-1,
-        # NexusBrain is already scaled to 0-100. Anything > 1 is assumed %.
-        wr_pct = wr if wr > 1 else wr * 100
+        # Normalize scale via win_rate_scale, the ONE rule (2026-08-26).
+        # Bots publish on two scales and nothing in the payload says which;
+        # this guess used to be reimplemented here, in ultron and in the
+        # broadcaster, with the broadcaster converting the opposite way.
+        wr_pct = to_percent(wr)
+        if wr_pct is None:
+            continue
         _dec = n.get("win_rate_decided")
         if isinstance(_dec, int) and _dec >= 0:
             denom = _dec

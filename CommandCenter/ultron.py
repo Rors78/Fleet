@@ -18,6 +18,7 @@ import time
 from datetime import datetime, timezone
 
 import requests
+from win_rate_scale import to_percent
 
 LOG_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logs")
 CC_URL = "http://localhost:9000"
@@ -103,7 +104,10 @@ class UltronAnalyzer:
                 wr = n.get("win_rate")
                 if trades and trades > 20 and wr is not None:
                     # Normalize: some bots report 0-1, others 0-100
-                    wr_pct = wr if wr > 1 else wr * 100
+                    # win_rate_scale: the ONE scale rule (2026-08-26).
+                    wr_pct = to_percent(wr)
+                    if wr_pct is None:
+                        continue
                     if wr_pct < 25:
                         self.findings.append({"cat": "bots", "msg": f"{name}: {trades} trades at {wr_pct:.0f}% WR — losing", "sev": "critical"})
         except Exception as e:

@@ -41,6 +41,7 @@ from typing import Callable, Optional
 from bot_names import (BOT_DISPLAY_NAMES, display_name,  # noqa: F401
                        human_regime)
 from probe_pairs import is_probe_pair
+from win_rate_scale import to_fraction
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -1217,9 +1218,12 @@ def _pct_to_fraction(v):
     ambiguity only bites a genuine sub-1% fleet win rate, which would require
     ~200 consecutive losses.
     """
-    if not isinstance(v, (int, float)) or isinstance(v, bool):
-        return None
-    return float(v) / 100.0 if v > 1.0 else float(v)
+    # Delegates to win_rate_scale, the ONE scale rule (2026-08-26). This body
+    # was one of three copies of the same guess, and it converted the OPPOSITE
+    # direction from the other two while pivoting on the same > 1 threshold.
+    # to_fraction is defined as the exact inverse of to_percent and shares its
+    # boundary, so the two can no longer disagree about where the scale flips.
+    return to_fraction(v)
 
 
 def _bar(value: float, total: float = 1.0, width: int = 10) -> str:

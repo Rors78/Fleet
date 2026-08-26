@@ -2032,10 +2032,35 @@ def _compute_aggregate(bots_data: dict) -> dict:
     def _collect(key):
         return [(bid, n[key]) for bid, n in norms.items() if n.get(key) is not None]
 
+    # TRADERS ONLY for anything that claims to count trading activity.
+    #
+    # _TRADER_IDS already gated the win rate (see the long note below), and
+    # the sibling fields were missed — the fix-one-sibling-miss-the-others
+    # shape this project keeps hitting. Observed live 2026-08-26 16:23, minutes
+    # after a watchdog restart:
+    #
+    #     aggregate.total_open_positions   10
+    #     portfolio.active_reservations     3
+    #
+    # The 7-position gap is trinity, which is role="support" — an intel-only
+    # scanner holding NO pool capital. Its normalizer maps signal tracks onto
+    # open_positions/total_trades, so the fleet appeared to hold 10 positions
+    # while the portfolio (the only thing that reserves real capital) held 3.
+    #
+    # A signal being tracked is not a position being held. The pool is the
+    # authority on what is open; a bot that cannot reserve cannot contribute.
+    def _collect_traders(key):
+        return [(bid, n[key]) for bid, n in norms.items()
+                if bid in _TRADER_IDS and n.get(key) is not None]
+
     equities = _collect("equity")
-    pnls = _collect("pnl")
-    open_pos = _collect("open_positions")
-    trades = _collect("total_trades")
+    # pnl is traders-only for the same reason, though no support bot publishes
+    # one today (checked live 2026-08-26: all six contributors are traders).
+    # Guarding it now rather than after a normalizer change makes it leak —
+    # trinity already leaks through open_positions by exactly that route.
+    pnls = _collect_traders("pnl")
+    open_pos = _collect_traders("open_positions")
+    trades = _collect_traders("total_trades")
     regimes = [n["regime"] for n in norms.values() if n.get("regime")]
 
     # Global fleet WR = total_wins / total DECIDED trades, over TRADERS only.

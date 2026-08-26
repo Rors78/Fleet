@@ -49,6 +49,41 @@ except ImportError:  # pragma: no cover - CC always has it on the path
     bot_registry_list = None
 
 
+def _is_probe(pair) -> bool:
+    """True for a SYNTHETIC test row, which must never enter a statistic.
+
+    VERBATIM COPY of the canonical predicate at command_center.py:3504.
+    NOT imported: command_center imports this module directly, so importing
+    it back would be circular. The other two copies live at
+    signal_broadcaster.py:701 and weekly_analysis.py:166 — expectancy.py was
+    the fourth sibling and the only major consumer with no filter at all
+    (added 2026-08-26).
+
+    Nothing in the payload marks these rows, so the pair name is the only
+    signal — every probe uses a marker prefix no real market carries. They
+    are not a rounding error. Measured in the durable bus log on 2026-08-26:
+    turtlesue had 97 TRADE_CLOSE rows, of which 92 were probes carrying an
+    identical hardcoded pnl=12.34 and summing +$1,135.28, while its five REAL
+    closes summed exactly -$0.00. Any statistic that admitted them would
+    report a bot that has made nothing as the fleet's biggest earner.
+
+    The same bug already bit once, on 2026-08-07: 50 of 73 rows on
+    /api/trades were probes contributing +$617, flipping the raw sum positive
+    while real pairs summed -$167 — the SIGN of the fleet's trade feed
+    depended on test data.
+
+    If probe rows ever gain a `synthetic: true` field at write time, ALL FOUR
+    copies should key on that instead of the pair name.
+    """
+    p = str(pair or "").upper()
+    if p.startswith(("ZZPROBE", "ZZ", "NFNOK")):
+        return True
+    # NF<digits>... e.g. NF138587OK/USD. No `re` import here, matching
+    # command_center.py's reasoning: adding one for a prefix test invites the
+    # NameError-in-a-handler class that file has already had once.
+    return p.startswith("NF") and len(p) > 2 and p[2].isdigit()
+
+
 def _fleet_member_ids() -> set:
     """Current fleet membership, from the ONE source of truth.
 
@@ -173,6 +208,21 @@ class ExpectancyTracker:
                 existing callers don't break.
             risk_per_trade: optional initial risk in USD (for R-multiple calc)
         """
+        # SYNTHETIC PROBE GATE (2026-08-26). Refuse at the door: this is the
+        # single chokepoint all three Command Center write paths funnel
+        # through (the bus TRADE_CLOSE handler, the reservation-release
+        # handler, and the public POST /api/expectancy/record endpoint), plus
+        # the bots' own direct calls. Filtering here covers every one of them
+        # rather than four call sites that each have to remember.
+        #
+        # A probe that reaches this store is PERMANENT and indistinguishable
+        # from a measurement afterwards, which is why the gate is at write
+        # time and not only at read time. Silent no-op, matching the
+        # trade_id dedup branch below: a probe being ignored is the system
+        # working, not an error worth raising into a bot's trade loop.
+        if _is_probe(pair):
+            return None
+
         if bot_id not in self.trades:
             self.trades[bot_id] = []
 
@@ -242,6 +292,14 @@ class ExpectancyTracker:
         Returns the numbers Jim Simons actually cares about.
         """
         trades = self.trades.get(bot_id, [])
+        # Probes are refused at write time (see record_trade), but the store
+        # is DURABLE and predates that gate — rows written before 2026-08-26
+        # are still on disk. Filter on read too so historical probes cannot
+        # corrupt a statistic, and so this is correct no matter which side of
+        # the gate a row arrived on. Applied BEFORE last_n: otherwise a
+        # window of 50 could be mostly probes and silently measure far fewer
+        # real trades than it claims.
+        trades = [t for t in trades if not _is_probe(t.get('pair'))]
         if last_n:
             trades = trades[-last_n:]
 
@@ -345,6 +403,29 @@ class ExpectancyTracker:
             'decided': decided,
             'win_rate': (round(win_rate * 100, 1)
                          if win_rate is not None else None),
+            # ADDITIVE (2026-08-26) — win_rate's denominator, made explicit.
+            # win_rate is over DECIDED trades and always has been; nothing
+            # about it changes here. But `decided` sat several keys away from
+            # the rate it divides, and the dashboard rendered the rate alone:
+            # "Win Rate 100.0%" from 16/16, with the 17 flats of a 33-trade
+            # population nowhere on screen. These two fields travel WITH the
+            # rate so a panel cannot show one without the other.
+            #   win_rate_n         — the denominator actually used (decided)
+            #   win_rate_basis     — which population that is, in words
+            #   win_rate_degenerate— the rate is forced by an empty side of
+            #                        the ledger, so it must not be rendered
+            #                        as a confident result. See
+            #                        _degenerate_win_rate().
+            # Rate over ALL closed trades is also published so a consumer
+            # that considers a flat a real closed trade can say so without
+            # recomputing — it is NOT a replacement for win_rate.
+            'win_rate_n': decided,
+            'win_rate_basis': 'decided',
+            'win_rate_degenerate': self._degenerate_win_rate(win_count,
+                                                             loss_count),
+            'win_rate_of_total': (round(win_count / total * 100, 1)
+                                  if total else None),
+            'win_rate_of_total_n': total,
             'expectancy_per_trade': (round(expectancy, 2)
                                      if expectancy is not None else None),
             'avg_win': (round(avg_win, 2) if avg_win is not None else None),
@@ -384,6 +465,10 @@ class ExpectancyTracker:
         for bot_id, trades in self.trades.items():
             if members and bot_id not in members:
                 continue
+            # Same probe filter as get_bot_stats, and for the same reason —
+            # this loop builds the FLEET headline, where a probe does the most
+            # damage. Filtered before last_n, as above.
+            trades = [t for t in trades if not _is_probe(t.get('pair'))]
             if last_n:
                 trades = trades[-last_n:]
             all_trades.extend(trades)
@@ -400,6 +485,10 @@ class ExpectancyTracker:
                 'total_trades': 0,
                 'fleet_expectancy': None,   # not 0 — nothing was measured
                 'win_rate': None,
+                'fleet_decided': 0,
+                'win_rate_n': 0,
+                'win_rate_basis': 'decided',
+                'win_rate_degenerate': False,
                 'total_net_pnl': 0,
                 'total_gross_pnl': 0,
                 'total_fees': 0,
@@ -520,6 +609,14 @@ class ExpectancyTracker:
             'win_rate': (round(win_rate * 100, 1)
                          if win_rate is not None else None),
             'fleet_decided': _fleet_decided,
+            # Same additive companions as get_bot_stats, so a consumer can
+            # treat a fleet payload and a bot payload identically.
+            # fleet_decided already carried the denominator; win_rate_n is
+            # its alias under the shared name.
+            'win_rate_n': _fleet_decided,
+            'win_rate_basis': 'decided',
+            'win_rate_degenerate': self._degenerate_win_rate(len(wins),
+                                                             len(losses)),
             'fleet_expectancy': (round(fleet_expectancy, 2)
                                  if fleet_expectancy is not None else None),
             'avg_win': (round(avg_win, 2) if avg_win is not None else None),
@@ -602,15 +699,45 @@ class ExpectancyTracker:
     def _max_consecutive_losses(self, trades):
         # Gross classification (matches get_bot_stats, not the stored
         # `won` flag, which is net-based for pre-2026-07-30 records).
+        #
+        # 2026-08-26: this counted `not gross_pnl > 0`, i.e. it treated FLAT
+        # trades as losses — the one place in this module that still did,
+        # after get_bot_stats was fixed to bucket flats separately. The two
+        # then described different populations out of the same list, and the
+        # contradiction shipped to the dashboard: gridzilla published
+        # `losses: 0` beside `max_consecutive_losses: 17`, where all 17 were
+        # $0.00 cycles. Read literally that says "a streak of 17 losses in a
+        # bot that has never lost". Only a strictly negative gross_pnl is a
+        # loss here, exactly as in get_bot_stats.
         max_run = 0
         current_run = 0
         for t in trades:
-            if not t['gross_pnl'] > 0:
+            if t['gross_pnl'] < 0:
                 current_run += 1
                 max_run = max(max_run, current_run)
-            else:
+            elif t['gross_pnl'] > 0:
                 current_run = 0
+            # A flat neither extends nor breaks a losing streak: it is not an
+            # outcome. It leaves current_run untouched so two losses either
+            # side of a $0.00 cycle still read as a run of 2.
         return max_run
+
+    @staticmethod
+    def _degenerate_win_rate(wins, losses):
+        """True when win_rate is arithmetically forced, not earned.
+
+        A rate of 100% over a population with zero losses (or 0% with zero
+        wins) is not a measurement of skill — it is what the formula must
+        return when one side of the ledger is empty. Gridzilla published
+        'Win Rate 100.0%' in confident green off 16W/0L/17F while its own
+        snapshot said `total_cycles: 0`; the grids that went against it
+        exited via range-break with the levels cancelled, so a loss was
+        never recordable in the first place.
+
+        Consumers use this to refuse a confident colour, not to hide the
+        number. The n belongs on screen either way.
+        """
+        return (wins + losses) > 0 and (losses == 0 or wins == 0)
 
     def evict_by_pair_prefix(self, prefix: str) -> int:
         """Drop in-memory trades whose pair starts with `prefix`. Returns count.
@@ -750,6 +877,15 @@ class ExpectancyTracker:
             'flat': 0, 'decided': 0,
             'max_consecutive_losses': 0,
             # Never measured — not zero.
+            # The win_rate_* companions must exist here too: a payload whose
+            # KEYS change with its values is the trap this function's
+            # docstring already warns about. n is a real count (0); the
+            # degenerate flag is False because no rate was produced at all.
+            'win_rate_n': 0,
+            'win_rate_basis': 'decided',
+            'win_rate_degenerate': False,
+            'win_rate_of_total': None,
+            'win_rate_of_total_n': 0,
             'win_rate': None, 'expectancy_per_trade': None,
             'avg_win': None, 'avg_loss': None, 'profit_factor': None,
             'avg_r': None, 'best_trade': None, 'worst_trade': None,

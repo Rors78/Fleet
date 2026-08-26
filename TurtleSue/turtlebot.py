@@ -54,6 +54,25 @@ try:
     from bus_listener import BusListener as _BusListener
 except ImportError:
     _BusListener = None
+
+# One floor for the fleet, not a copy per bot — see CONFIG["min_trade_size_usd"]
+# below and the size check in _open_position. This mirrors what NexusBrain and
+# Arbitrageur already do (arbitrageur.py ~line 61); TurtleSue was the sibling
+# still carrying a private hardcoded copy, which parked it after the
+# 2026-08-13 pool resize.
+#
+# Must be defined BEFORE the CONFIG dict at line ~119, which reads it — a
+# late import would be a NameError at module import and would take the whole
+# bot down. Bare `except Exception`, not `except ImportError`: command_center
+# is a large module and any failure inside it (not just a missing file) must
+# still leave a usable floor rather than killing this bot on startup.
+try:
+    from command_center import MIN_TRADE_USD as _MIN_TRADE_USD
+except Exception:
+    # Fallback matches the CURRENT fleet floor. Pinning the old 500.0 here
+    # would silently re-park this bot on a $210 pool if the import ever
+    # failed — the fallback must be safe AND usable.
+    _MIN_TRADE_USD = 0.25
 try:
     from event_publisher import EventPublisher as _EventPublisher
 except ImportError as e:
@@ -188,10 +207,31 @@ CONFIG = {
     # ── Minimum Trade Size ──
     # Signal-quality floor: must clear Kraken order minimums and the pool's
     # own floor. (No fee modeling — signal product, fees are the subscriber's venue.)
-    # The pool floor became an absolute $100 on 2026-08-05 (was 5%-of-pool,
-    # which scaled to $50,000 when the pool went to $1M and blocked trades
-    # fleet-wide). This 500 stays above it as a signal-quality bar of its own.
-    "min_trade_size_usd": 500.0,  # raised from 300.0 on 2026-04-07
+    #
+    # 2026-08-26: was a hardcoded 500.0 and it had PARKED THIS BOT COMPLETELY.
+    # The history is the whole lesson. The pool floor was once 5%-of-pool,
+    # which scaled to $50,000 at a $1M pool and blocked the fleet; it was made
+    # an absolute $100 on 2026-08-05, and this 500 was set above that as a
+    # signal-quality bar of its own. Then on 2026-08-13 the operator resized
+    # the pool $1M -> $210.53, Command Center dropped MIN_TRADE_USD 100 -> 1
+    # -> 0.25 to match, and TurtleSue's private copy never moved.
+    #
+    # At a $210.53 pool the per-trade cap is 20% = $42.11 and TurtleSue's 30%
+    # bot share is $63.16. A $500 FLOOR against a $42 CEILING is unsatisfiable:
+    # _open_position computed a correct pool-scaled unit, then rejected its own
+    # trade as "too small". Measured in the live log: 58 fleet-deployment
+    # denials since 2026-08-16, every one of them TurtleSue asking for a flat
+    # $600 against ~$107 of headroom, while every other bot sized itself at
+    # $5-13. The bot's only "wins" on record are ZZPROBE test rows because it
+    # has not been able to place a real trade since the resize.
+    #
+    # Fixed the way NexusBrain and Arbitrageur already do it (see
+    # arbitrageur.py ~line 61): import the ONE fleet floor instead of keeping
+    # a private copy, so the next pool resize carries automatically. The
+    # fallback matches the CURRENT fleet floor, per the sibling's own comment
+    # -- pinning the old 500.0 here would silently re-park this bot if the
+    # import ever failed, so the fallback must be safe AND usable.
+    "min_trade_size_usd": _MIN_TRADE_USD,
 
     # ── System Allocation ──
     "system_mode": "BOTH",          # S1 + S2 + S3 all active
@@ -900,7 +940,34 @@ class TurtleEngine:
             # so direction policy (e.g. the fleet-wide short ban) must not apply
             # — otherwise the reserve is refused and the branch below closes a
             # live position at market purely because of a config change.
+            # Re-reserve at the position's ORIGINAL notional, but never above
+            # what this bot could legitimately hold at the CURRENT pool size.
+            #
+            # 2026-08-26: the uncapped version jammed the fleet. A position
+            # opened against the $1M pool carries a $1M-era notional, and after
+            # the 2026-08-13 resize to $210.53 this line kept re-requesting it
+            # forever: measured in the live log, 58 fleet-deployment denials,
+            # every one "20.34 deployed + 600.00 requested > 127.49 cap",
+            # repeating every ~15s. Each denial then fell through to the else
+            # branch below, which CLOSES A LIVE POSITION AT MARKET — so a pool
+            # resize could liquidate open positions purely as a config artifact.
+            #
+            # The cap is the bot's own pool share, which is what sizing would
+            # grant a NEW position of this kind today. Capping (rather than
+            # refusing) keeps the position alive and lets the pool book a
+            # number it can actually honour; the residual exposure above the
+            # cap is already open and is reported through positions, not
+            # through the reservation book. If the basis is unreadable, fall
+            # back to the raw notional and let the pool decide — an unknown
+            # basis must not silently shrink a real reservation.
             amount = pos.total_size * pos.avg_entry
+            _rr_basis = self._sizing_basis()
+            if isinstance(_rr_basis, (int, float)) and _rr_basis > 0 and amount > _rr_basis:
+                logging.warning(
+                    "Re-reserve %s capped %.2f -> %.2f (position predates a pool "
+                    "resize; requesting its original notional would be denied "
+                    "and force a market close)", pair, amount, _rr_basis)
+                amount = _rr_basis
             ok, new_rid = self._portfolio_client.reserve(
                 pair, pos.direction, amount, is_reentry=True)
             if ok:

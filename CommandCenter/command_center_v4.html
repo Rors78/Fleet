@@ -3483,8 +3483,10 @@ function _drawMetricsBar(ctx,W){
      pool is unknown; downstream must render it as unavailable, same as the
      sibling pnl treatment noted below. */
   var pool=port.total!=null?port.total:null;
-  /* WR: use avg_win_rate (0-100 scale), normalize to fraction */
-  var wr=(agg.avg_win_rate!=null&&agg.total_trades>0)?agg.avg_win_rate:0;
+  /* WR: use avg_win_rate (0-100 scale), normalize to fraction.
+     Gate on win_rate_n (DECIDED trades), not total_trades — see the header
+     chip note: total_trades counts flats the rate never measured. */
+  var wr=(agg.avg_win_rate!=null&&agg.win_rate_n>0)?agg.avg_win_rate:0;
   if(wr>1) wr=wr/100;
   /* null-safe: this is the persistent command-bar HUD, on screen at all
      times. `||0` rendered an UNREPORTED total_pnl as "+0.00" in gain-teal —
@@ -3522,8 +3524,14 @@ function _drawMetricsBar(ctx,W){
      trade reads as "this system wins everything" — it is the most misleading
      number on the display. Below ~20 trades the figure is not meaningful, so
      it is dimmed rather than shown in confident teal. */
-  var _wrN=(agg.total_trades!=null?agg.total_trades:0);
-  var wrStr="WR: "+(wr*100).toFixed(1)+"% (n="+_wrN+")";
+  /* n = win_rate_n, the DECIDED-trade denominator the rate was computed
+     over. total_trades is a different population (it includes flats) and
+     pasting it here labelled a count that was never the divisor. When the
+     denominator is unknown, print no n at all rather than a stand-in. */
+  var _wrN=(agg.win_rate_n!=null?agg.win_rate_n:0);
+  var wrStr=(agg.avg_win_rate==null||!(_wrN>0))
+    ?"WR: --"
+    :"WR: "+(wr*100).toFixed(1)+"% (n="+_wrN+")";
   if(_wrN<20){
     /* Not enough trades to mean anything — grey, never the "good" colour. */
     ctx.fillStyle="rgba(150,150,150,0.55)";
@@ -3892,6 +3900,25 @@ function _orbRender(timestamp){
   /* Reset transform completely — no save/restore stack, immune to corruption */
   ctx.setTransform(_dpr,0,0,_dpr,0,0);
   ctx.clearRect(0,0,W,H);
+  /* Opaque near-black base (2026-08-25, darkness fix) — clearRect leaves the
+     canvas TRANSPARENT. Nothing painted below (CosmicCanvas/VoidField/
+     DeepField are all sparse gradient sprites over mostly-empty space, no
+     full-frame fill anywhere) ever makes most of the frame opaque, so the
+     empty-space pixel that reaches the exposure "screen" lift further down
+     this function has backdrop alpha ~0, not 1. A "screen" blend against a
+     transparent backdrop does NOT become fully opaque at the blend color —
+     it leaves the canvas pixel itself only as opaque as the fill's own
+     alpha, and the BROWSER then composites that translucent result over
+     the page's #07070c background as a second, silent blend pass. Measured
+     on a real fullscreen screenshot: this double-blend put "empty space" at
+     rgb(12,14,21) even though the code read as if it should land near
+     rgb(18,19,29) — the gap was exactly this missing opaque base. Painting
+     a real opaque near-black here first means every later blend mode
+     (screen/lighter/difference) computes against true black like the code
+     already assumes, and the CSS page background is never visible through
+     the canvas again. */
+  ctx.fillStyle="rgb(2,2,4)";
+  ctx.fillRect(0,0,W,H);
 
   /* Event rate tracking (events per second, smoothed) */
   _orbEventRateTimer+=dt;
@@ -4480,10 +4507,28 @@ function _orbRender(timestamp){
      deepest, darkest part of the pull-back where the lift is needed most.
      Now references _ORB_ZOOM_MIN directly so the ramp keeps intensifying
      all the way to the true floor, and the peak strength itself was raised
-     0.72->0.85 per the brief's "more aggressive at the far end" ask. */
+     0.72->0.85 per the brief's "more aggressive at the far end" ask.
+
+     ROUND 3 fix (2026-08-25, "space needs to be a lot darker"): 0.55-0.85
+     was calibrated back when this pass ran against an opaque backdrop that
+     (it turns out) never actually existed — clearRect left the canvas
+     transparent and nothing upstream ever painted a full-frame base (see
+     the new opaque fillRect right after clearRect above), so this pass was
+     the ONLY thing touching most "empty space" pixels, at 55-85% strength.
+     A "screen" blend has a hard floor of alpha*fillColor on pure black —
+     even against the now-correct opaque black base, 0.55 alone floors at
+     rgb(7.7,8.8,12.1) and 0.85 floors at rgb(11.9,13.6,18.7), i.e. a
+     uniformly lit-grey void, not the "black void, bright emitters" contrast
+     the brief asks for. Dropped to 0.08-0.18 (still ramping with zoom for
+     the "eyes adjusting" feel) so the black floor lands near rgb(1-3),
+     single digits, matching the measured target. Bright emitters (star
+     cores, engine plumes, CC's lattice) are already near-white and a
+     screen blend can only push them toward 255 — they barely move at any
+     strength, so this reduction is a contrast INCREASE, not a global dim:
+     void gets darker, real light sources read exactly the same. */
   if(_orbIsFS){
     var _expZoomT=Math.max(0,Math.min(1,(1-_orbZoom)/(1-_ORB_ZOOM_MIN)));
-    var _expStrength=0.55+_expZoomT*0.30;
+    var _expStrength=0.08+_expZoomT*0.10;
     ctx.save();
     ctx.globalCompositeOperation="screen";
     ctx.fillStyle="rgba(14,16,22,"+_expStrength.toFixed(3)+")";
@@ -4813,9 +4858,20 @@ function renderHeader(agg){
   var wrEl=document.getElementById("hWR");
   var wrVal=agg.avg_win_rate;
   /* Carry the sample size: a win rate with no n invites reading 100% on one
-     trade as a real edge. */
-  wrEl.textContent=wrVal!=null&&agg.total_trades>0
-    ?fmtPct(wrVal)+" (n="+agg.total_trades+")":"--%";
+     trade as a real edge.
+
+     The n MUST be win_rate_n -- the count of DECIDED trades the rate was
+     actually computed over -- and never total_trades. This chip used to read
+     "66.7% (n=66)" where 66 was a sum of trade counts pasted beside a rate
+     computed over a different population: 22 of those trades were FLAT and
+     never entered the rate at all. A number labelled n that is not the
+     denominator of the number beside it is a fabricated sample size. If the
+     backend cannot supply the real denominator, show no n rather than a
+     plausible-looking one. */
+  var wrN=agg.win_rate_n;
+  wrEl.textContent=(wrVal!=null&&wrN>0)
+    ?fmtPct(wrVal)+" (n="+wrN+")"
+    :(wrVal!=null?fmtPct(wrVal):"--%");
   /* This chip and the EXPECTANCY panel below it BOTH claim to be the
      fleet win rate and they disagree on screen: 55.3% (n=38) here against
      73.1% (n=27) there, same instant. Neither is wrong. They measure
@@ -4831,13 +4887,23 @@ function renderHeader(agg){
      Two honest measurements over different spans, presented as one
      quantity with no way to tell them apart. Name the window on the chip
      so the difference reads as scope rather than as a contradiction. */
-  if(wrVal!=null&&agg.total_trades>0){
+  if(wrVal!=null&&wrN>0){
     wrEl.title="Fleet win rate over each bot's LIFETIME counters (n="
-      +agg.total_trades+", restored across restarts). The EXPECTANCY panel"
+      +wrN+" DECIDED trades from "+(agg.win_rate_bots!=null?agg.win_rate_bots:"?")
+      +" trading bots, restored across restarts). Flat trades ($0.00) are"
+      +" excluded - they decide nothing, so they are not in this denominator;"
+      +" the fleet has "+(agg.total_trades!=null?agg.total_trades:"?")
+      +" trades in total. Intel-only bots are excluded: their wins/losses are"
+      +" signal outcomes, not trades."
+      +(agg.win_rate_n_exact===false
+        ?" CAVEAT: at least one bot does not report a decided count, so its"
+         +" flats may still be inside this n."
+        :"")
+      +" The EXPECTANCY panel"
       +" measures the trade store instead, which begins 2026-08-06 - a"
       +" shorter window, so the two figures differ legitimately.";
   }
-  if(wrVal!=null&&agg.total_trades>0){
+  if(wrVal!=null&&wrN>0){
     if(wrVal<15){wrEl.style.color="#ff4466";wrEl.style.textShadow="0 0 8px rgba(255,68,102,0.4)";}
     else if(wrVal<30){wrEl.style.color="#fbbf24";wrEl.style.textShadow="0 0 8px rgba(251,191,36,0.3)";}
     else{wrEl.style.color="#00ff88";wrEl.style.textShadow="0 0 8px rgba(0,255,136,0.3)";}
@@ -5132,7 +5198,12 @@ function renderAggStats(agg,bots){
   if(agg.best_performer&&agg.worst_performer&&agg.best_performer===agg.worst_performer){worstName="--";worstColor="var(--text-muted)";}
   html+=row("Positions",agg.total_open_positions!=null?agg.total_open_positions:"0");
   html+=row("Trades",agg.total_trades!=null?agg.total_trades:"0");
-  html+=row("Win Rate",agg.avg_win_rate!=null&&agg.total_trades>0?fmtPct(agg.avg_win_rate):"--%");
+  /* Win Rate carries its OWN denominator (decided trades), which is not the
+     "Trades" row above it — that row counts flats too. Showing them adjacent
+     without the n invited reading the trade count as the rate's sample. */
+  html+=row("Win Rate",agg.avg_win_rate!=null&&agg.win_rate_n>0
+    ?fmtPct(agg.avg_win_rate)+' <span style="opacity:.6">(n='+agg.win_rate_n+')</span>'
+    :"--%");
   html+=row("Best",'<span style="color:'+bestColor+'">'+bestName+'</span>');
   html+=row("Worst",'<span style="color:'+worstColor+'">'+worstName+'</span>');
   var rc=agg.regime_consensus;
@@ -8668,11 +8739,42 @@ function buildGridzillaView(def,b){
      hidden by a restart the way TurtleSue's was. */
   var _gzG=amnesiaGuard('gridzilla',0,np,0,null,{});
   if(_gzG.amnesia) np=_gzG.pnl;
+  /* ── Headline-stat provenance (2026-08-26) ──────────────────────────────
+     amnesiaGuard already corrected NET PNL and marks it with ' *'. But the
+     TRADE ECONOMICS and CYCLE ANALYTICS cards read exp.* — the DURABLE
+     expectancy store — and rendered it with no marker at all, beside live
+     counters reading zero. Live state said "Total cycles 0 / Active grids 0 /
+     No completed grids yet" while the same panel said "Win rate 100.0%,
+     Wins/Losses 16/0, Trades 33". The file already knew: CYCLE FORENSICS
+     prints "from event log (pre-restart)" and Trade History prints
+     "(pre-restart)". That provenance simply never reached the headline.
+
+     _gzPreRestart is true when the durable store holds trades the live bot
+     has no memory of. It drives the SAME ' *' marker convention the NET PNL
+     label already uses — no new visual language. */
+  var _gzPreRestart=((exp.total_trades||0)>0 && !(raw.total_cycles||0));
+  var _gzStatMark=(_gzPreRestart||_gzG.amnesia)?' *':'';
   var npc=!npKnown?'#64748b':(np>=0?'#16a085':'#ef4444');
   var grossPnl=exp.total_gross_pnl;
   var minSpacing=raw.min_spacing_pct||raw.config&&raw.config.min_spacing_pct||1.2;
   var spacingFloor=1.2; /* pct — CLAUDE.md: Gridzilla spacing floor, no longer fee-derived (fees removed fleet-wide) */
   var wr2=exp.win_rate;
+  /* ── Degenerate win rate (2026-08-26) ───────────────────────────────────
+     exp.win_rate is wins/DECIDED and always has been. Gridzilla sits at
+     16W / 0L / 17 flat, so decided=16 and the rate is a forced 100.0% — the
+     arithmetic cannot return anything else when one side of the ledger is
+     empty. It is not a measurement of skill: a grid that goes against
+     Gridzilla exits via range-break with its levels cancelled, booking $0.00,
+     so a LOSS IS NOT CURRENTLY RECORDABLE for this bot at all (167
+     GRID_KILLED events in the bus, zero with negative P/L).
+
+     Rendering that in confident green against a "target: 50%+" label asserts
+     a result nobody measured. Backend now publishes win_rate_degenerate;
+     recompute locally too so an older/cached payload still degrades safely
+     rather than falling back to the confident path. */
+  var _gzWrN=(exp.win_rate_n!=null?exp.win_rate_n:(exp.decided!=null?exp.decided:null));
+  var _gzWrDegen=(exp.win_rate_degenerate===true)||
+                 (((exp.wins||0)+(exp.losses||0))>0&&((exp.losses||0)===0||(exp.wins||0)===0));
   var maxDd=0;
   var _agKeys=Object.keys(activeGrids);
   for(var _ak=0;_ak<_agKeys.length;_ak++){if((activeGrids[_agKeys[_ak]].max_dd||0)>maxDd)maxDd=activeGrids[_agKeys[_ak]].max_dd;}
@@ -8883,22 +8985,41 @@ function buildGridzillaView(def,b){
   ════════════════════════════════════════ */
   var _gzTotalTrades=exp.total_trades||0;
   var _gzLowSample=_gzTotalTrades>0&&_gzTotalTrades<30;
-  var wrC2=wr2!=null?(wr2>=50?'good':wr2>=30?'warn':'bad'):'';
+  /* Degenerate rates get no verdict class — '' falls through to the card's
+     default text colour, the same neutral the null case already used. */
+  var wrC2=(wr2!=null&&!_gzWrDegen)?(wr2>=50?'good':wr2>=30?'warn':'bad'):'';
   h+='<div class="dv2-card">';
   h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>CYCLE ANALYTICS</div>';
   h+='<div class="dv2-scroll">';
   if(_gzLowSample){
     h+='<div style="font-size:9px;color:#f59e0b;margin-bottom:4px;font-family:\'Courier New\',monospace">'+_gzTotalTrades+' trades \u2014 need 30+ for reliable stats</div>';
   }
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Total cycles</span><span class="dv2-kv-v cyan">'+(raw.total_cycles||0)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Win rate</span><span class="dv2-kv-v '+wrC2+'">'+(wr2!=null?fmtNum(wr2,1)+'%':'--')+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Wins / Losses</span><span class="dv2-kv-v">'+(exp.wins||0)+' / '+(exp.losses||0)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Net P&amp;L</span><span class="dv2-kv-v '+(!npKnown?'':np>=0?'good':'bad')+'">'+(npKnown&&np>=0?'+':'')+fmtNum(np,4)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Profit factor</span><span class="dv2-kv-v '+(exp.profit_factor!=null&&exp.profit_factor>=1?'good':'bad')+'">'+(exp.profit_factor!=null?fmtNum(exp.profit_factor,2):'--')+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Exp/trade</span><span class="dv2-kv-v '+(exp.expectancy_per_trade!=null&&exp.expectancy_per_trade>=0?'good':'bad')+'">'+(exp.expectancy_per_trade!=null?(exp.expectancy_per_trade>=0?'+':'')+fmtNum(exp.expectancy_per_trade,4):'--')+'</span></div>';
+  /* "Total cycles" is LIVE (this run); every row under it is from the durable
+     pre-restart store. Reading 0 directly above "Win rate 100.0%" is what made
+     the panel self-contradictory, so the boundary is labelled. */
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Total cycles<span style="color:#475569;font-weight:400"> (this run)</span></span><span class="dv2-kv-v cyan">'+(raw.total_cycles||0)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Win rate'+_gzStatMark+'</span><span class="dv2-kv-v '+wrC2+'">'+(wr2!=null?fmtNum(wr2,1)+'%':'--')
+    +(_gzWrN!=null?'<span style="font-weight:400;color:#475569"> n='+_gzWrN+'</span>':'')+'</span></div>';
+  if(_gzWrDegen){
+    h+='<div style="font-size:8px;color:#f59e0b;margin:-1px 0 2px;font-family:\'Courier New\',monospace">'
+      +(exp.losses||0)+' losses recorded — rate not meaningful'
+      +(exp.win_rate_of_total!=null?' · '+fmtNum(exp.win_rate_of_total,1)+'% of all '+(exp.total_trades||0)+' closed':'')+'</div>';
+  }
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Wins / Losses'+_gzStatMark+'</span><span class="dv2-kv-v">'+(exp.wins||0)+' / '+(exp.losses||0)
+    +((exp.flat||0)>0?'<span style="font-weight:400;color:#475569"> / '+exp.flat+'F</span>':'')+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Net P&amp;L'+_gzStatMark+'</span><span class="dv2-kv-v '+(!npKnown?'':np>=0?'good':'bad')+'">'+(npKnown&&np>=0?'+':'')+fmtNum(np,4)+'</span></div>';
+  /* profit_factor is null with no losing side (no denominator). '--' already
+     handles that; the 'bad' class must not be applied to a null, which would
+     paint an ABSENT ratio red as though it had been measured and failed. */
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Profit factor'+_gzStatMark+'</span><span class="dv2-kv-v '+(exp.profit_factor==null?'':exp.profit_factor>=1?'good':'bad')+'">'+(exp.profit_factor!=null?fmtNum(exp.profit_factor,2):'--')+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Exp/trade'+_gzStatMark+'</span><span class="dv2-kv-v '+(exp.expectancy_per_trade==null?'':exp.expectancy_per_trade>=0?'good':'bad')+'">'+(exp.expectancy_per_trade!=null?(exp.expectancy_per_trade>=0?'+':'')+fmtNum(exp.expectancy_per_trade,4):'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Avg win</span><span class="dv2-kv-v">'+(exp.avg_win!=null?(exp.avg_win>=0?'+':'')+fmtNum(exp.avg_win,4):'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Avg loss</span><span class="dv2-kv-v">'+(exp.avg_loss!=null?fmtNum(exp.avg_loss,4):'--')+'</span></div>';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Max dd</span><span class="dv2-kv-v '+(maxDd>3?'bad':maxDd>1.5?'warn':'')+'">'+(maxDd>0?fmtNum(maxDd,2)+'%':'0%')+'</span></div>';
+  if(_gzPreRestart){
+    h+='<div style="margin-top:5px;font-size:8px;color:#f97316;font-family:\'Courier New\',monospace;padding:3px 5px;background:rgba(249,115,22,0.06);border-left:2px solid #f97316">'
+      +'* from durable expectancy store (pre-restart) \u2014 bot reports '+(raw.total_cycles||0)+' cycles this run</div>';
+  }
   h+='<div style="margin-top:5px;padding:4px 5px;background:rgba(250,204,21,0.04);border:1px solid rgba(250,204,21,0.1);font-size:9px;font-family:\'Courier New\',monospace;color:#facc15">Grid params: min spacing '+fmtNum(minSpacing,1)+'% \u00b7 min profit $0.50/cycle</div>';
   h+='</div>'; /* /dv2-scroll */
   h+='</div>'; /* /dv2-card R1C4 */
@@ -9028,7 +9149,14 @@ function buildGridzillaView(def,b){
   ════════════════════════════════════════ */
   var avgNet=(_gzTotalTrades>0)?np/_gzTotalTrades:null;
   var wrFill=wr2!=null?Math.min(100,Math.max(0,wr2)):0;
-  var wrC3=wr2!=null?(wr2>=55?'#16a085':wr2>=45?'#f59e0b':'#ef4444'):'#475569';
+  /* Neutral grey — the same '#475569' this line already used for null — when
+     the rate is degenerate. An unmeasurable rate and an absent one deserve
+     the same non-committal colour; only an EARNED rate gets a verdict hue. */
+  var wrC3=(wr2==null||_gzWrDegen)?'#475569'
+           :(wr2>=55?'#16a085':wr2>=45?'#f59e0b':'#ef4444');
+  /* The bar is the loudest thing in the card: a full-width green sweep to
+     100% reads as a triumphant result. Degenerate rates get no fill. */
+  if(_gzWrDegen) wrFill=0;
 
   h+='<div class="dv2-card">';
   h+='<div class="dv2-card-hdr"><div class="dv2-accent-pip" style="background:'+c+'"></div>TRADE ECONOMICS</div>';
@@ -9036,17 +9164,33 @@ function buildGridzillaView(def,b){
   /* Win rate bar */
   h+='<div style="margin-bottom:8px">';
   h+='<div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:3px">';
-  h+='<span style="font-size:9px;color:#475569;font-family:\'Courier New\',monospace;text-transform:uppercase;letter-spacing:1px">Win Rate</span>';
-  h+='<span style="font-size:12px;font-weight:700;color:'+wrC3+';font-family:\'Courier New\',monospace">'+(wr2!=null?fmtNum(wr2,0)+'%':'--')+'</span>';
+  h+='<span style="font-size:9px;color:#475569;font-family:\'Courier New\',monospace;text-transform:uppercase;letter-spacing:1px">Win Rate'+_gzStatMark+'</span>';
+  /* n travels WITH the rate. A bare "100.0%" whose denominator is invisible
+     is the defect; 16 of 33 trades were dropped from it as flats. */
+  h+='<span style="font-size:12px;font-weight:700;color:'+wrC3+';font-family:\'Courier New\',monospace">'+(wr2!=null?fmtNum(wr2,0)+'%':'--')
+    +(_gzWrN!=null?'<span style="font-size:9px;font-weight:400;color:#475569"> n='+_gzWrN+'</span>':'')+'</span>';
   h+='</div>';
   h+='<div style="height:5px;background:rgba(255,255,255,0.04);border-radius:2px;overflow:hidden">';
   h+='<div style="height:100%;width:'+wrFill+'%;background:'+wrC3+';border-radius:2px;transition:width 0.5s ease"></div>';
   h+='</div>';
-  h+='<div style="font-size:8px;color:#475569;margin-top:2px;font-family:\'Courier New\',monospace">target: 50%+</div>';
+  /* Say WHY it is not a result, in place of the target line — a "target: 50%+"
+     beside an unmeasurable 100% invites the reader to score it as a pass. */
+  if(_gzWrDegen){
+    h+='<div style="font-size:8px;color:#f59e0b;margin-top:2px;font-family:\'Courier New\',monospace">'
+      +(exp.losses||0)+' losses recorded — rate not meaningful</div>';
+    h+='<div style="font-size:8px;color:#475569;margin-top:1px;font-family:\'Courier New\',monospace">'
+      +(exp.wins||0)+'W / '+(exp.losses||0)+'L / '+(exp.flat||0)+'F of '+(exp.total_trades||0)
+      +(exp.win_rate_of_total!=null?' · '+fmtNum(exp.win_rate_of_total,1)+'% of all closed':'')+'</div>';
+  } else {
+    h+='<div style="font-size:8px;color:#475569;margin-top:2px;font-family:\'Courier New\',monospace">target: 50%+</div>';
+  }
   h+='</div>';
   /* Per-trade breakdown */
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Avg net/cycle</span><span class="dv2-kv-v '+(avgNet!=null&&avgNet>=0?'good':'bad')+'">'+(avgNet!=null?(avgNet>=0?'+':'')+fmtNum(avgNet,4):'--')+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Wins / Losses</span><span class="dv2-kv-v">'+(exp.wins||0)+' / '+(exp.losses||0)+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Avg net/cycle'+_gzStatMark+'</span><span class="dv2-kv-v '+(avgNet!=null&&avgNet>=0?'good':'bad')+'">'+(avgNet!=null?(avgNet>=0?'+':'')+fmtNum(avgNet,4):'--')+'</span></div>';
+  /* Flats shown alongside: "16 / 0" beside a 33-trade population hides the
+     17 records that are neither. */
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Wins / Losses'+_gzStatMark+'</span><span class="dv2-kv-v">'+(exp.wins||0)+' / '+(exp.losses||0)
+    +((exp.flat||0)>0?'<span style="font-weight:400;color:#475569"> / '+exp.flat+'F</span>':'')+'</span></div>';
   /* Spacing analysis */
   h+='<div style="margin-top:6px;border-top:1px solid #1e293b;padding-top:5px">';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Spacing floor</span><span class="dv2-kv-v">'+fmtNum(spacingFloor,2)+'%</span></div>';
@@ -9056,8 +9200,15 @@ function buildGridzillaView(def,b){
   /* Raw totals */
   h+='<div style="margin-top:6px;border-top:1px solid #1e293b;padding-top:5px">';
   h+='<div class="dv2-kv"><span class="dv2-kv-k">Total net</span><span class="dv2-kv-v '+(!npKnown?'':np>=0?'good':'bad')+'">'+(npKnown&&np>=0?'+':'')+fmtNum(np,4)+'</span></div>';
-  h+='<div class="dv2-kv"><span class="dv2-kv-k">Trades</span><span class="dv2-kv-v cyan">'+_gzTotalTrades+'</span></div>';
+  h+='<div class="dv2-kv"><span class="dv2-kv-k">Trades'+_gzStatMark+'</span><span class="dv2-kv-v cyan">'+_gzTotalTrades+'</span></div>';
   h+='</div>';
+  /* The disclosure itself. Without this the ' *' markers above are an
+     unexplained glyph; with it the card states plainly that these figures
+     predate the restart the live counters reflect. */
+  if(_gzPreRestart){
+    h+='<div style="margin-top:6px;font-size:8px;color:#f97316;font-family:\'Courier New\',monospace;padding:3px 5px;background:rgba(249,115,22,0.06);border-left:2px solid #f97316">'
+      +'* from durable expectancy store (pre-restart) — bot reports '+(raw.total_cycles||0)+' cycles this run</div>';
+  }
   h+='</div>'; /* /dv2-scroll */
   h+='</div>'; /* /dv2-card R2C4 */
 
@@ -12573,6 +12724,30 @@ function buildConfluenceView(def,b){
   var _cfG=amnesiaGuard('confluence',eq,pnl,0,null,{});
   eq=_cfG.eq; pnl=_cfG.pnl;
   if(_cfG.amnesia){ wr=_cfG.stats.win_rate*100; }
+  /* ── Two win rates, one panel (2026-08-26) ──────────────────────────────
+     This panel showed "WIN RATE 29.6%" in the KPI strip and "Win rate 36.8%
+     / Total trades 19" in the Performance card, at the same moment, with no
+     label distinguishing them. Both are correct; they measure DIFFERENT
+     POPULATIONS:
+
+       29.6%  raw.win_rate      — the BOT's own in-memory ledger (n=27),
+                                  reset on restart, counts every close the
+                                  bot itself remembers.
+       36.8%  expectancy store  — the DURABLE record Command Center wrote to
+                                  disk per event (7W/12L, n=19). Smaller
+                                  because CC only durably records closes it
+                                  actually observed, and it survives restarts.
+
+     Neither is wrong, so neither is "fixed" by deleting it. The DEFECT is two
+     bare figures labelled identically. Each now carries its source and its n.
+     The trader panels' convention for this already exists at line ~7681
+     (TurtleSue): "WIN RATE (self)" with a title= explaining the difference. */
+  var _cfSelfN=(typeof raw.total_trades==='number')?raw.total_trades:null;
+  /* ovData is declared later in the file; `var` hoists, and this only runs at
+     render time. Guarded anyway, matching the convention at lines 3840/7148. */
+  var _cfExp=(typeof ovData!=='undefined'&&ovData&&ovData.expectancy
+              &&ovData.expectancy.bot_stats
+              &&ovData.expectancy.bot_stats.confluence)||null;
   var positions=raw.positions||[];
   var candidates=raw.candidates||[];
   var rejections=raw.rejections||[];
@@ -12597,7 +12772,12 @@ function buildConfluenceView(def,b){
   h+='<div class="dv2-stats-strip">';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">EQUITY'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value cyan">'+fmt$(eq)+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">PNL'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(pnl>=0?'good':'bad')+'">'+(pnl>=0?"+":"")+fmtNum(pnl,2)+'</div></div>';
-  h+='<div class="dv2-kpi"><div class="dv2-kpi-label">WIN RATE'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(!wrKnown?'':wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
+  /* Labelled "(self)" with the same title= text and markup TurtleSue already
+     uses at line ~7715 — reusing the existing convention rather than
+     inventing a second visual language for the same distinction. The n makes
+     the population explicit, which is what tells 29.6% (n=27, bot ledger)
+     apart from the Performance card's 36.8% (n=19, durable store). */
+  h+='<div class="dv2-kpi"><div class="dv2-kpi-label" title="Self-reported by this bot, from its own in-memory ledger (reset on restart). The Performance card below shows trades Command Center durably recorded — a smaller, restart-proof set, so the two figures differ legitimately.">WIN RATE <span style="opacity:0.55;font-weight:400">(self'+(_cfSelfN!=null?' n='+_cfSelfN:'')+')</span>'+(_cfG.amnesia?' *':'')+'</div><div class="dv2-kpi-value '+(!wrKnown?'':wr>=55?'good':wr>=45?'warn':'bad')+'">'+fmtNum(wr,1)+'%</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">OPEN</div><div class="dv2-kpi-value '+(positions.length?'good':'')+'">'+positions.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">CANDIDATES</div><div class="dv2-kpi-value">'+candidates.length+'</div></div>';
   h+='<div class="dv2-kpi"><div class="dv2-kpi-label">REGIME</div><div class="dv2-kpi-value" style="color:'+regimeC+'">'+escHtml(regime)+'</div></div>';
@@ -13651,9 +13831,43 @@ function renderSidebar(botId){
     var pfCls = profitFactor!=null ? (profitFactor>=1.5?"green":profitFactor>=1?"amber":"red") : "";
 
     h3 = '<div class="sb-dsec">';
+    /* ── Which population is this? (2026-08-26) ─────────────────────────────
+       `wr` above prefers bex.win_rate (Command Center's DURABLE expectancy
+       store) and falls back to norm.win_rate (the bot's own in-memory
+       ledger). Those are different populations of different sizes, and the
+       row said only "Win rate" either way — so CONFLUENCE showed 36.8% here
+       (7W/12L, n=19, durable) beside its panel KPI's 29.6% (n=27, self) with
+       nothing to tell them apart. Name the source and carry the n.
+
+       Also: win_rate is over DECIDED trades while "Total trades" above counts
+       ALL closes including flats, so the two rows legitimately have different
+       denominators — that gap is exactly what made gridzilla's 100% look like
+       it was taken over 33 trades. */
+    var _sbSelf   = !(bex && bex.win_rate!=null);
+    var _sbWrN    = (bex && bex.win_rate_n!=null) ? bex.win_rate_n
+                  : (bex && bex.decided!=null) ? bex.decided : null;
+    var _sbSrc    = _sbSelf ? 'self' : 'recorded';
+    var _sbWrLbl  = 'Win rate <span style="opacity:0.55;font-weight:400">('
+                  + _sbSrc + (_sbWrN!=null ? ' n=' + _sbWrN : '') + ')</span>';
+    /* Same degeneracy rule as the Gridzilla panel: a rate forced by an empty
+       side of the ledger is not a result. Recomputed locally as well as read
+       from the backend flag so a cached payload still degrades safely. */
+    var _sbDegen  = bex && ((bex.win_rate_degenerate===true) ||
+                    (((bex.wins||0)+(bex.losses||0))>0 &&
+                     ((bex.losses||0)===0 || (bex.wins||0)===0)));
+
     h3 += '<div class="sb-hdr">Performance</div>';
     h3 += sbRow("Total trades", totalTrades!=null ? totalTrades : "--");
-    h3 += sbRow("Win rate", wr!=null ? pct1(wr) : "--");
+    h3 += sbRow(_sbWrLbl, wr!=null ? pct1(wr) : "--");
+    if(_sbDegen){
+      h3 += '<div style="font-size:0.58rem;color:#f59e0b;font-family:var(--font-mono);padding:0 0 3px">'
+          + (bex.losses||0) + ' losses recorded — rate not meaningful'
+          + (bex.win_rate_of_total!=null
+             ? ' · ' + bex.win_rate_of_total.toFixed(1) + '% of all '
+               + (bex.total_trades||0) + ' closed'
+             : '')
+          + '</div>';
+    }
     h3 += sbRow("Net PnL", netPnl!=null ? '<span class="sb-val '+netPnlCls+'">'+fmtPnl(netPnl)+'</span>' : "--");
     h3 += sbRow("Profit factor", profitFactor!=null ? '<span class="sb-val '+pfCls+'">'+profitFactor.toFixed(2)+'</span>' : "--");
     h3 += sbRow("Exp/trade", expTrade!=null ? '<span class="sb-val '+(expTrade>=0?"green":"red")+'">'+fmtPnl(expTrade)+'</span>' : "--");
@@ -13667,8 +13881,10 @@ function renderSidebar(botId){
   /* ── Fleet context (section 4, always shown) ── */
   var agg = state.aggregate || {};
   var poolAmt  = ovData.portfolio ? ovData.portfolio.total : (state.portfolio ? state.portfolio.total : null);
-  var fleetWR  = agg.avg_win_rate!=null ? pct1(agg.avg_win_rate) : "--";
-  var fleetTr  = agg.total_trades!=null ? agg.total_trades : "--";
+  var fleetWR  = (agg.avg_win_rate!=null&&agg.win_rate_n>0) ? pct1(agg.avg_win_rate) : "--";
+  /* The parenthesised figure beside a win rate is its SAMPLE SIZE, so it must
+     be the decided-trade denominator, not the fleet trade count. */
+  var fleetWRn = agg.win_rate_n!=null ? agg.win_rate_n : null;
   var contrSnap= ovData.contrarian || {};
   var fearVal  = contrSnap.fear_greed_value!=null ? contrSnap.fear_greed_value : (contrSnap.sentiment_index!=null ? contrSnap.sentiment_index : null);
   var fearLbl  = contrSnap.fear_greed_label || contrSnap.sentiment_label || (fearVal!=null?(fearVal<25?"EXTREME FEAR":fearVal<45?"FEAR":fearVal<55?"NEUTRAL":fearVal<75?"GREED":"EXTREME GREED"):"--");
@@ -13680,7 +13896,7 @@ function renderSidebar(botId){
     ? '<span class="sb-val '+(aegisState.score<0.3?"red":aegisState.score<0.6?"amber":"green")+'">'+Number(aegisState.score).toFixed(3)+' '+(aegisState.regime||"")+'</span>'
     : "--");
   fc += sbRow("Sentiment", fearVal!=null ? '<span class="sb-val '+fearCls+'">'+fearVal+' '+escHtml(fearLbl)+'</span>' : "--");
-  fc += sbRow("Fleet WR", fleetWR+' ('+fleetTr+')');
+  fc += sbRow("Fleet WR", fleetWR+(fleetWRn!=null?' (n='+fleetWRn+')':''));
   fc += sbRow("Pool", poolAmt!=null ? fmt$(poolAmt) : "--");
   fc += '</div>';
 
@@ -13695,6 +13911,12 @@ function _sbToggle(){
   if(!sb) return;
   _sbCollapsed=!_sbCollapsed;
   sb.classList.toggle("collapsed",_sbCollapsed);
+  /* Mirror the state onto .main so CSS can reserve a gutter for the fixed
+     .sb-toggle button, which parks at right:0 when collapsed and covers the
+     right-pinned .dv2-kv-v values. #sidebar is .main's LAST child, so a
+     sibling selector off .sidebar cannot reach the panels. */
+  var mn=document.querySelector(".main");
+  if(mn) mn.classList.toggle("sb-collapsed",_sbCollapsed);
   if(btn){
     btn.innerHTML=_sbCollapsed?"\u25B6":"\u25C0";
     btn.title=_sbCollapsed?"Show sidebar (S)":"Hide sidebar (S)";
@@ -18395,7 +18617,10 @@ function _updateFsHud(){
   el=document.getElementById("fsRegime");
   if(el&&agg) el.textContent=agg.regime_consensus||"--";
   el=document.getElementById("fsWR");
-  if(el&&agg) el.textContent=(agg.avg_win_rate!=null?fmtPct(agg.avg_win_rate):"--%");
+  /* Fullscreen HUD. Carries its own decided-trade n; gate on win_rate_n so a
+     rate never appears without the denominator it was computed over. */
+  if(el&&agg) el.textContent=(agg.avg_win_rate!=null&&agg.win_rate_n>0
+    ?fmtPct(agg.avg_win_rate)+" (n="+agg.win_rate_n+")":"--%");
   el=document.getElementById("fsTrades");
   if(el&&agg) el.textContent=(agg.total_trades||0)+" trades";
 }

@@ -1738,9 +1738,20 @@ def _normalize_gridzilla(raw: dict) -> dict:
     # +$34.90 cycle rendered as a total loss. Two fields, two sources, shown
     # as one measurement.
     _exp_trades = exp.get("total_trades")
+    _decided = None
     if _exp_trades:
         total_trades = _exp_trades
         wr = exp.get("win_rate")
+        # win_rate is computed over DECIDED trades (wins+losses); total_trades
+        # counts flats too. Carry the decided count so the fleet aggregate can
+        # use the rate's real denominator instead of multiplying the rate by a
+        # larger population. Live: 100% over 16 decided, 17 flat, 33 total --
+        # 100% x 33 fabricates 17 wins that do not exist.
+        _decided = exp.get("decided")
+        if _decided is None:
+            _w, _l = exp.get("wins"), exp.get("losses")
+            if isinstance(_w, int) and isinstance(_l, int):
+                _decided = _w + _l
     else:
         # Expectancy has nothing; fall back to the cycle counter for the
         # count and report the rate as unmeasured rather than borrowing a
@@ -1752,6 +1763,7 @@ def _normalize_gridzilla(raw: dict) -> dict:
         "pnl": float(pnl) if pnl is not None else None,
         "pnl_pct": None,
         "win_rate": float(wr) if wr is not None else None,
+        "win_rate_decided": _decided,
         "drawdown_pct": None,
         "sharpe": None,
         "open_positions": n_grids,
@@ -1936,6 +1948,29 @@ _NORMALIZERS = {
 }
 
 
+def _trader_ids() -> set:
+    """Bot ids whose wins/losses are actual TRADES.
+
+    The fleet win rate must be computed over traders only. Intel and support
+    bots publish signal-resolution counters that some normalizers map onto
+    win_rate/total_trades -- trinity (role="support", an intel-only scanner)
+    was contributing "2 trades at 100%" to the fleet TRADING win rate.
+
+    Falls back to the empty set if the registry is unreadable; callers treat
+    that as "cannot attribute", which yields no win rate rather than a wrong
+    one computed over everybody.
+    """
+    try:
+        return set(_fleet_config.get_traders().keys())
+    except Exception:
+        log.warning("fleet_config.get_traders() unavailable; fleet win rate "
+                    "will report unmeasured rather than aggregate non-traders")
+        return set()
+
+
+_TRADER_IDS = _trader_ids()
+
+
 def _first_available(d1: dict, d2: dict, *keys: str) -> Any:
     """Return the first non-None value found across dicts for any key."""
     for k in keys:
@@ -1964,13 +1999,35 @@ def _compute_aggregate(bots_data: dict) -> dict:
     trades = _collect("total_trades")
     regimes = [n["regime"] for n in norms.values() if n.get("regime")]
 
-    # Global fleet WR = total_wins / total_trades across bots that have traded.
-    # Reconstruct wins from (win_rate, total_trades) per bot and sum. Bots with
+    # Global fleet WR = total_wins / total DECIDED trades, over TRADERS only.
+    # Reconstruct wins from (win_rate, decided_n) per bot and sum. Bots with
     # zero trades contribute 0 wins AND 0 to the denominator, so they drop out
     # cleanly. This is the only aggregation that means what "fleet WR" says.
+    #
+    # Two corrections, both of which inflated the published figure:
+    #
+    # 1. THE DENOMINATOR MUST BE THE RATE'S OWN POPULATION. A bot's win_rate is
+    #    computed over DECIDED trades (wins+losses); its total_trades counts
+    #    flats as well. Multiplying the rate by the larger count invents wins.
+    #    Live 2026-08-25: gridzilla reported win_rate 100.0 with total_trades
+    #    33, of which 16 were decided and 17 were FLAT ($0.00 moves). 100% x 33
+    #    credited it 33 wins when it had 16 -- 17 fabricated wins, on their own
+    #    enough to carry the fleet figure. Prefer win_rate_decided when the bot
+    #    publishes it; fall back to total_trades only when it does not, and
+    #    record that fallback so the aggregate can disclose it.
+    #
+    # 2. ONLY BOTS THAT ACTUALLY TRADE MAY COUNT. trinity is role="support" --
+    #    an intel-only scanner. Its wins/losses are SIGNAL TRACK outcomes, not
+    #    trades, and its normalizer maps them onto win_rate/total_trades, so it
+    #    injected "2 trades at 100%" into the fleet TRADING win rate. A signal
+    #    that resolved favourably is not a trade that made money.
     _total_wins = 0
     _total_trades_for_wr = 0
-    for n in norms.values():
+    _wr_exact = True   # False once any bot's denominator had to be assumed
+    _wr_bots = 0
+    for bid, n in norms.items():
+        if bid not in _TRADER_IDS:
+            continue
         wr = n.get("win_rate")
         tc = n.get("total_trades") or 0
         if wr is None or tc <= 0:
@@ -1978,8 +2035,22 @@ def _compute_aggregate(bots_data: dict) -> dict:
         # Normalize scale: TurtleSue/Gridzilla raw passthrough may be 0-1,
         # NexusBrain is already scaled to 0-100. Anything > 1 is assumed %.
         wr_pct = wr if wr > 1 else wr * 100
-        _total_wins += round(wr_pct / 100.0 * tc)
-        _total_trades_for_wr += tc
+        _dec = n.get("win_rate_decided")
+        if isinstance(_dec, int) and _dec >= 0:
+            denom = _dec
+        else:
+            # The bot does not publish a decided count. total_trades is the
+            # only denominator available; it is exact only if nothing was
+            # flat, which cannot be confirmed from here.
+            denom = tc
+            _wr_exact = False
+        if denom <= 0:
+            # Decided nothing -- UNMEASURED, not 0%. Contributes to neither
+            # numerator nor denominator (turtlesue: 5 trades, all flat).
+            continue
+        _total_wins += round(wr_pct / 100.0 * denom)
+        _total_trades_for_wr += denom
+        _wr_bots += 1
     global_wr = (_total_wins / _total_trades_for_wr * 100.0) if _total_trades_for_wr > 0 else None
 
     # Best / worst performer by pnl_pct first, then pnl
@@ -2019,7 +2090,20 @@ def _compute_aggregate(bots_data: dict) -> dict:
         # fleet P/L, which is already reported as total_pnl below.
         "total_equity": None,
         "total_pnl": sum(v for _, v in pnls) if pnls else None,
-        "avg_win_rate": global_wr,  # Global WR = total_wins / total_trades (not an unweighted mean)
+        # Global WR = total_wins / total DECIDED trades, traders only.
+        # NOTE the denominator is win_rate_n, NOT total_trades: the two count
+        # different populations and pairing the rate with total_trades was the
+        # defect this replaces. Any consumer showing "(n=...)" beside this rate
+        # MUST use win_rate_n.
+        "avg_win_rate": global_wr,
+        "win_rate_n": _total_trades_for_wr if _total_trades_for_wr > 0 else None,
+        "win_rate_wins": _total_wins if _total_trades_for_wr > 0 else None,
+        "win_rate_bots": _wr_bots if _total_trades_for_wr > 0 else None,
+        # False when at least one bot published no decided count and its
+        # total_trades had to stand in, so the n may include flats. The
+        # dashboard discloses this rather than presenting an assumed
+        # denominator as an exact one.
+        "win_rate_n_exact": _wr_exact if _total_trades_for_wr > 0 else None,
         "total_open_positions": sum(v for _, v in open_pos) if open_pos else None,
         "total_trades": sum(v for _, v in trades) if trades else None,
         "best_performer": best,

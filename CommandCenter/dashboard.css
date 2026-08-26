@@ -494,6 +494,32 @@ body {
 }
 .sb-toggle:hover { color: var(--cyan); border-color: var(--cyan); }
 .sidebar.collapsed~.sb-toggle, .sidebar.collapsed+.sb-toggle { right: 0; }
+
+/* 2026-08-26 — .sb-toggle is position:fixed at top:50%, so it is outside
+   every panel's flow and floats OVER whatever sits at vertical centre of the
+   right-hand column. With the sidebar collapsed it sits at right:0, directly
+   on top of the .dv2-kv-v values, which are pinned to the card's right edge
+   by justify-content:space-between and have no ellipsis rules. Observed:
+   CONFLUENCE "Profit factor" reading as "0." and "Exp/trade" as a cut-off
+   "$-11.83", and AEGIS's "PHITEX 0=0.045 (good)" losing its tail. The text
+   was never truncated — it was covered by an opaque button.
+
+   Fix: reserve a gutter the width of the button on the panel body, and ONLY
+   in the state where the button overlaps it. Sidebar expanded, the button
+   parks at right:320px over the sidebar itself and no gutter is needed, so
+   this must not be an unconditional padding. Space is reserved rather than
+   restacked: raising a card above z-index 100 would put panel content
+   underneath the control instead, which trades a clipped value for an
+   unclickable button. --sb-toggle-gutter covers the button's border-box
+   (2 x 4px padding + 2 x 1px border + the ~10px glyph) plus breathing room. */
+   The hook is a class on .main set by _sbToggle(), NOT a sibling selector:
+   #sidebar is the LAST child of .main, so `.sidebar.collapsed ~ .content`
+   matches nothing (`~` only reaches FOLLOWING siblings) and would have been
+   a silent no-op that looked like a fix. */
+:root { --sb-toggle-gutter: 22px; }
+.main.sb-collapsed .dv2-body,
+.main.sb-collapsed .dv2-stats-strip,
+.main.sb-collapsed .dv2-title-strip { padding-right: var(--sb-toggle-gutter); }
 .sb-section { padding: 20px var(--pad) 16px; border-bottom: 1px solid var(--border); }
 .sb-title {
   font-size: 0.72rem; font-weight: 700; letter-spacing: 2px;

@@ -91,6 +91,13 @@ TESTS = [
     "test_no_live_writes.py",
     "test_component_renorm.py",
     "test_staleness_honesty.py",
+    "test_fleet_wr_pooled.py",
+    # 2026-08-26 display-honesty audit: a win rate rendered without its
+    # denominator (gridzilla's "100.0%" in confident green off 16W/0L/17flat
+    # beside "Total cycles 0"), and expectancy.py being the one major
+    # consumer with no synthetic-probe filter.
+    "test_win_rate_denominator.py",
+    "test_expectancy_probes.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

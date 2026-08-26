@@ -54,6 +54,7 @@ from event_bus import EventBus
 from collector import start_collector, register_brainiac_endpoints
 from signal_aggregator import SignalAggregator
 from signal_decomposition import SignalDecomposition
+from probe_pairs import is_probe_pair
 from expectancy import ExpectancyTracker
 from signal_decay import SignalDecay
 from fleet_intel_score import FleetIntelScore
@@ -3500,13 +3501,11 @@ def _is_probe_pair(pair) -> bool:
     ever gain a `synthetic: true` field at write time, both should key on it
     instead.)
     """
-    p = str(pair or "").upper()
-    if p.startswith(("ZZPROBE", "ZZ", "NFNOK")):
-        return True
-    # NF<digits>... e.g. NF138587OK/USD — no `re` in this module's imports,
-    # and adding one for a prefix test invites the NameError-in-a-handler
-    # class this file has already had once.
-    return p.startswith("NF") and len(p) > 2 and p[2].isdigit()
+    # Delegates to probe_pairs, the ONE definition (2026-08-26). This body
+    # used to be one of four copies that had already drifted — see that
+    # module's docstring. The wrapper name is kept because call sites and
+    # tests reference it.
+    return is_probe_pair(pair)
 
 
 def _collect_closed_trades() -> list[dict]:

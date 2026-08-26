@@ -40,6 +40,7 @@ from typing import Callable, Optional
 # copy of card_renderer's table carrying a "keep in sync" comment.
 from bot_names import (BOT_DISPLAY_NAMES, display_name,  # noqa: F401
                        human_regime)
+from probe_pairs import is_probe_pair
 
 
 # ── Logging ──────────────────────────────────────────────────────────────────
@@ -698,10 +699,8 @@ class TierRouter:
         it is the one that leaves the building.
         """
         p = str(pair or "").upper()
-        if p.startswith(("ZZPROBE", "ZZ", "NFNOK")):
-            return True
-        # NF<digits>... e.g. NF138587OK/USD
-        return p.startswith("NF") and len(p) > 2 and p[2].isdigit()
+        # Delegates to probe_pairs, the ONE definition (2026-08-26).
+        return is_probe_pair(p)
 
     @staticmethod
     def route(event: dict, config: dict) -> Optional[dict]:

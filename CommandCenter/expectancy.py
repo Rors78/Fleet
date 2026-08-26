@@ -42,6 +42,7 @@ Usage:
 import json
 import os
 import time
+from probe_pairs import is_probe_pair
 
 try:
     from fleet_config import bot_registry_list
@@ -75,13 +76,10 @@ def _is_probe(pair) -> bool:
     If probe rows ever gain a `synthetic: true` field at write time, ALL FOUR
     copies should key on that instead of the pair name.
     """
-    p = str(pair or "").upper()
-    if p.startswith(("ZZPROBE", "ZZ", "NFNOK")):
-        return True
-    # NF<digits>... e.g. NF138587OK/USD. No `re` import here, matching
-    # command_center.py's reasoning: adding one for a prefix test invites the
-    # NameError-in-a-handler class that file has already had once.
-    return p.startswith("NF") and len(p) > 2 and p[2].isdigit()
+    # Delegates to probe_pairs, the ONE definition (2026-08-26). This module
+    # having NO probe filter at all — while three siblings had one — is what
+    # let TurtleSue's 92 ZZPROBE rows reach the dashboard as wins.
+    return is_probe_pair(pair)
 
 
 def _fleet_member_ids() -> set:

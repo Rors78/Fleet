@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.request import Request, urlopen
 
 import re as _re
+from probe_pairs import is_probe_pair
 
 # Probe pairs look like NF138587OK/USD — a marker prefix plus a timestamp.
 _NF_PROBE = _re.compile(r"^NF\d+")
@@ -163,7 +164,12 @@ def main():
         sign depends on test data is worse than no report.
         """
         pair = str(((t.get("data") or {}).get("pair")) or "").upper()
-        return pair.startswith(("ZZPROBE", "ZZ", "NFNOK")) or _NF_PROBE.match(pair)
+        # Delegates to probe_pairs, the ONE definition (2026-08-26). This copy
+        # was the DRIFTED one: it never upper-cased, so a lowercase probe pair
+        # was filtered everywhere else and counted here. Verified against 716
+        # distinct pairs in the durable logs — zero change classification, so
+        # this closes the hole without moving any existing number.
+        return is_probe_pair(pair)
 
     _probes = [t for t in trade_closes if _is_probe(t)]
     trade_closes = [t for t in trade_closes if not _is_probe(t)]

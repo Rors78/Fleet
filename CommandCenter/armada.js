@@ -1961,393 +1961,293 @@ function stationHullMaterial(colorHex, seed, opts = {}) {
 }
 
 // ============================================================
-// CC STATION — the Command Center mothership (Task 3, 2026-07-30).
-// Honors the existing 2D wireframe CC identity (solar_system.js
-// drawSun(): a dark structural lattice with glowing edges, a pulsing
-// core, and "CC" at the center) as a three.js geodesic/icosahedral
-// structure — the dashboard's centerpiece, not another ship. Built at
-// a MUCH larger base unit scale than any hull (hullLength 7-9) since
-// per the spec the 2D CC hub is explicitly exempt from the general
-// size caps (sz 104 vs planet ~30/moon ~19) and the WebGL station
-// should read the same way.
+// CC STATION — the Command Center flagship (2026-08-25 refit: "change
+// that deathstar into the Enterprise", operator directive). Replaces the
+// battle-station geometry with a Galaxy-class silhouette (reference:
+// D:\GoldenEye\Enterprise_Forward.jpg) built from three.js primitives —
+// saucer section (dominant volume, forward), a neck down to the
+// engineering/secondary hull, and two nacelles swept up+out on pylons
+// with glowing bussard collectors (fore) and blue warp grilles (body).
+// The fleet-data plumbing is carried over UNCHANGED: the deflector dish
+// on the engineering hull's leading edge is the new "core" (health/AEGIS
+// pulse, P/L mood color via StationRig.update — same contract, same
+// material handles), and the ship "sometimes fires" its main deflector
+// beam forward using the exact same charge/fire state machine that used
+// to drive the superlaser (StationRig.update, `sl` return contract
+// unchanged: rimMat/flare/flareMat/mainMat/glowMat). outerEdges/
+// innerEdges are returned as empty groups so update()'s counter-rotation
+// writes stay no-op-safe, same as before.
 // ============================================================
 function buildStation(seed) {
-  // BATTLE STATION REBUILD (2026-07-30, Jeremy's directive): the CC hub is
-  // now a moon-sized gray battle station — solid greebled sphere, equatorial
-  // trench, recessed superlaser dish in the upper-left quadrant — replacing
-  // the icosahedral lattice. The lattice's fleet-data plumbing survives
-  // remapped: the dish EMITTER is the new "core" (health/AEGIS pulse, P/L
-  // mood color via StationRig.update, unchanged contract), and the station
-  // "sometimes fires energy": a charge-up of converging rim beams into a
-  // focal point, then a single thick lance — see the superlaser state
-  // machine in StationRig.update. outerEdges/innerEdges are returned as
-  // empty groups so update()'s counter-rotation writes stay no-op-safe.
   const g = new THREE.Group();
   const rand = mulberry32(seed);
 
-  // Main hull — solid gray sphere with the fine STATION-specific mosaic
-  // texture (ITEM 3, round 4: stationHullMaterial/stationHullTexture
-  // above), not the generic ship greeble — the station is viewed close
-  // enough as the scene centerpiece that ship-density plating read as
-  // blocky once stretched over a body this large; the station texture is
-  // 2x the resolution with ~6x the panel density plus baked window-light
-  // speckle.
-  // FINDING 6 (station lighting): lightness bumped above the ship-hull
-  // default (opts.lightness +0.09, ~0.19 total vs ships' ~0.10) — the
-  // station is meant to read as a distinct "moon-sized gray hull" against
-  // the fleet's near-black ships, and a lighter base gives the single hard
-  // key light a much stronger TERMINATOR to work with (more total range
-  // between lit and shadow side), which is what makes the trench/dish
-  // read through real value contrast instead of relying on their edge
-  // lines alone.
-  const hullMat = stationHullMaterial(0x767c88, seed, { lightness: 0.09 });
-  // Cut this mesh's own env-map (ambient-like fill) contribution well
-  // below the scene default (1.0) — envMapIntensity is per-material, so
-  // this dims the station's ambient-equivalent fill specifically without
-  // touching the global hemisphere/ambient the ships also rely on for
-  // their own "never fully dark" floor. Less ambient fill here = the key
-  // light's terminator does more of the work = trench/dish read through
-  // real shadow, not just their edge-line traces.
+  // THE LIGHT BUDGET (see the three-point rig comment near the light
+  // setup, ~line 3353): there is no sun in this scene, and a white
+  // Starfleet hull reads brighter than the old gray battle-station hull
+  // under the SAME lights — expected, not a bug. So the hull material
+  // itself is darkened relative to a "true white" paint job (lightness
+  // held close to the ship-hull baseline, NOT bumped up the way the old
+  // station's gray hull was) rather than compensating with more light.
+  // A cool-neutral near-white (low saturation) keeps the "light grey-white
+  // hull" read from the reference without blowing out under the key.
+  const hullMat = stationHullMaterial(0xc9ccd4, seed, { lightness: 0.04, metalness: 0.35, roughness: 0.62 });
   hullMat.envMapIntensity = 0.55;
-  const hull = new THREE.Mesh(new THREE.SphereGeometry(5.2, 48, 36), hullMat);
-  g.add(hull);
+  const trim = darkTrimMaterial();
 
-  // Equatorial trench — dark recessed band + two faint light lines along
-  // its edges (the "trench running lights" read).
-  const trench = new THREE.Mesh(new THREE.TorusGeometry(5.14, 0.30, 8, 64), darkTrimMaterial());
-  trench.rotation.x = Math.PI / 2;
-  g.add(trench);
-  const trenchLightMat = new THREE.MeshBasicMaterial({
-    color: 0x9fb8d8, transparent: true, opacity: 0.32,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  for (const off of [-0.36, 0.36]) {
-    const lightRing = new THREE.Mesh(new THREE.TorusGeometry(5.17, 0.024, 4, 64), trenchLightMat);
-    lightRing.rotation.x = Math.PI / 2;
-    lightRing.position.y = off;
-    g.add(lightRing);
-  }
-
-  // Panel seams — thin dark meridian rings (through the poles, varied
-  // longitude) + two latitude rings per hemisphere. Subtle: they break the
-  // sphere into plates without reading as wireframe.
-  for (let mi = 0; mi < 3; mi++) {
-    const seam = new THREE.Mesh(new THREE.TorusGeometry(5.21, 0.028, 4, 64), darkTrimMaterial());
-    seam.rotation.y = (mi / 3) * Math.PI;
-    g.add(seam);
-  }
-  for (const lat of [1.9, -1.9, 3.4, -3.4]) {
-    const r = Math.sqrt(5.21 * 5.21 - lat * lat);
-    const latRing = new THREE.Mesh(new THREE.TorusGeometry(r, 0.022, 4, 56), darkTrimMaterial());
-    latRing.rotation.x = Math.PI / 2;
-    latRing.position.y = lat;
-    g.add(latRing);
-  }
-
-  // Superlaser dish — recessed crater in the upper-left quadrant, tilted
-  // partly toward the camera (+Z) so the concentric detail reads on screen.
-  // Built along local +Y then quaternion-aligned to dishDir (same pattern
-  // as TurtleSue's flush turret).
-  //
-  // ITEM 3b (round 4, 2026-07-31): "deathstar needs more detail... proper
-  // dish crater with 2-3 concentric terrace rings" — the old version had a
-  // single flat CircleGeometry floor with three decorative torus LINES
-  // drawn on top of it (2D decals, no actual depth). Rebuilt as REAL
-  // stepped terrain: three concentric cylindrical walls at decreasing
-  // radius and increasing depth, each capped with its own flat annulus/
-  // disc floor, so the terracing is genuine geometry that self-shades
-  // under the key light instead of relying on emissive line decals to
-  // fake depth. Outermost=shallowest (matches the old crater's overall
-  // depth/radius so the surrounding hull opening is unchanged), innermost
-  // is deepest and holds the emitter core.
-  const dishDir = new THREE.Vector3(-0.42, 0.52, 0.74).normalize();
-  const dishGroup = new THREE.Group();
-  const dishFloorMat = new THREE.MeshStandardMaterial({ color: 0x3c414b, metalness: 0.35, roughness: 0.8, side: THREE.DoubleSide });
-  const TERRACES = [
-    { rOuter: 1.62, rInner: 1.12, yTop: -0.02, yBot: -0.20 },
-    { rOuter: 1.12, rInner: 0.68, yTop: -0.20, yBot: -0.34 },
-    { rOuter: 0.68, rInner: 0.30, yTop: -0.34, yBot: -0.46 },
+  // ---- SAUCER SECTION (dominant volume, forward) ----------------------
+  // LatheGeometry profile revolved around Y: a flattened lens with a
+  // slightly domed upper bridge module and a shallow lower bowl, matching
+  // the reference's thin-elliptical-disc-with-raised-center silhouette
+  // far better than a scaled sphere would. Points run bottom rim -> down
+  // to lower pole -> (implicit) -> up through the top bridge dome.
+  const saucerR = 5.6; // outer radius — the ship's dominant-dimension anchor
+  const saucerPts = [
+    new THREE.Vector2(saucerR * 0.98, 0.0),      // rim, front/leading edge
+    new THREE.Vector2(saucerR, 0.18),            // rim thickness (widest point)
+    new THREE.Vector2(saucerR * 0.90, 0.34),
+    new THREE.Vector2(saucerR * 0.55, 0.50),
+    new THREE.Vector2(saucerR * 0.20, 0.58),     // rises into the bridge module
+    new THREE.Vector2(0.0, 0.62),                // top pole (bridge dome apex)
   ];
-  for (const t of TERRACES) {
-    // Terrace wall — the vertical step down to the next ring.
-    const wall = new THREE.Mesh(
-      new THREE.CylinderGeometry(t.rOuter, t.rOuter, t.yTop - t.yBot, 28, 1, true), darkTrimMaterial());
-    wall.position.y = (t.yTop + t.yBot) / 2;
-    dishGroup.add(wall);
-    // Terrace floor — flat annulus at this step's depth, sized to the gap
-    // between this ring and the next one in (RingGeometry, not a solid
-    // disc, so each terrace only covers its own band).
-    const floor = new THREE.Mesh(new THREE.RingGeometry(t.rInner, t.rOuter, 28), dishFloorMat);
-    floor.rotation.x = -Math.PI / 2;
-    floor.position.y = t.yBot;
-    dishGroup.add(floor);
-  }
-  // Innermost floor — solid disc closing the deepest terrace, where the
-  // emitter core sits.
-  const innerFloor = new THREE.Mesh(new THREE.CircleGeometry(0.30, 24), dishFloorMat);
-  innerFloor.rotation.x = -Math.PI / 2;
-  innerFloor.position.y = -0.46;
-  dishGroup.add(innerFloor);
-  // Thin emissive accent line traced along each terrace edge — kept from
-  // the old version (reads as maintenance lighting along the step edges)
-  // but now sits AT the real geometric step instead of floating over a
-  // flat floor.
-  const dishLineMat = new THREE.MeshBasicMaterial({
-    color: 0x8fa8c8, transparent: true, opacity: 0.3,
-    blending: THREE.AdditiveBlending, depthWrite: false,
-  });
-  for (const t of TERRACES) {
-    const dr = new THREE.Mesh(new THREE.TorusGeometry(t.rOuter, 0.02, 4, 40), dishLineMat);
-    dr.rotation.x = Math.PI / 2;
-    dr.position.y = t.yTop;
-    dishGroup.add(dr);
-  }
-  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.6, 0.09, 6, 40), darkTrimMaterial());
-  rim.rotation.x = Math.PI / 2;
-  rim.position.y = 0.16;
-  dishGroup.add(rim);
+  // mirror for the underside (shallower bowl than the top)
+  const saucerBottom = [
+    new THREE.Vector2(saucerR * 0.20, -0.34),
+    new THREE.Vector2(0.0, -0.42),
+  ];
+  const saucerProfile = [...saucerBottom].reverse().concat(saucerPts);
+  const saucer = new THREE.Mesh(new THREE.LatheGeometry(saucerProfile, 48), hullMat);
+  saucer.rotation.x = Math.PI; // lathe builds +Y up from the profile; flip so bridge sits on top
+  saucer.position.y = 1.55;
+  g.add(saucer);
 
-  // Dish emitter = the station "core" — keeps the StationRig fleet-mood
-  // contract (opacity/scale pulse from health+AEGIS, P/L color bias).
+  // Saucer rim edge line — thin dark trim tracing the hull-plate seam at
+  // the widest point of the disc (reference shows a subtle darker rim
+  // band running the full circumference).
+  const rimSeam = new THREE.Mesh(new THREE.TorusGeometry(saucerR * 0.995, 0.05, 6, 64), trim);
+  rimSeam.rotation.x = Math.PI / 2;
+  rimSeam.position.y = saucer.position.y + 0.18;
+  g.add(rimSeam);
+
+  // Window rows — rings of tiny emissive strip lights following the
+  // saucer's curvature at a few latitudes, per the reference's banded rows
+  // of lit windows around the hull. Cheap: MeshBasicMaterial dots, no
+  // bloom (real ship windows are numerous+dim; blooming all of them would
+  // wash the saucer out — bloom stays reserved for the genuine emitters
+  // per the operator's bloom-tag guidance).
+  const windowMat = new THREE.MeshBasicMaterial({ color: 0xfff2c8, transparent: true, opacity: 0.85 });
+  const windowRows = [
+    { y: 0.30, r: saucerR * 0.94, n: 64 },
+    { y: 0.10, r: saucerR * 0.80, n: 56 },
+    { y: -0.10, r: saucerR * 0.60, n: 44 },
+  ];
+  for (const row of windowRows) {
+    for (let i = 0; i < row.n; i++) {
+      if (rand() < 0.35) continue; // irregular — not every panel is lit
+      const a = (i / row.n) * Math.PI * 2;
+      const win = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.05, 0.02), windowMat);
+      win.position.set(Math.cos(a) * row.r, saucer.position.y + row.y, Math.sin(a) * row.r);
+      win.lookAt(0, saucer.position.y + row.y, 0);
+      g.add(win);
+    }
+  }
+
+  // ---- NECK — connects saucer underside to the engineering hull -------
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.95, 1.7, 16), hullMat);
+  neck.position.set(0, -0.35, 1.55);
+  neck.rotation.x = 0.30; // leans the engineering hull aft, matching the reference's silhouette
+  g.add(neck);
+
+  // ---- ENGINEERING / SECONDARY HULL (below-aft) ------------------------
+  const engGroup = new THREE.Group();
+  const engHull = new THREE.Mesh(new THREE.CapsuleGeometry(1.15, 4.4, 8, 16), hullMat);
+  engHull.rotation.x = Math.PI / 2; // capsule's long axis runs +Y by default; lay it along Z (fore/aft)
+  engGroup.add(engHull);
+  // Aft docking-collar ring — dark trim break near the rear, a common
+  // Galaxy-class hull detail and a cheap way to break up the long capsule.
+  const engCollar = new THREE.Mesh(new THREE.TorusGeometry(1.18, 0.10, 8, 32), trim);
+  engCollar.rotation.x = Math.PI / 2;
+  engCollar.position.z = -1.6;
+  engGroup.add(engCollar);
+  engGroup.position.set(0, -1.55, 0.55);
+  g.add(engGroup);
+
+  // ---- MAIN DEFLECTOR DISH (front of the engineering hull) -------------
+  // REINTERPRETS the old superlaser emitter: same StationRig fleet-mood
+  // contract (core/coreGlow/coreHalo + coreMat/coreGlowMat/coreHaloMat),
+  // same charge/fire state machine driving `sl`, new identity as the
+  // ship's forward deflector — amber/blue per the mandate, facing +Z
+  // (the ship's forward direction) rather than the old dish's off-axis
+  // camera-facing tilt, since a deflector reads correctly face-on.
+  const dishGroup = new THREE.Group();
+  const dishRing = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.14, 8, 32), trim);
+  dishGroup.add(dishRing);
+  const dishBowlMat = new THREE.MeshStandardMaterial({ color: 0x2a2f38, metalness: 0.4, roughness: 0.7, side: THREE.DoubleSide });
+  const dishBowl = new THREE.Mesh(new THREE.CircleGeometry(0.88, 24), dishBowlMat);
+  dishBowl.position.z = -0.05;
+  dishGroup.add(dishBowl);
+
+  // Dish emitter = the station "core" — unchanged fleet-mood contract.
+  // Recolored amber/gold (deflector-dish canon) instead of the old
+  // dish's cool blue-white.
   const coreMat = new THREE.MeshBasicMaterial({
-    color: 0xe1f0ff, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
+    color: 0xffd98a, transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  const core = new THREE.Mesh(new THREE.SphereGeometry(0.34, 14, 12), coreMat);
-  core.position.y = -0.05;
-  core.layers.enable(BLOOM_LAYER); // SOTA upscale — station core blooms
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.30, 14, 12), coreMat);
+  core.layers.enable(BLOOM_LAYER);
   dishGroup.add(core);
   const coreGlowMat = new THREE.MeshBasicMaterial({
-    color: 0x5a9aff, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false,
+    color: 0xffaa3d, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  const coreGlow = new THREE.Mesh(new THREE.SphereGeometry(0.62, 12, 10), coreGlowMat);
-  coreGlow.position.y = -0.05;
+  const coreGlow = new THREE.Mesh(new THREE.SphereGeometry(0.55, 12, 10), coreGlowMat);
   coreGlow.layers.enable(BLOOM_LAYER);
   dishGroup.add(coreGlow);
   const coreHaloMat = new THREE.MeshBasicMaterial({
-    color: 0x3a6fd0, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
+    color: 0xd4841a, transparent: true, opacity: 0.22, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  const coreHalo = new THREE.Mesh(new THREE.SphereGeometry(1.0, 12, 10), coreHaloMat);
-  coreHalo.position.y = -0.05;
+  const coreHalo = new THREE.Mesh(new THREE.SphereGeometry(0.88, 12, 10), coreHaloMat);
   coreHalo.layers.enable(BLOOM_LAYER);
   dishGroup.add(coreHalo);
 
-  dishGroup.position.copy(dishDir.clone().multiplyScalar(4.72));
-  dishGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dishDir);
+  dishGroup.position.set(0, -1.55, 2.85); // engineering hull's forward (+Z) face
   g.add(dishGroup);
 
-  // SUPERLASER — hidden until StationRig's state machine fires it.
-  // Charge: 8 thin beams from the dish rim converge on a focal point above
-  // the dish. Fire: one thick tapered lance from the focal point outward.
-  // All meshes exist from build time; firing only mutates opacity/scale.
+  // ---- DEFLECTOR BEAM — hidden until StationRig's state machine fires
+  // it. Same charge (converging rim beams) -> fire (main lance) sequence,
+  // now aimed straight ahead (+Z, the ship's forward vector) instead of
+  // the old lance's up-left cheat — a deflector firing forward off the
+  // bow reads correctly in this orthographic view without foreshortening
+  // to a dot, since forward is not directly into the camera here (the
+  // scene view looks down at a steep angle, not dead-on -Z).
   const slGroup = new THREE.Group();
   slGroup.position.copy(dishGroup.position);
-  // Fire direction is deliberately NOT dishDir: the dish tilts toward the
-  // camera (+Z dominant) for identity, but a lance fired along +Z
-  // foreshortens to an invisible dot in the orthographic view. Cinematic
-  // cheat (the films do the same): fire mostly in the screen plane,
-  // up-left, with just enough +Z that it still reads as "from the dish".
-  const fireDir = new THREE.Vector3(-0.78, 0.45, 0.30).normalize();
+  const fireDir = new THREE.Vector3(0, 0.10, 1).normalize();
   slGroup.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), fireDir);
   g.add(slGroup);
-  const SL_COLOR = 0x54ff9e;
-  // ITEM 4a (round 4, 2026-07-31): "converging rim beams... make them
-  // slightly more prominent since they're now the visual story of the
-  // charge" — bumped radius (0.035/0.075 -> 0.05/0.10) and peak opacity
-  // (see the 'charging' state block below, 0.85 -> 1.0) so the charge-up
-  // reads clearly as 8 beams visibly converging on the dish focal point,
-  // the moment that now carries most of the sequence's visual weight
-  // since the fired lance itself is much thinner (see slMain/slGlow below).
+  const SL_COLOR = 0x6fb8ff; // deflector beam — cool blue, distinct from the amber dish core
   const slRimMat = new THREE.MeshBasicMaterial({
     color: SL_COLOR, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  const focal = new THREE.Vector3(0, 2.6, 0);
+  const focal = new THREE.Vector3(0, 2.2, 0);
   for (let i = 0; i < 8; i++) {
     const a = (i / 8) * Math.PI * 2;
-    const from = new THREE.Vector3(Math.cos(a) * 1.45, 0.15, Math.sin(a) * 1.45);
+    const from = new THREE.Vector3(Math.cos(a) * 1.0, 0.10, Math.sin(a) * 1.0);
     const segLen = from.distanceTo(focal);
-    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.10, segLen, 5, 1, true), slRimMat);
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.09, segLen, 5, 1, true), slRimMat);
     seg.position.copy(from.clone().add(focal).multiplyScalar(0.5));
     seg.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), focal.clone().sub(from).normalize());
-    seg.layers.enable(BLOOM_LAYER); // SOTA upscale — charge-up rim beams bloom
+    seg.layers.enable(BLOOM_LAYER);
     slGroup.add(seg);
   }
   const slFlareMat = new THREE.MeshBasicMaterial({
-    color: 0xd6ffe8, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
+    color: 0xe8f4ff, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false,
   });
-  const slFlare = new THREE.Mesh(new THREE.SphereGeometry(0.42, 12, 10), slFlareMat);
+  const slFlare = new THREE.Mesh(new THREE.SphereGeometry(0.38, 12, 10), slFlareMat);
   slFlare.position.copy(focal);
   slFlare.layers.enable(BLOOM_LAYER);
   slGroup.add(slFlare);
-  // Lance = gradient-textured PLANE strips, not cones. Screenshot-confirmed
-  // defect: open-ended additive cones viewed side-on are brightest at their
-  // silhouette edges (longest path through the "tube"), so the fired lance
-  // read as two parallel rails with a hollow gap. The camera is a fixed
-  // orthographic view down -Z, so an XY plane needs no billboarding: a
-  // cross-beam gradient (soft edge -> hot white core -> soft edge) renders
-  // as one solid luminous column, film-style. Two stacked strips: wide soft
-  // glow + narrow hot core. Plane height runs along local +Y = fire axis.
-  const slBeamTex = (() => {
-    const cv = document.createElement('canvas');
-    cv.width = 64; cv.height = 2;
-    const bctx = cv.getContext('2d');
-    const grad = bctx.createLinearGradient(0, 0, 64, 0);
-    grad.addColorStop(0, 'rgba(255,255,255,0)');
-    grad.addColorStop(0.30, 'rgba(255,255,255,0.28)');
-    grad.addColorStop(0.5, 'rgba(255,255,255,1)');
-    grad.addColorStop(0.70, 'rgba(255,255,255,0.28)');
-    grad.addColorStop(1, 'rgba(255,255,255,0)');
-    bctx.fillStyle = grad;
-    bctx.fillRect(0, 0, 64, 2);
-    return new THREE.CanvasTexture(cv);
-  })();
-  // ITEM 4a (round 4, 2026-07-31): "energy beam is too thick... reference
-  // is a needle: blinding thin white-hot core with a modest green bloom,
-  // not a thick column." Old widths (1.6 core / 4.2 glow) read as a solid
-  // column even from across the room. Thinned to a true needle — core
-  // width down to 0.22 (~14% of the old width), glow down to 0.9 (~21%).
-  // Core color pushed further toward pure white (was 0xd8ffe9, a pale
-  // green-white — now 0xffffff so the hot center genuinely reads
-  // "blinding white", not "bright green") with the SL_COLOR green pushed
-  // entirely onto the wider, dimmer glow strip where the brief wants the
-  // "modest bloom".
-  // NEEDLE LANCE, take 2 (2026-07-31): the gradient-plane version rendered
-  // nothing on screen while the ships' cone beams rendered fine in the same
-  // frame — rather than fight plane/texture forensics, use the PROVEN
-  // geometry at needle radii. Thin tapered open cylinders: at ~0.16 core
-  // radius the two silhouette edges merge into one solid line, so the
-  // hollow-rail artifact that killed the original THICK cones simply
-  // doesn't exist at needle scale. White-hot core + tight green bloom.
   const slMainMat = new THREE.MeshBasicMaterial({
     color: 0xffffff, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slMain = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.05, 55, 8, 1, true), slMainMat);
+  const slMain = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.045, 55, 8, 1, true), slMainMat);
   slMain.position.set(0, focal.y + 27.5, 0);
-  slMain.layers.enable(BLOOM_LAYER); // SOTA upscale — fired lance blooms (the "blinding" cue)
+  slMain.layers.enable(BLOOM_LAYER);
   slGroup.add(slMain);
   const slGlowMat = new THREE.MeshBasicMaterial({
     color: SL_COLOR, transparent: true, opacity: 0,
     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide,
   });
-  const slGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.16, 55, 10, 1, true), slGlowMat);
+  const slGlow = new THREE.Mesh(new THREE.CylinderGeometry(0.44, 0.14, 55, 10, 1, true), slGlowMat);
   slGlow.position.set(0, focal.y + 27.5, 0);
   slGlow.layers.enable(BLOOM_LAYER);
   slGroup.add(slGlow);
 
-  // City lights — small emissive points scattered on the hull surface
-  // (kept off the dish quadrant), amber/cool-white like lit viewports.
+  // ---- NACELLES — two, on pylons swept up and out from the engineering
+  // hull, each with a forward bussard collector (red/magenta, bloom) and
+  // a blue warp grille running the body length (bloom), per the reference.
   const dockingLights = [];
-  for (let i = 0; i < 22 && dockingLights.length < 16; i++) {
-    const theta = rand() * Math.PI * 2, phi = Math.acos(2 * rand() - 1);
-    const v = new THREE.Vector3(
-      Math.sin(phi) * Math.cos(theta), Math.cos(phi), Math.sin(phi) * Math.sin(theta));
-    if (v.dot(dishDir) > 0.86) continue;
-    const p = v.multiplyScalar(5.24);
-    const light = addRunningLight(g, p.x, p.y, p.z, i % 3 === 0 ? 0xffd27a : 0xcfe4ff, 0.12);
-    dockingLights.push(light);
-  }
+  for (const side of [-1, 1]) {
+    const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.20, 1.7), hullMat);
+    // Swept up+out: pylon runs from the engineering hull's shoulder
+    // outward and upward to the nacelle mount.
+    pylon.position.set(side * 2.0, -0.55, 1.0);
+    pylon.rotation.z = side * -0.55; // sweep outward
+    pylon.rotation.x = -0.35; // sweep upward/forward
+    g.add(pylon);
 
-  // EXPOSED SUPERSTRUCTURE (ITEM 3c, round 4, 2026-07-31) — the DS2
-  // under-construction signature: one wedge where the outer hull plating
-  // gives way to visible dark skeletal framework underneath, with a few
-  // glowing points inside like work-lights on an unfinished section.
-  // PLACEMENT FIX (2026-07-31, Jeremy: "looks the exact same"): the first
-  // pass put this at -dishDir — but the station's yaw sway deliberately
-  // keeps the dish on the CAMERA side, so "opposite the dish" meant
-  // "permanently hidden on the far side". Now ~95 degrees off the dish
-  // with a positive +Z component: dish upper-left, torn-open construction
-  // section lower-right, BOTH on the visible hemisphere at all sway
-  // angles, never overlapping.
-  const constructDir = new THREE.Vector3(0.80, -0.15, 0.45).normalize();
-  const constructGroup = new THREE.Group();
-  // Cutaway — a shallow wedge-shaped gap in the plating. Built as a
-  // partial-sweep SphereGeometry patch (thetaStart/thetaLength / phiStart/
-  // phiLength on a slightly smaller radius than the hull) so its edge
-  // follows the hull's own curvature instead of a flat plate cut into a
-  // round surface, which would read as a sticker rather than a hole.
-  // SphereGeometry's patch args are (radius, wSeg, hSeg, phiStart,
-  // phiLength, thetaStart, thetaLength); theta is measured from the +Y
-  // pole and MUST stay within [0, pi] — centering thetaStart at pi/2 (the
-  // equator) with a +-0.5 rad span keeps it valid. At theta=pi/2, phi=0
-  // the surface point is local (1,0,0), i.e. +X — so the alignment
-  // quaternion below maps +X (not +Z) onto constructDir.
-  const cutawayMat = new THREE.MeshStandardMaterial({ color: 0x05050a, metalness: 0.1, roughness: 0.95, side: THREE.DoubleSide });
-  const cutaway = new THREE.Mesh(
-    new THREE.SphereGeometry(5.05, 20, 16, -0.55, 1.1, Math.PI / 2 - 0.5, 1.0), cutawayMat);
-  cutaway.quaternion.setFromUnitVectors(new THREE.Vector3(1, 0, 0), constructDir);
-  g.add(cutaway);
-  // Raised broken-plate lip around part of the cutaway edge — a few
-  // jagged short plate fragments still attached at the rim, selling
-  // "torn open" rather than "clean cut hole".
-  // Local point on the cutaway's own patch surface, using the SAME
-  // theta-from-+Y/phi-around-Y convention as the SphereGeometry patch
-  // above (theta centered pi/2 +-0.5, phi centered 0 +-0.55) — NOT
-  // THREE.Spherical's differently-ordered (radius,phi,theta) convention,
-  // which would misalign this lip against the actual cutaway edge.
-  const lipMat = darkTrimMaterial();
-  const cutawayAlign = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(1, 0, 0), constructDir);
-  for (let i = 0; i < 5; i++) {
-    const phi = -0.55 + rand() * 1.1, theta = Math.PI / 2 + (-0.5 + rand() * 1.0);
-    const lv = new THREE.Vector3(
-      Math.cos(theta) * 5.16, Math.sin(theta) * Math.sin(phi) * 5.16, Math.sin(theta) * Math.cos(phi) * 5.16);
-    lv.applyQuaternion(cutawayAlign);
-    const plate = new THREE.Mesh(new THREE.BoxGeometry(0.5 + rand() * 0.4, 0.06, 0.35 + rand() * 0.3), lipMat);
-    plate.position.copy(lv);
-    plate.lookAt(0, 0, 0);
-    plate.rotateX(Math.PI / 2 + (rand() - 0.5) * 0.6);
-    g.add(plate);
-  }
-  // Skeletal box/strut lattice inside the cutaway — a small grid of thin
-  // dark struts at a slightly recessed radius, reading as exposed framing
-  // underneath the missing plating.
-  const strutMat = darkTrimMaterial();
-  const latticeCenter = constructDir.clone().multiplyScalar(4.75);
-  const latticeQuat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), constructDir);
-  for (let gx = -1; gx <= 1; gx++) {
-    for (let gy = -1; gy <= 1; gy++) {
-      if (rand() < 0.15) continue; // a couple of missing struts — irregular, not a clean grid
-      const local = new THREE.Vector3(gx * 0.62, gy * 0.55, 0);
-      local.applyQuaternion(latticeQuat);
-      const strut = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.65), strutMat);
-      strut.position.copy(latticeCenter.clone().add(local));
-      strut.lookAt(0, 0, 0);
-      constructGroup.add(strut);
+    const nacelleGroup = new THREE.Group();
+    const nacelleMat = stationHullMaterial(0xc4c9d2, seed + side * 17, { lightness: 0.03, metalness: 0.35, roughness: 0.62 });
+    nacelleMat.envMapIntensity = 0.55;
+    const nacelle = new THREE.Mesh(new THREE.CapsuleGeometry(0.58, 3.6, 8, 16), nacelleMat);
+    nacelle.rotation.x = Math.PI / 2; // long axis along Z (fore/aft), matching the engineering hull
+    nacelleGroup.add(nacelle);
+
+    // Warp grille — a row of thin blue emissive bars along the nacelle's
+    // outer face, the reference's signature "ladder of light" detail.
+    const grilleMat = new THREE.MeshBasicMaterial({
+      color: 0x5ab4ff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    for (let i = 0; i < 10; i++) {
+      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.05, 0.10), grilleMat);
+      bar.position.set(0, 0.42, -1.5 + i * 0.34);
+      bar.layers.enable(BLOOM_LAYER); // genuine emitter — bloom per the mandate
+      nacelleGroup.add(bar);
     }
-  }
-  // Cross-braces — diagonal struts tying the grid together, the detail
-  // that reads as "structural framing" rather than a rack of parallel bars.
-  for (let i = 0; i < 4; i++) {
-    const a1 = new THREE.Vector3((rand() - 0.5) * 1.3, (rand() - 0.5) * 1.15, 0).applyQuaternion(latticeQuat);
-    const a2 = new THREE.Vector3((rand() - 0.5) * 1.3, (rand() - 0.5) * 1.15, 0).applyQuaternion(latticeQuat);
-    const p1 = latticeCenter.clone().add(a1), p2 = latticeCenter.clone().add(a2);
-    const mid = p1.clone().add(p2).multiplyScalar(0.5);
-    const len = p1.distanceTo(p2);
-    const brace = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, len, 4), strutMat);
-    brace.position.copy(mid);
-    brace.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), p2.clone().sub(p1).normalize());
-    constructGroup.add(brace);
-  }
-  g.add(constructGroup);
-  // A few glowing work-lights nested inside the lattice — small, warm,
-  // irregular flicker candidates handled the same way as running lights
-  // elsewhere (addRunningLight's own material is static; the flicker read
-  // comes from these being small and numerous against the dark cutaway,
-  // not from per-frame animation, keeping this a zero-cost build-time-only
-  // addition).
-  for (let i = 0; i < 4; i++) {
-    const local = new THREE.Vector3((rand() - 0.5) * 1.1, (rand() - 0.5) * 1.0, 0.15).applyQuaternion(latticeQuat);
-    const wp = latticeCenter.clone().add(local);
-    addRunningLight(g, wp.x, wp.y, wp.z, 0xffb35c, 0.09);
+
+    // Bussard collector — glowing red/magenta hemisphere-cap at the
+    // nacelle's forward end.
+    const bussardMat = new THREE.MeshBasicMaterial({
+      color: 0xff3d6e, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const bussard = new THREE.Mesh(new THREE.SphereGeometry(0.60, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), bussardMat);
+    bussard.rotation.x = -Math.PI / 2; // dome faces forward (+Z)
+    bussard.position.z = 1.85;
+    bussard.layers.enable(BLOOM_LAYER); // genuine emitter — bloom
+    nacelleGroup.add(bussard);
+    const bussardGlowMat = new THREE.MeshBasicMaterial({
+      color: 0xff8fae, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false,
+    });
+    const bussardGlow = new THREE.Mesh(new THREE.SphereGeometry(0.82, 14, 10), bussardGlowMat);
+    bussardGlow.position.z = 1.85;
+    bussardGlow.layers.enable(BLOOM_LAYER);
+    nacelleGroup.add(bussardGlow);
+    dockingLights.push(addRunningLight(nacelleGroup, 0, 0.60, -1.5, 0xff5577, 0.08));
+
+    // Aft cap — dark exhaust-style ring closing the nacelle's rear.
+    const aftCap = new THREE.Mesh(new THREE.CircleGeometry(0.56, 16), trim);
+    aftCap.rotation.y = Math.PI;
+    aftCap.position.z = -1.9;
+    nacelleGroup.add(aftCap);
+
+    nacelleGroup.position.set(side * 3.5, 0.35, 2.6);
+    g.add(nacelleGroup);
   }
 
-  // No-op rotation targets — StationRig.update spins these (lattice-era
-  // contract); empty groups keep that write harmless on the solid hull.
+  // A few running lights along the saucer rim and engineering hull —
+  // small, non-bloomed, warm/cool per the reference's scattered hull
+  // lighting (kept modest per the light-budget mandate: these are point
+  // emitters, not a second key light).
+  for (let i = 0; i < 10; i++) {
+    const a = rand() * Math.PI * 2;
+    const p = new THREE.Vector3(Math.cos(a) * saucerR * 0.7, saucer.position.y - 0.30, Math.sin(a) * saucerR * 0.7);
+    addRunningLight(g, p.x, p.y, p.z, rand() < 0.5 ? 0xffd27a : 0xcfe4ff, 0.07);
+  }
+
+  // No-op rotation targets — StationRig.update spins these; empty groups
+  // keep that write harmless (the Enterprise's identity reads through its
+  // gentle yaw/pitch sway, not a spinning edge lattice).
   const outerEdges = new THREE.Group();
   const innerEdges = new THREE.Group();
   g.add(outerEdges); g.add(innerEdges);
 
-  g.userData.hullLength = 10.4; // large relative to ship hullLength 6.5-9
+  // hullLength anchors the 2D-body-size -> WebGL-scale mapping (see
+  // StationRig.update's targetSpan). The saucer diameter is this ship's
+  // dominant visual dimension (matches the reference's "saucer is the
+  // dominant volume"), so hullLength is set to that diameter — the same
+  // role the old sphere's diameter (10.4) played.
+  g.userData.hullLength = saucerR * 2; // 11.2 — comparable overall scale to the old 10.4
   return { group: g, core, coreGlow, coreHalo, coreMat, coreGlowMat, coreHaloMat, outerEdges, innerEdges, dockingLights,
     sl: { rimMat: slRimMat, flare: slFlare, flareMat: slFlareMat, mainMat: slMainMat, glowMat: slGlowMat } };
 }
@@ -2939,15 +2839,18 @@ class StationRig {
     this.group.scale.setScalar(this.currentScale * view.zoom);
 
     // SLOW MAJESTIC ROTATION — two axes at very different periods so it
-    // never looks like it's spinning on a fixed axis; counter-rotating
-    // inner/outer edge sets echo the 2D lattice's two counter-rotating
-    // shells (solar_system.js drawSun ~line 367-368: outer ~90s/rev,
-    // inner ~60s/rev opposite direction).
-    // Oscillating sway instead of a full revolution (battle-station rebuild):
-    // a 140s spin carried the superlaser dish behind the sphere most of the
-    // time, hiding the station's identity feature and any firing sequence
-    // from the camera. A slow +-31 degree yaw sway keeps the dish on the
-    // visible hemisphere permanently while the body still feels alive.
+    // never looks like it's spinning on a fixed axis. outerEdges/innerEdges
+    // are empty groups on the Enterprise geometry (2026-08-25 refit) so
+    // their counter-rotation writes below are inert no-ops — kept only so
+    // nothing else that references them needs to change.
+    // Oscillating sway, not a full revolution (carried over from the
+    // battle-station build, still correct here): the dish and both
+    // nacelles are fixed in the ship's own local frame (not scattered on a
+    // sphere at a random angle like the old dish was), so EVERY emitter —
+    // deflector dish, both bussard collectors, both warp grilles — stays
+    // on the visible hemisphere through the full +-31 degree yaw sway; a
+    // full spin isn't needed to keep them in view, and this way the ship
+    // never presents its aft to the camera.
     this.group.rotation.y = Math.sin(t * (Math.PI * 2 / 180)) * 0.55;
     this.group.rotation.x = Math.sin(t * (Math.PI * 2 / 260)) * 0.18;
     this.outerEdges.rotation.z = t * (Math.PI * 2 / 90);
@@ -3357,15 +3260,21 @@ const Armada = {
     // way darker".
     //
     // There is no star in this scene. sunX/sunY throughout the 2D layer is
-    // CC's position, and CC is the Death Star -- a dark battle station. What
-    // actually emits here is: starlight (weak, omnidirectional), each body's
-    // OWN emissive surfaces (engine plumes, the mining beam, the superlaser,
-    // running lights -- all of which now bloom via BLOOM_LAYER), and CC's
-    // amber data-lattice, which glows faintly but is not a G-type star.
+    // CC's position; CC was the Death Star when this budget was calibrated
+    // and is now the Enterprise (2026-08-25 refit, buildStation) -- the
+    // "not a G-type star" reasoning is unchanged, only the hull under it.
+    // What actually emits here is: starlight (weak, omnidirectional), each
+    // body's OWN emissive surfaces (engine plumes, the mining beam, the
+    // deflector dish/beam formerly called the superlaser, bussard
+    // collectors, warp grilles, running lights -- all of which bloom via
+    // BLOOM_LAYER), and CC's own glow, which is not a G-type star either.
     //
     // So the key survives -- the scene still needs a modelling cue and CC
-    // does emit -- but at 30% strength and recoloured from white sunlight to
-    // that amber lattice. The hemisphere fill rises to carry the starlight
+    // does emit -- but at 30% strength and recoloured from white sunlight
+    // to that glow. THIS BUDGET IS NOT CHANGED BY THE 2026-08-25 REFIT: a
+    // white hull reads brighter than gray under the same lights, and that
+    // is compensated in the hull material (see buildStation), never here.
+    // The hemisphere fill rises to carry the starlight
     // floor so hulls stay legible in shadow: deep space is dark, not
     // invisible. Matches _LIGHT_KEY 0.30 / _LIGHT_AMBIENT 0.16 in
     // solar_system.js and _drawMoonOrb in command_center_v4.html, so all

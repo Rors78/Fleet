@@ -137,7 +137,46 @@ RSI_RIP_THRESHOLD = 60       # RSI > 60 = rip (SHORT mirror of RSI_DIP_THRESHOLD
 RSI_DEEP_PUMP = 70           # RSI > 70 = deep pump (SHORT mirror of RSI_DEEP_DIP: 100-30)
 
 # Exit
-SL_ATR_MULT = 2.0            # 2.0 ATR below entry on 60m (v1: 1.5 on 5m — too tight)
+#
+# TIMEFRAME MISMATCH — fixed 2026-08-26. The stop used the 60m ATR while the
+# target (tp1 = bb_middle) is measured on the 15m Bollinger band. Reward was
+# therefore capped at the 15m half-width while risk was priced off a 60m bar,
+# and the 2:1 gate below could not be cleared by construction:
+#
+#     reward = bb_middle - bb_lower        (15m, = 2.0 BB stdev)
+#     risk   = SL_ATR_MULT * ATR_60m
+#     2:1 requires  ATR_60m <= bb_half / 4
+#
+# Measured across the live 25-pair universe, that demanded ATR_60m be between
+# 0.30x and 0.93x ATR_15m (median 0.50x). ATR grows with bar length — roughly
+# sqrt(4) = 2x from 15m to 60m — so the requirement was inverted. Measured
+# directly against Kraken OHLC on 2026-08-26: ATR_60m / ATR_15m = 2.29 mean
+# (XBT 2.31, ETH 2.14, LINK 2.26, AVAX 2.53, XRP 2.24). The gate needed
+# <= 0.93 at absolute best. Result: 600 consecutive scans, 0 signals, and 0
+# trades in the bot's entire history — a silent bot that read as "selective".
+#
+# The stop now uses the 15m ATR, the same series as the target. MIN_RR_RATIO
+# stays at 2.0: that gate is what ended the 21-consecutive-loss streak, and
+# the defect was never the ratio — it was comparing two different clocks.
+#
+# NECESSARY BUT NOT SUFFICIENT — do not read this fix as "Rubberband trades
+# now". With the clocks matched, the LONG gate reduces to an identity:
+#
+#     reward = 2 * BB_stdev,  risk = 2 * ATR_15m   =>   R:R = BB_stdev / ATR_15m
+#
+# so 2:1 means BB_stdev >= 2 * ATR_15m. Both sides now measure 15m
+# volatility, so that ratio sits near 1.0 by construction. Measured across
+# the live 25-pair universe on 2026-08-26: max 1.86 (AAVE), median 1.00,
+# and 0 of 25 pairs clearing 2.0. The best live signal, CSPR/USD, improved
+# from 0.87 to 1.99 — a 2.29x gain that still lands just under the bar.
+#
+# So this fix removes an ARITHMETIC IMPOSSIBILITY and leaves a RARE SETUP.
+# Expect signals to remain infrequent. If the bot is still silent after a
+# few hundred scans, the next question is whether a mean-reversion target
+# capped at the band midpoint can ever pay 2:1 against a true-range stop —
+# that is a strategy question, not a bug, and it needs measurement rather
+# than another constant nudged downward.
+SL_ATR_MULT = 2.0            # 2.0 x ATR_15m — SAME series as tp1 (see above)
 TRAILING_ATR_MULT = 1.5      # After TP1: trail by 1.5 ATR
 MIN_RR_RATIO = 2.0           # Minimum GROSS reward:risk (no fee term — see below)
 
@@ -833,7 +872,9 @@ class RubberbandEngine:
                 return None  # not oversold enough
 
             direction = "LONG"
-            stop_loss = price - SL_ATR_MULT * atr_60m  # 2.0 ATR on 60m (wider, stable)
+            # Stop on the 15m ATR — the SAME series the target is measured on.
+            # See the timeframe-mismatch note above SL_ATR_MULT.
+            stop_loss = price - SL_ATR_MULT * atr
             tp1 = bb_middle   # mean reversion target (the snap-back)
             tp2 = bb_upper    # full extension
 
@@ -856,7 +897,8 @@ class RubberbandEngine:
                 return None  # not overbought enough
 
             direction = "SHORT"
-            stop_loss = price + SL_ATR_MULT * atr_60m  # 2.0 ATR on 60m (wider, stable)
+            # Mirror of the LONG stop — same 15m series as the target.
+            stop_loss = price + SL_ATR_MULT * atr
             tp1 = bb_middle   # mean reversion target (the snap-back)
             tp2 = bb_lower    # full extension
 

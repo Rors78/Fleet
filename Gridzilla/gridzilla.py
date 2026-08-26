@@ -1228,16 +1228,89 @@ class GridExecutor:
                     "fills": len(grid["fills"]),
                     "reservation_id": grid.get("reservation_id", ""),
                 }
-                # Completed cycles are recorded as they happen (see
-                # check_fills). Appending this teardown summary too would
-                # double-count their P/L — grid_pnl is the SUM of the cycles
-                # already in trade_history. Only record a teardown that
-                # carries P/L no cycle claimed, i.e. a grid torn down with
-                # zero completed cycles.
+                # THE LOSS PATH (2026-08-26). Read this before changing the
+                # condition below.
+                #
+                # A grid cycle only completes when a sell fires at
+                # current_price >= level["price"] against a buy filled at a
+                # strictly lower level, so EVERY realized cycle P/L is >= 0
+                # by construction. check_fills is the only caller of
+                # expectancy.record_trade, so the expectancy ledger could
+                # never receive a losing trade: gridzilla stood at 16W/0L/17F
+                # with a win rate of 100.0% that was structurally unable to
+                # fall. Measured on the durable bus: 167 GRID_KILLED events,
+                # ZERO with a negative P/L, 154 reporting exactly 0.00.
+                #
+                # The loss in a grid is not a cycle. It is the open inventory
+                # bought on the way down and abandoned when price left the
+                # range — 155 of those 167 teardowns had zero completed
+                # cycles and reported pnl 0, every one of them reason
+                # "range_break". That is a real adverse outcome recorded as
+                # nothing.
+                #
+                # grid["total_pnl_mtm"] (realized + unrealized, maintained
+                # every scan by the drawdown block in check_fills) is the
+                # honest figure and is what gets recorded here. The
+                # double-count guard is preserved exactly: cycles already
+                # recorded themselves, so only the UNREALIZED remainder is
+                # new information at teardown.
+                _realized = grid.get("grid_pnl") or 0
+                _unreal = grid.get("unrealized_pnl") or 0
+                _mtm = grid.get("total_pnl_mtm")
+                if not isinstance(_mtm, (int, float)):
+                    # Grid restored from a state file written before these
+                    # keys existed, or torn down before its first scan. An
+                    # unknown mark is not a mark of zero — fall back to the
+                    # realized sum and say so, rather than inventing a
+                    # mark-to-market nobody measured.
+                    _mtm = _realized + _unreal
+                summary["unrealized_pnl"] = round(_unreal, 4)
+                summary["total_pnl_mtm"] = round(_mtm, 4)
+
                 if not grid.get("cycles_completed"):
+                    # No cycle claimed any of this grid's P/L, so the whole
+                    # mark-to-market figure is unclaimed and is the trade.
                     summary["status"] = grid["status"]
-                    summary["won"] = (grid["grid_pnl"] or 0) > 0
+                    summary["pnl"] = round(_mtm, 4)
+                    summary["won"] = _mtm > 0
                     self.trade_history.append(summary)
+                    _record_pnl = _mtm
+                else:
+                    # Cycles already recorded their realized P/L. Only the
+                    # abandoned inventory is new — recording _mtm here would
+                    # double-count every completed cycle.
+                    _record_pnl = _unreal
+
+                # Feed the expectancy tracker, which check_fills feeds on the
+                # winning side. Skipping this is what made the 100% possible.
+                # Record only when there is something unclaimed to record: a
+                # clean teardown with no open inventory and no unclaimed P/L
+                # is not a trade and must not pad the denominator.
+                if self.expectancy is not None and _record_pnl != 0:
+                    try:
+                        self.expectancy.record_trade(
+                            bot_id="gridzilla",
+                            pair=pair,
+                            direction="LONG",
+                            # No single entry/exit price describes an
+                            # abandoned multi-level grid. None, never 0.0 —
+                            # a recorded price of 0.0 lands in the DURABLE
+                            # store and cannot be told from a real reading.
+                            entry_price=None,
+                            exit_price=None,
+                            size_usd=sum((l.get("size_usd") or 0)
+                                         for l in grid["levels"]
+                                         if l.get("filled") and l.get("side") == "BUY"),
+                            duration=(time.time() - grid["deployed_at"]
+                                      if isinstance(grid.get("deployed_at"), (int, float))
+                                      else None),
+                            realized_pnl=_record_pnl,
+                            trade_id=f"gridzilla_{pair}_teardown_{int(time.time() * 1000)}",
+                        )
+                    except Exception as e:
+                        logging.warning(
+                            f"expectancy.record_trade failed for "
+                            f"{pair} teardown: {e}")
         if summary is not None:
             self._save_state()  # persist after removal (outside lock — _save_state takes its own lock)
         return summary

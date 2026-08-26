@@ -4401,7 +4401,30 @@ function _bloomBlur(bctx, src, w, h, radius) {
 
    FLOOR is the knob. Higher = only the brightest emitters bloom. It is set
    from the darkest thing that should still glow (a lit planet limb) rather
-   than by eye. */
+   than by eye.
+
+   GREY-FLOOR BUG (2026-08-26): 'difference' alone is |v - floor|, which is
+   NOT one-sided -- it is only correct as "v - floor" when v >= floor. For
+   v < floor (every empty-space pixel, since deep space sits at roughly
+   3-25 and the floor is 96), |v - floor| = floor - v, which is LARGE for
+   v near 0 (|0-96|=96) and shrinks toward 0 only as v approaches the floor
+   from below. So 'difference' was actually a distance-from-floor detector,
+   brightest at v=0 and darkest at v=floor -- the exact opposite of a
+   bright-pass. That inverted signal got blurred and additively composited
+   back over the whole frame ('lighter' at alpha 0.55 in _bloomApply),
+   which is what put a uniform ~rgb(20-35) floor under every dark region of
+   the scene. Measured on the operator's own fullscreen screenshot: empty
+   corners at rgb(22,24,25) that should read near rgb(3-8) per the 2D
+   exposure-lift math alone.
+
+   Fix: clamp to a floor via 'lighten' (which is max(v,floor), a real
+   per-channel max) BEFORE the 'difference' step. For v<floor this makes
+   the clamped value EQUAL to floor, so |floor-floor|=0 -- correctly zero,
+   no inversion. For v>=floor, lighten(v,floor)=v (unchanged), so
+   |v-floor| is exactly the same value the code already computed --
+   provably behavior-preserving for every pixel that was already bright
+   enough to bloom. Only the wrong (v<floor) case changes, and only in the
+   direction of removing the bug. */
 var _BLOOM_FLOOR = 96;      /* 0-255; below this, nothing blooms */
 
 function _bloomBrightPass(bctx, srcCanvas, bw, bh) {
@@ -4411,11 +4434,21 @@ function _bloomBrightPass(bctx, srcCanvas, bw, bh) {
     bctx.clearRect(0, 0, bw, bh);
     bctx.drawImage(srcCanvas, 0, 0, bw, bh);
 
+    var f = _BLOOM_FLOOR;
+
+    /* CLAMP to the floor first: 'lighten' is a per-channel max(src,dst), so
+       this pins every pixel darker than the floor UP TO exactly the floor
+       value (and leaves brighter pixels untouched). Without this step the
+       'difference' below is a two-sided |v-floor| distance, not a
+       one-sided threshold -- see the grey-floor bug note above. */
+    bctx.globalCompositeOperation = 'lighten';
+    bctx.fillStyle = 'rgb(' + f + ',' + f + ',' + f + ')';
+    bctx.fillRect(0, 0, bw, bh);
+
     /* SUBTRACT the floor. Canvas has no 'subtract' blend, but
        difference(x, floor) == |x - floor|, which equals x - floor for the
-       bright pixels we are keeping. Dark pixels invert to a small value and
-       are then crushed by the multiply below rather than surviving as fog. */
-    var f = _BLOOM_FLOOR;
+       bright pixels we are keeping. Everything the 'lighten' step above
+       pinned to exactly `floor` now differences to exactly 0 -- no fog. */
     bctx.globalCompositeOperation = 'difference';
     bctx.fillStyle = 'rgb(' + f + ',' + f + ',' + f + ')';
     bctx.fillRect(0, 0, bw, bh);

@@ -16975,12 +16975,32 @@ function _drawComet(ctx,x,y,size,color,sunX,sunY,bounceClock,pnlColor,now){
    Same budget as drawPlanet: key light cut to 30% and recoloured to CC's
    amber lattice glow (which does emit, faintly), with an ambient starlight
    floor at 0.16 so the shadow side reads dark rather than absent. Deep
-   space is dark, not invisible. */
+   space is dark, not invisible.
+
+   CONSOLIDATION (2026-08-26): this used to be a hand-copied literal
+   (0.30/0.16) that only a comment tied back to solar_system.js's
+   _LIGHT_KEY/_LIGHT_AMBIENT -- three independent copies of one physical
+   constant (this file, solar_system.js drawPlanet, armada.js's
+   three-point rig), agreeing today but with nothing enforcing that they
+   stay agreeing. solar_system.js loads as a classic <script> before this
+   inline block (see the <script src="solar_system.js"> tag), so its
+   top-level `var _LIGHT_KEY`/`_LIGHT_AMBIENT` are real `window` globals
+   already reachable here. Read them directly with a literal fallback (the
+   same 0.30/0.16 this line always had) so a load-order change or a
+   solar_system.js edit that drops the globals degrades to the prior
+   behavior instead of throwing -- this file's standing convention for
+   every cross-file dependency (see the DeepField/_orbNodes guards
+   elsewhere). armada.js's WebGL rig is NOT included in this reference:
+   its key/ambient are lux-scale DirectionalLight/HemisphereLight
+   intensities, a different unit system entirely, so a shared numeric
+   constant would be meaningless there -- it stays a separately-tuned
+   analog of the same ~4:1 lit:shadow intent, documented, not unified. */
 function _drawMoonOrb(ctx,x,y,s,baseR,baseG,baseB,sunX,sunY){
   var lx=(sunX-x),ly=(sunY-y);
   var ld=Math.sqrt(lx*lx+ly*ly)||1;lx/=ld;ly/=ld;
   var offX=lx*s*0.25,offY=ly*s*0.25;
-  var KL=0.30, AM=0.16;   /* mirrors _LIGHT_KEY / _LIGHT_AMBIENT */
+  var KL=(typeof _LIGHT_KEY==="number")?_LIGHT_KEY:0.30;
+  var AM=(typeof _LIGHT_AMBIENT==="number")?_LIGHT_AMBIENT:0.16;
   /* Atmospheric glow */
   var ag=ctx.createRadialGradient(x,y,s*0.6,x,y,s*1.6);
   ag.addColorStop(0,"rgba("+baseR+","+baseG+","+baseB+",0.06)");

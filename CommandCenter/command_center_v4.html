@@ -3543,6 +3543,46 @@ function _drawMetricsBar(ctx,W){
   var pnlStr="PnL: "+(pnl===null?"—":(pnl>=0?"+":"")+pnl.toFixed(2));
   ctx.fillStyle=pnl===null?"rgba(255,255,255,0.35)":pnl>=0?"rgba(0,191,165,0.7)":"rgba(255,100,100,0.65)";
   ctx.fillText(pnlStr,xp,y);xp+=ctx.measureText(pnlStr).width+18;
+  /* Avg win / avg loss / expectancy — CURRENT ERA ONLY.
+     These come from /api/current_era, not /api/expectancy. The lifetime
+     endpoint reports avg_win $191 and avg_loss -$311 because it includes
+     pre-resize trades sized against a $1,000,000 pool; printing those beside
+     "Pool: $215" in the always-on HUD would be the era-mixing defect
+     rendered at full confidence.
+     Every value is null-guarded the same way pool/wr/pnl above are: this is
+     canvas draw code, and a throw here kills the frame and takes the HUD
+     down. Absent stays absent — "--", never 0.00. */
+  var _era=state.era||null;
+  var _eN=(_era&&typeof _era.n==="number")?_era.n:0;
+  function _eraNum(v){return (typeof v==="number"&&isFinite(v))?v:null;}
+  var _aw=_era?_eraNum(_era.avg_win):null;
+  var _al=_era?_eraNum(_era.avg_loss):null;
+  var _ex=_era?_eraNum(_era.expectancy_per_trade):null;
+  /* Below the fleet's own 30-trade bar nothing here is significant, so it is
+     drawn grey — the same treatment WR gets under 20. A confident colour on
+     an n=14 expectancy is exactly the "fabricated success" shape. */
+  var _eraDim=_eN<30;
+  var _awStr="AvgW: "+(_aw===null?"--":"$"+_aw.toFixed(2));
+  ctx.fillStyle=_eraDim?"rgba(150,150,150,0.5)":"rgba(0,191,165,0.65)";
+  ctx.fillText(_awStr,xp,y);xp+=ctx.measureText(_awStr).width+14;
+  /* avg_loss arrives negative; render as -$0.15, not $-0.15. */
+  var _alStr="AvgL: "+(_al===null?"--":(_al<0?"-$":"$")+Math.abs(_al).toFixed(2));
+  ctx.fillStyle=_eraDim?"rgba(150,150,150,0.5)":"rgba(255,100,100,0.6)";
+  ctx.fillText(_alStr,xp,y);xp+=ctx.measureText(_alStr).width+14;
+  var _exStr="Exp: "+(_ex===null?"--":(_ex>=0?"+":"")+"$"+_ex.toFixed(3));
+  if(_ex===null){ctx.fillStyle="rgba(255,255,255,0.35)";}
+  else if(_eraDim){ctx.fillStyle="rgba(150,150,150,0.5)";}
+  else{ctx.fillStyle=_ex>=0?"rgba(0,191,165,0.7)":"rgba(255,100,100,0.65)";}
+  ctx.fillText(_exStr,xp,y);xp+=ctx.measureText(_exStr).width+14;
+  /* n for the three above — a rate without its n is not a measurement, and
+     these are a DIFFERENT population from the WR n printed earlier (that one
+     is decided-only; this one counts flats too). Labelled so the two cannot
+     be confused. */
+  if(_eN>0){
+    var _enStr="(era n="+_eN+")";
+    ctx.fillStyle="rgba(150,150,150,0.45)";
+    ctx.fillText(_enStr,xp,y);xp+=ctx.measureText(_enStr).width+18;
+  }else{xp+=4;}
   /* AEGIS score */
   if(aegisScr!=null){
     var aegisStr="AEGIS: "+aegisScr.toFixed(2);
@@ -14001,6 +14041,17 @@ function fetchData(){
     state.bots=data.bots||[];
     state.aggregate=data.aggregate||null;
     state.feed=data.feed||[];
+    /* Current-era trade stats for the HUD (avg win / avg loss / expectancy).
+       /api/expectancy is LIFETIME and spans the 2026-08-13 pool resize, so
+       its avg_win of $191 and avg_loss of -$311 describe positions sized
+       against a $1,000,000 pool. Rendering those beside a $215 pool would
+       put the era-mixing defect straight into the always-on HUD.
+       /api/current_era excludes pre-resize trades and probe fixtures.
+       Polled here on the master cadence but failure-tolerant: a missing
+       endpoint (older backend, pre-restart) leaves state.era null and the
+       HUD renders "--", never a stand-in number. */
+    fetch("/api/current_era").then(function(r){return r.ok?r.json():null;})
+      .then(function(e){state.era=e||null;}).catch(function(){state.era=null;});
     state.portfolio=data.portfolio||null;
     state.daily_24h=data.daily_24h||null;
     if(data.fleet_engage_state) _updateFleetModeBtn(data.fleet_engage_state);

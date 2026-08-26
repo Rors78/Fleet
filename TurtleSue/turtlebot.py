@@ -1396,7 +1396,12 @@ class TurtleEngine:
         # Minimum trade size check - reject trades too small to be a meaningful signal
         min_size = CONFIG["min_trade_size_usd"]
         if cost < min_size:
-            self.errors.append(f"Trade too small: ${cost:.2f} < ${min_size:.0f} minimum")
+            # :.2f, not :.0f — the fleet floor is $0.25 and :.0f renders it as
+            # "$0", so a real rejection read as "too small: $0.13 < $0 minimum",
+            # which is unfalsifiable nonsense to whoever is reading the errors.
+            # The floor followed the pool down; the format string did not.
+            self.errors.append(
+                f"Trade too small: ${cost:.2f} < ${min_size:.2f} minimum")
             return
 
         # Concentration clamp — measured against the SIZING BASIS, not the

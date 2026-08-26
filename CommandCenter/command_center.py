@@ -1987,6 +1987,43 @@ def _first_available(d1: dict, d2: dict, *keys: str) -> Any:
 # Aggregate computation
 # ---------------------------------------------------------------------------
 
+# The pool was resized $1,000,000 -> $210.53 on 2026-08-13. Bot P/L ledgers
+# are LIFETIME and cross that boundary, so summing them adds two different
+# pools' worth of dollars under one label. Live example, 2026-08-26:
+# confluence publishes pnl = -362.76, which is dominated by pre-resize trades
+# on notionals of $38k-$49k (FLOW -1216.75, STORJ -567.06, XMR -581.30,
+# ETHFI +3111.19) against a pool that is now $215. Re-derived from the durable
+# bus, the SAME bot's post-resize record is +5.01 over 14 closed trades.
+#
+# The sum is not wrong arithmetic — it is an honest sum of inputs that mean
+# different things. This constant exists so the boundary is a value the code
+# can point at rather than a date repeated in ten comments, and so the
+# aggregate can DISCLOSE the crossing instead of quietly publishing it.
+# 2026-08-13 21:00:00 UTC — MEASURED from the trade record, not assumed from
+# the calendar date. Position notionals break cleanly and permanently there:
+#
+#     08-13 19:22  confluence ETHFI/USD  +3111.19  size $38,557.56   <- old
+#     08-13 21:42  confluence CRV/USD       -0.01  size      $6.80   <- new
+#
+# and nothing after that point is ever sized above ~$14 again. The boundary
+# sits inside the 2h20m gap between those two closes.
+#
+# Two wrong values were written here first, and both failed the same way —
+# quietly, by shifting which trades count:
+#   1786924800.0  = 2026-08-17 UTC, four days LATE — dropped 7 real trades.
+#   1786579200.0  = 2026-08-13 00:00 UTC, ~21h EARLY — admitted 12 old-pool
+#                   trades and published +$939 on a $215 pool, with a $300
+#                   average win. A calendar midnight is a guess; the notional
+#                   break is evidence.
+#
+# Verify any change here with time.gmtime(), and re-check it against the
+# notional column rather than trusting the arithmetic.
+POOL_RESIZE_TS = 1786654800.0
+POOL_RESIZE_NOTE = ("bot P/L ledgers are lifetime and cross the 2026-08-13 "
+                    "pool resize ($1,000,000 -> $210.53); pre-resize trades "
+                    "were sized against the old pool")
+
+
 def _compute_aggregate(bots_data: dict) -> dict:
     """Compute fleet-wide aggregate from all normalized bot data."""
     alive_count = sum(1 for b in bots_data.values() if b.get("alive"))
@@ -1995,10 +2032,35 @@ def _compute_aggregate(bots_data: dict) -> dict:
     def _collect(key):
         return [(bid, n[key]) for bid, n in norms.items() if n.get(key) is not None]
 
+    # TRADERS ONLY for anything that claims to count trading activity.
+    #
+    # _TRADER_IDS already gated the win rate (see the long note below), and
+    # the sibling fields were missed — the fix-one-sibling-miss-the-others
+    # shape this project keeps hitting. Observed live 2026-08-26 16:23, minutes
+    # after a watchdog restart:
+    #
+    #     aggregate.total_open_positions   10
+    #     portfolio.active_reservations     3
+    #
+    # The 7-position gap is trinity, which is role="support" — an intel-only
+    # scanner holding NO pool capital. Its normalizer maps signal tracks onto
+    # open_positions/total_trades, so the fleet appeared to hold 10 positions
+    # while the portfolio (the only thing that reserves real capital) held 3.
+    #
+    # A signal being tracked is not a position being held. The pool is the
+    # authority on what is open; a bot that cannot reserve cannot contribute.
+    def _collect_traders(key):
+        return [(bid, n[key]) for bid, n in norms.items()
+                if bid in _TRADER_IDS and n.get(key) is not None]
+
     equities = _collect("equity")
-    pnls = _collect("pnl")
-    open_pos = _collect("open_positions")
-    trades = _collect("total_trades")
+    # pnl is traders-only for the same reason, though no support bot publishes
+    # one today (checked live 2026-08-26: all six contributors are traders).
+    # Guarding it now rather than after a normalizer change makes it leak —
+    # trinity already leaks through open_positions by exactly that route.
+    pnls = _collect_traders("pnl")
+    open_pos = _collect_traders("open_positions")
+    trades = _collect_traders("total_trades")
     regimes = [n["regime"] for n in norms.values() if n.get("regime")]
 
     # Global fleet WR = total_wins / total DECIDED trades, over TRADERS only.
@@ -2096,6 +2158,14 @@ def _compute_aggregate(bots_data: dict) -> dict:
         # fleet P/L, which is already reported as total_pnl below.
         "total_equity": None,
         "total_pnl": sum(v for _, v in pnls) if pnls else None,
+        # total_pnl sums LIFETIME bot ledgers, which cross the 2026-08-13 pool
+        # resize. Publishing a single number that spans two pool sizes without
+        # saying so is how -362.76 reads as "the fleet is down $363" when the
+        # post-resize record is +5.01. Consumers showing total_pnl MUST show
+        # this caveat beside it.
+        "total_pnl_spans_pool_resize": True,
+        "total_pnl_note": POOL_RESIZE_NOTE,
+        "pool_resize_ts": POOL_RESIZE_TS,
         # Global WR = total_wins / total DECIDED trades, traders only.
         # NOTE the denominator is win_rate_n, NOT total_trades: the two count
         # different populations and pairing the rate with total_trades was the
@@ -3681,6 +3751,7 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
         "/api/signals/rankings":    "_serve_signals_rankings",
         "/api/signals/decomposition": "_serve_signals_decomposition",
         "/api/expectancy":          "_serve_expectancy",
+        "/api/current_era":         "_serve_current_era",
         "/api/trades":              "_serve_trades",
         "/api/signals/decay":       "_serve_signals_decay",
         "/api/manifest":            "_serve_manifest",
@@ -4453,6 +4524,97 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
 
     def _serve_expectancy(self, parsed) -> None:
         self._send_json(_expectancy_tracker.get_fleet_stats())
+
+    def _serve_current_era(self, parsed) -> None:
+        """The fleet's record on the CURRENT pool, with nothing else in it.
+
+        Every other P/L figure this server publishes is lifetime, and lifetime
+        spans the 2026-08-13 pool resize ($1,000,000 -> $210.53). Summed
+        across that boundary the fleet reads -$362.76; restricted to the
+        current pool it reads +$5.01 over 14 closed trades. Both are
+        arithmetically correct and they describe different things, which is
+        precisely why this endpoint exists rather than a footnote somewhere.
+
+        Three exclusions, each of which otherwise flatters the number:
+
+          - PRE-RESIZE TRADES. Sized against a pool 4,750x larger. A single
+            pre-resize trade (ETHFI +3111.19) exceeds the entire current pool
+            by 14x.
+          - PROBE PAIRS. ZZPROBE/NF fixtures are test scaffolding. They were
+            30 of 58 post-resize closes and every one of them a win, worth
+            +370.20 -- all of TurtleSue's apparent profit. Its real-pair P/L
+            is $0.00.
+          - UNDECIDED (FLAT) TRADES. Counted in n, excluded from the win rate
+            denominator, and reported separately. A flat is not a win.
+
+        Returns n alongside every rate. A rate without its n is not a
+        measurement, and at n=14 nothing here is significant -- the response
+        says so in `caveat` rather than leaving the reader to infer it.
+        """
+        trades = _collect_closed_trades()
+
+        kept, pre, probe = [], 0, 0
+        for t in trades:
+            ts = t.get("ts") or t.get("closed_at_ts") or 0
+            if not isinstance(ts, (int, float)) or ts < POOL_RESIZE_TS:
+                pre += 1
+                continue
+            if _is_probe_pair(t.get("pair")):
+                probe += 1
+                continue
+            kept.append(t)
+
+        pnls, by_bot = [], {}
+        for t in kept:
+            p = t.get("pnl")
+            if not isinstance(p, (int, float)):
+                continue
+            pnls.append(p)
+            by_bot.setdefault(t.get("bot") or "unknown", []).append(p)
+
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        flats = [p for p in pnls if p == 0]
+        decided = len(wins) + len(losses)
+
+        def _stats(vals):
+            w = [v for v in vals if v > 0]
+            l = [v for v in vals if v < 0]
+            d = len(w) + len(l)
+            return {
+                "n": len(vals),
+                "pnl": round(sum(vals), 4),
+                "wins": len(w), "losses": len(l), "flat": len(vals) - d,
+                "win_rate": round(100.0 * len(w) / d, 1) if d else None,
+                "win_rate_n": d,
+            }
+
+        self._send_json({
+            "era_start_ts": POOL_RESIZE_TS,
+            "era_note": POOL_RESIZE_NOTE,
+            "n": len(pnls),
+            "total_pnl": round(sum(pnls), 4) if pnls else 0.0,
+            "wins": len(wins), "losses": len(losses), "flat": len(flats),
+            # Over DECIDED trades only -- flats are neither a win nor a loss.
+            "win_rate": round(100.0 * len(wins) / decided, 1) if decided else None,
+            "win_rate_n": decided,
+            "avg_win": round(sum(wins) / len(wins), 4) if wins else None,
+            "avg_loss": round(sum(losses) / len(losses), 4) if losses else None,
+            "expectancy_per_trade": round(sum(pnls) / len(pnls), 4) if pnls else None,
+            "by_bot": {b: _stats(v) for b, v in sorted(by_bot.items())},
+            "excluded": {
+                "pre_resize": pre,
+                "probe_pairs": probe,
+                "why": "pre-resize trades were sized against a $1,000,000 "
+                       "pool; probe pairs are test fixtures, not trades",
+            },
+            # Stated, not implied. The fleet's own bar for an expectancy read
+            # is ~30 closed trades; below it this is a direction, not a rate.
+            "caveat": (None if len(pnls) >= 30 else
+                       "PROVISIONAL: n=%d is below the 30-trade bar — quote "
+                       "with the n, do not drive parameter changes from it"
+                       % len(pnls)),
+        })
 
     def _serve_trades(self, parsed) -> None:
         """Return per-bot trade history from the durable event bus log.

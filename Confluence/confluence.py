@@ -420,12 +420,36 @@ class ConfluenceEngine:
         print(f"[{level}] {msg}", flush=True)
 
     def _emit(self, etype, data):
+        """Publish one event to the fleet bus.
+
+        The call below was `self._events.publish({...})` for this bot's whole
+        history. EventPublisher has no `publish` method — its API is
+        `emit(event_type, data)` — so every call raised AttributeError into
+        the bare `except: pass` beneath it and vanished.
+
+        Measured 2026-08-26: confluence had emitted 0 TRADE_OPEN events ever,
+        against 146 from gridzilla and 110 from turtlesue. The 22 confluence
+        TRADE_CLOSE rows on the bus were all synthesized by Command Center's
+        portfolio_release path (they carry "via": "portfolio_release"), not by
+        this bot. The bot doing all the live trading was invisible on entry.
+
+        A swallowed exception on a telemetry path is the expensive kind: the
+        bot keeps trading correctly, so nothing looks wrong, while the record
+        that any audit depends on is quietly never written. The failure is now
+        logged once per event type rather than silently dropped — telemetry
+        still must never take the trading loop down with it.
+        """
         if not self._events:
             return
         try:
-            self._events.publish({"source": BOT_ID, "type": etype, "data": data})
-        except Exception:
-            pass
+            self._events.emit(etype, data)
+        except Exception as e:
+            if not hasattr(self, "_emit_failed"):
+                self._emit_failed = set()
+            if etype not in self._emit_failed:
+                self._emit_failed.add(etype)
+                self._log(f"Event emit failed for {etype}: {e!r} — this event "
+                          f"type is NOT reaching the fleet bus", "WARNING")
 
     # ── state ──
     def _save_state(self):
@@ -1102,7 +1126,43 @@ class ConfluenceEngine:
         for pair, pos in list(self.positions.items()):
             price = self._price_for(pair, intel)
             if not price:
+                # NO QUOTE. Every price-based exit is blind here, but the
+                # AGE of a position is knowable without a price — and this
+                # is exactly when it matters most.
+                #
+                # This `continue` used to skip the whole iteration, which put
+                # the MAX_POSITION_AGE_H check below it out of reach for any
+                # pair Oracle stopped quoting. Measured 2026-08-26 against a
+                # 36h limit: AAVE/USD held 215.9h (6.0x), LINK/USD 212.1h,
+                # PENDLE/USD 182.9h. Those three drifted up in a rising tape
+                # and became 88% of all current-era profit — not strategy,
+                # just positions the exit logic had lost track of. The next
+                # tape would have taken it back the same way.
+                #
+                # A stale position is flagged, never force-closed: closing
+                # requires a price, and inventing one would book a fictional
+                # P/L. Absence stays absence. The operator gets a loud,
+                # once-per-position warning instead.
+                if pos.age_h >= MAX_POSITION_AGE_H and not getattr(
+                        pos, "_stale_warned", False):
+                    pos._stale_warned = True
+                    self._log(
+                        f"STALE {pos.direction} {pair}: held {pos.age_h:.1f}h "
+                        f"(limit {MAX_POSITION_AGE_H}h) with NO QUOTE from "
+                        f"Oracle — stop/target/time exits are all blind. "
+                        f"Position is unmanaged until a quote returns.",
+                        "WARNING")
+                    self._emit("ATTENTION", {
+                        "bot": BOT_ID, "pair": pair,
+                        "reason": "position_unmanaged_no_quote",
+                        "age_h": round(pos.age_h, 2),
+                        "limit_h": MAX_POSITION_AGE_H,
+                        "suggested_action": "check_oracle_coverage",
+                    })
                 continue
+
+            # A quote exists again — let the next outage warn afresh.
+            pos._stale_warned = False
 
             # Favorable extreme: highest price for a LONG, lowest for a SHORT.
             if pos.direction == "SHORT":

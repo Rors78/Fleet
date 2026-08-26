@@ -98,6 +98,26 @@ def _send_telegram(message: str) -> bool:
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
             if resp.status == 200:
+                # Log the SEND, not just the failure. Every alert but the
+                # startup message used to succeed silently, so the log could
+                # only ever prove that something went wrong — never that the
+                # alarm actually went off.
+                #
+                # Observed 2026-08-26: Command Center took 703s to come up.
+                # The log showed 16 grace lines and 21 "socket check failed"
+                # warnings and NOTHING else, which reads exactly like a
+                # notifier that watched an 11-minute outage and stayed quiet.
+                # It had in fact sent both a CC_DOWN and a CC_RECOVERED alert;
+                # neither left a trace. A monitor whose own log cannot
+                # distinguish "alerted" from "failed to alert" is not
+                # auditable, and the first line of the message is what says
+                # which alert it was.
+                # splitlines() on "" returns [], so [0] would raise — inside
+                # the send path of the thing that is supposed to be watching
+                # everything else. Never index it directly.
+                _lines = (message or "").splitlines()
+                log.info("ALERT SENT: %s",
+                         _lines[0][:120] if _lines else "(empty message)")
                 return True
             log.warning("Telegram returned status %s", resp.status)
     except Exception as e:
@@ -247,6 +267,14 @@ def main():
 
     cc_fail_streak = 0 if cc_alive else 1
     cc_was_down = not cc_alive
+    # Startup grace: the FleetNotifierWatchdog scheduled task starts this at
+    # LOGON, but the fleet only comes up when Fleet Restart is run manually.
+    # Until CC has been seen up ONCE, down-checks inside the grace window log
+    # at INFO and send no Tier 1 — a fleet that is still booting is not an
+    # outage. If the grace expires and CC never appeared, alarm as usual.
+    cc_seen_up = cc_alive
+    start_ts = time.time()
+    startup_grace_s = cfg.get("startup_grace_s", 300)
     prev_bot_states: dict[str, str] = {}
     tick = 0
     tg_fail_streak = 0
@@ -263,6 +291,33 @@ def main():
             # ── Socket check every tick ──
             alive = _check_socket(host, port)
             if alive:
+                if cc_fail_streak:
+                    if cc_seen_up:
+                        log.info("CC recovered after %d failed checks (~%ds down)",
+                                 cc_fail_streak, cc_fail_streak * socket_interval)
+                    else:
+                        # Say whether the grace was BLOWN, not just how long
+                        # it took. 703s against a 300s grace means a CC_DOWN
+                        # alert already went out and the operator was paged;
+                        # 120s means the fleet booted normally and nobody was
+                        # disturbed. Those are different mornings, and the
+                        # bare elapsed figure does not distinguish them.
+                        _elapsed = int(time.time() - start_ts)
+                        if _elapsed >= startup_grace_s:
+                            log.warning(
+                                "CC is up — first contact %ds after notifier "
+                                "start, EXCEEDING the %ds startup grace by "
+                                "%ds. A CC_DOWN alert was sent during this "
+                                "window; this was a real page, not a quiet "
+                                "boot.",
+                                _elapsed, startup_grace_s,
+                                _elapsed - startup_grace_s)
+                        else:
+                            log.info(
+                                "CC is up — first contact %ds after notifier "
+                                "start, within the %ds startup grace "
+                                "(no alert sent)", _elapsed, startup_grace_s)
+                cc_seen_up = True
                 if cc_was_down:
                     key = "CC_RECOVERED:notifier"
                     if gate.should_send(key):
@@ -280,8 +335,15 @@ def main():
                 cc_was_down = False
             else:
                 cc_fail_streak += 1
-                log.warning("CC socket check failed (%d consecutive)", cc_fail_streak)
-                if cc_fail_streak == cc_down_threshold:
+                in_grace = (not cc_seen_up
+                            and time.time() - start_ts < startup_grace_s)
+                if in_grace:
+                    log.info("CC not up yet — startup grace (check %d, %ds elapsed)",
+                             cc_fail_streak, int(time.time() - start_ts))
+                else:
+                    log.warning("CC socket check failed (%d consecutive)", cc_fail_streak)
+                if (not in_grace and cc_fail_streak >= cc_down_threshold
+                        and not cc_was_down):
                     cc_was_down = True
                     key = "CC_DOWN:notifier"
                     if gate.should_send(key):
@@ -419,7 +481,12 @@ def main():
                                 gate.record_sent(key)
 
                 # TIER 2: MANIFOLD_WARNING with regime_change_probability >= 1.0
-                elif etype == "MANIFOLD_WARNING":
+                # Gated off by default since 2026-07-30: NEXUS's info_geometry
+                # emits prob=1 on every pair continuously (first observed the
+                # night the notifier came alive — the stream was always there,
+                # nobody had ears on the bus). Re-enable via
+                # "manifold_alerts_enabled": true once the engine is fixed.
+                elif etype == "MANIFOLD_WARNING" and cfg.get("manifold_alerts_enabled", False):
                     prob = data.get("regime_change_probability", 0)
                     if prob >= 1.0:
                         pair = data.get("pair", "?")

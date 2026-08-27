@@ -857,3 +857,177 @@ by eye alone — the offscreen per-pixel diff and `_sphProject.vis` sampling
 above are the load-bearing proof, run against the real shipped function in
 the live page's own `window.PLANET_VISUALS`/`window._sphProject`, not a
 reimplementation.
+
+---
+
+## 2026-08-27 — Whole-system moving surface life (pass 9)
+
+**Premise checked first, and it held up close but not exactly**: coordinator's
+grep said `_sphBlob(` appears twice (definition + Gridzilla's one call site),
+so "17 of 18 bodies have nothing that moves across their surface." Confirmed
+the raw grep count (2, exact) but then read all 18 `PLANET_VISUALS.*.surface`/
+`.overlay` functions directly, line by line, rather than trusting the count as
+a proxy for "static." Reality: only Gridzilla used the true
+`_sphProject`/`_sphBlob` spherical limb-transit technique, but 14 of the other
+17 bodies already had real `now`-driven motion via a DIFFERENT, older
+technique — flat screen-space rotation (`ctx.rotate(now/N)` around the body
+center: Aegis's hex shield, NexusBrain's whole-globe spin, Trinity/Brainiac's
+radar sweeps, Arbitrageur's wormhole rings, Hivemind's honeycomb flicker,
+Phitex's field-line spin, Chronos's hourglass sand, etc). That motion is real
+and visible but never foreshortens or backface-culls at the limb the way
+`_sphProject`-based features do — it doesn't fail the brief's bar so much as
+answer a narrower question than "does it move"; the brief specifically asked
+for the limb-transiting kind. Oracle/DeepBlue/NEXUS (the 3 stars) already use
+the full technique (GRS, Great Dark Spot, banded zones — all `_sphProject`-
+driven, confirmed by reading, not assumed from the earlier pass's log entry).
+Confluence and Rubberband's `surface()` legitimately draw nothing/little (by
+design — Confluence's identity beams must live in unclipped `overlay()`, see
+the 2026-07-30 comment already in the file; Rubberband's oscillation happens
+in flat-space stroked lines, which don't register in an `arc`/gradient
+draw-call counter but are genuinely animated).
+
+**Changed** — added true `_sphProject`/`_sphLambert`/`_sphBlob` limb-
+transiting weather, following the Gridzilla reference pattern exactly, to the
+three bodies with the weakest existing motion:
+
+- `solar_system.js:1832-1876` `PLANET_VISUALS.chronos.surface` — added 2
+  "chrono echo" cells. Chronos's disk was the flattest surviving body: the
+  three time-rings never change and the clock hand only ticks once a real
+  UTC hour (invisible on any human-watching timescale). The sand-fall
+  animation that DOES exist lives in `overlay()`, not on the sphere itself.
+- `solar_system.js:1499-1526` `PLANET_VISUALS.aegis.surface` — added 3
+  magnetic flux cells. Aegis's craters are fixed screen-space decals that
+  never turn with the body (a real instance of the "flat decal" failure mode
+  the brief warned about), and the hex shield only rotates as a flat overlay
+  silhouette. The new cells sit between the static craters so they don't
+  compete with the hex shield identity.
+- `solar_system.js:1744-1777` `PLANET_VISUALS.turtlesue.surface` — added 3
+  hull running-light glints. TurtleSue is the fleet's single largest planet
+  (sz 33) and, correctly, has NO procedural surface animation — it's a static
+  battle-station sprite, not weather, and adding storm cells to a hull would
+  be wrong for its identity. But that left it with literally nothing that
+  moved across the body itself (only the superlaser overlay animates). Added
+  inside the sprite's own disk-clip so the lights read as point-defense
+  glints on the hull, not free-floating.
+
+Each addition: 2-3 cells (not Gridzilla's 3 uniformly — Chronos/Aegis got
+what suited their identity), own mismatched drift rates (17-33s periods, in
+the same register as Gridzilla's 21-34s), own lat/phase, projected with
+`_sphProject`, lit with `_sphLambert` against the real light vector, drawn
+with `_sphBlob`. Declared as scenery in each comment block, matching the
+Gridzilla precedent — none read a fleet quantity.
+
+**Rejected, with reasons**:
+- *Arbitrageur* — smallest planet (sz 17), already has a live-orbiting binary
+  overlay + rotating wormhole rings. Adding storm cells here would be exactly
+  the "three green cells copy-pasted" pile-on the brief said not to do, on
+  the one body least able to afford the pixel budget. Left alone.
+- *NexusBrain* — already the single most expensive surface() in the file
+  after Gridzilla (47 draw calls measured), with rotating continents/clouds/
+  city-lights. Genuinely alive already; adding more here fails the brief's
+  own cost-discipline instruction ("if too expensive, cut, and say what").
+  Skipped for budget, not because it lacked motion.
+- *A blanket pass touching all 18* — surveyed first (this pass's whole point
+  was not to repeat pass 8's "surveyed, found most already alive" finding
+  without re-verifying it). 14 of 17 non-Gridzilla bodies already have real,
+  distinct `now`-driven animation; forcing the same 3-cell weather template
+  onto all of them would have been the "redundant" sameness the operator
+  explicitly said to get rid of, not the fix for it. Went deep on the 3
+  genuinely weakest bodies instead.
+- *Rewriting NexusBrain/Aegis's existing flat-rotation motion into true
+  `_sphProject` sweeps.* Real and valid follow-up (their rotation doesn't
+  foreshorten/cull at the limb) but a much larger, higher-risk rewrite of
+  already-working, already-alive code — out of scope for a pass whose brief
+  was "extend life to the whole system," not "re-architect existing life."
+  Flagging as a good next target if a future pass wants to push further on
+  the SPECIFIC limb-transit cue rather than motion in general.
+
+**Radius guard**: every new cell's `sz` is a hardcoded positive literal
+(0.030-0.10); every `_sphBlob` call wraps it in `Math.max(0.1, ...)` anyway,
+matching house style. Verified for real, not assumed: a throwing wrapper on
+`ctx.arc`/`createRadialGradient` (rejects negative/non-finite radius) run
+against the actual LIVE shipped `window.PLANET_VISUALS.{chronos,aegis,
+turtlesue}.surface` in the browser (not a Node reimplementation) — 5 radii
+(14/20/27/33/60) x 150 time steps x 3 bodies = **2,250 real calls, 0 thrown**.
+
+**Measured, not estimated** — and the coordinator's own pre-supplied
+worst-case number (453) was independently re-derived and corrected. Built a
+Node harness against `PLANET_VISUALS` directly (`new Function` + a fake
+canvas 2d context that throws on any negative/non-finite radius passed to
+`arc`/`createRadialGradient`/`createLinearGradient`). First harness attempt
+was itself wrong — it called `surface(ctx,400,300,60,Date.now(),0.35,1,1)`,
+which is NOT this file's signature (`ctx,x,y,r,lx,ly,now` per the real call
+site at line ~2768); that bug fed `now=1` (freezing every time-driven branch
+near t=0) and `lx=Date.now()` (a nonsense multi-trillion light-direction
+value) into every body. Fixed to the real signature, then swept 5 radii
+(14/20/27/33/60, covering fullscreen-moon to fullscreen-star) x ~171 time
+samples across a 10-minute span, all 18 bodies, before AND after this pass:
+
+- Baseline (pre-this-pass, current file at commit ca34f1d): **608** true
+  worst-single-frame total (all 18 `surface()`, same r, same `now`,
+  simultaneously) — turtlesue's Death Star sprite needed its `Image` stub
+  patched to report `complete:true` first, since Node's fake `Image()` never
+  loads and the real function short-circuits with 0 draws otherwise; without
+  that patch the baseline undercounts by turtlesue's real cost.
+- After this pass: **617** true worst-single-frame total. Delta: **+9**
+  draw calls in the single worst-aligned frame across the whole 18-body
+  scene — for scale, smaller than Gridzilla's own prior +3 by count but the
+  same order of magnitude, and two orders of magnitude below the deep
+  field's already-accepted 47/frame baseline. Nowhere near the ~950 naive
+  per-body-sum estimate flagged as the thing to check going in.
+- Per-body worst (`surface()` alone, across the same sweep): gridzilla 53
+  (unchanged, pass 8), nexusbrain 47, trinity 42, nexus 40, inference 40,
+  brainiac 37, oracle 36, deepblue 35, phitex 34, hivemind 34, contrarian 31,
+  sentinel 29, aegis 21 (was 18), turtlesue 7 (was 0 — image-load artifact
+  of the Node stub, not a real prior value), chronos 5 (was 3), arbitrageur 4
+  (unchanged, not touched), confluence 0 (by design), rubberband 0 (flat-
+  space strokes, not counted by an arc/gradient-only counter — real cost is
+  non-zero but small, unchanged this pass).
+- Per-pixel proof of real motion, run against the live shipped page (not
+  Node): rendered `chronos`/`aegis`/`turtlesue` `.surface()` to an offscreen
+  200x200 canvas at identical camera/light 15 simulated seconds apart —
+  chronos 149/40000 px changed (0.37%), aegis 5823/40000 (14.56%, includes
+  its pre-existing hex shimmer), turtlesue 329/40000 (0.82%, isolated to the
+  new cells since the image itself is static once drawn).
+
+**Suite**: 99 passed, 0 failed (`python -X utf8 run_all.py` from
+`D:\CommandCenter\tests`), same as baseline. `node --check` clean on both
+`solar_system.js` and `armada.js` (armada.js untouched). Brace balance on
+`solar_system.js`: 521/521 after this pass (full-file count; the diff itself
+is independently balanced at 36 open / 36 close, confirming no stray edit
+elsewhere).
+
+**Pool total**: `215.77491525702527` before this pass's suite run and
+`215.77491525702527` after — unchanged, checked via
+`curl http://localhost:9000/api/portfolio` both times, matching the
+operator's stated baseline exactly.
+
+**Verification honesty**: Chrome automation worked. Confirmed the real page
+loads `window.PLANET_VISUALS` with all 18 keys and both `_sphProject`/
+`_sphBlob` present as live globals (not a stale bundle). Entered fullscreen
+COSMOS via `#ovSolarBtn` (the plain "Fullscreen orbital" toggle button
+clicked first but only re-rendered the docked panel, not fullscreen — the
+overview-page `☉ SOLAR SYSTEM` button, id `ovSolarBtn`, is the one that
+actually launches it). Two screenshots ~8s apart show the whole scene has
+visibly moved (planet positions, ship positions, ring bodies all shifted) and
+no console errors. TurtleSue at the moment of the screenshot appeared to be
+rendering as the WebGL armada 3D station rather than the 2D sprite (per
+`project_sota_round2_2026_07_30.md`, armada.js can silently own trader-bot
+visuals) — that specific view does not visually prove the 2D running-lights
+addition by eye. The load-bearing proof for all three bodies is the
+per-pixel offscreen diff and the 2,250-call radius-guard sweep above, both
+run against the real shipped `window.PLANET_VISUALS` in the live page, not a
+reimplementation — consistent with pass 8's own stated limitation that a
+static screenshot at small render sizes cannot fully prove motion by eye
+alone.
+
+**Total bodies with confirmed `now`-driven surface motion after this pass**:
+18 of 18 (up from 17 of 18 before — Chronos, Aegis, and TurtleSue now join
+the rest; TurtleSue's is its first surface motion of any kind, the other two
+already had motion, now stronger/limb-correct in part). Bodies using the true
+`_sphProject`/`_sphBlob` spherical technique specifically: 7 of 18 (oracle,
+deepblue, nexus, gridzilla, chronos, aegis, turtlesue) — up from 4
+(oracle/deepblue/nexus already had it via `_sphBand`, gridzilla via pass 8).
+The remaining 11 bodies have real but flat-space motion; converting those to
+the limb-correct technique is flagged above as a follow-up, not attempted
+this pass.

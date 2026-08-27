@@ -1396,6 +1396,28 @@ var PLANET_VISUALS = {
                 ctx.lineTo(x + Math.cos(a)*r*0.9, y + Math.sin(a)*r*0.9);
                 ctx.stroke();
             }
+            /* Traveling magnetar hotspots (COSMOS pass #9, 2026-08-27):
+               scenery, time-driven only — two crust hotspots drift in
+               longitude at different fixed rates using the same
+               _sphProject/_sphBlob/_sphLambert machinery Gridzilla proved,
+               so they foreshorten and cross the limb like real surface
+               features instead of the field lines' flat radial decals. */
+            var ptTilt = 0.10;
+            var ptCells = [
+                { lat:  0.22, rate: 1 / 23800, phase: 0.6, sz: 0.14, rgb: '235,180,255' },
+                { lat: -0.40, rate: -1 / 31500, phase: 3.2, sz: 0.10, rgb: '210,120,255' }
+            ];
+            for (var pc = 0; pc < ptCells.length; pc++) {
+                var pcell = ptCells[pc];
+                var pLon = pcell.phase + now * pcell.rate;
+                var pp = _sphProject(pcell.lat, pLon, r, 0, ptTilt);
+                if (pp.vis <= 0.03) continue;
+                var pLit = _sphLambert(pp.x, pp.y, pp.z, r, lx, ly);
+                var pAlpha = pp.vis * (0.18 + pLit * 0.28);
+                if (pAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, pcell.lat, pLon, Math.max(0.1, pcell.sz), 0, ptTilt,
+                    'rgba(' + pcell.rgb + ',' + pAlpha.toFixed(3) + ')');
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* Magnetic field lines — the part that arcs OUT past the disk
@@ -1497,6 +1519,27 @@ var PLANET_VISUALS = {
               }
             }
             ctx.restore();
+            /* Traveling dust glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two sunlit micrometeorite scars drift in
+               longitude, same _sphProject/_sphBlob/_sphLambert technique as
+               Gridzilla, so they cross the limb like real terrain instead
+               of the fixed crater decals above. */
+            var agTilt = 0.10;
+            var agCells = [
+                { lat:  0.30, rate: 1 / 24800, phase: 1.1, sz: 0.09, rgb: '250,215,175' },
+                { lat: -0.18, rate: -1 / 33400, phase: 4.4, sz: 0.07, rgb: '235,195,160' }
+            ];
+            for (var ag = 0; ag < agCells.length; ag++) {
+                var agc = agCells[ag];
+                var agLon = agc.phase + now * agc.rate;
+                var agp = _sphProject(agc.lat, agLon, r, 0, agTilt);
+                if (agp.vis <= 0.03) continue;
+                var agLit = _sphLambert(agp.x, agp.y, agp.z, r, lx, ly);
+                var agAlpha = agp.vis * (0.10 + agLit * 0.22);
+                if (agAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, agc.lat, agLon, Math.max(0.1, agc.sz), 0, agTilt,
+                    'rgba(' + agc.rgb + ',' + agAlpha.toFixed(3) + ')');
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ HEXAGONAL SHIELD OUTLINE ═══
@@ -1595,6 +1638,27 @@ var PLANET_VISUALS = {
             ctx.arc(x, y, r*1.5, sweep-0.15, sweep+0.15);
             ctx.closePath();
             ctx.fill();
+            /* Traveling frost glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two sunlit ice-crystal patches drift in
+               longitude, same _sphProject/_sphBlob/_sphLambert technique as
+               Gridzilla, so they cross the limb like real terrain rather
+               than the fixed crack lines above. */
+            var stTilt = 0.10;
+            var stCells = [
+                { lat:  0.15, rate: 1 / 22900, phase: 2.0, sz: 0.11, rgb: '225,245,255' },
+                { lat: -0.42, rate: -1 / 32500, phase: 5.1, sz: 0.08, rgb: '205,235,255' }
+            ];
+            for (var sc2 = 0; sc2 < stCells.length; sc2++) {
+                var stc = stCells[sc2];
+                var stLon = stc.phase + now * stc.rate;
+                var stp = _sphProject(stc.lat, stLon, r, 0, stTilt);
+                if (stp.vis <= 0.03) continue;
+                var stLit = _sphLambert(stp.x, stp.y, stp.z, r, lx, ly);
+                var stAlpha = stp.vis * (0.14 + stLit * 0.26);
+                if (stAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, stc.lat, stLon, Math.max(0.1, stc.sz), 0, stTilt,
+                    'rgba(' + stc.rgb + ',' + stAlpha.toFixed(3) + ')');
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* Thin cold-blue atmosphere halo — icy body catching starlight
@@ -1848,6 +1912,27 @@ var PLANET_VISUALS = {
             ctx.moveTo(x, y);
             ctx.lineTo(x + Math.cos(handA) * r * 0.65, y + Math.sin(handA) * r * 0.65);
             ctx.stroke();
+            /* Traveling amber glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two surface highlights drift in longitude,
+               same _sphProject/_sphBlob/_sphLambert technique as Gridzilla,
+               so they cross the limb instead of sitting as the flat static
+               rings above. */
+            var chTilt = 0.10;
+            var chCells = [
+                { lat:  0.26, rate: 1 / 25700, phase: 0.9, sz: 0.10, rgb: '255,220,140' },
+                { lat: -0.30, rate: -1 / 34400, phase: 3.8, sz: 0.08, rgb: '255,200,110' }
+            ];
+            for (var ch = 0; ch < chCells.length; ch++) {
+                var chc = chCells[ch];
+                var chLon = chc.phase + now * chc.rate;
+                var chp = _sphProject(chc.lat, chLon, r, 0, chTilt);
+                if (chp.vis <= 0.03) continue;
+                var chLit = _sphLambert(chp.x, chp.y, chp.z, r, lx, ly);
+                var chAlpha = chp.vis * (0.14 + chLit * 0.24);
+                if (chAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, chc.lat, chLon, Math.max(0.1, chc.sz), 0, chTilt,
+                    'rgba(' + chc.rgb + ',' + chAlpha.toFixed(3) + ')');
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ HOURGLASS OVERLAY + CLOCK TICK MARKS ═══
@@ -2125,6 +2210,23 @@ var PLANET_VISUALS = {
               }
             }
             ctx.restore();
+            /* Traveling storm cell (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — one weather system drifts in longitude
+               using _sphProject/_sphBlob/_sphLambert (Gridzilla's pattern),
+               drawn OUTSIDE the cRot rotate/translate above (which is a
+               flat screen-space spin, not the sphere projection) so it
+               foreshortens and crosses the limb correctly on its own. */
+            var nbTilt = 0.10;
+            var nbLon = 1.4 + now / 25000;
+            var nbP = _sphProject(0.12, nbLon, r, 0, nbTilt);
+            if (nbP.vis > 0.03) {
+                var nbLit = _sphLambert(nbP.x, nbP.y, nbP.z, r, lx, ly);
+                var nbAlpha = nbP.vis * (0.14 + nbLit * 0.22);
+                if (nbAlpha >= 0.02) {
+                    _sphBlob(ctx, x, y, r, 0.12, nbLon, 0.13, 0, nbTilt,
+                        'rgba(255,255,255,' + nbAlpha.toFixed(3) + ')');
+                }
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ NEURAL LIGHTNING ARCS — 3 jagged surface discharges ═══
@@ -2183,6 +2285,27 @@ var PLANET_VISUALS = {
                 }
                 ctx.stroke();
             }
+            /* Traveling tension glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two highlights drift in longitude using
+               the real sphere projection, so they foreshorten and cross the
+               limb rather than sliding along the flat screen-space bands
+               above. */
+            var rbTilt = 0.10;
+            var rbCells = [
+                { lat:  0.20, rate: 1 / 26700, phase: 1.7, sz: 0.11, rgb: '150,235,255' },
+                { lat: -0.28, rate: -1 / 35300, phase: 4.9, sz: 0.09, rgb: '110,215,250' }
+            ];
+            for (var rb = 0; rb < rbCells.length; rb++) {
+                var rbc = rbCells[rb];
+                var rbLon = rbc.phase + now * rbc.rate;
+                var rbp = _sphProject(rbc.lat, rbLon, r, 0, rbTilt);
+                if (rbp.vis <= 0.03) continue;
+                var rbLit = _sphLambert(rbp.x, rbp.y, rbp.z, r, lx, ly);
+                var rbAlpha = rbp.vis * (0.14 + rbLit * 0.26);
+                if (rbAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, rbc.lat, rbLon, Math.max(0.1, rbc.sz), 0, rbTilt,
+                    'rgba(' + rbc.rgb + ',' + rbAlpha.toFixed(3) + ')');
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ OSCILLATION RINGS — 3 concentric expanding/contracting rings ═══
@@ -2230,6 +2353,26 @@ var PLANET_VISUALS = {
             var fG2 = ctx.createRadialGradient(x+r*0.28, y+r*0.22-fDrift, 0, x+r*0.28, y+r*0.22-fDrift, r*0.18);
             fG2.addColorStop(0, 'rgba(225, 200, 215, 0.14)'); fG2.addColorStop(1, 'rgba(0,0,0,0)');
             ctx.fillStyle = fG2; ctx.beginPath(); ctx.arc(x+r*0.28, y+r*0.22-fDrift, r*0.18, 0, Math.PI*2); ctx.fill();
+            /* Traveling red veins (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two crust glints drift in longitude using
+               the real sphere projection, so they foreshorten and cross
+               the limb rather than the fixed frost patches above. */
+            var coTilt = 0.10;
+            var coCells = [
+                { lat:  0.24, rate: -1 / 27700, phase: 0.4, sz: 0.10, rgb: '255,140,120' },
+                { lat: -0.36, rate: 1 / 36300, phase: 3.6, sz: 0.08, rgb: '235,110,105' }
+            ];
+            for (var co = 0; co < coCells.length; co++) {
+                var coc = coCells[co];
+                var coLon = coc.phase + now * coc.rate;
+                var cop = _sphProject(coc.lat, coLon, r, 0, coTilt);
+                if (cop.vis <= 0.03) continue;
+                var coLit = _sphLambert(cop.x, cop.y, cop.z, r, lx, ly);
+                var coAlpha = cop.vis * (0.14 + coLit * 0.24);
+                if (coAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, coc.lat, coLon, Math.max(0.1, coc.sz), 0, coTilt,
+                    'rgba(' + coc.rgb + ',' + coAlpha.toFixed(3) + ')');
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ RETROGRADE RING — dashed ring spinning opposite the
@@ -2282,6 +2425,22 @@ var PLANET_VISUALS = {
             ctx.fillStyle = cg;
             ctx.beginPath(); ctx.arc(0, 0, r*0.3, 0, Math.PI*2); ctx.fill();
             ctx.restore();
+            /* Traveling accretion glint (COSMOS pass #9, 2026-08-27):
+               scenery, time-driven only — one highlight drifts in longitude
+               using the real sphere projection (drawn outside the rot
+               transform above, which is flat screen-space), so it
+               foreshortens and crosses the limb correctly on its own. */
+            var arTilt = 0.10;
+            var arLon = 2.1 + now / 27000;
+            var arP = _sphProject(-0.10, arLon, r, 0, arTilt);
+            if (arP.vis > 0.03) {
+                var arLit = _sphLambert(arP.x, arP.y, arP.z, r, lx, ly);
+                var arAlpha = arP.vis * (0.16 + arLit * 0.24);
+                if (arAlpha >= 0.02) {
+                    _sphBlob(ctx, x, y, r, -0.10, arLon, 0.12, 0, arTilt,
+                        'rgba(200,170,255,' + arAlpha.toFixed(3) + ')');
+                }
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* ═══ BINARY SYSTEM — two dots orbiting each other, ~5s period ═══ */
@@ -2351,6 +2510,26 @@ var PLANET_VISUALS = {
                         ctx.fillStyle = 'rgba(250, 230, 140, 0.16)'; ctx.fill();
                     }
                 }
+            }
+            /* Traveling swarm glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two highlights drift in longitude using
+               the real sphere projection, so they foreshorten and cross
+               the limb rather than the fixed honeycomb grid above. */
+            var hmTilt = 0.10;
+            var hmCells = [
+                { lat:  0.18, rate: 1 / 21900, phase: 2.5, sz: 0.10, rgb: '250,235,150' },
+                { lat: -0.32, rate: -1 / 29700, phase: 5.4, sz: 0.08, rgb: '235,210,110' }
+            ];
+            for (var hm = 0; hm < hmCells.length; hm++) {
+                var hmc = hmCells[hm];
+                var hmLon = hmc.phase + now * hmc.rate;
+                var hmp = _sphProject(hmc.lat, hmLon, r, 0, hmTilt);
+                if (hmp.vis <= 0.03) continue;
+                var hmLit = _sphLambert(hmp.x, hmp.y, hmp.z, r, lx, ly);
+                var hmAlpha = hmp.vis * (0.14 + hmLit * 0.26);
+                if (hmAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, hmc.lat, hmLon, Math.max(0.1, hmc.sz), 0, hmTilt,
+                    'rgba(' + hmc.rgb + ',' + hmAlpha.toFixed(3) + ')');
             }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
@@ -2426,6 +2605,26 @@ var PLANET_VISUALS = {
                 var br2 = r * (0.3 + bi * 0.2);
                 ctx.fillStyle = 'rgba(160, 210, 255, ' + (0.45 - bi * 0.10) + ')';
                 ctx.beginPath(); ctx.arc(x + Math.cos(ba)*br2, y + Math.sin(ba)*br2, Math.max(1.2,r*0.05), 0, Math.PI*2); ctx.fill();
+            }
+            /* Traveling metal glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two highlights drift in longitude using
+               the real sphere projection, so they foreshorten and cross
+               the limb rather than the flat concentric grid above. */
+            var trTilt = 0.10;
+            var trCells = [
+                { lat:  0.28, rate: 1 / 28700, phase: 1.3, sz: 0.10, rgb: '190,225,255' },
+                { lat: -0.20, rate: -1 / 37200, phase: 4.2, sz: 0.08, rgb: '160,205,255' }
+            ];
+            for (var tr = 0; tr < trCells.length; tr++) {
+                var trc = trCells[tr];
+                var trLon = trc.phase + now * trc.rate;
+                var trp = _sphProject(trc.lat, trLon, r, 0, trTilt);
+                if (trp.vis <= 0.03) continue;
+                var trLit = _sphLambert(trp.x, trp.y, trp.z, r, lx, ly);
+                var trAlpha = trp.vis * (0.14 + trLit * 0.24);
+                if (trAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, trc.lat, trLon, Math.max(0.1, trc.sz), 0, trTilt,
+                    'rgba(' + trc.rgb + ',' + trAlpha.toFixed(3) + ')');
             }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
@@ -2511,6 +2710,26 @@ var PLANET_VISUALS = {
                 ctx.fillStyle = 'rgba(180, 220, 255, ' + (0.35*flick).toFixed(3) + ')';
                 ctx.beginPath(); ctx.arc(jx, jy, Math.max(0.6, r*0.025), 0, Math.PI*2); ctx.fill();
             }
+            /* Traveling compute glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two highlights drift in longitude using
+               the real sphere projection, so they foreshorten and cross
+               the limb rather than the flat circuit traces above. */
+            var infTilt = 0.10;
+            var infCells = [
+                { lat:  0.22, rate: 1 / 30600, phase: 3.1, sz: 0.10, rgb: '180,215,255' },
+                { lat: -0.34, rate: -1 / 38200, phase: 0.2, sz: 0.08, rgb: '150,195,255' }
+            ];
+            for (var inf = 0; inf < infCells.length; inf++) {
+                var infc = infCells[inf];
+                var infLon = infc.phase + now * infc.rate;
+                var infp = _sphProject(infc.lat, infLon, r, 0, infTilt);
+                if (infp.vis <= 0.03) continue;
+                var infLit = _sphLambert(infp.x, infp.y, infp.z, r, lx, ly);
+                var infAlpha = infp.vis * (0.14 + infLit * 0.26);
+                if (infAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, infc.lat, infLon, Math.max(0.1, infc.sz), 0, infTilt,
+                    'rgba(' + infc.rgb + ',' + infAlpha.toFixed(3) + ')');
+            }
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* Cool processing-halo — soft blue bloom past the disk, plus
@@ -2591,6 +2810,33 @@ var PLANET_VISUALS = {
             ctx.moveTo(x, y);
             ctx.lineTo(x + Math.cos(sweep)*r, y + Math.sin(sweep)*r);
             ctx.stroke();
+            ctx.restore();
+            /* Traveling survey glints (COSMOS pass #9, 2026-08-27): scenery,
+               time-driven only — two highlights drift in longitude using
+               the real sphere projection, so they foreshorten and cross
+               the limb rather than the fixed survey grid above. Drawn
+               outside the clip/save block above since _sphBlob/drawPlanet's
+               own disk clip already contains it. */
+            ctx.save();
+            ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI*2); ctx.clip();
+            var brTilt = 0.10;
+            var brCells = [
+                { lat:  0.16, rate: 1 / 21000, phase: 4.0, sz: 0.10, rgb: '150,205,250' },
+                { lat: -0.26, rate: -1 / 39200, phase: 1.6, sz: 0.08, rgb: '120,185,245' }
+            ];
+            for (var br = 0; br < brCells.length; br++) {
+                var brc = brCells[br];
+                var brLon = brc.phase + now * brc.rate;
+                var brp = _sphProject(brc.lat, brLon, r, 0, brTilt);
+                if (brp.vis > 0.03) {
+                    var brLit = _sphLambert(brp.x, brp.y, brp.z, r, lx, ly);
+                    var brAlpha = brp.vis * (0.14 + brLit * 0.24);
+                    if (brAlpha >= 0.02) {
+                        _sphBlob(ctx, x, y, r, brc.lat, brLon, Math.max(0.1, brc.sz), 0, brTilt,
+                            'rgba(' + brc.rgb + ',' + brAlpha.toFixed(3) + ')');
+                    }
+                }
+            }
             ctx.restore();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {

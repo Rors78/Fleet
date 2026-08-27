@@ -1145,6 +1145,17 @@ var _ORB_ZOOM_MIN=0.38;
 /* Event rate for sun flares */
 var _orbEventRate=0,_orbEventCount=0,_orbEventRateTimer=0;
 
+/* AEGIS risk vignette (2026-08-27, pass 11) — eased display copy of
+   aegisState.score, the fleet risk governor's continuous output (it fires
+   AEGIS_UPDATE every ~36s and actively tightens max_deploy below its
+   config default when conditions are judged CAUTIOUS/DEFENSIVE — the
+   single most important continuous quantity the fleet produces, previously
+   rendered as nothing). Eased every frame toward aegisState.score so a
+   36s-cadence step function reads as smoothly shifting weather, never a
+   strobe. null (never assigned) means "no reading yet" and is handled as
+   absence, not defaulted to a score. */
+var _orbRiskEased=null;
+
 /* Vivarium (2026-07-30): tanh-based scaling for tiny real-fleet numbers.
    Steep near zero so a genuinely small daily PnL ($5-10 on a $10k pool)
    still visibly moves size/energy, saturates to ±1 so a rare large swing
@@ -2737,11 +2748,15 @@ function _orbHandleEvent(ev){
       if(tn&&rn) _orbWormhole(tn,rn,d.force_transfer||1,d.expected_lag||2);
     }
   }
-  /* Update nebula hue from AEGIS */
-  if(/AEGIS_UPDATE/.test(type)){
-    var asc=(ev.data||{}).score||0;
-    _orbNebulaTgt=asc>0.7?140:asc>0.4?200:asc>0.15?260:340;
-  }
+  /* AEGIS_UPDATE previously wrote _orbNebulaTgt here (asc>0.7?140:...) but
+     nothing ever read it back — confirmed dead by grepping both files
+     (pass 10's log, and re-confirmed pass 11). Removed rather than wired
+     up: aegisState.score (line ~698) is already kept live off this same
+     event (see the AEGIS_UPDATE handler further down this file, and the
+     periodic poll) with honest null-on-absence semantics, so the risk
+     vignette in _orbRender reads aegisState.score directly every frame
+     instead of a second, event-only copy that could drift stale between
+     36s updates. No replacement write needed at this call site. */
   /* AEGIS regime change — trigger hexagon edge flicker */
   if(/REGIME_CHANGE/.test(type)&&(src==="aegis")){
     var an=_orbNodes.aegis;
@@ -2795,14 +2810,16 @@ function _orbHandleEvent(ev){
      already ticks that body's own eventBurst via onEvent(). A scan
      finishing is routine bot heartbeat, not stakes — no discrete visual
      added; the existing tiny per-body pulse is the right-sized signal. */
-  /* NEXUS_UPDATE (82.1/hr) — per the brief, already wired to _orbNebulaTgt
-     as the continuous/ambient pattern; NOT duplicated here. Note for the
-     log: grepped both files for a consumer of _orbNebulaTgt and found none
-     — it is assigned at the AEGIS_UPDATE handler above (asc>0.7?140:...)
-     but nothing reads it back into a hue/nebula draw call. This is a
-     pre-existing dead write, not something this pass introduced, and
-     AEGIS_UPDATE is not one of the 9 gap types in scope — flagged in the
-     log, not fixed here. */
+  /* NEXUS_UPDATE (82.1/hr) — deliberately still no discrete visual here.
+     Pass 11 (2026-08-27) removed the dead _orbNebulaTgt write this comment
+     used to reference and replaced it with a real continuous risk vignette
+     in _orbRender driven off aegisState.recommended_deploy (AEGIS's actual
+     deployment-cap decision, not its raw score — the raw score barely
+     moves in practice, see the L0-risk comment for the measured spread
+     that forced this) — see that layer for the current AEGIS ambient
+     treatment. NEXUS_UPDATE itself remains ambient-only (existing per-body
+     eventBurst bump), same reasoning as
+     SCAN_COMPLETE above: routine heartbeat, not stakes. */
 }
 
 /* --- Migration engine — runs each render frame to check for intelligence-based migrations --- */
@@ -4545,6 +4562,90 @@ function _orbRender(timestamp){
   } else {
     _cosmicCanvas.draw(ctx,_drawNow,_cosmicRegime);
   }
+
+  /* L0-risk: AEGIS risk vignette — replaces the confirmed-dead
+     _orbNebulaTgt write (was assigned at the AEGIS_UPDATE handler, never
+     read back anywhere — grepped both files, pass 10's log, re-confirmed
+     here). AEGIS is the fleet's risk governor: it scores conditions every
+     ~36s (2,403 AEGIS_UPDATE/day measured) and actively tightens
+     max_deploy below its config default when it judges conditions
+     CAUTIOUS/DEFENSIVE.
+
+     REVISED 2026-08-27, same pass, after a measured warning: the first cut
+     of this drove intensity off aegisState.score mapped across the full
+     0-1 range. Pulled score_history from the live bot (50 samples): range
+     0.2376-0.2395, spread 0.0019, every sample lands in the same
+     asc>0.15 band — mapped across 0-1 that is visually flat, technically
+     wired but showing a viewer nothing, which is barely better than the
+     dead write it replaced. Switched to aegisState.recommended_deploy —
+     AEGIS's actual DECISION, not its raw internal score: the deployment
+     cap it enforces (currently 60, i.e. it is actively holding a fifth of
+     the fleet's config ceiling back). This is "a decision with teeth" (it
+     gates every bot's reserve() call, see the enforcement cross-check at
+     ~10679) and it moves in visible integer-percent steps rather than
+     drifting by 0.002, so a real tightening reads as a real change instead
+     of noise close enough to flat to be invisible. Normalized against 100
+     (full deployment) rather than any fleet-config default, since 100 is
+     always knowable client-side and always means the same thing — no need
+     to guess or hardcode aegis.py's internal band thresholds, which are
+     trading-domain and out of this pass's scope.
+
+     Source of truth: aegisState.recommended_deploy (line ~698) — same
+     honest null-on-absence global as .score, kept live off the same
+     AEGIS_UPDATE event plus the periodic poll. Read directly here so this
+     can't drift stale between updates.
+
+     CONTINUOUS, NOT AN EVENT: this is weather, not a strobe — one update
+     every ~36s must not flash. _orbRiskEased chases the raw deploy-cap
+     percentage with a slow dt-scaled lerp (~4-6s to converge) so a viewer
+     notices posture *changing*, never a per-update snap. A genuine
+     tightening (e.g. 80->60->40) now visibly ramps instead of jumping.
+
+     POLARITY: LOWER deploy cap = MORE caution = MORE visible vignette —
+     same direction and same hue bands as aegisScoreColor/aegisRegimeLabel
+     just above in this file, keyed off the equivalent score-style
+     thresholds so the ambient read never contradicts the panel's own
+     coloring (100=full green/DEPLOY down through red/DEFENSIVE at low cap).
+
+     ABSENCE: if aegisState.recommended_deploy is null (AEGIS down / never
+     reported), draw NOTHING and reset the eased value to null so a later
+     reconnect starts fresh rather than resuming a stale intensity — an
+     absent risk governor must never render as "conditions are fine." */
+  (function(){
+    var _rd=aegisState.recommended_deploy;
+    if(_rd==null){ _orbRiskEased=null; return; }
+    if(_orbRiskEased==null) _orbRiskEased=_rd; /* snap once on first reading, then ease */
+    var _rEaseK=Math.min(1,dt*0.22); /* ~4.5s time constant */
+    _orbRiskEased+=(_rd-_orbRiskEased)*_rEaseK;
+    var d=Math.max(0,Math.min(100,_orbRiskEased));
+    /* Intensity: 0 at d>=80 (holding back <=20% reads as normal operating
+       slack, no visible tint), ramping to 1 at d=0 (fully defensive, zero
+       deployment permitted). 80 chosen as the visible-response floor
+       because it is the config DEFAULT ceiling referenced in this file's
+       own comments elsewhere (line ~4568) — a cap sitting AT the default
+       is "not tightened," a cap below it is a real, teeth-having decision
+       to hold capital back, and that is exactly the case this layer exists
+       to surface. */
+    var _rIntensity=Math.max(0,Math.min(1,(80-d)/80));
+    if(_rIntensity>0.01){
+      var _rHue=d<20?0:d<50?38:d<80?210:145; /* red / gold / neutral-blue / green — mirrors aegisScoreColor's band shape on the deploy-% axis */
+      var _rMaxR=Math.max(0.1,Math.abs(Math.max(W,H)*0.75));
+      var _rG=ctx.createRadialGradient(W/2,H*0.48,Math.max(0.1,Math.abs(Math.min(W,H)*0.32)),W/2,H*0.48,_rMaxR);
+      /* Alpha calibrated 2026-08-27 against a live screenshot: composited
+         against this layer's busy backdrop (CosmicCanvas nebulae + VoidField
+         corner glows), 0.10/0.22 stops were barely legible. Raised to
+         0.22/0.42 so a real tightening is unmistakable on the 50in display
+         while the calm case (intensity<=0, cap at/above 80) stays exactly
+         invisible. */
+      _rG.addColorStop(0,"hsla("+_rHue+",70%,45%,0)");
+      _rG.addColorStop(0.75,"hsla("+_rHue+",65%,42%,"+(0.22*_rIntensity)+")");
+      _rG.addColorStop(1,"hsla("+_rHue+",60%,32%,"+(0.42*_rIntensity)+")");
+      ctx.save();
+      ctx.fillStyle=_rG;
+      ctx.fillRect(0,0,W,H);
+      ctx.restore();
+    }
+  })();
 
   /* L0a: Void field — baked outer-void richness pass (2026-07-30, "upscale
      the shit out of the vast empty space"). Distant-galaxy field extension,

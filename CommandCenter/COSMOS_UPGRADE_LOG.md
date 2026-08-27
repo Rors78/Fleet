@@ -1307,3 +1307,151 @@ happen. A future pass with more time could confirm by watching for several
 minutes continuously (FLEET_ALERT's 99s natural cadence means a ~3-4 minute
 watch should catch at least one real firing) or by adding a temporary
 `window._orbDebugFireTest` hook the way earlier passes exposed `_orbDebug`.
+
+---
+
+## 2026-08-27 — a confirmed dead write, and making the risk governor visible (pass 11)
+
+**Attempted**: one confirmed dead-write defect (`_orbNebulaTgt`, flagged by
+pass 10 and re-confirmed here) plus making AEGIS — the fleet's risk
+governor, 2,403 `AEGIS_UPDATE`/day — visible on the solar system for the
+first time. `command_center_v4.html` only.
+
+**Dead write, confirmed real.** Grepped both `command_center_v4.html` and
+`solar_system.js` for any consumer of `_orbNebulaTgt`: none. It was an
+implicit global (never `var`-declared), written once at the `AEGIS_UPDATE`
+handler (`asc>0.7?140:asc>0.4?200:asc>0.15?260:340`) and read nowhere. This
+matches pass 10's own finding exactly — not a new discovery, a
+re-verification of a standing one.
+
+**Changed** — `command_center_v4.html`:
+
+- `_orbNebulaTgt` write removed at the `AEGIS_UPDATE` handler (~2751);
+  replaced with a comment explaining why (no replacement write needed —
+  see below). Stale cross-reference comment at the old `NEXUS_UPDATE`
+  handler (~2813) updated to point at the real mechanism instead of the
+  dead one.
+- New module var `_orbRiskEased` (~1157, declared alongside the other
+  `_orb*` render-loop state) — the eased display copy of AEGIS's live
+  state, `null` until a first real reading arrives.
+- New draw block `L0-risk` in `_orbRender` (~4566-4650), inserted right
+  after CosmicCanvas and before VoidField (L0a) — an eased, screen-space
+  radial vignette (one `createRadialGradient` + one `fillRect(0,0,W,H)`,
+  both already-guarded against non-positive radii per the file's standing
+  radius-guard rule).
+
+**First cut was wrong, caught before shipping.** Version 1 drove the
+vignette off `aegisState.score` (the raw AEGIS internal score, 0-1),
+mapped across the full theoretical range. The coordinator pulled
+`score_history` (50 live samples) from the AEGIS bot directly and found:
+range 0.2376-0.2395, spread 0.0019, every sample landing in the same
+`asc>0.15` band from the original dead-write thresholds. Mapped across
+0-1 that spread is invisible — technically wired, but showing a viewer
+nothing, which is only marginally better than the dead write it replaced.
+Live-verified this myself by hooking `createRadialGradient`/`fillRect` on
+the real canvas context and sampling composited pixels: predicted vs.
+observed RGB shift at the edge was in the same ballpark but small enough
+(~5-9 units) to be a legitimate concern, not a rendering bug — the
+underlying issue was the source signal itself, not the draw code.
+
+**Redesigned around `aegisState.recommended_deploy`** — AEGIS's actual
+*decision*, not its internal score: the deployment cap it is currently
+enforcing (60% today, against a 100% ceiling), already the same
+honestly-null-on-absence global as `.score` (populated off the same
+`AEGIS_UPDATE` event + periodic poll). This is "a decision with teeth" —
+it gates every bot's `reserve()` call (see the enforcement cross-check
+already in this file at ~10679) — and it moves in visible integer-percent
+steps rather than drifting by 0.002. Normalized against 100 (always
+knowable client-side) rather than any fleet-config default, since guessing
+`aegis.py`'s internal band thresholds would be trading-domain and out of
+scope. Intensity ramps from 0 at cap>=80 (holding back <=20% reads as
+normal slack) to 1 at cap=0; hue bands mirror `aegisScoreColor`'s red/gold/
+neutral/green shape on the deploy-% axis. At today's real cap (60),
+intensity computes to 0.25 — already visibly non-zero — and a real
+tightening (60->40, the kind of move AEGIS actually makes) would double it
+and shift the hue band, unlike the score version's ~0.4%-relative crawl.
+
+**Continuous, not an event.** `_orbRiskEased` chases the raw deploy-cap
+percentage with a `dt`-scaled lerp (~4.5s time constant), so the ~36s
+`AEGIS_UPDATE` cadence reads as slowly shifting weather, never a per-update
+snap — satisfies the brief's explicit anti-strobe constraint without
+touching the existing `_orbVisAllowed`/cooldown-bucket idiom, which is for
+discrete events, not continuous state.
+
+**Absence handled honestly.** If `aegisState.recommended_deploy` is `null`
+(AEGIS down / never reported), the block returns immediately and resets
+`_orbRiskEased` to `null` so a later reconnect starts fresh rather than
+resuming a stale intensity. No vignette renders — absence never reads as
+"conditions are fine," per this project's worst documented failure shape.
+
+**Alpha calibrated against real composited pixels, not guessed.** Original
+stops (0.10/0.22 alpha) composited to a barely-legible shift over this
+layer's busy backdrop (CosmicCanvas nebulae + VoidField corner glows
+already painting warm/cool tints everywhere) — confirmed by hooking
+`createRadialGradient`/`fillRect` on the live canvas and comparing
+predicted-vs-observed RGB at sampled points. Raised to 0.22/0.42.
+
+**Live-verified with proof, not narration.** Hooked `createRadialGradient`
+and `CanvasGradient.prototype.addColorStop` on the real `orbitalCanvas`
+context in a live fullscreen session and captured the actual gradient call
+the running code produced: center `(775.96, 381.09)` = `(W/2, H*0.48)`,
+radii `(254.06, 1163.94)` = `(min(W,H)*0.32, max(W,H)*0.75)`, color stops
+`hsla(210,70%,45%,0)` / `hsla(210,65%,42%,0.055)` / `hsla(210,60%,32%,
+0.105)` — byte-exact match to `d=60 -> intensity=0.25, hue=210` computed
+by hand from the redesigned formula. This is stronger evidence than a
+visual "it looked different": the exact live arguments were captured and
+checked against the exact predicted arguments, not inferred from a
+screenshot. Cross-checked the live value itself independently:
+`curl localhost:8079/api/snapshot` (the AEGIS bot directly) read
+`recommended_max_deployed: 60`, matching the AEGIS panel's own "Max
+Deploy: 60%" readout and the coordinator's ground truth throughout.
+
+**Radius guard**: both radii into `createRadialGradient` are wrapped in
+`Math.max(0.1,Math.abs(...))`, matching this file's standing rule; neither
+is `Math.sin`/`Math.cos`-derived so a negative radius was never reachable,
+but the guard is applied anyway per the "always" instruction.
+
+**Measured performance**: this pass adds exactly ONE `createRadialGradient`
+call and ONE `fillRect` call per frame, gated so both are skipped entirely
+whenever `recommended_deploy` is `null` or the eased value is at/above the
+80% no-tint floor. Two orders of magnitude below the standing baseline
+(464 draw calls at r=60 across 18 `surface()` calls, peak ~425-450/frame).
+Worst case measured this pass: **+2 draw calls/frame**, always — no
+event-triggered spikes, since this layer is pure continuous state.
+
+**Suite**: 99 passed, 0 failed (`python -X utf8 run_all.py`, run twice —
+once on the score-based first cut, once again on the final
+`recommended_deploy` redesign — both clean). `node --check` clean on the
+extracted inline `<script>` block, `solar_system.js` (untouched this pass,
+checked anyway), and `armada.js` (untouched, checked anyway).
+
+**Brace balance**: 3439/3439 before this pass, **3440/3440 after** (net
++1: the new `_orbRiskEased` var line and the `L0-risk` draw block's own
+braces balance out against the removed `AEGIS_UPDATE` dead-write block).
+
+**Pool total**: `215.77491525702527` before and after both suite runs, via
+`curl http://localhost:9000/api/portfolio` — unchanged throughout, matching
+the operator's stated baseline exactly.
+
+**Rejected, with reasons**
+
+- *Reusing `_orbVisAllowed`/`_ORB_VIS_COOLDOWN_MS` (pass 10's event-gating
+  idiom) for this.* That machinery exists to rate-limit discrete, bursty
+  events sharing a bucket. AEGIS risk posture is the opposite shape —
+  slowly-varying continuous state — so an eased lerp toward the live value
+  is the correct primitive, not a cooldown gate. Documented explicitly in
+  the draw-site comment so a future pass doesn't "fix" this by wiring it
+  into the cooldown system.
+- *Hardcoding `aegis.py`'s internal deploy-cap band thresholds (e.g. what
+  triggers 40 vs 60 vs 80) to make the hue mapping exact.* Those
+  thresholds are trading-domain config, out of this agent's remit per the
+  standing rule against touching bot configuration. Normalized against the
+  always-knowable 100% ceiling instead — self-consistent regardless of
+  what specific bands the backend uses.
+- *Shipping the score-based first cut.* Would have passed every mechanical
+  check (wired, live, honest-on-absence, correctly polarized) while still
+  showing a viewer nothing in practice, because the raw score's real
+  observed range is 0.0019 wide. Caught by the coordinator's independent
+  pull of `score_history` before shipping, not by anything in this agent's
+  own verification — worth recording plainly rather than only logging the
+  final version as if it were the first idea.

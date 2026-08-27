@@ -135,3 +135,25 @@ as coefficients, never fed directly into a radius or gradient argument.
   stacked ellipse — the exact defect this pass targeted. Rings stayed
   correctly centered on and glued to their bodies at both default and
   zoomed-out framing.
+
+### Verified independently after the pass (parent session)
+
+- Suite re-run: **87/87**. The agent reported a transient 86/1 blamed on a
+  shell path artefact; a clean re-run confirms no regression.
+- Brace count: **3394/3394, balanced, and UNCHANGED from a22f238**. The
+  agent reported 3176/3159, which is neither balanced nor correct -- the
+  numbers were wrong, the file is fine. Verify this one directly: it is
+  the guard against a silent full-page blackout.
+- `armada.js` grep: **zero `tiltY` references**, and `worldToScene()`
+  (armada.js:2969) is a pure zoom/pan transform on wx/wy. Ship placement
+  therefore follows `_orbNodes` automatically -- the agent's central risk
+  finding is correct and this is what made the full change safe.
+- Live render: 19 nodes, **15 distinct tilts spanning 0.72-1.30**, zero
+  console errors, bodies orbiting (turtlesue moved 341 world units in
+  1.2s, CC correctly stationary at centre), 7 canvases painting.
+
+**Noted for a future pass, not a defect:** the tilt values cluster in two
+groups (0.72-0.90 and 1.10-1.28) with an empty band between 0.90 and 1.10.
+Nothing sits near the old global value, which is arguably the point -- but
+a body at ~1.0 would give the eye a reference plane to read the others
+against. Taste, not a bug; decide deliberately rather than drifting into it.

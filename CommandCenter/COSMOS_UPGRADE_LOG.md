@@ -1772,3 +1772,48 @@ runs at.
   via the live-patch technique above, exactly what covers Confluence's
   screen position and why the plain 2D surface work is invisible in
   normal play. No restart of any bot or the fleet was performed.
+
+### Parent-session verification of pass 13 — the agent corrected MY premise, and was right
+
+I briefed this pass on the claim that five bodies were "still static",
+derived from `grep -c "_sphBlob("` per body. **That grep was a bad proxy
+and three of the five were never static.** The agent tested behaviour
+instead of trusting the premise, and pushed back. It was right.
+
+I re-tested independently — recording every draw-call ARGUMENT at t and
+t+45s and diffing the sequences, so a truly static body produces a
+byte-identical trace:
+
+    body        draws   ops changed over 45s
+    oracle      2477    2391 of 2477   -> MOVES
+    deepblue    1991    1934 of 2002   -> MOVES
+    nexus        282     260 of  282   -> MOVES
+    gridzilla    151      15 of  156   -> MOVES  (pass 8's weather)
+    confluence    67      46 of   67   -> MOVES  (this pass; was 0 draws)
+    turtlesue      0     identical     -> the sprite, correctly untouched
+
+Oracle, DeepBlue and NEXUS were already animating 96%+ of their draw
+operations — via GRS/oval drift, Great Dark Spot and bioluminescence, band
+differential rotation, and NEXUS's flaring motes. They simply do not call
+the one helper I grepped for. Stacking `_sphBlob` weather on top would have
+added competing features to identities that already work.
+
+**The real finding was Confluence, and it was worse than "static":** its
+`surface()` produced ZERO draw calls. The only bot actually trading — it
+carries 100% of the current-era record — had no surface at all. It now has
+molten crust, three converging magma channels, a pulsing vent and two
+drifting embers on 33s/46s periods.
+
+**Second finding, verified here:** Confluence's on-screen body is not the
+2D surface at all. `armada.js:54` gives it a WebGL `refinery` hull on a
+separate stacked canvas that fully covers the 2D disk. The new surface is a
+correct fallback, not the visible identity — flagged for a future pass
+rather than silently assumed fixed.
+
+**Method note worth keeping:** "does this code path exist" is not the same
+question as "does this body move". Grepping for a helper answers the first;
+only diffing draw arguments over time answers the second. I asked the wrong
+one, and the pass was better for the agent checking rather than complying.
+
+Draw calls 464 -> 491 (+27, confluence only). Suite 99/99. Pool 215.7749
+before and after. node --check clean on both JS files.

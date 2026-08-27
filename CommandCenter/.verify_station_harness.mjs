@@ -134,15 +134,40 @@ check('innerEdges carries geometry (was an empty no-op group)',
 console.log(`  -> outerEdges ${built.outerEdges.children.length} children, innerEdges ${built.innerEdges.children.length}`);
 
 {
-  const probe = built.outerEdges.children.find(c => c.isMesh && c.geometry.type === 'BoxGeometry');
+  // Probe by POSITION, not geometry type. This used to look for a
+  // BoxGeometry specifically, so changing the ring segments from boxes to
+  // torus arcs threw a TypeError on `undefined.getWorldPosition` instead of
+  // reporting a failure -- a test that crashes on a legitimate geometry
+  // change is testing the wrong property. What matters is that SOMETHING in
+  // the group is off-axis enough to sweep when the ring turns.
+  const probe = built.outerEdges.children.find(
+    c => c.isMesh && (Math.abs(c.position.x) > 0.5 || Math.abs(c.position.y) > 0.5
+                      || c.geometry.type === 'TorusGeometry'));
+  check('outerEdges contains a mesh that can demonstrate rotation', !!probe);
+  if (!probe) {
+    console.log('  -> no probe mesh found; skipping the world-motion check');
+  } else {
   built.group.updateMatrixWorld(true);
   const before = new THREE.Vector3(); probe.getWorldPosition(before);
   built.outerEdges.rotation.z = Math.PI / 2;
   built.group.updateMatrixWorld(true);
   const after = new THREE.Vector3(); probe.getWorldPosition(after);
-  check('rotating outerEdges moves its children in world space',
-    before.distanceTo(after) > 1.0);
-  console.log(`  -> strut moved ${before.distanceTo(after).toFixed(2)} units on a 90deg ring turn`);
+  // A torus arc centred on the ring axis has its ORIGIN at the centre, so
+  // world position alone will not move -- compare a real vertex instead.
+  let moved = before.distanceTo(after);
+  if (moved <= 1.0 && probe.geometry.attributes && probe.geometry.attributes.position) {
+    const v = new THREE.Vector3().fromBufferAttribute(probe.geometry.attributes.position, 0);
+    built.outerEdges.rotation.z = 0;
+    built.group.updateMatrixWorld(true);
+    const v0 = v.clone().applyMatrix4(probe.matrixWorld);
+    built.outerEdges.rotation.z = Math.PI / 2;
+    built.group.updateMatrixWorld(true);
+    const v1 = v.clone().applyMatrix4(probe.matrixWorld);
+    moved = v0.distanceTo(v1);
+  }
+  check('rotating outerEdges moves its geometry in world space', moved > 1.0);
+  console.log(`  -> ring geometry swept ${moved.toFixed(2)} units on a 90deg turn`);
+  }
   built.outerEdges.rotation.z = 0;
   built.group.updateMatrixWorld(true);
 }

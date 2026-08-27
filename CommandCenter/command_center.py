@@ -241,8 +241,22 @@ def _save_cc_state(updates: dict) -> None:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(current, fh, default=str)
             os.replace(tmp, _CC_STATE_PATH)
-    except Exception:
-        pass
+    except Exception as e:
+        # The READ side of this file already fails safe (see _load_cc_state:
+        # unreadable ARMS every restart cooldown rather than disarming it).
+        # The write side stayed silent, which is the other half of the same
+        # hazard: this file holds restart_cooldowns, the watchdog's circuit
+        # breaker. A write that quietly does nothing means a crash-looping
+        # bot's cooldown is never recorded, so it is restarted again on the
+        # next sweep, forever, and nothing says why.
+        #
+        # Never raise -- this is called from the health monitor and from
+        # AEGIS adjustment, and neither may die over a disk error. But never
+        # stay quiet either: log the keys that were lost.
+        log.error("CC state write FAILED (%r) — %s was NOT updated. Keys "
+                  "lost this pass: %s. restart_cooldowns lives here, so a "
+                  "crash-looping bot may be restarted without its breaker.",
+                  e, _CC_STATE_PATH, sorted(updates))
 
 
 def _save_open_trade_signals() -> None:

@@ -1961,22 +1961,24 @@ function stationHullMaterial(colorHex, seed, opts = {}) {
 }
 
 // ============================================================
-// CC STATION — the Command Center flagship (2026-08-25 refit: "change
-// that deathstar into the Enterprise", operator directive). Replaces the
-// battle-station geometry with a Galaxy-class silhouette (reference:
-// D:\GoldenEye\Enterprise_Forward.jpg) built from three.js primitives —
-// saucer section (dominant volume, forward), a neck down to the
-// engineering/secondary hull, and two nacelles swept up+out on pylons
-// with glowing bussard collectors (fore) and blue warp grilles (body).
-// The fleet-data plumbing is carried over UNCHANGED: the deflector dish
-// on the engineering hull's leading edge is the new "core" (health/AEGIS
-// pulse, P/L mood color via StationRig.update — same contract, same
-// material handles), and the ship "sometimes fires" its main deflector
-// beam forward using the exact same charge/fire state machine that used
-// to drive the superlaser (StationRig.update, `sl` return contract
-// unchanged: rimMat/flare/flareMat/mainMat/glowMat). outerEdges/
-// innerEdges are returned as empty groups so update()'s counter-rotation
-// writes stay no-op-safe, same as before.
+// CC STATION — the Command Center body in the WebGL armada.
+//
+// Lineage: Death Star -> Enterprise-D (2026-08-25) -> abstract station
+// (2026-08-26, "get rid of the enterprise. its lame."). Neither ship
+// belonged on a display shown to investors; the node represents the
+// process that holds the pool and arbitrates every reservation, so it
+// reads as infrastructure.
+//
+// The fleet-data plumbing is carried through every refit UNCHANGED: the
+// emitter dish is the "core" (health/AEGIS pulse, P/L mood colour via
+// StationRig.update — same material handles), and the charge/fire state
+// machine that once drove the superlaser still fires on a fleet-wide
+// TRADE_CLOSE >= $25 (`sl` contract: rimMat/flare/flareMat/mainMat/
+// glowMat).
+//
+// outerEdges/innerEdges CARRY REAL GEOMETRY again. On the Enterprise they
+// were empty groups, so StationRig.update's counter-rotation writes were
+// silent no-ops — dead animation kept alive so nothing else had to change.
 // ============================================================
 function buildStation(seed) {
   const g = new THREE.Group();
@@ -2016,6 +2018,33 @@ function buildStation(seed) {
     collar.position.y = y;
     g.add(collar);
   }
+
+  // Vertical ribs down the drum's facets. The hull texture alone reads FLAT
+  // at the size CC actually renders (it is the largest body in the field --
+  // size 76 against 41 for the next -- so it is inspected more closely than
+  // any ship), and a bare cylinder beside the detailed planet sprites looked
+  // like untextured placeholder geometry. Real edges catch the key light as
+  // distinct planes, which a diffuse map cannot fake. One per octagonal
+  // facet, seated just proud of the surface.
+  // Sized from the RENDERED result: at 0.13 x 2.05 in the dark trim material
+  // these read as thick black bars dominating the drum, not panel lines on
+  // it. Halved in section, shortened to sit inside the collars, and cut in
+  // the HULL material so they catch light as raised seams instead of
+  // punching holes in the silhouette.
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2 + Math.PI / 8;
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(0.07, 1.78, 0.07), hullMat);
+    rib.position.set(Math.cos(a) * (HUB_R * 1.005), 0, Math.sin(a) * (HUB_R * 1.005));
+    rib.rotation.y = -a;
+    g.add(rib);
+  }
+
+  // Equatorial band between the collars — breaks the drum's blank midsection
+  // and gives the emitter dish something to sit against. Thin: it is a seam,
+  // not a third collar.
+  const band = new THREE.Mesh(
+    new THREE.CylinderGeometry(HUB_R * 1.01, HUB_R * 1.01, 0.16, 8), trim);
+  g.add(band);
 
   // Spine through the hub, capped — the axis the rings rotate about, made
   // visible so the rotation below has something to be about.
@@ -2144,14 +2173,21 @@ function buildStation(seed) {
   const outerEdges = new THREE.Group();
   const outerRing = new THREE.Mesh(new THREE.TorusGeometry(6.2, 0.17, 8, 64), hullMat);
   outerEdges.add(outerRing);
-  // Struts riding the outer ring: without them a smooth torus gives the
-  // eye nothing to track and the rotation is invisible.
+  // Segment blocks WRAPPING the outer ring: without them a smooth torus
+  // gives the eye nothing to track and the rotation is invisible.
+  //
+  // These were 0.20 x 0.46 x 0.20 boxes sitting ON the ring surface, and at
+  // the scale CC actually renders they read as detached grey cubes floating
+  // beside it rather than structure attached to it. Short torus arcs share
+  // the ring's own curvature, so they sit flush by construction and cannot
+  // drift off it. Slightly fatter than the ring (0.24 vs 0.17) so they
+  // stand proud enough to catch the key light and mark rotation.
   for (let i = 0; i < 12; i++) {
     const a = (i / 12) * Math.PI * 2;
-    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.46, 0.20), trim);
-    strut.position.set(Math.cos(a) * 6.2, Math.sin(a) * 6.2, 0);
-    strut.rotation.z = a;
-    outerEdges.add(strut);
+    const seg = new THREE.Mesh(
+      new THREE.TorusGeometry(6.2, 0.24, 6, 6, 0.16), trim);
+    seg.rotation.z = a;
+    outerEdges.add(seg);
   }
   g.add(outerEdges);
 
@@ -2187,11 +2223,20 @@ function buildStation(seed) {
                     0xcfe4ff, 0.06);
   }
 
-  // hullLength anchors the 2D-body-size -> WebGL-scale mapping (see
-  // StationRig.update's targetSpan). The outer ring is this station's
-  // dominant dimension, the role the saucer diameter (11.2) and the old
-  // sphere diameter (10.4) played before it.
-  g.userData.hullLength = 12.4; // outer ring diameter
+  // hullLength anchors the 2D-body-size -> WebGL-scale mapping:
+  // StationRig.update does `scale = (size2D * 3.3) / hullLength`, so this
+  // is a DIVISOR -- a larger value renders the station SMALLER.
+  //
+  // Set to 11.2, matching the Enterprise saucer it replaced (the old sphere
+  // was 10.4), NOT to the 12.4 outer-ring diameter. Feeding the ring
+  // diameter here shrank the station 9.7% against its predecessor for the
+  // same 2D allocation, because the ring's widest points are mostly empty
+  // space: what the eye reads as the body is the hub drum, and the ring
+  // reads as structure around it. Measured live at cc.size=76 -- scale went
+  // 22.39 -> 20.23 purely from the constant change, with no geometry
+  // shrinking. CC is the largest 2D body in the field (76 vs 41 for the
+  // next), and it should look it.
+  g.userData.hullLength = 11.2;
   return { group: g, core, coreGlow, coreHalo, coreMat, coreGlowMat, coreHaloMat, outerEdges, innerEdges, dockingLights,
     sl: { rimMat: slRimMat, flare: slFlare, flareMat: slFlareMat, mainMat: slMainMat, glowMat: slGlowMat } };
 }

@@ -1087,6 +1087,9 @@ var _orbAmbient=[];
    the gated pulse reads as occasional, not constant. */
 var _orbVisLastByType={};
 var _ORB_VIS_COOLDOWN_MS={
+  /* 1940/day = one every 42s. 4 min keeps ~15/hour: present, not
+     constant. EXTREME tier bypasses this entirely (see the call site). */
+  WHALE_BURST: 240000,
   NEXUS_ENGINES:20000,   /* EUCLID_LEVEL+CAUSAL_FLOW+SCHWARZSCHILD_HORIZON+NEWTON_FORCE+EINSTEIN_ENERGY combined ~251/hr from nexus alone — shared bucket, one pulse per gate window regardless of which sub-engine fired */
   FLEET_ALERT:180000     /* 36.2/hr measured (one per ~99s) — 3min gate keeps the rare-escalation shockwave meaningful instead of routine */
 };
@@ -2641,9 +2644,21 @@ function _orbHandleEvent(ev){
     /* Migration: whale activity pulls traders toward Deep Blue */
     if(_orbNodes.confluence) _orbNodes.confluence.migrateTo("deepblue","whale intelligence dominant");
     if(tier==="EXTREME"&&_orbNodes.turtlesue) _orbNodes.turtlesue.migrateTo("deepblue","whale may trigger breakout");
-    /* SignalLane burst: staggered arcs from deepblue to all pool traders */
+    /* SignalLane burst: staggered arcs from deepblue to all pool traders.
+       GATED. WHALE_ALERT fires 1,940 times in 24h -- one every 42 SECONDS
+       -- and this loop pushes a lane to EVERY pool trader on each one. At
+       that rate it is not an event, it is a strobe, and strobing routine
+       traffic is exactly the "boring redundant" this dashboard is trying
+       to get rid of: when everything flashes, nothing reads as news.
+
+       EXTREME tier is deliberately NOT gated. That is the rare case
+       (whales large enough to move the tape) and it must still cut
+       through instantly -- rarity has to LOOK rare, and commonness has to
+       stop pretending it isn't. Same principle the audio pass applied via
+       _TYPE_COOLDOWN_MS, and the same gate this pass introduced for the
+       NEXUS engines. */
     var _srcNode=_orbNodes.deepblue||_orbNodes[src];
-    if(_srcNode){
+    if(_srcNode&&(tier==="EXTREME"||_orbVisAllowed("WHALE_BURST"))){
       for(var _wi=0;_wi<_whaleTradersAll.length;_wi++){
         (function(_i,_tgt){
           var _delay=_i*50;

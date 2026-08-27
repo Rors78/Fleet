@@ -722,3 +722,138 @@ mechanism per se, just a carrier of old data); (2) live migration state,
 as described above. This is the first COSMOS pass this log has that
 includes a real, on-screen, human-equivalent visual check rather than a
 stated inability to render.
+
+---
+
+## 2026-08-27 — MOTION AND LIFE: a first real moving surface feature
+
+Scope: things that visibly CHANGE while you watch, on a human timescale.
+`solar_system.js` only; `command_center_v4.html` untouched this pass (no
+edit needed).
+
+**Measured first, correcting a wrong premise from my own brief.** The
+coordinator's dispatch said `_ibCastShadows`/`_ibPlanetshine`/
+`_ibAtmoScatter` each appearing exactly twice meant "barely wired." Grep
+confirmed the count but the read was wrong: all three are called from a
+single dispatcher, `_ibApply` (solar_system.js:4988-4992), itself called
+once per planet from `drawPlanet` (solar_system.js:2806). This is fully
+wired, real inter-body lighting — shadows and planetshine are driven by
+live `_orbNodes[*].x/y` positions from every body in the scene (including
+moons; `_ibRefreshScene` at 4797 excludes only `cc`), so eclipse/shadow
+geometry already changes every frame as bodies orbit. Nothing to fix
+there; the coordinator's own follow-up correction arrived independently
+reaching the same conclusion.
+
+`_sphBlob` (206) and `_sphLambert` (91) — the foreshortened-ellipse
+drawer and the Lambert-shading helper — really were dead code: defined,
+never called, re-confirmed by grep both before and after the correction
+landed. That was the real gap: the file has correct spherical-projection
+machinery for a moving surface feature, and nothing used it outside the
+three hand-tuned band systems (Oracle/Deep Blue/NEXUS, all pre-existing).
+
+**Surveyed all 18 `PLANET_VISUALS` surface functions for `now`-references**
+as a proxy for "does this body's surface actually change over time, or
+only its whole-sphere spin/position." `gridzilla` was the clear outlier —
+1 reference (none, actually; see below) against 4-17 for every other
+body.
+
+**Changed** — `solar_system.js:1308-1364`, `PLANET_VISUALS.gridzilla.surface`
+
+Read the function: the grid overlay (lines, intersection nodes) was drawn
+in flat screen-space x/y, no `_sphProject`, no `now` term at all — the
+single most static body in the fleet, and it didn't even turn with the
+planet's own axial spin. Gridzilla is the Grid Trading bot, so removing
+the grid to add weather would have thrown away real identity; instead
+added three "load cell" features drawn with `_sphBlob` at latitudes/
+longitudes that drift over time (`gLon = phase + now*rate`, three
+different rates/directions so they don't stay in lockstep), each shaded
+with `_sphLambert` against the real light direction so they dim correctly
+toward the terminator. This is the first live use of both `_sphBlob` and
+`_sphLambert` in the file. `spin` passed as `0` to `_sphProject`/`_sphBlob`
+since the longitude drift already carries the motion — passing a nonzero
+spin too would have double-counted it.
+
+Declared as scenery, matching the deep-field convention the coordinator's
+brief pointed at: three plain constants per cell (`lat`, `rate`, `phase`,
+`sz`), no fleet-state read of any kind. Not asserted by a test this pass
+(the existing `deepfield_coverage.js` machinery covers `_visitorAt`
+specifically, not `PLANET_VISUALS`) — flagging as a possible follow-up if
+more bodies get this treatment, rather than writing a single-body test now.
+
+**Radius guard**: `_sphBlob`'s own `rr = rad * r` is safe by construction
+(rad is a positive constant 0.12-0.16, r is always a positive planet
+radius). Wrapped the call's `rad` argument in `Math.max(0.1, cell.sz)`
+anyway for defense-in-depth even though `cell.sz` can never be
+non-positive. Verified for real: a throwing wrapper on both `ctx.arc` and
+`ctx.createRadialGradient` (rejects non-finite or negative radius) run
+against the actual shipped `PLANET_VISUALS.gridzilla.surface`, swept
+across 3 simulated hours at 5s steps and 12 light angles per step —
+**1,334,137 real draw calls, zero exceptions.**
+
+**Measured, not estimated**
+
+- Worst case for `gridzilla.surface()` alone: **53 arc/gradient calls in
+  one call** (the pre-existing ~50-line grid plus up to 3 visible cells).
+  This is one body's surface function, not a frame total — for scale, the
+  deep field's own documented worst case is 47 draws/frame across the
+  whole background layer; this addition is at most +3 arc() calls in an
+  18-body scene that already redraws every planet's own gradient stack
+  every frame, immeasurably small against that baseline.
+- Per-pixel proof of real motion: rendered `gridzilla.surface()` to an
+  offscreen 200x200 canvas at identical camera/light twice, 15 (simulated)
+  seconds apart — **615 of 40,000 pixels changed**, confirmed with
+  `getImageData` diffing, not a visual guess.
+- Limb-transit behavior confirmed by sampling `_sphProject(...).vis` for
+  all three cells across a simulated 40 minutes at 2s steps: each cell is
+  hidden (behind the limb) **49-53%** of the time and fully visible
+  **41-46%** of the time — genuine appear/rotate-across/vanish-at-the-limb
+  cycling, not just in-place jitter. Full rotation period is
+  2.2-3.6 minutes per cell (three different rates), so a viewer watching
+  for under a minute will see a cell visibly slide and foreshorten even if
+  it doesn't complete a full transit in that window.
+
+**Rejected, with reasons**
+
+- *A generic moving-storm layer applied to every planet.* Surveyed first:
+  all 18 bodies already have bespoke, hand-built `surface` functions (not
+  a shared generic path), and most (`oracle`, `deepblue`, `nexus`, and to
+  a lesser degree `nexusbrain`, `aegis`, `phitex`, `brainiac`) already
+  carry real `now`-driven motion — rotating bands, hex flicker, core
+  pulses. Going deep on the one genuinely static outlier (gridzilla)
+  matched the brief's "go deep rather than sprinkle" instruction better
+  than a shallow pass touching all 18.
+- *Rewriting `_ibCastShadows`/`_ibPlanetshine`/`_ibAtmoScatter` to make
+  them "more wired."* They were never actually broken — see the measured
+  section above. No change made there this pass.
+- *A fourth cell, or a much larger/brighter cell, on gridzilla.* The three
+  existing cells already sweep roughly half-hidden/half-visible; a fourth
+  moving element on the fleet's smallest rendered planet (sz≈14-23px at
+  the layouts checked) risked visual clutter over legibility. Left at
+  three.
+
+**Suite**: 99 passed, 0 failed (`python -X utf8 run_all.py`), including
+`cosmos_lighting.js` and `deepfield_coverage.js` unmodified (this pass
+touches neither's subject matter). `node --check` clean on both
+`solar_system.js` and `armada.js` (armada.js untouched, checked anyway per
+the standing rule). Brace balance on `solar_system.js`: 485/485 before and
+after (full-file count, not just the diff region).
+
+**Pool total**: `215.77491525702527` before the suite run and
+`215.77491525702527` after — unchanged, checked via
+`curl http://localhost:9000/api/portfolio` both times.
+
+**Verification honesty**: Chrome automation worked this session. Loaded
+`localhost:9000`, entered fullscreen COSMOS via the "Open solar system
+fullscreen (F)" button, confirmed the scene painted (multiple screenshots
+showing bodies at different positions across the session, real orbital
+motion, no console errors). Located Gridzilla specifically by reading
+`window._orbNodes.gridzilla` live (world coords drift fast — it completed
+a large chunk of its orbit between two reads seconds apart) and zoomed the
+screenshot on its screen position: the grid and glow are visible, with one
+node among the lattice reading distinctly brighter, consistent with a
+traveling cell, but at gridzilla's small rendered size (~14-23px radius
+depending on layout) a single static screenshot cannot fully prove motion
+by eye alone — the offscreen per-pixel diff and `_sphProject.vis` sampling
+above are the load-bearing proof, run against the real shipped function in
+the live page's own `window.PLANET_VISUALS`/`window._sphProject`, not a
+reimplementation.

@@ -1331,6 +1331,39 @@ var PLANET_VISUALS = {
                     }
                 }
             }
+
+            /* Traveling load cells (2026-08-27): the flat grid above never
+               changed, and it was drawn in raw screen-space (not projected
+               onto the sphere), so it didn't even turn with the body's own
+               spin. This is scenery, not a measurement of anything —
+               Gridzilla's grid identity has no live "hot cell" signal to
+               bind to, and it must not look like one. Three cells drift in
+               LONGITUDE at different fixed rates (not tied to now in a way
+               that could be mistaken for activity level) using the real
+               _sphProject/_sphBlob/_sphLambert machinery every other body
+               already uses for weather — so a cell correctly foreshortens
+               approaching the limb and disappears behind it, then reappears
+               on the far side, exactly like a real rotating surface
+               feature. First live use of _sphBlob/_sphLambert in the file;
+               both existed already but were never called anywhere. */
+            var gzTilt = 0.10;
+            var gzCells = [
+                { lat:  0.32, rate: 1 / 21000, phase: 0.0,  sz: 0.16, rgb: '190,255,205' },
+                { lat: -0.55, rate: 1 / 34000, phase: 2.4,  sz: 0.12, rgb: '150,255,235' },
+                { lat:  0.02, rate: -1 / 27000, phase: 4.6, sz: 0.14, rgb: '210,255,170' }
+            ];
+            for (var gc = 0; gc < gzCells.length; gc++) {
+                var cell = gzCells[gc];
+                var gLon = cell.phase + now * cell.rate;
+                var gp = _sphProject(cell.lat, gLon, r, 0, gzTilt);
+                if (gp.vis <= 0.03) continue;
+                var gLit = _sphLambert(gp.x, gp.y, gp.z, r, lx, ly);
+                var gAlpha = gp.vis * (0.16 + gLit * 0.30);
+                if (gAlpha < 0.02) continue;
+                var gRad = Math.max(0.1, cell.sz);
+                _sphBlob(ctx, x, y, r, cell.lat, gLon, gRad, 0, gzTilt,
+                    'rgba(' + cell.rgb + ',' + gAlpha.toFixed(3) + ')');
+            }
         }
     },
 

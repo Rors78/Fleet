@@ -1455,3 +1455,41 @@ the operator's stated baseline exactly.
   pull of `score_history` before shipping, not by anything in this agent's
   own verification — worth recording plainly rather than only logging the
   final version as if it were the first idea.
+
+### Parent-session verification of pass 11 — the redesign was vindicated within the hour
+
+Verified independently before pushing:
+
+- **Dead write is gone.** `grep -c "_orbNebulaTgt="` returns 0; the only
+  surviving references are comments explaining what was removed.
+- `recommended_deploy` is wired in 14 places, and the absence guard is real
+  (null -> draw nothing AND reset the eased value, so a reconnect starts
+  fresh rather than resuming a stale intensity).
+- Braces 3440/3440. The 1.19MB inline script extracted and `node --check`ed
+  clean -- brace counting cannot catch what that does.
+- Suite 99/99. Pool 215.7749 before and after, zero drift.
+
+**The design change proved itself in under an hour, by accident.**
+
+Mid-pass I measured `score_history` and warned the agent that the AEGIS
+score was effectively frozen -- 50 samples, total spread 0.0019, every one
+in a single band -- so the banded visual it had built first would render an
+identical picture indefinitely. Wired, passing any "is it connected" test,
+and showing a viewer nothing. It redesigned around
+`recommended_max_deployed` instead: AEGIS's actual decision, which gates
+every bot's `reserve()` call at the pool.
+
+Then, between that warning and this verification, AEGIS moved:
+
+    at dispatch      score 0.2394   regime CAUTIOUS    cap 60
+    at verification  score 0.183    regime DEFENSIVE   cap 30
+
+The score barely twitched. **The deployment cap HALVED.** Under the first
+design that tightening would have rendered as nothing at all; under the
+shipped one it is a visible ramp. This is the difference between wiring a
+number and showing a decision -- and it is worth remembering next time
+something looks "connected but static": measure whether the quantity
+actually moves before believing the visual works.
+
+Cost: +2 draw calls per frame, always, with no event spikes -- gated to
+zero when AEGIS is absent or conditions are calm.

@@ -211,12 +211,35 @@ def fetch_universe():
     return ["BTC/USD", "ETH/USD", "SOL/USD", "XRP/USD", "ADA/USD"]
 
 
-def fetch_ohlc(pair, interval=5, limit=4):
-    """Fetch recent OHLC candles for a pair from Command Center.
+try:
+    from kraken_ohlc import fetch_ohlc as _fetch_ohlc_canonical
+except ImportError:                                  # pragma: no cover
+    _fetch_ohlc_canonical = None
 
-    Returns list of candle arrays: [[time, open, high, low, close, vwap, count], ...]
-    or None.
+
+def fetch_ohlc(pair, interval=5, limit=4):
+    """Fetch recent OHLC candles for a pair.
+
+    Delegates to kraken_ohlc, the canonical fetcher Trinity already uses.
+    This was a private copy that asked Command Center and returned None if CC
+    could not answer -- so whenever CC was unreachable this bot went BLIND
+    rather than degraded: its one caller does `if not candles: continue`, and
+    a scan over a silent market is indistinguishable from a scan that found
+    nothing. CC's own restart takes ~11 minutes on a cold boot (measured
+    2026-08-26), which is a long time to be quietly not looking.
+
+    The canonical module falls back to Kraken's public OHLC endpoint when CC
+    is down and enforces `limit` on the result, neither of which the copy did.
+
+    Returns list of candle arrays [[time, open, high, low, close, vwap,
+    count], ...] or None. Shape is unchanged -- CC's /api/market/ohlc proxies
+    Kraken's rows verbatim, which is why the copy worked at all.
     """
+    if _fetch_ohlc_canonical is not None:
+        return _fetch_ohlc_canonical(pair, interval, limit, cc_url=CC_URL) or None
+    # Canonical module unavailable (path problem). Fall back to the old
+    # CC-only path rather than not trading -- but say so, because this is the
+    # blind mode described above.
     data = fetch_json(f"{CC_URL}/api/market/ohlc?pair={pair}&interval={interval}&limit={limit}")
     if data and isinstance(data, dict):
         return data.get("candles")

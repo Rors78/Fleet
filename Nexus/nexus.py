@@ -45,6 +45,11 @@ except ImportError:
     EventPublisher = None
 
 try:
+    from kraken_ohlc import fetch_ohlc as _fetch_ohlc_canonical
+except ImportError:                                  # pragma: no cover
+    _fetch_ohlc_canonical = None
+
+try:
     from fleet_config import is_blacklisted as _is_blacklisted
 except ImportError:
     _is_blacklisted = lambda pair: False
@@ -1342,7 +1347,26 @@ class NexusEngine:
             print(line, flush=True)
 
     def _fetch_candles(self, pair, interval=5, limit=200):
-        """Fetch cached candles from Command Center's shared market layer."""
+        """Fetch candles: CC's shared market layer, Kraken as fallback.
+
+        This asked ONLY Command Center and returned [] on any failure, which
+        is indistinguishable from "this pair has no candles" -- so with CC
+        down every engine downstream reads a silent market as a measured one.
+        Nexus is intel-only, so the cost is signal quality rather than trades,
+        but a council that cannot tell "no data" from "no signal" is the same
+        false-green shape as a check that passes because it measured nothing.
+
+        kraken_ohlc is the canonical fetcher (Trinity, Sentinel, Rubberband,
+        Arbitrageur, Chronos, Contrarian and HiveMind all use it); it tries CC
+        first and falls back to Kraken's public endpoint. Contrarian was moved
+        onto it in the same pass -- this was the last CC-only holdout.
+        """
+        if _fetch_ohlc_canonical is not None:
+            try:
+                return _fetch_ohlc_canonical(
+                    pair, interval, limit, cc_url=COMMAND_CENTER) or []
+            except Exception:
+                return []
         try:
             resp = requests.get(f"{COMMAND_CENTER}/api/market/ohlc",
                                 params={"pair": pair, "interval": interval, "limit": limit},

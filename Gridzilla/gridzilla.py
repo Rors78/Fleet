@@ -1553,15 +1553,47 @@ class GridzillaEngine:
             logging.info(f"Grids paused: {reason}")
             # Don't deploy new grids, but still check existing ones
 
-        # Get portfolio allocation
-        portfolio_balance = 10000  # default
+        # Get portfolio allocation.
+        #
+        # The $10,000 default here was the last surviving copy of a fallback
+        # that Rubberband and Arbitrageur both removed by name. Against the
+        # real ~$215 pool it is a ~47x overstatement, and it was reached
+        # silently: available() returns None on a Command Center outage, the
+        # `is not None` guard left the default standing, and nothing logged.
+        #
+        # The consequence was worse than the number. This bot skips any pair
+        # whose allocation is under $500 (see the floor below). 5% of the
+        # real pool is ~$10, so with a correct reading it deploys nothing --
+        # while the $10,000 fiction yields exactly $500 and clears the floor.
+        # A DEPENDENCY FAILURE WAS THE ONLY CONDITION UNDER WHICH THIS BOT
+        # TRADED, at roughly 12x the fleet per-trade cap, on capital the pool
+        # had never granted.
+        #
+        # There is one pool and this bot holds no capital of its own, so
+        # there is no smaller truth to degrade to: unknown must refuse. Same
+        # rule TurtleSue and NexusBrain already follow.
+        #
+        # pool_total() is used rather than available(): sizing off available
+        # makes this bot resize because an UNRELATED bot happened to open a
+        # position, which is not a property of its own strategy.
+        portfolio_balance = None
         if self.portfolio:
             try:
-                avail = self.portfolio.available()
-                if avail is not None:
-                    portfolio_balance = avail
-            except Exception:
-                pass
+                portfolio_balance = self.portfolio.pool_total()
+            except Exception as _e:
+                logging.warning("pool_total() failed: %r", _e)
+                portfolio_balance = None
+        if not isinstance(portfolio_balance, (int, float)) or portfolio_balance <= 0:
+            # Loud once per outage, not every scan -- a silently-degraded
+            # sizing basis is the kind of thing that runs for weeks.
+            if not getattr(self, "_pool_unreadable_warned", False):
+                self._pool_unreadable_warned = True
+                logging.warning(
+                    "Pool total unreadable - NOT sizing and NOT deploying. "
+                    "This bot holds no capital of its own; sizing off a "
+                    "guess would deploy capital the pool never granted.")
+            return
+        self._pool_unreadable_warned = False
 
         max_exposure = portfolio_balance * self.config["max_total_exposure_pct"]
         max_exposure *= self.intel.max_exposure_multiplier()
@@ -1582,12 +1614,44 @@ class GridzillaEngine:
         # deploy from per_pair_alloc), so summing it is the actual exposure.
         active_full = self.executor.active_grids
         current_exposure = 0.0
+        _exposure_unknown = 0
         for _g in list(active_full.values()):
             if not isinstance(_g, dict):
                 continue
-            _alloc = _g.get("allocation")
+            # READ design.allocation_usd, NOT a top-level "allocation".
+            #
+            # This read `_g.get("allocation")` -- a key that deploy_grid
+            # never writes into grid_state. The only "allocation" in this
+            # file is inside the GRID_DEPLOYED event payload, so the guard
+            # below rejected None on every grid and current_exposure was
+            # PERMANENTLY 0.0. The 30% portfolio ceiling could never fire;
+            # ten pairs at 5% each would have reached 50% unopposed.
+            #
+            # Note the comment directly above documents the PREVIOUS version
+            # of this same bug (summing a count of grid lines as dollars) and
+            # asserts the fix -- a fix written against a field name that does
+            # not exist. Unmeasured exposure defaulting to zero, reading as
+            # healthy: the project's most-repeated failure, twice in one
+            # expression.
+            _alloc = None
+            _design = _g.get("design")
+            if isinstance(_design, dict):
+                _alloc = _design.get("allocation_usd")
+            if not isinstance(_alloc, (int, float)) or _alloc <= 0:
+                _alloc = _g.get("size_usd")
             if isinstance(_alloc, (int, float)) and _alloc > 0:
                 current_exposure += float(_alloc)
+            else:
+                # An unmeasurable grid must not silently count as zero
+                # exposure -- that is exactly how this cap died the first
+                # time. Counted and reported.
+                _exposure_unknown += 1
+        if _exposure_unknown:
+            logging.warning(
+                "%d active grid(s) report no readable allocation - their "
+                "exposure is NOT in the %.2f total, so the portfolio ceiling "
+                "is being checked against an understated figure",
+                _exposure_unknown, current_exposure)
 
         # Scan universe for grid opportunities (skip blacklisted pairs)
         for pair in self.config["universe"]:

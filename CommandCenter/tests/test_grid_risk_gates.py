@@ -46,8 +46,23 @@ SRC = open('D:/Gridzilla/gridzilla.py', encoding='utf-8',
 check('sum(g.get("levels", 0) * 10 for g in active.values())' not in SRC,
       'exposure still counts grid LINES x10 and compares them against a '
       'dollar ceiling — the gate cannot fire')
-check(re.search(r'_alloc = _g\.get\("allocation"\)', SRC) is not None,
-      'exposure must sum each grid\'s real allocation')
+# CORRECTED 2026-08-27. This used to require `_alloc = _g.get("allocation")`
+# -- and deploy_grid NEVER writes that key into grid_state. The only
+# "allocation" in gridzilla.py is inside the GRID_DEPLOYED event payload,
+# so the sum was always 0.0 and the 30% portfolio ceiling could never fire.
+#
+# The test was therefore PINNING THE BUG: it asserted a read against a
+# phantom field, and went red against the correct fix. A guard that
+# enforces the defect it was written to prevent is the worst false green
+# in this suite, because it actively resists repair.
+#
+# The real field is design.allocation_usd, written at GridArchitect.design.
+check('allocation_usd' in SRC,
+      'exposure must sum each grid real allocation from '
+      'design.allocation_usd -- the field deploy_grid actually stores')
+check(re.search(r'_alloc = _g\.get\("allocation"\)\s*$', SRC, re.M) is None,
+      'exposure reads the phantom top-level allocation key again, which '
+      'nothing writes -- current_exposure would be permanently 0.0')
 check('"allocation": design["allocation_usd"]' in SRC,
       'the allocation field the exposure sum reads must actually be set at '
       'deploy — a wrong key would silently report zero exposure, which is '

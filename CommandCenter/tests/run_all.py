@@ -128,6 +128,7 @@ TESTS = [
     "test_aggregate_traders_only.py",
     "test_confluence_exit_and_emit.py",
     "test_rubberband_timeframe_coherence.py",
+    "test_gridzilla_sizes_off_pool.py",
     # The same close reached the store by two routes under different
     # trade_ids, so dedup could never fire. Fixed once on the consumer side
     # and it came back -- a consumer fix cannot help an emitter that never

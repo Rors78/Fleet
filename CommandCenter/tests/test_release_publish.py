@@ -40,7 +40,23 @@ def post(path, payload):
     req = urllib.request.Request(
         CC + path, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json"})
-    return json.loads(urllib.request.urlopen(req, timeout=25).read())
+    try:
+        return json.loads(urllib.request.urlopen(req, timeout=25).read())
+    except urllib.error.HTTPError as e:
+        # A REFUSED reservation is a POLICY OUTCOME, not a transport error.
+        # Command Center answers a denial with HTTP 403 and a JSON body
+        # carrying {"ok": false, "reason": ...} -- but urlopen RAISES on
+        # 403, so every caller that wrapped this in try/except treated a
+        # normal denial as a dead server.
+        #
+        # That is how the cleanup below silently stopped reversing: its
+        # compensating reserve was refused, the exception jumped past the
+        # release, and $12.34 of fabricated P/L was left in the pool on
+        # every run. It reached $86.38 before anyone counted.
+        try:
+            return json.loads(e.read())
+        except Exception:
+            return {"ok": False, "reason": "HTTP %s" % e.code}
 
 
 def get(path):
@@ -191,19 +207,79 @@ if os.path.exists(exp):
         os.replace(tmp, exp)
 
 # The +12.34 from case 2 landed in the pool exactly as a real trade would.
+#
+# REVERSE IT THROUGH COMMAND CENTER, NOT BY REWRITING THE FILE.
+#
+# Rewriting portfolio.json alone does not work and quietly did not work for
+# some time: Command Center holds the pool total in memory and rewrites the
+# whole file from that on its next save, so the corrected figure was
+# overwritten within seconds. Measured 2026-08-27 -- the pool read $240.3182
+# on disk AND in memory against a true $215.7749, carrying $24.54 of
+# fabricated profit that would have been reported as real fleet performance.
+# A test that corrupts the number an investor reads is worse than no test.
+#
+# A compensating reserve+release with the NEGATIVE of the injected P/L moves
+# CC's in-memory total back, and CC then persists the corrected value itself.
+# Disk is rewritten afterwards only as a belt-and-braces check.
 pf = os.path.join(CCDIR, "portfolio.json")
+# Read the drift from the LIVE API, not from the file.
+#
+# The first version of this cleanup computed drift from portfolio.json --
+# but Command Center only flushes that file periodically, so disk LAGS
+# memory. Measured 2026-08-27: disk $228.1149 against memory $240.4549,
+# exactly one probe P/L apart, so the correction under-shot by $12.34 on
+# every run and the fabricated profit accumulated. It reached $86.38
+# before this was caught.
+#
+# Memory is the authority here: it is what /api/portfolio serves, what
+# every published figure derives from, and what CC will persist next.
+try:
+    _live_total = get("/api/portfolio")["total"]
+except Exception:
+    _live_total = json.load(open(pf, encoding="utf-8")).get("total") or 0
 pd = json.load(open(pf, encoding="utf-8"))
-drift = round((pd.get("total") or 0) - _pool_before, 4)
+drift = round(_live_total - _pool_before, 4)
 if abs(drift) > 0.001:
-    pd["total"] = round(pd["total"] - drift, 4)
-    tmp = pf + ".tmp"
-    json.dump(pd, open(tmp, "w", encoding="utf-8"), indent=2)
-    os.replace(tmp, pf)
+    try:
+        _rev = post("/api/portfolio/reserve",
+                    # UNIQUE pair per run. Reusing one symbol hit Command
+                    # Center's per-pair cooldown ("COOLDOWN: ... 314s
+                    # remaining"), so the reversal was refused on every run
+                    # after the first and the drift silently accumulated.
+                    {"bot_id": "turtlesue", "pair": PROBE + "REV" + _RUN + "/USD",
+                     "direction": "LONG", "amount": PROBE_AMOUNT})
+        if _rev.get("ok"):
+            post("/api/portfolio/release",
+                 {"reservation_id": _rev["reservation_id"],
+                  "pnl": round(-drift, 4)})
+            time.sleep(1.0)
+    except Exception as _rv:
+        print(f"  note: in-memory pool reversal failed ({str(_rv)[:60]}) -- "
+              f"the disk rewrite below will be overwritten by CC")
+    # Re-read from the LIVE API for the same reason as above.
+    try:
+        _live_total = get("/api/portfolio")["total"]
+    except Exception:
+        _live_total = json.load(open(pf, encoding="utf-8")).get("total") or 0
+    pd = json.load(open(pf, encoding="utf-8"))
+    drift = round(_live_total - _pool_before, 4)
+    if abs(drift) > 0.001:
+        pd["total"] = round(pd["total"] - drift, 4)
+        tmp = pf + ".tmp"
+        json.dump(pd, open(tmp, "w", encoding="utf-8"), indent=2)
+        os.replace(tmp, pf)
 
 print(f"  {removed} inert bus row(s), {exp_removed} expectancy row(s) removed, "
       f"pool drift {drift:+.4f} reverted")
+# Assert against the LIVE total. Checking the file would pass while memory
+# -- the number actually served to every consumer -- was still wrong.
+try:
+    _final = get("/api/portfolio")["total"]
+except Exception:
+    _final = json.load(open(pf, encoding="utf-8"))["total"]
 check("pool restored to its prior total",
-      abs(json.load(open(pf, encoding="utf-8"))["total"] - _pool_before) < 0.001)
+      abs(_final - _pool_before) < 0.001,
+      "live total %.4f vs prior %.4f" % (_final, _pool_before))
 # The probe created a REAL trade in the tracker; confirm the evict removed it
 # from the live API, not just from the disk file.
 try:

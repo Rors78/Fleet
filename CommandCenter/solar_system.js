@@ -4237,12 +4237,37 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
         ctx.fillStyle = 'rgba(215,222,235,' + Math.min(1, 0.35 * zb) + ')';
         ctx.beginPath(); ctx.arc(cm.x, cm.y, 1.1 * zbR, 0, Math.PI * 2); ctx.fill();
     }
-    /* Interstellar visitors LAST within the deep field — they are the
-       nearest thing this layer draws, passing through rather than sitting
-       behind, so nebulae and drifters must not paint over them. Still
-       below every fleet body, which is drawn in a later pass entirely.
+};
 
-       zoomBoost is NOT applied to alpha here. That multiplier exists to
+/* Visitors used to be drawn as the tail end of DeepField.prototype.draw
+   (2026-08-27, before this split), which is called at html:~4544 — LAYER
+   L0b, before L4 orbit paths, L8 wormholes, L10 synapses, L11-L16 trade
+   comets/shockwaves/planets/moons, and L17b labels. MEASURED (not
+   guessed): every one of those ~11 later layers paints on top of a
+   visitor, and at high zoom the foreground is dense enough that a 22-42px
+   saucer at alpha ~0.44-0.70 is fully buried — the operator's "omg, these
+   arent even visable" screenshot showed one bare sliver surviving at the
+   very bottom edge, outside the busy fleet cluster. The hull-shape fix
+   (saucer forms, this same day) was real but could never have been the
+   whole story: it changed WHAT gets drawn, not WHETHER anything drawn at
+   L0b can survive 11 layers of fleet rendering on top of it.
+
+   Fix: visitors are now their OWN draw pass — DeepField.prototype.draw no
+   longer emits them at all (see the emptied tail above). The dashboard
+   calls drawVisitors() separately, LATE, after L15 moons and before L16
+   trade-lifecycle visuals, so a saucer now paints in front of every star,
+   planet, moon, orbit ring and label. _visitorAt (the pure data/pacing
+   function) is completely unchanged — this is a paint-order and
+   presentation fix only, not a behavior change, and the declared-scenery
+   test only inspects _visitorAt's source, so it is untouched by this
+   split. */
+DeepField.prototype.drawVisitors = function (ctx, now, zoomBoost) {
+    var elapsedMs = now - this.epoch;
+    var zb = zoomBoost || 1;
+    var zbR = 1 + (zb - 1) * 0.35;
+    var ep = this.epochAt(elapsedMs);
+
+    /* zoomBoost is NOT applied to alpha here. That multiplier exists to
        stop world-space scenery dissolving as the camera pulls back; a
        visitor is a discrete event that should read the same wherever the
        camera happens to be, and boosting it made a rare sighting turn
@@ -4254,7 +4279,7 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
        mid-crossing, which reads as a rendering bug. */
     var visLive = Math.max(1, Math.min(_DF_VISITOR_SLOTS,
                   Math.round(_DF_VISITOR_BASE * ep.vis)));
-    for (i = 0; i < visLive; i++) {
+    for (var i = 0; i < visLive; i++) {
         var vz = this._visitorAt(i, elapsedMs);
         if (vz.phase !== 'transit') continue;
         var vA = vz.alpha;
@@ -4262,7 +4287,24 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
         ctx.save();
         ctx.translate(vz.x, vz.y);
         ctx.rotate(vz.heading);
+        /* Now drawn IN FRONT of the whole fleet instead of buried behind
+           it (see the header comment above) — the same 22-42 length is
+           unmistakable at this paint order, so this is purely a paint-order
+           fix, not a second size bump on top of the earlier one. A large
+           soft 'lighter' halo is added first so the craft visibly glows
+           against a busy foreground rather than reading as a flat sticker. */
         var L = Math.max(1, vz.len * zbR);
+
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
+        var haloR = Math.max(0.1, L * 1.9);
+        var halo = ctx.createRadialGradient(0, 0, 0, 0, 0, haloR);
+        halo.addColorStop(0, 'hsla(' + vz.hue + ',85%,72%,' + (vA * 0.30) + ')');
+        halo.addColorStop(0.5, 'hsla(' + vz.hue + ',85%,62%,' + (vA * 0.12) + ')');
+        halo.addColorStop(1, 'hsla(' + vz.hue + ',85%,60%,0)');
+        ctx.fillStyle = halo;
+        ctx.beginPath(); ctx.arc(0, 0, haloR, 0, Math.PI * 2); ctx.fill();
+        ctx.restore();
 
         /* Wake: a short taper behind the craft, never a long comet tail —
            this is under power, not shedding ice. */
@@ -4350,20 +4392,25 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
 
         /* Running lights around the rim — the only pulsing things out
            here. Count and placement vary per arrival, so even two craft
-           sharing a hull form read as different vessels. */
+           sharing a hull form read as different vessels. 'lighter' so a
+           light punches through busy foreground instead of blending flat
+           against it, matching the halo above. */
+        ctx.save();
+        ctx.globalCompositeOperation = 'lighter';
         for (var li = 0; li < vz.lights; li++) {
             var lang = (li / Math.max(1, vz.lights)) * Math.PI * 2 + vz.t01 * 0.6;
             var lx = Math.cos(lang) * RIM * 0.86;
             var ly = Math.sin(lang) * RIMH * 0.86;
-            var pr = Math.max(0.1, L * 0.15 * vz.pulse);
+            var pr = Math.max(0.1, L * 0.22 * vz.pulse);
             var pg = ctx.createRadialGradient(lx, ly, 0, lx, ly, pr);
-            pg.addColorStop(0, 'hsla(' + vz.hue + ',90%,80%,' + (vA * vz.pulse) + ')');
+            pg.addColorStop(0, 'hsla(' + vz.hue + ',90%,85%,' + Math.min(1, vA * vz.pulse * 1.3) + ')');
             pg.addColorStop(1, 'hsla(' + vz.hue + ',90%,60%,0)');
             ctx.fillStyle = pg;
             ctx.beginPath();
             ctx.arc(lx, ly, pr, 0, Math.PI * 2);
             ctx.fill();
         }
+        ctx.restore();
         ctx.restore();
     }
 };

@@ -435,6 +435,135 @@ not a claim about how it sounds. Needs Jeremy's ears as final judge.
 
 ---
 
+## 2026-08-27 — visitor saucers made visible + the CC eye tracks
+
+Two independent targets from a live 218%-zoom screenshot. Operator,
+verbatim: "omg. these arent even visable" (visitors) and "the eye of the
+cc should react/follow the important stuff like its always paying
+attention and always watching" (CC core). `solar_system.js` for target 1,
+`armada.js` for target 2; `command_center_v4.html` was off-limits this
+pass (another agent working in it).
+
+### Target 1 — visitor saucers invisible
+
+**Measured, not guessed.** `window._deepField.draw()` — which emitted
+visitors as its own last step — is called at `command_center_v4.html`
+line ~4544, labeled L0b. Grepping the paint-order comments in the same
+file shows 11 more layers painting AFTER that call and before the frame
+is done: L4 orbit paths, L8 wormholes, L9 lensing, L10/L10b/L10d synapses
+and signal lanes, L11 trade comets, L12/12b/12c shockwaves and far-zoom
+overlay, L13/13b stars, L14 planets, L13c shadow streaks, L15 moons, L16
+trade-lifecycle visuals, L17b labels. Every one of those paints on top of
+a visitor. At high zoom the foreground is dense enough that a 22-42px
+saucer at alpha 0.44-0.70 (the existing, already-reasonable numbers) is
+fully buried — the earlier same-day hull-shape fix (saucer forms instead
+of wedges) was real but could never have solved this alone, since it only
+changed WHAT gets drawn at L0b, not whether anything at L0b survives 11
+more layers on top of it.
+
+**Changed**
+
+- `solar_system.js`: split the visitor-drawing tail (previously the last
+  ~130 lines of `DeepField.prototype.draw`) into its own
+  `DeepField.prototype.drawVisitors(ctx, now, zoomBoost)` (~4264-4411).
+  `DeepField.prototype.draw` no longer emits visitors at all.
+  `_visitorAt` (the pure pacing/data function the declared-scenery test
+  inspects) is byte-for-byte unchanged — this is a paint-order and
+  presentation split only.
+- Added a soft `'lighter'`-blended halo (radius ~1.9x craft length) drawn
+  before the hull, and switched the running-lights loop to `'lighter'`
+  too (previously plain `source-over`) so both punch through a busy
+  foreground instead of blending flat against it. Light intensity bumped
+  (radius 0.15->0.22 x L, peak brightness x1.3, clamped to 1). Hull size/
+  alpha themselves untouched from the same-day earlier pass — this is
+  additively brighter, not a second unrelated resize.
+- `command_center_v4.html`: added one new call,
+  `window._deepField.drawVisitors(ctx,_drawNow,_dfZoomBoost)`, inserted
+  as L15b — after L15 moons, before L16 trade-lifecycle visuals (~line
+  4855). Reuses the exact same `_deepField` instance and `_dfZoomBoost`
+  already computed at the original L0b call site; no new state.
+
+**Rejected**: rewriting `_visitorAt`'s size/alpha further. The paint-order
+fix alone puts an unchanged-spec craft in front of every fleet body; a
+second size/alpha bump on top would be guessing at a problem that was
+never about the numbers.
+
+### Target 2 — the CC eye now tracks
+
+The station's amber core/glow/halo (`coreMat`/`coreGlowMat`/`coreHaloMat`,
+mounted on `dishGroup` at local `(0,0,HUB_R+0.30)`) already changed
+brightness/color from real fleet data but never changed WHERE it looked.
+
+**Changed** (`armada.js`)
+
+- `buildStation` (~2256): now also returns `dishGroup` (previously
+  discarded after construction) so `StationRig` can drive it.
+- `StationRig` constructor (~2793): stores `this.dishGroup`, plus
+  `eyeYaw`/`eyePitch` (current eased local rotation), `eyeIdlePhase`
+  (idle-scan animation phase, per-instance random offset only — not
+  fleet data), and `eyeLockedBotId` (last acquired target, for the
+  snap-vs-smooth edge below).
+- `StationRig.update` (~2915, right after the existing hull-sway rotation
+  block): every frame, if `_ccCargoTarget` is set (the same real
+  `/api/portfolio`-derived "bot holding the fleet's largest live
+  reservation" the cargo-drift code a few lines above already trusts —
+  no new data source), compute the bearing from CC's own drifted world
+  position to the target's, map it to a small clamped local yaw/pitch
+  (±0.62/±0.30 rad — a cant, not a spin, since the dish is mounted on a
+  fixed hull face) and ease `dishGroup.rotation.y/x` toward it. Ease rate
+  is fast (`dt*6`) for one frame when `eyeLockedBotId` just changed (a
+  genuine new-reservation event) and slow (`dt*1.6`) once locked on, so
+  acquiring a target reads as "noticing" and steady tracking doesn't
+  jitter. With `_ccCargoTarget` null, the eye idle-scans instead — a pure
+  function of elapsed time (`eyeIdlePhase += dt*0.09`), explicitly NOT a
+  fabricated data signal, just idle animation state.
+
+**Verification (ad hoc harness, not a permanent suite file — written,
+run, then deleted)**: vm-sandboxed the real `armada.js` source (same
+technique as `.verify_station_harness.mjs`), constructed a live
+`StationRig`, and drove `update()` across synthetic frames. Confirmed:
+the core's world Z stayed forward-facing (>15) with active tracking
+engaged (the harness's own "never swings behind the hull" invariant,
+re-checked under the new rotation, not just the pre-existing sway);
+`eyeYaw` moved measurably toward a fake `_ccCargoTarget`;
+`eyeLockedBotId` cleared and idle scan resumed motion when the target
+went null; and a newly-acquired target closed ~30% of its yaw gap in a
+single frame vs. the slow steady-tracking rate, confirming the snap/
+smooth split is real and not accidentally uniform. (One test-authoring
+bug caught and fixed along the way: the first version of the
+snap-acquire check picked a target whose bearing happened to sit close to
+wherever idle-scanning had already parked the eye, so the "small delta"
+it saw was geometry, not a broken ease — fixed by forcing a target on the
+opposite side of the sky.)
+
+**Verification, both targets**
+
+- `node --check solar_system.js`, `node --check armada.js`: pass.
+- `node .verify_station_harness.mjs`: 23/23 pass, including the
+  pre-existing "emitter never swings behind the station across the full
+  sway" check.
+- Suite: 99 passed, 0 failed (`python run_all.py` via PowerShell — the
+  git-bash pty on this machine hit a `UnicodeDecodeError` storm reading
+  subprocess output that reproduced identically on the pre-change
+  baseline too, confirmed by stash/pop; not a regression from this pass,
+  just a console-encoding artifact of the bash tool specifically).
+- Chrome: navigated to `localhost:9000` successfully this session (the
+  documented `ERR_CONNECTION_REFUSED` fault did not reproduce), entered
+  solar-system fullscreen, confirmed zero console errors. Screenshots
+  show the CC eye/core at visibly different screen positions across a
+  6-second gap (real motion, not frozen). No visitor happened to be
+  mid-transit during the live observation window (expected — one every
+  ~4min average per the existing pacing test) so I additionally called
+  `window._deepField.drawVisitors()` directly against the real live
+  `orbitalCanvas` 2D context with a synthetic `now` proven (by scanning
+  `_visitorAt`) to land a real transit: zero exceptions thrown, and 25/25
+  non-transparent pixels sampled in a 5x5 box exactly at the visitor's
+  own computed world coordinates. That is direct proof the new draw path
+  executes cleanly and paints real content on the production canvas, even
+  though a natural sighting did not occur inside the observation window.
+
+---
+
 ## 2026-08-27 — planet clump fix: orbital distribution and phase
 
 **Reported defect**: at ZOOM 56%, 5-6 planets bunched near 7-8 o'clock with

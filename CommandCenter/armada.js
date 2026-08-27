@@ -2253,7 +2253,7 @@ function buildStation(seed) {
   // re-measuring -- see the StationRig.update comment on the same line
   // for the current numbers to reproduce.
   g.userData.hullLength = 14.2;
-  return { group: g, core, coreGlow, coreHalo, coreMat, coreGlowMat, coreHaloMat, outerEdges, innerEdges, dockingLights,
+  return { group: g, dishGroup, core, coreGlow, coreHalo, coreMat, coreGlowMat, coreHaloMat, outerEdges, innerEdges, dockingLights,
     sl: { rimMat: slRimMat, flare: slFlare, flareMat: slFlareMat, mainMat: slMainMat, glowMat: slGlowMat } };
 }
 
@@ -2794,6 +2794,7 @@ class StationRig {
   constructor(seed) {
     const built = buildStation(seed);
     this.group = built.group;
+    this.dishGroup = built.dishGroup;
     this.core = built.core;
     this.coreGlow = built.coreGlow;
     this.coreHalo = built.coreHalo;
@@ -2805,6 +2806,20 @@ class StationRig {
     this.currentScale = 1;
     this.scaleTarget = 1;
     this.sceneRef = null;
+    // THE EYE (2026-08-27, operator: "the eye of the cc should react/
+    // follow the important stuff ... always paying attention and always
+    // watching"). dishGroup's amber core/glow/halo IS the eye — same
+    // meshes coreMat/coreGlowMat/coreHaloMat above already animate for
+    // brightness/color, this adds where it LOOKS. Driven by
+    // _ccCargoTarget, the same real /api/portfolio-derived quantity that
+    // already drives the cargo-run drift a few lines above — "whoever
+    // currently holds the fleet's largest live reservation" is a real,
+    // continuously-measured "most important thing right now", not an
+    // invented signal. No fleet data => idle scan (see update()).
+    this.eyeYaw = 0;
+    this.eyePitch = 0;
+    this.eyeIdlePhase = Math.random() * Math.PI * 2; // per-instance offset only, not fleet data
+    this.eyeLockedBotId = null; // last bot id the eye actually acquired, for the snap-on-new-target edge
     // CC CARGO RUN (2026-08-27, operator: "the cc in the middle is allowed
     // to move around... or transfer goods... something besides shoot out
     // data signal lines"). CC is no longer glued to node.x/node.y — it
@@ -2902,6 +2917,63 @@ class StationRig {
     this.outerEdges.rotation.z = t * (Math.PI * 2 / 90);
     this.innerEdges.rotation.z = -t * (Math.PI * 2 / 60);
     this.innerEdges.rotation.y = -t * (Math.PI * 2 / 60);
+
+    // THE EYE — dishGroup (amber core/glow/halo, animated below under
+    // CORE PULSE) swivels in its own local frame ON TOP OF the hull's
+    // sway above, so it visibly orients independent of the body it sits
+    // on — the "always watching" read the operator asked for, not just a
+    // brighter light.
+    //
+    // Target: real fleet data only. _ccCargoTarget (set in
+    // syncOpenPositions() from live /api/portfolio reservation amounts,
+    // same source the cargo-drift block above already trusts) names the
+    // bot holding the fleet's largest live reservation — a genuine,
+    // continuously-measured "what matters most right now". Its world
+    // position (dx,dy from CC's own drifted position) gives a real
+    // bearing; there is no fabricated substitute when it is null — the
+    // eye idle-scans instead of pretending to watch something.
+    if (_ccCargoTarget) {
+      const edx = _ccCargoTarget.x - (node.x + this.driftX);
+      const edy = _ccCargoTarget.y - (node.y + this.driftY);
+      const edist = Math.hypot(edx, edy) || 1;
+      // Bearing -> small local yaw/pitch swivel, same clamp+lerp idiom as
+      // the ship bank turret above (~line 3798) rather than a full turn:
+      // the dish is mounted on the hub's forward face, so it CANTS toward
+      // the target rather than spinning to face it edge-on.
+      const bearing = Math.atan2(edy, edx);
+      const eyeYawTarget = THREE.MathUtils.clamp(Math.sin(bearing) * 0.62, -0.62, 0.62);
+      const eyePitchTarget = THREE.MathUtils.clamp(-Math.cos(bearing) * 0.30, -0.30, 0.30);
+      // Snap-acquire: a NEW target (dockedBotId just changed, i.e. a real
+      // reservation event — the pool granted/rotated the largest slot) is
+      // a "notice something" moment and eases fast; once locked on, small
+      // corrections track smoothly rather than jittering.
+      const justAcquired = this.eyeLockedBotId !== _ccCargoTarget.botId;
+      const eyeEase = justAcquired ? Math.min(1, dt * 6) : Math.min(1, dt * 1.6);
+      this.eyeYaw += (eyeYawTarget - this.eyeYaw) * eyeEase;
+      this.eyePitch += (eyePitchTarget - this.eyePitch) * eyeEase;
+      this.eyeLockedBotId = _ccCargoTarget.botId;
+      // Fade the slow idle scan phase back toward "aligned with now" so
+      // the moment the target clears, idle scanning resumes from near
+      // the last watched bearing instead of snapping across the sky.
+      this.eyeIdlePhase = bearing;
+    } else {
+      this.eyeLockedBotId = null;
+      // Idle: nothing to watch, so the eye drifts in a slow deliberate
+      // scan rather than sitting dead-still (which reads as "off", not
+      // "calm") or jittering (which reads as broken). Pure function of t
+      // — animation state, not a data value, so it never competes with a
+      // real target for meaning.
+      this.eyeIdlePhase += dt * 0.09;
+      const eyeYawTarget = Math.sin(this.eyeIdlePhase) * 0.40;
+      const eyePitchTarget = Math.sin(this.eyeIdlePhase * 0.63) * 0.16;
+      const eyeEase = Math.min(1, dt * 1.0);
+      this.eyeYaw += (eyeYawTarget - this.eyeYaw) * eyeEase;
+      this.eyePitch += (eyePitchTarget - this.eyePitch) * eyeEase;
+    }
+    if (this.dishGroup) {
+      this.dishGroup.rotation.y = this.eyeYaw;
+      this.dishGroup.rotation.x = this.eyePitch;
+    }
 
     // CORE PULSE — brightness/rate from real fleet data, not invented.
     const health = meta.health != null ? meta.health : 1;

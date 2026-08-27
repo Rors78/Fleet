@@ -1982,103 +1982,70 @@ function buildStation(seed) {
   const g = new THREE.Group();
   const rand = mulberry32(seed);
 
-  // THE LIGHT BUDGET (see the three-point rig comment near the light
-  // setup, ~line 3353): there is no sun in this scene, and a white
-  // Starfleet hull reads brighter than the old gray battle-station hull
-  // under the SAME lights — expected, not a bug. So the hull material
-  // itself is darkened relative to a "true white" paint job (lightness
-  // held close to the ship-hull baseline, NOT bumped up the way the old
-  // station's gray hull was) rather than compensating with more light.
-  // A cool-neutral near-white (low saturation) keeps the "light grey-white
-  // hull" read from the reference without blowing out under the key.
-  const hullMat = stationHullMaterial(0xc9ccd4, seed, { lightness: 0.04, metalness: 0.35, roughness: 0.62 });
-  hullMat.envMapIntensity = 0.55;
+  // COMMAND CENTER — an abstract station, deliberately not a ship.
+  //
+  // This body was a Death Star, then an Enterprise-D (2026-08-25 refit),
+  // and is now neither. Both were recognisable craft from someone else's
+  // universe sitting on a display that gets shown to investors, which is
+  // a distraction from what the node actually represents: the process
+  // that holds the pool and arbitrates every reservation. It should read
+  // as infrastructure.
+  //
+  // THE LIGHT BUDGET IS NOT TOUCHED. There is no sun in this scene. The
+  // hull is a dark neutral metal, well below the near-white Starfleet
+  // hull that preceded it, so it sits comfortably under the same key
+  // without any light being raised to show it off (see the three-point
+  // rig note near the light setup).
+  const hullMat = stationHullMaterial(0x8d949e, seed, { lightness: 0.035, metalness: 0.62, roughness: 0.44 });
+  hullMat.envMapIntensity = 0.7;
   const trim = darkTrimMaterial();
 
-  // ---- SAUCER SECTION (dominant volume, forward) ----------------------
-  // LatheGeometry profile revolved around Y: a flattened lens with a
-  // slightly domed upper bridge module and a shallow lower bowl, matching
-  // the reference's thin-elliptical-disc-with-raised-center silhouette
-  // far better than a scaled sphere would. Points run bottom rim -> down
-  // to lower pole -> (implicit) -> up through the top bridge dome.
-  const saucerR = 5.6; // outer radius — the ship's dominant-dimension anchor
-  const saucerPts = [
-    new THREE.Vector2(saucerR * 0.98, 0.0),      // rim, front/leading edge
-    new THREE.Vector2(saucerR, 0.18),            // rim thickness (widest point)
-    new THREE.Vector2(saucerR * 0.90, 0.34),
-    new THREE.Vector2(saucerR * 0.55, 0.50),
-    new THREE.Vector2(saucerR * 0.20, 0.58),     // rises into the bridge module
-    new THREE.Vector2(0.0, 0.62),                // top pole (bridge dome apex)
-  ];
-  // mirror for the underside (shallower bowl than the top)
-  const saucerBottom = [
-    new THREE.Vector2(saucerR * 0.20, -0.34),
-    new THREE.Vector2(0.0, -0.42),
-  ];
-  const saucerProfile = [...saucerBottom].reverse().concat(saucerPts);
-  const saucer = new THREE.Mesh(new THREE.LatheGeometry(saucerProfile, 48), hullMat);
-  saucer.rotation.x = Math.PI; // lathe builds +Y up from the profile; flip so bridge sits on top
-  saucer.position.y = 1.55;
-  g.add(saucer);
+  // ---- CENTRAL HUB ----------------------------------------------------
+  // An octagonal drum: a low-segment cylinder reads as machined structure
+  // rather than an organic sphere, and the flat facets catch the key light
+  // as distinct planes instead of a single specular smear.
+  const HUB_R = 2.5;
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(HUB_R, HUB_R, 2.2, 8), hullMat);
+  g.add(hub);
 
-  // Saucer rim edge line — thin dark trim tracing the hull-plate seam at
-  // the widest point of the disc (reference shows a subtle darker rim
-  // band running the full circumference).
-  const rimSeam = new THREE.Mesh(new THREE.TorusGeometry(saucerR * 0.995, 0.05, 6, 64), trim);
-  rimSeam.rotation.x = Math.PI / 2;
-  rimSeam.position.y = saucer.position.y + 0.18;
-  g.add(rimSeam);
-
-  // Window rows — rings of tiny emissive strip lights following the
-  // saucer's curvature at a few latitudes, per the reference's banded rows
-  // of lit windows around the hull. Cheap: MeshBasicMaterial dots, no
-  // bloom (real ship windows are numerous+dim; blooming all of them would
-  // wash the saucer out — bloom stays reserved for the genuine emitters
-  // per the operator's bloom-tag guidance).
-  const windowMat = new THREE.MeshBasicMaterial({ color: 0xfff2c8, transparent: true, opacity: 0.85 });
-  const windowRows = [
-    { y: 0.30, r: saucerR * 0.94, n: 64 },
-    { y: 0.10, r: saucerR * 0.80, n: 56 },
-    { y: -0.10, r: saucerR * 0.60, n: 44 },
-  ];
-  for (const row of windowRows) {
-    for (let i = 0; i < row.n; i++) {
-      if (rand() < 0.35) continue; // irregular — not every panel is lit
-      const a = (i / row.n) * Math.PI * 2;
-      const win = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.05, 0.02), windowMat);
-      win.position.set(Math.cos(a) * row.r, saucer.position.y + row.y, Math.sin(a) * row.r);
-      win.lookAt(0, saucer.position.y + row.y, 0);
-      g.add(win);
-    }
+  // Collar rings top and bottom — hard horizontal lines that give the drum
+  // a manufactured edge and stop it reading as a plain barrel.
+  for (const y of [1.16, -1.16]) {
+    const collar = new THREE.Mesh(new THREE.TorusGeometry(HUB_R * 0.99, 0.10, 6, 24), trim);
+    collar.rotation.x = Math.PI / 2;
+    collar.position.y = y;
+    g.add(collar);
   }
 
-  // ---- NECK — connects saucer underside to the engineering hull -------
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.95, 1.7, 16), hullMat);
-  neck.position.set(0, -0.35, 1.55);
-  neck.rotation.x = 0.30; // leans the engineering hull aft, matching the reference's silhouette
-  g.add(neck);
+  // Spine through the hub, capped — the axis the rings rotate about, made
+  // visible so the rotation below has something to be about.
+  // Spine length and cap size set from the RENDERED result, not from the
+  // numbers reading sensibly in isolation. At 5.6 long with 0.5 spherical
+  // caps it stood 1.7 proud of a 2.2-tall hub at each end and read as a
+  // dumbbell — two knobs on a stick — rather than a docking axis. The
+  // harness could not catch this: the object graph was correct and every
+  // structural assertion passed. Only the screenshot showed it.
+  const spine = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 3.5, 12), trim);
+  g.add(spine);
+  for (const y of [1.75, -1.75]) {
+    // Flat docking collars, not spheres. A short cylinder terminates the
+    // axis instead of bulging off it.
+    const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.44, 0.34, 12), hullMat);
+    cap.position.y = y;
+    g.add(cap);
+  }
 
-  // ---- ENGINEERING / SECONDARY HULL (below-aft) ------------------------
-  const engGroup = new THREE.Group();
-  const engHull = new THREE.Mesh(new THREE.CapsuleGeometry(1.15, 4.4, 8, 16), hullMat);
-  engHull.rotation.x = Math.PI / 2; // capsule's long axis runs +Y by default; lay it along Z (fore/aft)
-  engGroup.add(engHull);
-  // Aft docking-collar ring — dark trim break near the rear, a common
-  // Galaxy-class hull detail and a cheap way to break up the long capsule.
-  const engCollar = new THREE.Mesh(new THREE.TorusGeometry(1.18, 0.10, 8, 32), trim);
-  engCollar.rotation.x = Math.PI / 2;
-  engCollar.position.z = -1.6;
-  engGroup.add(engCollar);
-  engGroup.position.set(0, -1.55, 0.55);
-  g.add(engGroup);
+  // ---- RADIAL ARMS ----------------------------------------------------
+  // Four box arms out to the ring line. Structure, and they visually tie
+  // the hub to the rings so the assembly reads as one object.
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 8;
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 3.1), hullMat);
+    arm.position.set(Math.cos(a) * (HUB_R + 1.2), 0, Math.sin(a) * (HUB_R + 1.2));
+    arm.rotation.y = -a;
+    g.add(arm);
+  }
 
-  // ---- MAIN DEFLECTOR DISH (front of the engineering hull) -------------
-  // REINTERPRETS the old superlaser emitter: same StationRig fleet-mood
-  // contract (core/coreGlow/coreHalo + coreMat/coreGlowMat/coreHaloMat),
-  // same charge/fire state machine driving `sl`, new identity as the
-  // ship's forward deflector — amber/blue per the mandate, facing +Z
-  // (the ship's forward direction) rather than the old dish's off-axis
-  // camera-facing tilt, since a deflector reads correctly face-on.
   const dishGroup = new THREE.Group();
   const dishRing = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.14, 8, 32), trim);
   dishGroup.add(dishRing);
@@ -2109,7 +2076,10 @@ function buildStation(seed) {
   coreHalo.layers.enable(BLOOM_LAYER);
   dishGroup.add(coreHalo);
 
-  dishGroup.position.set(0, -1.55, 2.85); // engineering hull's forward (+Z) face
+  // Forward face of the hub. The emitter assembly itself is UNCHANGED —
+  // same dish, same core/glow/halo contract StationRig animates, same
+  // charge->fire lance. Only where it is mounted moved.
+  dishGroup.position.set(0, 0, HUB_R + 0.30);
   g.add(dishGroup);
 
   // ---- DEFLECTOR BEAM — hidden until StationRig's state machine fires
@@ -2163,91 +2133,65 @@ function buildStation(seed) {
   slGlow.position.set(0, focal.y + 27.5, 0);
   slGlow.layers.enable(BLOOM_LAYER);
   slGroup.add(slGlow);
-
-  // ---- NACELLES — two, on pylons swept up and out from the engineering
-  // hull, each with a forward bussard collector (red/magenta, bloom) and
-  // a blue warp grille running the body length (bloom), per the reference.
-  const dockingLights = [];
-  for (const side of [-1, 1]) {
-    const pylon = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.20, 1.7), hullMat);
-    // Swept up+out: pylon runs from the engineering hull's shoulder
-    // outward and upward to the nacelle mount.
-    pylon.position.set(side * 2.0, -0.55, 1.0);
-    pylon.rotation.z = side * -0.55; // sweep outward
-    pylon.rotation.x = -0.35; // sweep upward/forward
-    g.add(pylon);
-
-    const nacelleGroup = new THREE.Group();
-    const nacelleMat = stationHullMaterial(0xc4c9d2, seed + side * 17, { lightness: 0.03, metalness: 0.35, roughness: 0.62 });
-    nacelleMat.envMapIntensity = 0.55;
-    const nacelle = new THREE.Mesh(new THREE.CapsuleGeometry(0.58, 3.6, 8, 16), nacelleMat);
-    nacelle.rotation.x = Math.PI / 2; // long axis along Z (fore/aft), matching the engineering hull
-    nacelleGroup.add(nacelle);
-
-    // Warp grille — a row of thin blue emissive bars along the nacelle's
-    // outer face, the reference's signature "ladder of light" detail.
-    const grilleMat = new THREE.MeshBasicMaterial({
-      color: 0x5ab4ff, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    for (let i = 0; i < 10; i++) {
-      const bar = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.05, 0.10), grilleMat);
-      bar.position.set(0, 0.42, -1.5 + i * 0.34);
-      bar.layers.enable(BLOOM_LAYER); // genuine emitter — bloom per the mandate
-      nacelleGroup.add(bar);
-    }
-
-    // Bussard collector — glowing red/magenta hemisphere-cap at the
-    // nacelle's forward end.
-    const bussardMat = new THREE.MeshBasicMaterial({
-      color: 0xff3d6e, transparent: true, opacity: 0.92, blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    const bussard = new THREE.Mesh(new THREE.SphereGeometry(0.60, 16, 12, 0, Math.PI * 2, 0, Math.PI / 2), bussardMat);
-    bussard.rotation.x = -Math.PI / 2; // dome faces forward (+Z)
-    bussard.position.z = 1.85;
-    bussard.layers.enable(BLOOM_LAYER); // genuine emitter — bloom
-    nacelleGroup.add(bussard);
-    const bussardGlowMat = new THREE.MeshBasicMaterial({
-      color: 0xff8fae, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false,
-    });
-    const bussardGlow = new THREE.Mesh(new THREE.SphereGeometry(0.82, 14, 10), bussardGlowMat);
-    bussardGlow.position.z = 1.85;
-    bussardGlow.layers.enable(BLOOM_LAYER);
-    nacelleGroup.add(bussardGlow);
-    dockingLights.push(addRunningLight(nacelleGroup, 0, 0.60, -1.5, 0xff5577, 0.08));
-
-    // Aft cap — dark exhaust-style ring closing the nacelle's rear.
-    const aftCap = new THREE.Mesh(new THREE.CircleGeometry(0.56, 16), trim);
-    aftCap.rotation.y = Math.PI;
-    aftCap.position.z = -1.9;
-    nacelleGroup.add(aftCap);
-
-    nacelleGroup.position.set(side * 3.5, 0.35, 2.6);
-    g.add(nacelleGroup);
-  }
-
-  // A few running lights along the saucer rim and engineering hull —
-  // small, non-bloomed, warm/cool per the reference's scattered hull
-  // lighting (kept modest per the light-budget mandate: these are point
-  // emitters, not a second key light).
-  for (let i = 0; i < 10; i++) {
-    const a = rand() * Math.PI * 2;
-    const p = new THREE.Vector3(Math.cos(a) * saucerR * 0.7, saucer.position.y - 0.30, Math.sin(a) * saucerR * 0.7);
-    addRunningLight(g, p.x, p.y, p.z, rand() < 0.5 ? 0xffd27a : 0xcfe4ff, 0.07);
-  }
-
-  // No-op rotation targets — StationRig.update spins these; empty groups
-  // keep that write harmless (the Enterprise's identity reads through its
-  // gentle yaw/pitch sway, not a spinning edge lattice).
+  // ---- COUNTER-ROTATING RINGS ----------------------------------------
+  // outerEdges / innerEdges are the two groups StationRig.update() spins
+  // (outer +2pi/90s about Z, inner -2pi/60s about Z and Y). On the
+  // Enterprise build these were EMPTY GROUPS and every one of those
+  // rotation writes was an inert no-op — dead animation code kept alive
+  // only so nothing else had to change. Here they carry real geometry
+  // again, so the station has actual motion of its own rather than only
+  // the gentle sway applied to the whole group.
   const outerEdges = new THREE.Group();
+  const outerRing = new THREE.Mesh(new THREE.TorusGeometry(6.2, 0.17, 8, 64), hullMat);
+  outerEdges.add(outerRing);
+  // Struts riding the outer ring: without them a smooth torus gives the
+  // eye nothing to track and the rotation is invisible.
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.20, 0.46, 0.20), trim);
+    strut.position.set(Math.cos(a) * 6.2, Math.sin(a) * 6.2, 0);
+    strut.rotation.z = a;
+    outerEdges.add(strut);
+  }
+  g.add(outerEdges);
+
   const innerEdges = new THREE.Group();
-  g.add(outerEdges); g.add(innerEdges);
+  const innerRing = new THREE.Mesh(new THREE.TorusGeometry(4.3, 0.12, 8, 48), hullMat);
+  // Tilted off the outer ring's plane. Coplanar rings read as one thick
+  // ring from this camera angle and the counter-rotation is then invisible
+  // — the whole point of putting geometry back on these groups. Confirmed
+  // against the rendered frame, not assumed.
+  innerRing.rotation.x = 0.42;
+  innerEdges.add(innerRing);
+  const innerRing2 = new THREE.Mesh(new THREE.TorusGeometry(4.3, 0.09, 8, 48), trim);
+  innerRing2.rotation.y = Math.PI / 2;
+  innerRing2.rotation.x = -0.30;
+  innerEdges.add(innerRing2);
+  g.add(innerEdges);
+
+  // ---- RUNNING LIGHTS -------------------------------------------------
+  // On the OUTER RING so they travel with its rotation — motion the eye
+  // can follow. Modest and non-bloomed, per the light-budget mandate:
+  // these are point emitters, not a second key light.
+  const dockingLights = [];
+  for (let i = 0; i < 10; i++) {
+    const a = (i / 10) * Math.PI * 2;
+    dockingLights.push(addRunningLight(
+      outerEdges, Math.cos(a) * 6.2, Math.sin(a) * 6.2, 0,
+      i % 3 === 0 ? 0xffd27a : 0x9fd0ff, 0.075));
+  }
+  // A few on the hub itself, scattered, so the centre is not dead.
+  for (let i = 0; i < 4; i++) {
+    const a = rand() * Math.PI * 2;
+    addRunningLight(g, Math.cos(a) * HUB_R, (rand() - 0.5) * 1.6, Math.sin(a) * HUB_R,
+                    0xcfe4ff, 0.06);
+  }
 
   // hullLength anchors the 2D-body-size -> WebGL-scale mapping (see
-  // StationRig.update's targetSpan). The saucer diameter is this ship's
-  // dominant visual dimension (matches the reference's "saucer is the
-  // dominant volume"), so hullLength is set to that diameter — the same
-  // role the old sphere's diameter (10.4) played.
-  g.userData.hullLength = saucerR * 2; // 11.2 — comparable overall scale to the old 10.4
+  // StationRig.update's targetSpan). The outer ring is this station's
+  // dominant dimension, the role the saucer diameter (11.2) and the old
+  // sphere diameter (10.4) played before it.
+  g.userData.hullLength = 12.4; // outer ring diameter
   return { group: g, core, coreGlow, coreHalo, coreMat, coreGlowMat, coreHaloMat, outerEdges, innerEdges, dockingLights,
     sl: { rimMat: slRimMat, flare: slFlare, flareMat: slFlareMat, mainMat: slMainMat, glowMat: slGlowMat } };
 }

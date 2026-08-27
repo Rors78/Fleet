@@ -4022,7 +4022,20 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
         var neb = this._nebulaAt(i, elapsedMs);
         if (!neb.alive) continue;
         var rr = Math.max(0.1, Math.abs(neb.r) * zbR);
-        var nA = Math.min(1, neb.alpha * zb);
+        /* Epoch scales VISIBILITY, not just count.
+           An era named FIELD BLOOM that renders at the same faintness as
+           every other era is a label with nothing behind it -- the epoch
+           multiplied slot count and saturation but never alpha, so 'bloom'
+           put ~19 clouds on screen at alpha 0.016-0.137, where the dim
+           half is indistinguishable from empty space. Measured against the
+           live annulus (innerR 373, outerR 1018) while the running page
+           was actually in a bloom era and did not look like one.
+
+           Scaled by ep.neb rather than a new multiplier so density and
+           presence move together, and capped: the base range was tuned to
+           read against pure black without becoming fog, and a bloom should
+           be unmistakable, not opaque. */
+        var nA = Math.min(0.34, neb.alpha * zb * Math.min(1.6, ep.neb));
         ctx.save();
         ctx.translate(neb.x, neb.y);
         ctx.rotate(neb.rot);

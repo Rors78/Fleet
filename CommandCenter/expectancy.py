@@ -984,7 +984,90 @@ class ExpectancyTracker:
                 "refusing to load. Store left untouched.",
                 self.PERSIST_PATH, type(data).__name__)
             return
-        self.trades = data
+        self.trades = self._collapse_double_records(data)
+
+    @staticmethod
+    def _collapse_double_records(data):
+        """Drop rows that are the SAME close recorded twice.
+
+        A close reaches this store by two routes -- the portfolio release
+        and the bus TRADE_CLOSE handler -- and record_trade dedups on
+        trade_id. That only works if both routes produce the SAME key.
+        Confluence emitted a rich TRADE_CLOSE (carrying reservation_id) and
+        a thin one (without it) for the same close, so the keys were
+        structurally different and dedup could never fire. Measured
+        2026-08-27: ENA/USD stored as +0.6945 and +0.6900, BLUR/USD as
+        -0.2807 and -0.2800, 8-31ms apart.
+
+        The emitter now sends reservation_id, so no NEW pair can form. This
+        repairs the rows already on disk, at load, because the file is
+        rewritten wholesale from memory on every save -- editing it while
+        Command Center runs would simply be overwritten.
+
+        DELIBERATELY CONSERVATIVE. Two rows collapse only when they share a
+        pair, land within 2s of each other, and agree on P/L to within 1%.
+        A bot can legitimately close two positions on the same pair in one
+        scan; that is why the P/L agreement is required and why the window
+        is seconds rather than minutes. The RICH copy is kept -- the one
+        with a real size_usd -- because size-normalized expectancy is
+        computed from it and the thin copy carries size_usd 0.
+
+        KNOWN LIMIT, stated rather than hidden: two GENUINE closes on the
+        same pair, both exactly $0.00, less than 2s apart would also
+        collapse -- they are indistinguishable from a duplicate by every
+        signal available here. That costs one flat from a denominator and
+        moves no P/L, which is the right way round for this trade-off: the
+        alternative is double-counting a real loss. Verified against five
+        cases including this one; the other four all behave correctly
+        (different P/L, >2s apart, and different pairs are all preserved).
+        """
+        if not isinstance(data, dict):
+            return data
+        cleaned = {}
+        removed = []
+        for bot_id, trades in data.items():
+            if not isinstance(trades, list):
+                cleaned[bot_id] = trades
+                continue
+            ordered = sorted(trades, key=lambda t: (t or {}).get("timestamp") or 0)
+            keep = []
+            i = 0
+            while i < len(ordered):
+                cur = ordered[i]
+                nxt = ordered[i + 1] if i + 1 < len(ordered) else None
+                pair_match = (
+                    nxt is not None
+                    and isinstance(cur, dict) and isinstance(nxt, dict)
+                    and cur.get("pair") == nxt.get("pair")
+                    and abs((nxt.get("timestamp") or 0)
+                            - (cur.get("timestamp") or 0)) < 2.0)
+                if pair_match:
+                    a = cur.get("gross_pnl")
+                    b = nxt.get("gross_pnl")
+                    both_num = isinstance(a, (int, float)) and isinstance(b, (int, float))
+                    scale = max(abs(a), abs(b)) if both_num else 0
+                    same_pnl = both_num and (abs(a - b) <= max(scale * 0.01, 1e-9))
+                else:
+                    same_pnl = False
+                if pair_match and same_pnl:
+                    rich = cur if (cur.get("size_usd") or 0) else nxt
+                    thin = nxt if rich is cur else cur
+                    keep.append(rich)
+                    removed.append("%s/%s %+.4f" % (bot_id, rich.get("pair"),
+                                                    rich.get("gross_pnl") or 0))
+                    i += 2
+                else:
+                    keep.append(cur)
+                    i += 1
+            cleaned[bot_id] = keep
+        if removed:
+            logging.warning(
+                "expectancy._load: collapsed %d double-recorded close(s) -- "
+                "the same trade stored twice under different trade_ids: %s. "
+                "The emitting side now sends reservation_id so no new pair "
+                "can form; this repairs rows already on disk.",
+                len(removed), ", ".join(removed))
+        return cleaned
 
 
 if __name__ == "__main__":

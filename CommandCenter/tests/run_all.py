@@ -111,6 +111,11 @@ TESTS = [
     # not be skipped by the guard that exists for price-based exits.
     # Confluence and Gridzilla both had this; four more traders still do.
     "test_price_free_exits_reachable.py",
+    # The same close reached the store by two routes under different
+    # trade_ids, so dedup could never fire. Fixed once on the consumer side
+    # and it came back -- a consumer fix cannot help an emitter that never
+    # sends the key. Both ends pinned now.
+    "test_double_record_collapse.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

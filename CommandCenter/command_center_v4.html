@@ -1173,6 +1173,39 @@ function OrbNode(id,cfg,def,angle,cw,ch){
      toward CC at 150°/210° relative to CC-outward, balancing the scene)
      instead of stacked in a line. Every parentId/defaultParent
      relationship is UNCHANGED — only initial angle assignment moved. */
+  /* SCALE-DRAMA CLUMP FIX (2026-08-27, follow-up to the same-day planetRatios
+     widening 0.85-1.30 -> 0.55-2.70): Jeremy's screenshot at zoom 56% showed
+     5-6 planets bunched near 7-8 o'clock with the whole upper-right empty.
+     Root cause, found by measuring absolute angle-from-CC for every planet
+     (not by re-eyeballing this table): `orbitAngle` below is each planet's
+     ABSOLUTE world angle (Math.cos(this.orbitAngle) directly, ~L1455-1456 —
+     never added to the parent star's own angle), and a planet's absolute
+     angle is bounded by how big its OWN orbitRadius is relative to its
+     star's orbitRadius from CC. The scale-drama pass pushed gridzilla to
+     ratio 0.23 and confluence to 0.65 of Oracle's own 845-unit radius,
+     nexusbrain to 0.34 and arbitrageur to 0.44 of their stars' radius — at
+     those ratios a planet CANNOT reach a wide absolute angle no matter what
+     value is put here: gridzilla's local angle can swing the full 360° and
+     its absolute angle-from-CC still only ranges -7.8°..+7.8° (measured by
+     brute-force scan, 1° steps, all 360 values). nexusbrain is similarly
+     boxed to Nexus's own neighborhood (99.5°-135.2°) and arbitrageur to
+     DeepBlue's (220.5°-267.6°). Only turtlesue (ratio 1.13) has real
+     freedom. This is a structural consequence of the ratio spread, not a
+     bad angle choice — angle tuning can only move planets WITHIN their
+     per-star achievable window, so the fix below picks each planet's
+     window-edge that best separates it from its same-star sibling, and
+     spends the one free body (turtlesue) filling the empty far side
+     directly opposite Oracle. Measured (real-execution Node harness,
+     _orbScaleOrbits fullscreen-branch formulas copied verbatim, 1920x1080):
+     old constants -> min gap 12.1°, max gap 134.3° between adjacent planets
+     sorted by absolute angle (even spread would be 60° each). New constants
+     below -> min gap 28.5°, max gap 92.0° at t=0. NOTE: Kepler speed still
+     drifts this apart over 30-300+ min of runtime (simulated forward;
+     min/max gap degrades toward the old numbers again) — see the live
+     separation nudge in OrbNode.prototype.update's repulsion block, added
+     the same pass, which continuously re-spreads absolute angle instead of
+     relying on this table to hold forever. Full derivation and time-series
+     in COSMOS_UPGRADE_LOG.md. */
   var _fixedAngles={
     /* Stars — 120° apart in equilateral triangle (unchanged — this
        triangle's spacing was already correct; see the starRatios balance
@@ -1180,25 +1213,37 @@ function OrbNode(id,cfg,def,angle,cw,ch){
     oracle:0, nexus:Math.PI*(2/3), deepblue:-Math.PI*(2/3),
     /* CC moons — 4 bodies, 90° apart, offset 45° from star axes (unchanged) */
     aegis:Math.PI/4, sentinel:Math.PI*3/4, chronos:Math.PI*5/4, hivemind:Math.PI*7/4,
-    /* Oracle system (4 dependents — the most crowded system): true diamond
-       spread at ±60°/150°/210° relative to CC-outward (0°). confluence/
-       turtlesue lean toward the outer edge (±60°), gridzilla/trinity lean
-       BACK toward CC (150°/210°) so the system's own mass doesn't pile up
-       past Oracle — this is what pulls the whole scene's right-side
-       weight back toward center. */
-    confluence:Math.PI/3, turtlesue:-Math.PI/3,
-    gridzilla:Math.PI*(5/6), trinity:Math.PI*(7/6),
-    /* Nexus system (2 dependents): spread ±65°/115° off Nexus's own
-       outward angle (120°) rather than a flat 180° pair, so neither one
-       sits directly on the DeepBlue-facing side and compounds the old
-       "Nexus and DeepBlue nearly share an X coordinate" overlap. */
-    nexusbrain:Math.PI*(2/3)+Math.PI*(65/180), rubberband:Math.PI*(2/3)-Math.PI*(115/180),
+    /* Oracle system planets — gridzilla/confluence are both boxed to a tiny
+       window near Oracle's own 0° (see comment above); pushed to opposite
+       edges of that window (local ±90°) so they separate from each other
+       instead of overlapping. turtlesue (the one free body, ratio 2.70) was
+       first tried at local 180° to sit opposite Oracle in the emptiest gap,
+       but MEASURED (real formula, scanned local 150°-210° in 5° steps) that
+       neighborhood puts turtlesue only 65-273 world units from CC at its
+       closest (perihelion nearly cancels Oracle's own 845-unit offset) —
+       close enough to visually transit through/behind the sun's corona
+       once an orbit, which is worse than the clump it was meant to fix.
+       Moved to local 140° (~68° absolute, 373 units clear of CC — a safe
+       margin) instead; splits the same gap slightly off-center rather than
+       dead-center, still cutting the largest remaining gap roughly in half. */
+    gridzilla:Math.PI/2, confluence:-Math.PI/2, turtlesue:Math.PI*(140/180),
+    /* Oracle moon (trinity) — unchanged, not part of this pass's measurement. */
+    trinity:Math.PI*(7/6),
+    /* Nexus system planets — both boxed near Nexus's own 120°; nexusbrain
+       at absolute 120° (-> renders ~122.7°) and rubberband at absolute 300°
+       i.e. 180° opposite (-> renders ~98.0°, eccentricity/tilt pull it off
+       the naive antipode) put them at opposite edges of their shared
+       window, ~24.7° apart, separated instead of overlapping. */
+    nexusbrain:Math.PI*(2/3), rubberband:Math.PI*(2/3)+Math.PI,
     /* PHITEX (Nexus moon) — placed opposite Nexus's own dependent spread,
        clear of nexusbrain/rubberband. */
     phitex:Math.PI*(2/3)+Math.PI,
-    /* DeepBlue system (2 dependents): mirror of Nexus's ±65°/115° spread
-       off DeepBlue's own outward angle (-120°). */
-    arbitrageur:-Math.PI*(2/3)-Math.PI*(65/180), contrarian:-Math.PI*(2/3)+Math.PI*(115/180)
+    /* DeepBlue system — arbitrageur is the sole planet here (no sibling to
+       separate from); absolute -120° (DeepBlue's own angle, renders
+       ~236.6°) keeps it well clear of Oracle's (~0-8°/339°) and Nexus's
+       (~98-123°) neighborhoods — no tuning needed beyond "not colliding
+       with the other two clusters", which it already isn't. */
+    arbitrageur:-Math.PI*(2/3), contrarian:-Math.PI*(2/3)+Math.PI*(115/180)
   };
   this.orbitAngle=_fixedAngles[id]!=null?_fixedAngles[id]:(Math.random()*Math.PI*2);
   this.orbitRadius=hier.orbitRadius||100;
@@ -1431,6 +1476,27 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
   var r=this.orbitRadius*(1+this.orbitEccentricity*Math.cos(this.orbitAngle));
   var speedMod=this.orbitRadius/r;
   this.orbitAngle+=this.orbitSpeed*speedMod*dt*60;
+
+  /* LIVE ANGULAR SEPARATION — TRIED AND REJECTED (2026-08-27, same pass as
+     the _fixedAngles rewrite above). Attempted a continuous nudge on
+     orbitAngle to counteract Kepler-drift reclumping over long runtimes
+     (a good day-one layout was measured to decay from a 28.5° min gap back
+     toward ~2° within 30min of simulated time). Rejected after measuring
+     two problems: (1) it never converged — simulated at nudge strengths
+     from 0.0004 to 0.1 rad/frame (250x range), min gap oscillated
+     chaotically (0.1°-28.7°) at every strength tried, fighting the
+     periodic Kepler disturbance instead of damping it — a real control-loop
+     instability, not a tuning miss. (2) more importantly, it was solving a
+     problem that doesn't cause the reported symptom: same-star sibling
+     planets have such different orbitRadius (planetRatios spread 0.55-2.70
+     means e.g. gridzilla and confluence sit 355 world units apart
+     radially from Oracle) that even at a near-zero ANGULAR gap they are
+     never close enough to visually touch — "both near Oracle" is not
+     overlap, the same way Mercury and Jupiter both being sunward isn't.
+     The pixel-distance repulsion below (allNodes, not scoped to planets or
+     same-system — see next block) already catches genuine cross-system
+     coincidences reactively and is stable. Left removed; day-one
+     _fixedAngles placement is the whole fix for this pass. */
 
   /* Calculate target position relative to parent */
   /* COMPOSITION FIX (round 3, 2026-07-30): fullscreen tiltY used to be a flat
@@ -4781,6 +4847,17 @@ function _orbRender(timestamp){
       _drawNode(ctx,moon);
     }
   }
+
+  /* L15b: Interstellar visitor saucers — drawn LATE and separately from
+     the rest of the deep field (2026-08-27 split, see the header comment
+     on DeepField.prototype.drawVisitors in solar_system.js). The old
+     single-call draw() painted visitors at L0b, before all 11 layers
+     below (orbit paths, wormholes, synapses, comets, stars, planets,
+     moons, labels) — measured to be the actual reason a saucer was
+     invisible at high zoom, not merely a size/alpha problem. This call
+     uses the SAME window._deepField instance and the SAME _dfZoomBoost
+     already computed above at the L0b call site — no new state. */
+  if(window._deepField) window._deepField.drawVisitors(ctx,_drawNow,_dfZoomBoost);
 
   /* L16: TIER 1 — Trade lifecycle visuals (always on) */
   _drawWinStars(ctx,_drawNow);
@@ -15000,6 +15077,40 @@ var _sound=window._sound={
     var conv=c.createConvolver();conv.buffer=buf;return conv;
   },
 
+  /* Per-event-type cooldowns, in ms. The shared 4/sec limiter below is a
+     BURST guard -- it stops several sounds landing in the same instant. It
+     was never a RATE guard, and priority>=2 events skipped even that.
+     Measured on the durable bus, 2026-08-27:
+
+       WHALE_ALERT     2072 / 24h  -> one every 42 SECONDS
+       REGIME_CHANGE    407 / 24h  -> one every 3.5 min
+       TRADE_CLOSE       19 / 24h
+       TRADE_OPEN         3 / 24h
+
+     _whale is a 3.5-5.5 second swell. At one every 42 seconds it is not a
+     stinger, it is a continuous wash with gaps -- and the operator has now
+     twice described the soundscape as unbearable. An event class firing
+     2000 times a day is AMBIENCE, and ambience belongs in the bed, not in
+     one-shots stacked on top of each other.
+
+     A rare event should still cut through instantly, so this is per-TYPE
+     rather than a global slow-down: trades, which fire a few times a day,
+     are untouched. */
+  _TYPE_COOLDOWN_MS:{WHALE_ALERT:180000, REGIME_CHANGE:600000,
+                     SENTIMENT_EXTREME:300000, PHITEX_UPDATE:300000,
+                     AEGIS_UPDATE:300000, NEXUS_UPDATE:300000},
+
+  _typeAllowed:function(type){
+    if(!type) return true;
+    var cd=this._TYPE_COOLDOWN_MS[type];
+    if(!cd) return true;
+    if(!this._lastByType) this._lastByType={};
+    var now=Date.now(), last=this._lastByType[type]||0;
+    if(now-last<cd) return false;
+    this._lastByType[type]=now;
+    return true;
+  },
+
   _canPlay:function(priority){
     var now=Date.now();
     this._recentSounds=this._recentSounds.filter(function(t){return now-t<1000;});
@@ -15138,11 +15249,35 @@ var _sound=window._sound={
   },
 
   _regimeShift:function(data){
-    /* Long slow swell sweeping the whole low-mid register — the fleet's
-       harmonic bed visibly (audibly) shifts underneath everything else */
-    this._noiseSwell(5.5,0.13,150,1400,0,this.ambient);
-    var self=this;
-    setTimeout(function(){self._drone(90,4,0.11,300,0,self.ambient);},400);
+    /* SILENT. Deliberately.
+     *
+     * This fired a 5.5-second filtered-NOISE swell every time the fleet
+     * changed regime -- 409 times in 24 hours, measured on the durable bus,
+     * roughly once every 3.5 minutes, all day, routed into the AMBIENT bus
+     * so it sat underneath everything else.
+     *
+     * Operator, twice: "a progressive screech like a crying dog in a
+     * hallway", and after I merely inverted the sweep direction, "NOW ITS
+     * JUST A LOWER TONE AND EVEN MORE ANNOYING. CHANGE IT COMPLETELY."
+     *
+     * They were right and my first fix was wrong. The problem was never
+     * the PITCH -- it was the gesture. A slow swept-filter swell over noise
+     * is a siren, and a siren every 3.5 minutes is intolerable whichever
+     * direction it sweeps. Lowering it just made a lower siren.
+     *
+     * A regime change is CONTEXT, not an event: it describes the weather
+     * the fleet is trading in, and the weather has no business announcing
+     * itself over the top of the mix hundreds of times a day. The ambient
+     * bed ALREADY tracks fleet state continuously (see _adaptAmbient, which
+     * reads the deep-field epoch every 5s), so this state is audible
+     * without a one-shot at all -- the swell was redundant on top of a
+     * layer already doing the job.
+     *
+     * If a regime change ever needs to be individually audible again, it
+     * should be a brief, low, PLUCKED event -- something with a sharp
+     * attack and a short decay that the ear files as punctuation -- never
+     * a slow swept swell. Do not re-add a _noiseSwell here.
+     */
   },
 
   _emergency:function(){
@@ -15320,6 +15455,8 @@ var _sound=window._sound={
        type==="NEWTON_FORCE"||type==="NEWTON_REACTION"||type==="EUCLID_LEVEL"||
        type==="CHRONOS_ALERT"||type==="PORTFOLIO_RESERVE"||type==="PORTFOLIO_DENIAL") return;
     var c=this.ctx,now=c.currentTime,played=false;
+    /* Rate-gate by type BEFORE the burst limiter -- see _TYPE_COOLDOWN_MS. */
+    if(!this._typeAllowed(type)) return;
     if(type==="WHALE_ALERT"){if(this._canPlay(2)){this._whale(data);played=true;}}
     else if(type==="TRADE_OPEN"){if(this._canPlay(3)){this._tradeEntry((data||{}).bot_id||"");played=true;}}
     else if(type==="TRADE_CLOSE"){

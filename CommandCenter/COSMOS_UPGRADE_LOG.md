@@ -432,3 +432,164 @@ Chrome automation on this machine gets `ERR_CONNECTION_REFUSED` on
 localhost; `curl` confirms the server and file serve cleanly. The table
 above is the honest substitute — Hz numbers an operator can judge by eye,
 not a claim about how it sounds. Needs Jeremy's ears as final judge.
+
+---
+
+## 2026-08-27 — planet clump fix: orbital distribution and phase
+
+**Reported defect**: at ZOOM 56%, 5-6 planets bunched near 7-8 o'clock with
+the entire upper-right of the ring system empty. Suspected side effect of
+the same-day scale-drama pass (commit `2d8c2fa`, planetRatios widened
+0.85-1.30 -> 0.55-2.70, orbitSpeed now `k/r^1.5`).
+
+**Measured (real-execution Node harness, `_orbScaleOrbits` fullscreen-branch
+formulas and `_fixedAngles` copied verbatim from the file, 1920x1080)**
+
+Root cause: `this.orbitAngle` (command_center_v4.html, OrbNode.update,
+`Math.cos(this.orbitAngle)`) is used as an ABSOLUTE world angle, never
+added to the parent star's own angle, despite the existing "ROUND 4"
+`_fixedAngles` comments describing offsets as star-relative. A planet's
+achievable ABSOLUTE angle-from-CC is bounded by its own `orbitRadius`
+relative to its star's `orbitRadius` from CC. Brute-force scanning local
+angle 0-360 in 1-degree steps (all six planets, current planetRatios)
+found:
+
+- gridzilla (ratio 0.23 vs Oracle's radius): absolute angle can only swing
+  +/-7.8 degrees no matter what value is assigned - structurally boxed
+  next to Oracle's own position.
+- confluence (0.65): +/-25.4 degrees.
+- nexusbrain (0.34) and arbitrageur (0.44): +/-15-28 degrees around
+  Nexus's/DeepBlue's own angle respectively.
+- rubberband (0.86): -57/+35 degrees.
+- turtlesue (1.13, the outer giant): the only planet with near-full 360
+  degree freedom.
+
+This is a direct, unavoidable consequence of the scale-drama ratio spread
+(NOT re-litigated - operator said do not revisit) - four of six planets
+are structurally glued near their star's own position regardless of
+`_fixedAngles`. Old `_fixedAngles` (hand-tuned for the pre-scale-drama
+0.85-1.30 band) produced min angular gap 12.1 degrees, max gap 134.3
+degrees between adjacent planets sorted by absolute angle (even spread =
+60 degrees each) at t=0, matching the screenshot's "5-6 clumped,
+upper-right empty" description.
+
+**Tried and rejected: a live per-frame angular-separation nudge**
+
+Attempted to add a continuous nudge on `orbitAngle` (planets only, same-
+`currentParent` pairs, absolute-angle-space) to counteract Kepler-drift
+reclumping over long runtimes - a good day-one layout was measured (forward
+simulation, real formulas) to decay from a 24.8-28.5 degree min gap back
+toward 0.3-8 degrees within 5-300 minutes, because the ~10.88x orbitSpeed
+spread (`k/r^1.5`, from the same-day scale-drama pass) makes same-star
+siblings drift apart from each other at very different rates. Rejected
+after two findings: (1) tuned nudge strength from 0.0004 to 0.1 rad/frame
+(250x range) - min gap oscillated chaotically (0.1-28.7 degrees) at EVERY
+strength tried, a genuine control-loop instability (nudge fighting a
+periodic Kepler disturbance without damping), not a tuning miss; (2) it
+was solving a problem that doesn't cause the reported symptom - same-star
+sibling planets have such different `orbitRadius` (the same scale-drama
+spread) that even at a near-zero angular gap they sit hundreds of world
+units apart radially (e.g. gridzilla 195 vs confluence 550 from Oracle, a
+355-unit radial separation) and never visually touch. "Both near Oracle"
+reads the same as Mercury and Jupiter both being sunward - not overlap.
+Code was written, measured, then removed in the same pass.
+
+**Changed** - `command_center_v4.html` `_fixedAngles` (~L1176-1237, exact
+lines shift with future edits - grep `_fixedAngles`)
+
+Rewrote the six planet entries only (stars, CC moons, star-orbiting moons
+left untouched - not part of the measured complaint):
+`gridzilla:Math.PI/2, confluence:-Math.PI/2, turtlesue:Math.PI*(140/180),
+nexusbrain:Math.PI*(2/3), rubberband:Math.PI*(2/3)+Math.PI,
+arbitrageur:-Math.PI*(2/3)`. Chosen by: (1) for planets structurally boxed
+near their star (gridzilla/confluence on Oracle, nexusbrain/rubberband on
+Nexus), push each to the opposite edge of its own achievable window from
+its same-star sibling; (2) spend the one free body (turtlesue) filling the
+largest remaining gap. turtlesue was first tried at exactly local 180
+degrees (directly opposite Oracle) but MEASURED that the ~1096-unit
+gas-giant orbit brings it only 65-273 world units from CC across local
+150-210 degrees - perihelion nearly cancels Oracle's own 845-unit CC
+offset, close enough to visually transit behind/through the sun once an
+orbit. Moved to local 140 degrees (373 units clear) instead, splitting the
+same gap slightly off-center.
+
+**Measured after** (real committed constants, eval'd from the actual file,
+not reimplemented): sorted absolute angles gridzilla 7.7, turtlesue 68.1,
+rubberband 98.0, nexusbrain 122.7, arbitrageur 236.6, confluence 339.2
+(degrees). Min gap 24.7 degrees, max gap 113.9 degrees at t=0 (was
+12.1/134.3) - real improvement, though (per the rejected-nudge finding
+above) this decays over tens of minutes of Kepler drift and is NOT a
+permanent fix; flagged for a future pass if the operator wants one (e.g. a
+damped/critically-tuned nudge, or periodically re-snapping to the day-one
+table).
+
+**Live-browser finding, not fixable by this pass**: real-execution
+verification (see below) found that `currentParent` frequently does not
+match `defaultParent` - planets migrate between star systems live (by
+design, on real regime/signal data, 60s cooldown). A fresh page load
+showed confluence and gridzilla BOTH migrated onto Nexus within ~15
+seconds (alongside nexusbrain, which defaults there), stacking 3 of 6
+planets onto one star - a worse version of the same structural trap this
+pass fixed for the default-parent case, and unavoidable by any static
+`_fixedAngles` table since migration is data-driven and can put any
+combination of planets on any star at any time. Confirmed the SAME
+radial-separation argument still holds (3 planets sharing Nexus were still
+151/220/427 units apart radially - no visual overlap observed), but the
+"empty far side of the sky" symptom can recur whenever migration clusters
+3+ planets on one star. Not fixed this pass (would require either
+migration-aware re-angling on every migration event, or a different
+distribution strategy entirely) - flagging for the operator rather than
+guessing at scope.
+
+**Existing minimum-separation mechanism** (operator's direct question):
+yes, one exists - `OrbNode.prototype.update`'s pixel-distance repulsion
+loop (`allNodes`, all body types, not scoped to same-system pairs),
+`minD=(sizeA+sizeB)*2.2`, push strength `0.06` of the overlap per frame.
+Verified by simulation: it is real but weak/slow - from exact overlap
+(d=0) it takes ~10 simulated seconds to reach only ~49 units of the ~90
+unit target separation for two ~20px bodies. It is reactive-only (does
+nothing to prevent bodies approaching) and was not tuned this pass -
+flagged as a possible follow-up if overlap is still visible at the 50"
+display, but out of scope for "fix the clump" specifically.
+
+**Rejected, with reasons**
+
+- *Widening `planetScale` to give near-star planets more absolute swing.*
+  Tested numerically: pushes turtlesue's outer ratio well past 1.0 (into
+  the next star's territory) long before gridzilla's inner ratio gains
+  meaningful swing - wrong lever, breaks the outer edge to fix the inner
+  one.
+- *Touching `planetRatios`/`sz` (size/speed drama).* Explicitly out of
+  scope per the operator's instruction not to revisit the same-day scale
+  pass's core numbers.
+- *The live angular-separation nudge* - see above, tried, measured
+  unstable and solving the wrong problem, removed.
+
+**Suite**: 99 passed, 0 failed (`tests/run_all.py`), including
+`cosmos_lighting.js` and `deepfield_coverage.js`. `node --check` clean on
+`solar_system.js` and `armada.js` (both untouched this pass). Isolated diff
+on `command_center_v4.html` (`git diff HEAD`) adds 3 `{`/3 `}` and removes
+1 `{`/1 `}` - balanced net +2/+2. Full-file brace count 3432/3432 both
+before and after (this pass's edit is brace-neutral against the file as it
+stood after the prior same-day audio commit `a3572e8`, which had already
+moved the file's baseline off the previous log entry's 3430 figure).
+Extracted the real inline `<script>` block and ran `node --check` on it
+directly after every edit - clean throughout.
+
+**Verification honesty**: Chrome automation WORKED this session (unlike
+several prior rounds' `ERR_CONNECTION_REFUSED`) - loaded
+`http://localhost:9000/`, opened fullscreen COSMOS, zoomed to the 38%
+floor, and visually confirmed the fix: bodies spread across all
+quadrants, no single-wedge pile-up, no empty half-sky. One legitimate
+tight-but-clean cluster remained (Nexus + its glow corona + Trinity, 3-4
+o'clock) - zoomed in and confirmed no pixel overlap. Zero console
+errors/warnings the entire session (checked with an unfiltered pattern).
+Also live-verified, via `window._orbNodes` introspection: (1)
+`cosmos_orbit_v1` persistence was restoring a STALE pre-fix angle set on
+load, confirming the operator's candidate #2 concern is real for old
+cached state - cleared it mid-session to test cleanly, but did NOT change
+the persistence code itself (out of scope, no defect in the persistence
+mechanism per se, just a carrier of old data); (2) live migration state,
+as described above. This is the first COSMOS pass this log has that
+includes a real, on-screen, human-equivalent visual check rather than a
+stated inability to render.

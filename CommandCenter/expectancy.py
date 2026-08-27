@@ -40,6 +40,7 @@ Usage:
 """
 
 import json
+import logging
 import os
 import time
 from probe_pairs import is_probe_pair
@@ -481,6 +482,11 @@ class ExpectancyTracker:
             _members = _fleet_member_ids()
             return {
                 'total_trades': 0,
+                # A zeroed history and an UNREADABLE store look identical from
+                # here — that is the whole absent-vs-empty trap, and this is
+                # the branch it lands in. Say which one this is.
+                'store_unreadable': bool(self.load_failed),
+                'store_error': self.load_error,
                 'fleet_expectancy': None,   # not 0 — nothing was measured
                 'win_rate': None,
                 'fleet_decided': 0,
@@ -604,6 +610,11 @@ class ExpectancyTracker:
 
         return {
             'total_trades': total,
+            # Present on BOTH return paths so a consumer never has to know
+            # which branch produced its payload — a key that appears only
+            # sometimes is the same trap as a denominator that comes and goes.
+            'store_unreadable': bool(self.load_failed),
+            'store_error': self.load_error,
             'win_rate': (round(win_rate * 100, 1)
                          if win_rate is not None else None),
             'fleet_decided': _fleet_decided,
@@ -897,23 +908,83 @@ class ExpectancyTracker:
 
     # ── Persistence ─────────────────────────────────────────────────
 
+    # Set when the store EXISTS but could not be read. Distinct from an empty
+    # store: see _load. Consumers that publish P/L should check it.
+    load_failed = False
+    load_error = None
+
     def _save(self):
+        """Persist the trade store. Returns True on success, False on failure.
+
+        This used to swallow every exception. A disk-full, a permission
+        denial, or a bad path all reported success, and the caller had no way
+        to know the write never happened. This file IS the fleet's measured
+        history -- 60 trades at the time of this change, and every published
+        expectancy, win rate and P/L figure derives from it. A write that
+        silently does nothing loses trades permanently and the loss is
+        invisible until someone counts.
+        """
         try:
             os.makedirs(os.path.dirname(self.PERSIST_PATH), exist_ok=True)
             tmp = self.PERSIST_PATH + '.tmp'
             with open(tmp, 'w') as f:
                 json.dump(self.trades, f)
             os.replace(tmp, self.PERSIST_PATH)
-        except Exception:
-            pass
+            return True
+        except Exception as e:
+            # Never raise into a trading loop, but never stay quiet either.
+            logging.error(
+                "expectancy._save FAILED (%r) -- the trade store at %s was "
+                "NOT written. Trades recorded since the last successful save "
+                "are lost, and every P/L figure derived from this file is now "
+                "stale.", e, self.PERSIST_PATH)
+            return False
 
     def _load(self):
+        """Restore the trade store.
+
+        THREE CASES, and they must not collapse into one:
+
+          absent      -- no file. First run. Empty is correct.
+          empty       -- file holds {}. We looked, there is nothing.
+          UNREADABLE  -- file exists and could not be parsed. NOT empty.
+
+        This used to be `except Exception: pass`, so a corrupted store was
+        indistinguishable from a first run: both produced {} and a normal
+        startup. That is the founding absent-vs-empty shape, sitting on the
+        fleet's only durable record of what it has traded.
+
+        The file is left ON DISK for recovery -- never overwritten on a failed
+        read, because the next _save would then persist the empty dict and
+        destroy whatever was recoverable.
+        """
+        self.load_failed = False
+        self.load_error = None
+        if not os.path.exists(self.PERSIST_PATH):
+            return                      # absent: first run, {} is correct
         try:
-            if os.path.exists(self.PERSIST_PATH):
-                with open(self.PERSIST_PATH) as f:
-                    self.trades = json.load(f)
-        except Exception:
-            pass
+            with open(self.PERSIST_PATH) as f:
+                data = json.load(f)
+        except Exception as e:
+            self.load_failed = True
+            self.load_error = repr(e)
+            logging.error(
+                "expectancy._load FAILED (%r) -- %s EXISTS but could not be "
+                "read. This is NOT an empty store: treating it as empty would "
+                "publish a zeroed history as though the fleet had never "
+                "traded. The file is left untouched for recovery; fix or move "
+                "it rather than letting a save overwrite it.",
+                e, self.PERSIST_PATH)
+            return
+        if not isinstance(data, dict):
+            self.load_failed = True
+            self.load_error = "top level is %s, expected dict" % type(data).__name__
+            logging.error(
+                "expectancy._load: %s parsed but is a %s, not a dict -- "
+                "refusing to load. Store left untouched.",
+                self.PERSIST_PATH, type(data).__name__)
+            return
+        self.trades = data
 
 
 if __name__ == "__main__":

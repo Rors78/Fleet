@@ -244,6 +244,13 @@
       <span class="header-chip">Pool: <span class="val" id="hPool">--</span></span>
       <span class="header-chip">Free: <span class="val" id="hFree">--</span></span>
       <span class="header-chip">WR: <span class="val" id="hWR">--%</span></span>
+      <!-- CURRENT ERA (2026-08-26). Every other figure in this header is
+           LIFETIME and spans the 2026-08-13 pool resize ($1,000,000 ->
+           $210.53), so it mixes two pools' worth of dollars under one label.
+           This chip is the fleet's record on the money it actually has.
+           It reads /api/current_era, which excludes pre-resize trades and
+           probe fixtures and counts flats separately. -->
+      <span class="header-chip" id="hEraChip">ERA: <span class="val" id="hEra">--</span></span>
     </div>
     <div class="header-right">
       <span class="header-chip" id="hKrakenChip" title="Kraken API status">Kraken: <span class="val" id="hKraken" style="color:#475569">--</span></span>
@@ -4947,6 +4954,68 @@ function renderHeader(agg){
     if(wrVal<15){wrEl.style.color="#ff4466";wrEl.style.textShadow="0 0 8px rgba(255,68,102,0.4)";}
     else if(wrVal<30){wrEl.style.color="#fbbf24";wrEl.style.textShadow="0 0 8px rgba(251,191,36,0.3)";}
     else{wrEl.style.color="#00ff88";wrEl.style.textShadow="0 0 8px rgba(0,255,136,0.3)";}
+  }
+  _renderEraChip();
+}
+
+/* ── CURRENT-ERA chip ──────────────────────────────────────────────────
+   The header's other figures are LIFETIME and cross the 2026-08-13 pool
+   resize, so they add two different pools' worth of dollars under one
+   label. Live example: the fleet P/L reads -$362.76, dominated by
+   pre-resize trades on $38k-$49k notionals, against a pool that is now
+   $215. Post-resize the same record is +$5.01 over 14 closed trades.
+
+   This chip is that second number, and it always carries its n. Below the
+   fleet's 30-trade bar it is drawn grey, never a confident green -- an
+   n=14 expectancy in teal is the fabricated-success shape. Absent stays
+   absent: if /api/current_era is missing (older backend, pre-restart) the
+   chip shows "--", never 0.00. */
+var _eraData=null;
+function _renderEraChip(){
+  var el=document.getElementById("hEra");
+  if(!el) return;
+  var e=_eraData;
+  var n=(e&&typeof e.n==="number")?e.n:0;
+  function num(v){return (typeof v==="number"&&isFinite(v))?v:null;}
+  var pnl=e?num(e.total_pnl):null;
+  var wr=e?num(e.win_rate):null;
+  if(pnl===null){
+    el.textContent="--";
+    el.style.color="rgba(255,255,255,0.35)";
+    el.style.textShadow="none";
+    var chip0=document.getElementById("hEraChip");
+    if(chip0) chip0.title="Current-era figures unavailable — /api/current_era"
+      +" did not answer. This is NOT a flat result; the number is unknown.";
+    return;
+  }
+  /* -$12.75, not $-12.75 — the sign belongs outside the currency symbol.
+     Same slip as the canvas HUD's avg-loss field. */
+  el.textContent=(pnl<0?"-$":"+$")+Math.abs(pnl).toFixed(2)
+    +(wr!==null?" · "+wr.toFixed(1)+"%":"")
+    +" (n="+n+")";
+  if(n<30){
+    /* Not enough closed trades to mean anything yet. */
+    el.style.color="#94a3b8"; el.style.textShadow="none";
+  }else{
+    el.style.color=pnl>=0?"#00ff88":"#ff4466";
+    el.style.textShadow="0 0 8px "+(pnl>=0?"rgba(0,255,136,0.3)":"rgba(255,68,102,0.4)");
+  }
+  var chip=document.getElementById("hEraChip");
+  if(chip){
+    var aw=num(e.avg_win), al=num(e.avg_loss), ex=num(e.expectancy_per_trade);
+    chip.title="CURRENT ERA — the fleet's record on the pool it actually has."
+      +" Window starts at the 2026-08-13 pool resize ($1,000,000 -> $210.53),"
+      +" a boundary MEASURED from the trade record: position notionals break"
+      +" from $38,557 to $6.80 across it and never return."
+      +"\n\nn="+n+" closed trades"
+      +(wr!==null?", win rate "+wr.toFixed(1)+"% over "+(e.win_rate_n!=null?e.win_rate_n:"?")+" decided":"")
+      +(aw!==null?"\navg win  "+(aw>=0?"+":"")+"$"+aw.toFixed(4):"")
+      +(al!==null?"\navg loss "+(al<0?"-$"+Math.abs(al).toFixed(4):"$"+al.toFixed(4)):"")
+      +(ex!==null?"\nexpectancy "+(ex>=0?"+":"")+"$"+ex.toFixed(4)+" per trade":"")
+      +"\n\nExcluded: "+((e.excluded&&e.excluded.pre_resize)||0)+" pre-resize trades"
+      +" (sized against the old pool) and "+((e.excluded&&e.excluded.probe_pairs)||0)
+      +" probe fixtures (test scaffolding, not trades)."
+      +(e.caveat?"\n\n"+e.caveat:"");
   }
 }
 
@@ -14051,7 +14120,17 @@ function fetchData(){
        endpoint (older backend, pre-restart) leaves state.era null and the
        HUD renders "--", never a stand-in number. */
     fetch("/api/current_era").then(function(r){return r.ok?r.json():null;})
-      .then(function(e){state.era=e||null;}).catch(function(){state.era=null;});
+      .then(function(e){
+        state.era=e||null;
+        /* Also feeds the ERA header chip. The canvas HUD only draws in the
+           non-fullscreen COSMOS view; the HTML header is on screen all the
+           time, and it is the bar that was still showing only lifetime
+           figures. Both read the same data now. */
+        _eraData=state.era;
+        _renderEraChip();
+      }).catch(function(){
+        state.era=null; _eraData=null; _renderEraChip();
+      });
     state.portfolio=data.portfolio||null;
     state.daily_24h=data.daily_24h||null;
     if(data.fleet_engage_state) _updateFleetModeBtn(data.fleet_engage_state);

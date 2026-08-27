@@ -1648,3 +1648,127 @@ the P/L, both falling through to "--%" / "--" with the colour reset. A
 missing era cannot render as a zero or a stale value.
 
 Suite 99/99, braces 3446/3446, pool 215.7749 before and after.
+
+---
+
+## 2026-08-27 — COSMOS pass 13: the last static bodies, and a scoping correction
+
+**Brief**: give moving surface life to the four bodies measured static via
+grep (`oracle`, `deepblue`, `confluence`, `nexus` — all `_sphBand=1
+_sphBlob=0`), with Confluence (the only bot currently trading) getting the
+strongest treatment. TurtleSue flagged as a sprite trap, out of scope.
+
+**Verified the premise before acting**, per the brief's own instruction —
+the grep-derived claim did not survive contact with the code:
+
+- Built an offscreen node harness (stubs `document.createElement`,
+  `CanvasRenderingContext2D`, etc.) and ran each target body's
+  `surface()`/`overlay()` at `now = 0, 20000, 40000, 60000` (ms), diffing
+  the recorded draw-call sequence across those four times. Result:
+  **oracle, deepblue, and nexus all already have genuine per-frame
+  motion** — Great Red Spot / white ovals drifting in longitude
+  (`grsSpin=now/26000*1.55`, `oracle` ~line 847/901), Great Dark Spot /
+  "scooter" / bioluminescent patches (`deepblue` ~line 1097-1163), band
+  differential rotation (`jSpin`/`nSpin`/`nSpin2` on all three), NEXUS's
+  14 engine motes flaring on staggered phases and a 6s verdict pulse ring
+  (`nexus` overlay ~line 2100-2145). They just don't call the specific
+  `_sphBlob` helper function — a coincidental implementation detail the
+  grep mistook for staticness, not an absence of motion.
+- **Confluence's `surface()` was confirmed genuinely, totally empty** —
+  zero draw calls at every `now` sampled, matching the brief exactly.
+
+**Decision**: did not add more traveling cells to oracle/deepblue/nexus.
+This project's own history (`project_cosmos_redesign_round2_2026_07_30`,
+`project_vivarium_round2_redesign_2026_07_30` in agent memory) documents
+that stacking more competing features onto an identity that already reads
+correctly is the "not even close to good" failure mode, and the brief
+itself warned "must work WITH that, not fight it." Put all the strength
+into the one body that actually had nothing.
+
+**Changed**: `solar_system.js` `PLANET_VISUALS.confluence.surface()`
+(~line 1227), previously an empty function with only a comment. Built a
+molten terrestrial crust to match Confluence's `pt:"terrestrial"` /
+orange identity and "intel aggregator" role:
+- `_bakeMottleTex` crust texture (same machinery as Phitex/NEXUS) plus a
+  warm radial undercoat.
+- Three spherically-projected magma channels (`_sphProject`-based
+  point-strip, not `_sphBand`) converging on a shared equatorial vent —
+  a crust-level echo of the four intel beams that already converge on
+  this body from `overlay()`, so the new surface detail reinforces
+  rather than competes with the existing identity feature.
+- A pulsing central vent where the channels meet (`Math.sin(now/1900)`).
+- Two `_sphBlob` drifting ember hotspots via the shared
+  `_sphProject`/`_sphBlob`/`_sphLambert` traveling-cell pattern
+  (Gridzilla/Phitex/NexusBrain's technique), periods 33s/46s — distinct
+  from every other timescale in the file, per the brief's "nothing moves
+  in lockstep" rule.
+- Standard limb darkening to match every other body.
+- All of it is scenery: a fixed function of `now` only, never a fleet
+  quantity — documented in a comment at the top of the surface() function
+  per the brief's explicit rule ("anything that looks like a measurement
+  must BE one"). The pre-existing 4-beam `overlay()` and its align-pulse
+  were untouched (that logic already reads `_orbNodes`/beam-alignment
+  state legitimately and was correct before this pass).
+- Preserved the original disk-clip warning comment verbatim at the end of
+  the function (do not move beam/ring/corona effects into `surface()`).
+
+**The scoping correction — read this before the next pass touches a
+trader bot**: live-page verification (see below) found that Confluence's
+2D `PLANET_VISUALS.confluence` render is **not what a viewer actually
+sees**. `armada.js` (`FLEET.confluence = {hull:'refinery'}`,
+`buildConfluence()` ~armada.js:1663) renders Confluence as a fully
+independent WebGL ship on its own canvas (`armadaCanvas`), stacked above
+the 2D `orbitalCanvas` and synced to the same `_orbNodes.confluence`
+world position. The WebGL ship's screen footprint fully covers the 2D
+disk underneath — confirmed by temporarily monkey-patching
+`PLANET_VISUALS.confluence.surface/overlay` in the live page to draw at
+120px radius (in-memory only, restored before finishing, source file
+untouched) and screenshotting: the WebGL refinery hull (twin engine
+flares, umbilical couplers, drum) was the only thing visible at that
+screen position, no 2D disk peeking out at any edge. This is the same
+trap `project_sota_round2_2026_07_30` documented for TurtleSue
+(`_armadaOwnsTraders`-equivalent routing, invisible to a 2D-only
+investigation) — it turns out it also applies to Confluence, and the
+brief's own "own THE LAST STATIC BODIES" scoping (solar_system.js only)
+walked right past it because the grep that produced the brief's premise
+only looked at solar_system.js. The refinery ship itself is NOT static —
+prior armada passes already gave it twin engine plumes, running lights,
+and a cargo-bay glow keyed to P/L closes — so Confluence was never
+actually a static body on the display; the 2D static one was just the
+part underneath that nobody sees.
+
+**Net effect of this pass**: `solar_system.js`'s Confluence surface is
+now correct, tested, and will render if armada.js ever fails to load
+(the file's own comments describe this as an intentional fallback
+architecture elsewhere) — a real fix, not wasted work, but not what
+raises visible "wow" on the actual 50" display today. Flagging this
+explicitly rather than reporting a visual win that isn't there. The
+genuinely-still-worth-doing follow-up, if the operator wants Confluence
+to feel more alive, is armada.js's refinery hull, not solar_system.js.
+
+**Rejected**: adding `_sphBlob` traveling cells to oracle/deepblue/nexus
+on top of their existing anchored storms — would compete with, not
+complement, features already judged as working (see Decision above).
+Considered adding a fifth micro-feature to each anyway "just to use
+`_sphBlob` by name" and rejected it — the brief's literal ask was moving
+surface life, which they already have; matching a specific function name
+would be satisfying the letter of a stale premise over the actual goal.
+
+**Draw calls** (offscreen Node harness, r=60, all 18 bodies' `surface()`):
+464 -> 491 total (+27, entirely from confluence 0 -> 27). No other body
+touched. Well inside the ~425-464/frame measured range this file already
+runs at.
+
+**Verification**:
+- `node --check solar_system.js` and `node --check armada.js`: both clean
+  (armada.js untouched, checked anyway per the standing rule).
+- Suite: 99 passed, 0 failed (`python -X utf8 run_all.py`).
+- Pool: `215.77491525702527` before and after
+  (`curl http://localhost:9000/api/portfolio`), unchanged.
+- **Saw it render**: yes, on the real page via claude-in-chrome, fullscreen
+  cinema mode. Confirmed the composited scene paints correctly (NEXUS
+  geodesic lattice + 14 motes, Oracle's polar eye storm and Jovian bands,
+  CC's station core all rendered correctly in screenshots) and confirmed,
+  via the live-patch technique above, exactly what covers Confluence's
+  screen position and why the plain 2D surface work is invisible in
+  normal play. No restart of any bot or the fleet was performed.

@@ -1225,19 +1225,131 @@ var PLANET_VISUALS = {
         baseColor: [255, 109, 0],
         atmosphere: [255, 160, 80],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Left intentionally minimal — the real identity feature (the 4
-               converging beams) lives in overlay(), not here. surface() is
-               clipped to the disk (drawPlanet clips to arc(x,y,r) before
-               calling it), so anything drawn here that needs to extend
-               PAST the sphere's edge — which the beams must, to read as
-               "arriving from outside" — is silently cut off. Confirmed live
-               2026-07-30 round 2: the beams were coded correctly (verified
-               the math directly) but invisible on screen because they were
-               in surface() and every pixel past radius r was being clipped
-               away before it ever reached the canvas. Moving them to
-               overlay() (unclipped, drawn after the sphere) was the actual
-               fix — do not move beam/ring/corona-style effects back into
-               surface() for this or any other body. */
+            /* COSMOS pass 13 (2026-08-27): this body's disk was previously
+               empty — the 4-beam convergence identity lives entirely in
+               overlay() (see the disk-clip note preserved below) and
+               nothing was ever drawn on the sphere itself. Confluence is
+               the only bot in the fleet actually trading right now, so of
+               every body in the system this one most needed to look alive
+               up close, not just from its beams. This is scenery, not a
+               measurement — the crust texture is a one-time deterministic
+               bake and the channel/ember motion below is a fixed function
+               of time only; nothing here is keyed to trade count, P/L, or
+               any other live fleet quantity. Anything that looks like a
+               measurement (the overlay beams, the align-pulse) already
+               existed and is untouched.
+
+               Molten terrestrial crust: baked amber/ember mottle texture
+               for base variation (same machinery as Phitex/NEXUS), three
+               spherically-projected magma channels that snake toward an
+               equatorial vent — a crust-level echo of the four beams
+               converging on this body from outside — and two drifting
+               ember hotspots via the shared _sphProject/_sphBlob/
+               _sphLambert technique, so they foreshorten and cross the
+               limb like real terrain instead of sitting as flat decals. */
+            var cfTex = _bakeMottleTex('confluence', _texBucket(r), [200, 85, 20]);
+            _stampSurfTex(ctx, cfTex, x, y, r);
+
+            /* Base warm undercoat so the crust reads as glowing rock, not
+               a bare orange disk under the mottle speckle. */
+            var cfBase = ctx.createRadialGradient(x, y, 0, x, y, r);
+            cfBase.addColorStop(0,    'rgba(255,170,90,0.22)');
+            cfBase.addColorStop(0.55, 'rgba(220,110,35,0.16)');
+            cfBase.addColorStop(1,    'rgba(150,60,15,0.20)');
+            ctx.fillStyle = cfBase;
+            ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+
+            /* Magma channels — three cracks running from a mid-latitude
+               source down to a shared equatorial vent, drawn as a strip of
+               small sphere-projected points so each one foreshortens and
+               dims correctly on the limb-facing side. Each channel spins at
+               its own slow rate (distinct from every timescale used
+               elsewhere on this body/system — see the brief's "nothing
+               moves in lockstep" rule). */
+            var cfTilt = 1.22; /* matches this body's CELESTIAL_HIERARCHY tilt */
+            var cfChannels = [
+                { lon0: -0.9, lon1: 0.05, lat0: 0.55, lat1: 0.06, rate: 1 / 41000, phase: 0.0 },
+                { lon0:  0.9, lon1: 0.05, lat0: 0.42, lat1: 0.06, rate: 1 / 41000, phase: 0.0 },
+                { lon0:  2.6, lon1: 3.10, lat0: -0.30, lat1: -0.05, rate: 1 / 41000, phase: 0.0 }
+            ];
+            for (var cc2 = 0; cc2 < cfChannels.length; cc2++) {
+                var ch = cfChannels[cc2];
+                var chSpin = now * ch.rate;
+                ctx.beginPath();
+                var chStarted = false;
+                for (var cs2 = 0; cs2 <= 18; cs2++) {
+                    var cf2 = cs2 / 18;
+                    var clon2 = ch.lon0 + (ch.lon1 - ch.lon0) * cf2;
+                    var clat2 = ch.lat0 + (ch.lat1 - ch.lat0) * cf2;
+                    var chP = _sphProject(clat2, clon2, r, chSpin, cfTilt);
+                    if (chP.vis <= 0.03) { chStarted = false; continue; }
+                    if (!chStarted) { ctx.moveTo(x + chP.x, y + chP.y); chStarted = true; }
+                    else ctx.lineTo(x + chP.x, y + chP.y);
+                }
+                ctx.strokeStyle = 'rgba(255,190,90,0.34)';
+                ctx.lineWidth = Math.max(0.5, r * 0.03);
+                ctx.stroke();
+                /* Thin bright core inside the channel — the "flowing" cue */
+                ctx.strokeStyle = 'rgba(255,235,190,0.22)';
+                ctx.lineWidth = Math.max(0.3, r * 0.012);
+                ctx.stroke();
+            }
+
+            /* Central vent — where the three channels converge, pulsing
+               gently. Anchored to the same lat/lon as the channels' shared
+               endpoint so it stays put under the crust's own spin. */
+            var ventP = _sphProject(0.02, 0.05, r, now / 41000, cfTilt);
+            if (ventP.vis > 0.03) {
+                var ventPulse = 0.55 + 0.25 * Math.sin(now / 1900);
+                var ventR = Math.max(0.1, r * 0.16 * ventPulse);
+                var vx = x + ventP.x, vy = y + ventP.y;
+                var ventG = ctx.createRadialGradient(vx, vy, 0, vx, vy, ventR);
+                ventG.addColorStop(0, 'rgba(255,240,200,' + (0.55 * ventP.vis).toFixed(3) + ')');
+                ventG.addColorStop(0.5, 'rgba(255,150,50,' + (0.30 * ventP.vis).toFixed(3) + ')');
+                ventG.addColorStop(1, 'rgba(0,0,0,0)');
+                ctx.fillStyle = ventG;
+                ctx.beginPath(); ctx.arc(vx, vy, ventR, 0, Math.PI * 2); ctx.fill();
+            }
+
+            /* Drifting ember hotspots — same shared traveling-cell pattern
+               as Gridzilla/Phitex/NexusBrain, distinct periods so nothing
+               on this body moves in lockstep. */
+            var cfCells = [
+                { lat:  0.30, rate: 1 / 33000, phase: 1.1, sz: 0.11, rgb: '255,205,120' },
+                { lat: -0.48, rate: -1 / 46000, phase: 4.0, sz: 0.09, rgb: '255,150,60' }
+            ];
+            for (var ec = 0; ec < cfCells.length; ec++) {
+                var ecl = cfCells[ec];
+                var ecLon = ecl.phase + now * ecl.rate;
+                var ecP = _sphProject(ecl.lat, ecLon, r, 0, cfTilt);
+                if (ecP.vis <= 0.03) continue;
+                var ecLit = _sphLambert(ecP.x, ecP.y, ecP.z, r, lx, ly);
+                var ecAlpha = ecP.vis * (0.20 + ecLit * 0.30);
+                if (ecAlpha < 0.02) continue;
+                _sphBlob(ctx, x, y, r, ecl.lat, ecLon, Math.max(0.1, ecl.sz), 0, cfTilt,
+                    'rgba(' + ecl.rgb + ',' + ecAlpha.toFixed(3) + ')');
+            }
+
+            /* Limb darkening — cheap sphere cue, consistent with every
+               other body in the file. */
+            var cfLimb = ctx.createRadialGradient(x, y, r * 0.6, x, y, r);
+            cfLimb.addColorStop(0, 'rgba(0,0,0,0)');
+            cfLimb.addColorStop(0.75, 'rgba(60,20,5,0.14)');
+            cfLimb.addColorStop(1, 'rgba(35,10,2,0.34)');
+            ctx.fillStyle = cfLimb;
+            ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+
+            /* Preserved note: the 4-beam convergence identity lives in
+               overlay(), not here, because surface() is clipped to the
+               disk (drawPlanet clips to arc(x,y,r) before calling it), so
+               anything needing to extend PAST the sphere's edge — which
+               the beams must, to read as "arriving from outside" — would
+               be silently cut off. Confirmed live 2026-07-30 round 2: the
+               beams were coded correctly but invisible on screen because
+               they were in surface() and every pixel past radius r was
+               being clipped away before it ever reached the canvas. Do not
+               move beam/ring/corona-style effects back into surface() for
+               this or any other body. */
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             /* Four converging intel beams — Oracle, Deep Blue, NEXUS, Sentinel —

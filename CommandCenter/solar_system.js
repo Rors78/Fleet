@@ -362,24 +362,35 @@ var CELESTIAL_HIERARCHY={
   oracle:    {type:"star",  parent:"cc",      orbitRadius:585, orbitSpeed:0.000085,mass:40,  sz:36, gravitationalRadius:180, grp:"intel",  pt:"gas_giant",  pers:"deliberate"},
   deepblue:  {type:"star",  parent:"cc",      orbitRadius:520, orbitSpeed:0.000115,mass:35,  sz:34, gravitationalRadius:160, grp:"intel",  pt:"ocean",      pers:"predatory"},
   nexus:     {type:"star",  parent:"cc",      orbitRadius:468, orbitSpeed:0.00007, mass:38,  sz:35, gravitationalRadius:170, grp:"novel",  pt:"binary",     pers:"omniscient"},
-  /* PLANETS — Trading bots. orbitSpeed = Kepler(orbitRadius). */
-  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.0008114,mass:15, sz:27, grp:"trader", pt:"terrestrial", pers:"aggressive"},
-  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"analytical"},
-  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.0010284,mass:10, sz:25, grp:"trader", pt:"crystal",     pers:"steady"},
-  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.0006173,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"patient"},
-  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:10, sz:24, grp:"trader", pt:"elastic",     pers:"bouncy"},
-  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.0008710,mass:10, sz:24, grp:"trader", pt:"binary_pair", pers:"paired"},
+  /* PLANETS — Trading bots. orbitSpeed = Kepler(orbitRadius).
+     tilt: per-body inclination MULTIPLIER on top of the existing global
+     _orbEllipseTiltY() aspect-fit compression (COSMOS pass #2, 2026-08-27).
+     Deliberately narrow band (0.70-1.30) around 1.0 so no orbit exceeds the
+     vertical envelope the composition-fix rounds already solved for at
+     tilt=1.0 (see command_center_v4.html ~1409-1426) — this only fans the
+     six planet orbit PLANES apart from each other and from the flat
+     ecliptic disc, it does not re-open the aspect-fit/occupancy math. Stars
+     and the sun are intentionally left untilted (no `tilt` key => 1.0):
+     the star triangle's exact 120°-apart composition was independently
+     tuned across multiple rounds and is out of scope here. */
+  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.0008114,mass:15, sz:27, grp:"trader", pt:"terrestrial", pers:"aggressive", tilt:1.22},
+  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"analytical", tilt:0.78},
+  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.0010284,mass:10, sz:25, grp:"trader", pt:"crystal",     pers:"steady",     tilt:1.12},
+  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.0006173,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"patient",    tilt:0.85},
+  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:10, sz:24, grp:"trader", pt:"elastic",     pers:"bouncy",     tilt:1.28},
+  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.0008710,mass:10, sz:24, grp:"trader", pt:"binary_pair", pers:"paired",     tilt:0.72},
   /* MOONS — Small support bots. Compressed further Round 2: 18-22 -> 20-26
      band so AEGIS (still largest moon by design, hex shield untouched per
-     directive) is only 1.3x the smallest moon, not 2x. */
-  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.0009503, mass:14, sz:26, grp:"novel",    pt:"magnetar",   pers:"guardian"},
-  phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.0010284, mass:12, sz:23, grp:"novel",    pt:"variable",   pers:"pulsing"},
-  sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.0006173, mass:10, sz:22, grp:"intel",    pt:"nebula",     pers:"watchful"},
-  contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.0011340, mass:10, sz:22, grp:"intel",    pt:"dark_nebula",pers:"contrarian",ecc:0.22},
-  chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.0004898, mass:10, sz:22, grp:"intel",    pt:"pulsar",     pers:"rhythmic"},
-  hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0012397, mass:8,  sz:21, grp:"optimizer",pt:"cluster",    pers:"swarm"},
-  trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0011340, mass:8,  sz:21, grp:"intel",    pt:"trinary",    pers:"scattered"},
-  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:20, grp:"support",  pt:"nebula",     pers:"processing"},
+     directive) is only 1.3x the smallest moon, not 2x. tilt: same
+     per-body inclination multiplier as planets, same 0.70-1.30 band. */
+  aegis:     {type:"moon",  parent:"cc",              orbitRadius:117,orbitSpeed:0.0009503, mass:14, sz:26, grp:"novel",    pt:"magnetar",   pers:"guardian",   tilt:0.80},
+  phitex:    {type:"moon",  parent:"nexus",           orbitRadius:111,orbitSpeed:0.0010284, mass:12, sz:23, grp:"novel",    pt:"variable",   pers:"pulsing",    tilt:1.25},
+  sentinel:  {type:"moon",  parent:"cc",              orbitRadius:156,orbitSpeed:0.0006173, mass:10, sz:22, grp:"intel",    pt:"nebula",     pers:"watchful",   tilt:1.15},
+  contrarian:{type:"moon",  parent:"deepblue",        orbitRadius:104,orbitSpeed:0.0011340, mass:10, sz:22, grp:"intel",    pt:"dark_nebula",pers:"contrarian",ecc:0.22,tilt:0.75},
+  chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.0004898, mass:10, sz:22, grp:"intel",    pt:"pulsar",     pers:"rhythmic",   tilt:1.20},
+  hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0012397, mass:8,  sz:21, grp:"optimizer",pt:"cluster",    pers:"swarm",      tilt:0.82},
+  trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0011340, mass:8,  sz:21, grp:"intel",    pt:"trinary",    pers:"scattered",  tilt:1.10},
+  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:20, grp:"support",  pt:"nebula",     pers:"processing", tilt:0.90},
   /* BRAINIAC — Command Center's own sensory apparatus, not a fleet bot: it
      is five collector threads running INSIDE cc, so it orbits cc closely
      and fast. orbitRadius 88 is the tightest orbit in the scene and its

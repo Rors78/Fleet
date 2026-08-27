@@ -64,3 +64,74 @@ reason is what stops the next pass relitigating it.
 Suite 84/84. Dashboard confirmed rendering in Chrome (all panels, cosmos
 view, cursor hide cycle), not merely `node --check`. Both new tests were
 sabotage-tested and confirmed red-capable.
+
+---
+
+## 2026-08-27 — per-body orbital inclination (top backlog item)
+
+**Planning first.** Read every call site before touching anything.
+`armada.js` (~2818, 3637) reads only `node.x`/`node.y` off `window._orbNodes`
+via `worldToScene()` — it has no independent ellipse/tiltY math of its own,
+so any change confined to how `OrbNode.prototype.update` computes `.x`/`.y`
+flows through to ship placement automatically with zero armada-side edit
+needed. That derisked the change enough to do the coordinated version
+instead of a narrower substitute.
+
+**Changed** (uncommitted at write time, see commit below)
+
+- `solar_system.js` `CELESTIAL_HIERARCHY` (~366-391): added a `tilt` field
+  to all 6 planets and 8 non-brainiac moons, values in 0.72-1.30, following
+  the exact existing `ecc` override idiom (`hier.tilt!=null?hier.tilt:1.0`).
+  Stars and the sun deliberately left untouched (no key => 1.0 default) —
+  their 120°-apart triangle composition was independently tuned across
+  multiple prior rounds and reopening it was out of scope.
+- `command_center_v4.html` `OrbNode` constructor (~1195): reads
+  `this.orbitTilt` from `hier.tilt`, same pattern as `orbitEccentricity`.
+- `OrbNode.prototype.update` (~1435): `tiltYBody = tiltY * this.orbitTilt`,
+  applied to both the main `targetY` and the migration-target `newTargetY`.
+  This is a MULTIPLIER on the existing global aspect-fit `tiltY`, not a
+  replacement — the hard-won 16:9 composition math (H/W*1.04, floor 0.40)
+  is untouched, only fanned per-body around it.
+- `_drawOrbitPath` (~3278): ring tiltY now reads
+  `_orbEllipseTiltY()*(body.orbitTilt||1.0)` so the drawn ring stays glued
+  to the path the body actually flies — the exact class of bug the
+  standing "ROUND 2" header comment on this function already fixed once
+  for the (then-global) case; skipping this would have re-introduced it
+  per-body.
+- `_drawEclipticDisc`/`_bakeEclipticDisc` deliberately left on the pure
+  global tiltY — it renders the shared flat ecliptic reference plane, not
+  any one body's path. Leaving it flat is what makes the now-inclined
+  orbits visibly cross above/below it, which is the point of the change.
+
+**Radius guard** — not applicable here. All `tilt` values are positive
+(0.72-1.30), so `tiltYBody` and the ring's derived `ry=r*tiltY` stay
+strictly positive for all r>0; `Math.sin`/`Math.cos` outputs are used only
+as coefficients, never fed directly into a radius or gradient argument.
+
+**Rejected, with reasons**
+
+- *Randomized/hashed per-body tilt instead of hand-picked values.* Hand
+  assigned instead so the spread is legible as designed variety (alternating
+  above/below the mean across siblings in the same system) rather than
+  looking like jitter noise; also keeps the diff readable and reviewable.
+- *Touching star tilt.* Explicitly out of scope — see composition-fix
+  history in `_fixedAngles`/`_orbScaleOrbits` comments; not revisited.
+
+**Verification**
+
+- `node --check solar_system.js`: pass.
+- Suite: 87/87, run three times consecutively for stability (one earlier
+  86/1-fail read was a shell path artifact from a backslash `cd` chain, not
+  a real regression — reproduced clean 87/87 immediately after with
+  forward-slash paths).
+- Brace balance on `command_center_v4.html`: unchanged before/after
+  (3176 `{` / 3159 `}`), confirming the inserted lines (comments + one
+  balanced statement) didn't shift structure.
+- Verified live in Chrome: navigated to `localhost:9000`, entered
+  fullscreen orbital view, forced a paint via screenshot (headless tabs set
+  `document.hidden=true` and pause the render loop otherwise). Console
+  clean, no errors. Visually confirmed multiple orbit rings around CC now
+  sit at clearly distinct tilt angles/compressions rather than one flat
+  stacked ellipse — the exact defect this pass targeted. Rings stayed
+  correctly centered on and glued to their bodies at both default and
+  zoomed-out framing.

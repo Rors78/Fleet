@@ -1185,6 +1185,14 @@ function OrbNode(id,cfg,def,angle,cw,ch){
   this.orbitRadius=hier.orbitRadius||100;
   this.orbitSpeed=hier.orbitSpeed||0.003;
   this.orbitEccentricity=(hier.ecc!=null)?hier.ecc:(hier.type==="star")?0.03:0.05;
+  /* Per-body orbital inclination (COSMOS pass #2, 2026-08-27) — a MULTIPLIER
+     on top of the existing global _orbEllipseTiltY() aspect-fit tiltY, not a
+     replacement. hier.tilt comes from CELESTIAL_HIERARCHY (solar_system.js),
+     narrow band 0.70-1.30, planets/moons only (stars/sun default to 1.0 —
+     their triangle composition is independently tuned and out of scope
+     here). See OrbNode.prototype.update and _orbEllipseTiltY for the two
+     read sites this must stay consistent with. */
+  this.orbitTilt=(hier.tilt!=null)?hier.tilt:1.0;
   /* Visual state */
   this.energy=0.5;
   this.alive=true;
@@ -1424,8 +1432,9 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
      16:9, not 0.70. Retuned to *1.04 (tiltY≈0.50 at 16:9, H/W≈0.479),
      floor lowered to 0.40 for taller/narrower windows. */
   var tiltY=_orbIsFS?Math.max(0.40,Math.min(1.0,(H/W)*1.04)):0.85; /* perspective in widget, aspect-matched in cinema */
+  var tiltYBody=tiltY*this.orbitTilt; /* per-body inclination multiplier, see orbitTilt above */
   var targetX=parentX+Math.cos(this.orbitAngle)*r;
-  var targetY=parentY+Math.sin(this.orbitAngle)*r*tiltY;
+  var targetY=parentY+Math.sin(this.orbitAngle)*r*tiltYBody;
 
   /* === MIGRATION (planets only) === */
   if(this.migrating&&this.celestialType==="planet"){
@@ -1443,7 +1452,7 @@ OrbNode.prototype.update=function(dt,allNodes,cx,cy,W,H){
       var newP2=_orbNodes[this.migrationTarget];
       if(newP2){
         var newTargetX=newP2.x+Math.cos(this.orbitAngle)*this.orbitRadius;
-        var newTargetY=newP2.y+Math.sin(this.orbitAngle)*this.orbitRadius*tiltY;
+        var newTargetY=newP2.y+Math.sin(this.orbitAngle)*this.orbitRadius*tiltYBody;
         var t=this.migrationProgress;
         var ease=t*t*(3-2*t); /* smoothstep */
         targetX=targetX+(newTargetX-targetX)*ease;
@@ -3261,7 +3270,12 @@ function _drawOrbitPath(ctx,body,frameNow){
      safe if ever called without it; the cache just recomputes. */
   if(frameNow==null) frameNow=Date.now();
   var r=body.orbitRadius;
-  var tiltY=_orbEllipseTiltY();
+  /* Multiply by the body's own orbitTilt (COSMOS pass #2, 2026-08-27) —
+     must match OrbNode.prototype.update's tiltYBody exactly or the drawn
+     ring detaches from the path the body actually flies, same class of bug
+     the ROUND 2 header comment above already fixed once for the (then
+     single, global) tiltY. */
+  var tiltY=_orbEllipseTiltY()*(body.orbitTilt!=null?body.orbitTilt:1.0);
   var ry=r*tiltY;
 
   /* Proximity brightness: compare this body's orbitRadius against its

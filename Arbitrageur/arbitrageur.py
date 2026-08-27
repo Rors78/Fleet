@@ -131,6 +131,10 @@ POOL_SHARE_PCT = 100.0
 MAX_POSITIONS = 3             # concurrent positions
 SL_ATR_MULT = 1.5             # stop loss = 1.5x ATR
 TP_CATCHUP_PCT = 0.50         # target 50% gap closure as TP
+# How long a cached close stays usable. The cache had no TTL at all
+# and served a startup price for the whole process lifetime; these
+# are 60-minute candles, so 5 minutes is well inside the bar.
+PRICE_CACHE_TTL_S = 300
 TIME_STOP_HOURS = 12          # 12h (was 48h — too generous)
 # No paper balance. This was INITIAL_EQUITY = 10_000.0, which seeded
 # self.equity and became the sizing fallback whenever the pool could not be
@@ -517,14 +521,36 @@ class ArbitrageurEngine:
         Build full correlation map from OHLC closes.
         Uses Brainiac data first, fills gaps with our own calculation.
         """
-        # Fetch OHLC closes for all pairs
+        # Fetch OHLC closes for all pairs.
+        #
+        # The refresh condition used to be "not cached, or too short", with
+        # NO age check and no invalidation anywhere in the file. Once a pair
+        # was populated it was never fetched again for the life of the
+        # process. Measured 2026-08-27 in the log: scans 1-2 took 4.2s and
+        # 5.5s (real network), scans 3-6 took 0.0-0.1s -- no network at all.
+        # Exits were being evaluated against a close frozen at startup.
+        #
+        # A stale price is worse than a missing one: missing is visible and
+        # now refuses to close a position, while stale looks exactly like a
+        # live quote and silently mis-fires stops.
+        #
+        # PRICE_CACHE_TTL_S bounds that. These are 60-minute candles, so a
+        # 5-minute TTL is far tighter than the bar period and costs one
+        # fetch per pair per 5 min at 0.3s spacing.
+        _now_ts = time.time()
+        if not hasattr(self, "_price_cache_ts"):
+            self._price_cache_ts = {}
         for pair in pairs:
-            if pair not in self.price_cache or len(self.price_cache[pair]) < LOOKBACK:
+            _age = _now_ts - self._price_cache_ts.get(pair, 0)
+            if (pair not in self.price_cache
+                    or len(self.price_cache[pair]) < LOOKBACK
+                    or _age > PRICE_CACHE_TTL_S):
                 candles = self._fetch_ohlc(pair, interval=60, limit=100)
                 if candles and len(candles) >= LOOKBACK:
                     closes = [float(c[4]) for c in candles if len(c) > 4]
                     if len(closes) >= LOOKBACK:
                         self.price_cache[pair] = closes
+                        self._price_cache_ts[pair] = _now_ts
                 time.sleep(0.3)  # rate limit Kraken
 
         # Get Brainiac correlations as starting point
@@ -781,9 +807,41 @@ class ArbitrageurEngine:
         to_close = []
         for pos in self.open_positions:
             closes = self.price_cache.get(pos.pair, [])
-            current_price = closes[-1] if closes else pos.entry_price
-            if current_price <= 0:
+            # NO FABRICATED PRICE.
+            #
+            # This used to fall back to `pos.entry_price` when the cache was
+            # empty. That is not a missing value, it is a WRONG one, and it
+            # is wrong in the most damaging possible direction:
+            #
+            #   * price == entry makes stop-loss and take-profit both
+            #     evaluate False, so neither can ever fire while blind;
+            #   * the TIME_STOP still fires -- and closes at the fabricated
+            #     price, booking a genuine loss as exactly $0.00 into the
+            #     durable record.
+            #
+            # A $0.00 loss is not a small loss, it is a deleted one. This is
+            # the same shape as the Gridzilla scar where losing grids exited
+            # through a path that never recorded: the ledger ends up unable
+            # to show a loss, and every statistic derived from it flatters.
+            #
+            # Absence must read as absence. With no quote the position is
+            # left OPEN and flagged; nothing is closed on an invented number.
+            current_price = closes[-1] if closes else None
+            if current_price is None or current_price <= 0:
+                # Say so once per pair per outage -- a blind position that
+                # renders as healthy is the failure this fleet keeps having.
+                if not hasattr(self, "_blind_positions"):
+                    self._blind_positions = set()
+                if pos.pair not in self._blind_positions:
+                    self._blind_positions.add(pos.pair)
+                    logging.warning(
+                        "No cached price for HELD %s - stop, take-profit and "
+                        "time stop are all blind. Position stays OPEN rather "
+                        "than closing on a fabricated price.", pos.pair)
                 continue
+            # Quote is back - let the next outage warn afresh.
+            if getattr(self, "_blind_positions", None):
+                self._blind_positions.discard(pos.pair)
 
             reason = None
             if current_price <= pos.stop_loss:
@@ -947,11 +1005,31 @@ class ArbitrageurEngine:
             positions = {}
             for pos in self.open_positions:
                 closes = self.price_cache.get(pos.pair, [])
-                cur = closes[-1] if closes else pos.entry_price
+                # The DISPLAY path had the same fabricated-price fallback as
+                # the exit path: with no cached close it used the entry
+                # price, so current_price echoed the entry and
+                # unrealized_pnl rendered as exactly $0.00. A position that
+                # is actually deep in the red shows on the dashboard as a
+                # flat, healthy one -- the "unmeasured defaults to healthy"
+                # failure, in the place a human is most likely to look.
+                #
+                # None means unknown and must render as unknown. Consumers
+                # already handle a null unrealized P/L (the ACTIVE POSITIONS
+                # panel shows an em-dash).
+                cur = closes[-1] if closes else None
+                _stale = (cur is not None and
+                          time.time() - getattr(self, "_price_cache_ts", {}).get(
+                              pos.pair, 0) > PRICE_CACHE_TTL_S)
+                if _stale:
+                    cur = None
                 positions[pos.id] = {
                     **pos.to_dict(),
-                    "current_price": round(cur, 6),
-                    "unrealized_pnl": round(pos.unrealized_pnl(cur), 2),
+                    "current_price": (round(cur, 6) if cur is not None else None),
+                    "unrealized_pnl": (round(pos.unrealized_pnl(cur), 2)
+                                       if cur is not None else None),
+                    # Say WHY it is unknown, so a null reads as "no quote"
+                    # rather than as a missing field.
+                    "price_unavailable": cur is None,
                 }
 
             result = {

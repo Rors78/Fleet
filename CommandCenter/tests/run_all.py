@@ -103,6 +103,14 @@ TESTS = [
     # at once. The fallback quote that fixes it must stay held-positions
     # only -- on the entry path it would silently widen the traded universe.
     "test_confluence_fallback_quote.py",
+    # 2026-08-27 investor audit: the fleet WR chip absorbed gridzilla's
+    # 16W/0L -- a rate expectancy.py had already marked degenerate. The
+    # flag reached two display sites but never the aggregate.
+    "test_degenerate_rate_excluded.py",
+    # A protection that needs no price (max-age exit, drawdown kill) must
+    # not be skipped by the guard that exists for price-based exits.
+    # Confluence and Gridzilla both had this; four more traders still do.
+    "test_price_free_exits_reachable.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but

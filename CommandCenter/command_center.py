@@ -1755,6 +1755,7 @@ def _normalize_gridzilla(raw: dict) -> dict:
     # as one measurement.
     _exp_trades = exp.get("total_trades")
     _decided = None
+    _degen = None   # bound on BOTH branches -- the else path returns it too
     if _exp_trades:
         total_trades = _exp_trades
         wr = exp.get("win_rate")
@@ -1768,6 +1769,14 @@ def _normalize_gridzilla(raw: dict) -> dict:
             _w, _l = exp.get("wins"), exp.get("losses")
             if isinstance(_w, int) and isinstance(_l, int):
                 _decided = _w + _l
+        # Carry expectancy's own degeneracy verdict. The store computes it
+        # (one side of the book empty -> the rate is forced, not measured)
+        # and the DASHBOARD already honours it in two places, but the fleet
+        # aggregate never saw it: the flag stopped at the display layer
+        # while the headline number was computed upstream of it. That is
+        # how a rate the system has explicitly marked as not-a-measurement
+        # ends up inside the figure an investor reads first.
+        _degen = exp.get("win_rate_degenerate")
     else:
         # Expectancy has nothing; fall back to the cycle counter for the
         # count and report the rate as unmeasured rather than borrowing a
@@ -1780,6 +1789,7 @@ def _normalize_gridzilla(raw: dict) -> dict:
         "pnl_pct": None,
         "win_rate": float(wr) if wr is not None else None,
         "win_rate_decided": _decided,
+        "win_rate_degenerate": _degen,
         "drawdown_pct": None,
         "sharpe": None,
         "open_positions": n_grids,
@@ -2103,6 +2113,7 @@ def _compute_aggregate(bots_data: dict) -> dict:
     _total_trades_for_wr = 0
     _wr_exact = True   # False once any bot's denominator had to be assumed
     _wr_bots = 0
+    _wr_degenerate_excluded = []   # bots whose rate is forced, not measured
     for bid, n in norms.items():
         if bid not in _TRADER_IDS:
             continue
@@ -2130,12 +2141,46 @@ def _compute_aggregate(bots_data: dict) -> dict:
             # Decided nothing -- UNMEASURED, not 0%. Contributes to neither
             # numerator nor denominator (turtlesue: 5 trades, all flat).
             continue
+        # A DEGENERATE rate is one side of the book being empty: 16W/0L is
+        # not "a 100% win rate", it is a bot that has never recorded a loss.
+        # expectancy.py computes this verdict and the dashboard honours it in
+        # two display sites -- but this aggregate, which produces the headline
+        # WR chip, never read it. Measured 2026-08-27: gridzilla's 16/16 was
+        # 57% of the fleet NUMERATOR and 31% of its denominator, holding the
+        # published fleet rate at 53.8%. Excluding it, the fleet is 33.3%
+        # (12/36). Gridzilla's own scar is that losing grids exited through a
+        # path that never recorded, so the 100% was structural; the code was
+        # fixed 2026-08-26 but every stored record predates it.
+        #
+        # Excluded from the RATE, still disclosed by count -- silently
+        # dropping a bot would understate participation the same way
+        # silently including it overstates the edge.
+        if n.get("win_rate_degenerate") is True:
+            _wr_degenerate_excluded.append(bid)
+            continue
         _total_wins += round(wr_pct / 100.0 * denom)
         _total_trades_for_wr += denom
         _wr_bots += 1
     global_wr = (_total_wins / _total_trades_for_wr * 100.0) if _total_trades_for_wr > 0 else None
 
-    # Best / worst performer by pnl_pct first, then pnl
+    # Best / worst performer by pnl_pct first, then pnl.
+    #
+    # A bot whose own store marks its win rate DEGENERATE is not eligible to
+    # be "best performer". Measured 2026-08-27: gridzilla ranked first on
+    # +$960.94, every dollar of which was booked before the 2026-08-13 pool
+    # resize, on positions up to $49,784 -- 236x the ENTIRE current $210.53
+    # pool -- and from a ledger that structurally could not record a loss
+    # (losing grids exited via a path that never called record_trade; fixed
+    # 2026-08-26, but all 33 stored records predate the fix).
+    #
+    # Crowning that bot "best performer" beside a $210 pool is the single
+    # most misleading thing on the page: it is a real number, computed
+    # correctly, describing a world that no longer exists. It stays visible
+    # on the scoreboard with its own caveats; it just cannot win a ranking.
+    #
+    # Worst performer is NOT filtered the same way. A degenerate rate always
+    # errs flattering (an empty loss column), so it can only wrongly promote
+    # a bot, never wrongly condemn one.
     def _perf_score(bid):
         n = norms.get(bid, {})
         pct = n.get("pnl_pct")
@@ -2147,11 +2192,15 @@ def _compute_aggregate(bots_data: dict) -> dict:
         return None
 
     scored = []
+    _best_eligible = []
     for bid in norms:
-        s = _perf_score(bid)
-        if s is not None:
-            scored.append((bid, s))
-    best = max(scored, key=lambda x: x[1])[0] if scored else None
+        sc = _perf_score(bid)
+        if sc is None:
+            continue
+        scored.append((bid, sc))
+        if norms.get(bid, {}).get("win_rate_degenerate") is not True:
+            _best_eligible.append((bid, sc))
+    best = max(_best_eligible, key=lambda x: x[1])[0] if _best_eligible else None
     worst = min(scored, key=lambda x: x[1])[0] if scored else None
 
     # Regime consensus
@@ -2194,6 +2243,10 @@ def _compute_aggregate(bots_data: dict) -> dict:
         # dashboard discloses this rather than presenting an assumed
         # denominator as an exact one.
         "win_rate_n_exact": _wr_exact if _total_trades_for_wr > 0 else None,
+        # Bots left OUT of the rate because their own store marked the rate
+        # degenerate. Published so a consumer can say WHY the fleet rate does
+        # not include a bot it can see on the scoreboard.
+        "win_rate_degenerate_excluded": _wr_degenerate_excluded,
         "total_open_positions": sum(v for _, v in open_pos) if open_pos else None,
         "total_trades": sum(v for _, v in trades) if trades else None,
         "best_performer": best,
@@ -5002,9 +5055,38 @@ class CommandCenterHandler(BaseHTTPRequestHandler):
                         # 162.9797, one with a real exit price and one zeroed.
                         # Key on the reservation id when the emitting bot
                         # supplies it, so both routes collide as intended.
+                        # Fallback order matters. reservation_id is the
+                        # only key BOTH routes share, so it comes first.
+                        #
+                        # The event id used to be second -- but an event id
+                        # is unique PER EVENT, so for an emitter that does
+                        # not send reservation_id it guarantees a miss and
+                        # the trade is stored twice. Measured 2026-08-27:
+                        # confluence emitted a rich TRADE_CLOSE (with the
+                        # reservation id, via the release path) and a thin
+                        # one (without it) for the same close, 8ms apart,
+                        # producing two BLUR/USD rows and two ENA/USD rows.
+                        #
+                        # The REAL fix is at the emitter, which now sends
+                        # the field (verified: 4 events -> 2 distinct keys).
+                        #
+                        # This fallback is a weaker backstop and its limits
+                        # are worth stating plainly, because it was tested
+                        # against the live duplicates and did NOT resolve
+                        # them: the two routes reported the same trade as
+                        # -0.2807 and -0.28, since one path rounds P/L at
+                        # the emitter. Any key containing P/L therefore
+                        # still misses. What this change actually buys is
+                        # narrower -- it stops the EVENT ID, which is unique
+                        # per event and so guarantees a miss, from being the
+                        # fallback, and it collides for a re-delivery of the
+                        # same event. A bot that omits reservation_id AND
+                        # rounds inconsistently can still double-record;
+                        # the durable fix for such a bot is to send the id.
                         trade_id=(edata.get("reservation_id")
-                                  or data.get("id")
-                                  or f"{source}:{pair}:{pnl}"),
+                                  or "%s:%s:%s:%d" % (
+                                      source, pair, pnl,
+                                      int(float(data.get("ts") or 0) // 60))),
                     )
                 except Exception:
                     log.warning("expectancy.record_trade failed for bus "

@@ -185,6 +185,11 @@ MIN_RR_RATIO = 2.0           # Minimum GROSS reward:risk (no fee term — see be
 # gating in this file is GROSS price movement. (KRAKEN_FEE_RATE removed.)
 
 # Risk
+# A cached close older than this is treated as NO QUOTE, not as a price.
+# self.prices is written once per successful fetch and was never
+# invalidated, so a pair dropping out of the rolling top-15 universe
+# left a frozen price behind that exits still compared against.
+PRICE_MAX_AGE_S = 600         # 10 min; scan interval is far shorter
 MAX_POSITIONS = 1             # Start conservative — scale to 3 after 20 profitable trades
 TRADE_RISK_PCT = 0.05         # 5% per trade
 # Share of the central pool this bot uses AS ITS EQUITY BASIS — see
@@ -381,6 +386,10 @@ class RubberbandEngine:
         # Market data
         self.pairs: List[str] = []
         self.prices: Dict[str, float] = {}
+        # When each price was written -- see PRICE_MAX_AGE_S.
+        self.price_ts: Dict[str, float] = {}
+        # Pairs already warned about this outage (warn once).
+        self._stale_priced = set()
         self.candles: Dict[str, list] = {}       # pair -> list of [ts, o, h, l, c, vol, count]
         self.indicators: Dict[str, dict] = {}    # pair -> {bb, rsi, adx, atr}
 
@@ -432,7 +441,39 @@ class RubberbandEngine:
                 else:
                     self._log(f"Stale reservation for {pos.pair} - closing", "WARNING")
                     # Get current price for closing
-                    current_price = self.prices.get(pos.pair, pos.entry_price)
+                    # Was `self.prices.get(pos.pair, pos.entry_price)`.
+                    # Defaulting to the ENTRY price reports a held
+                    # position as exactly break-even whenever its
+                    # quote is missing -- a fabricated number that
+                    # renders a blind position as a healthy one.
+                    # None means unknown, and the caller must show
+                    # it as unknown.
+                    current_price = self.prices.get(pos.pair)
+                    _stale = (current_price is not None
+                              and time.time() - self.price_ts.get(pos.pair, 0)
+                              > PRICE_MAX_AGE_S)
+                    if current_price is None or _stale:
+                        # This close is FORCED (the reservation is gone), so
+                        # unlike a normal exit it cannot simply be deferred
+                        # until a quote returns -- the capital must be
+                        # released either way. But closing at a price we do
+                        # not have would book a fictional P/L into the
+                        # durable record, and close_position computes P/L
+                        # directly from this value.
+                        #
+                        # Fall back to the entry price ONLY here, and say so
+                        # loudly: the resulting trade is a $0.00 by
+                        # construction, not a measured break-even. Every
+                        # existing turtlesue/rubberband record with
+                        # reason="stale_reservation" and pnl 0.00 is this
+                        # case, and must not be read as a flat outcome.
+                        self._log(
+                            f"Forced close of {pos.pair} with "
+                            f"{'a stale' if _stale else 'NO'} price - "
+                            f"booking at ENTRY, so this trade's $0.00 P/L is "
+                            f"a placeholder, NOT a measured result",
+                            "WARNING")
+                        current_price = pos.entry_price
                     self.close_position(pos, current_price, "stale_reservation")
 
     # -- Sizing basis ---------------------------------------------------------
@@ -1228,6 +1269,26 @@ class RubberbandEngine:
         with self._lock:
             for pos in self.positions:
                 price = self.prices.get(pos.pair)
+                _age = time.time() - self.price_ts.get(pos.pair, 0)
+                if price is not None and _age > PRICE_MAX_AGE_S:
+                    # Stale. Treated as ABSENT, not as a quote -- see the
+                    # note at the writer. Rubberband has NO max-age exit
+                    # (verified: zero references fleet-wide), so unlike
+                    # Confluence there is no time-based backstop to catch a
+                    # position whose price has gone quiet. With
+                    # MAX_POSITIONS = 1 a single stranded position wedges
+                    # the whole bot, so this must be loud.
+                    if pos.pair not in self._stale_priced:
+                        self._stale_priced.add(pos.pair)
+                        self._log(
+                            f"Price for HELD {pos.pair} is {_age/60:.0f} min "
+                            f"old - treating as NO QUOTE. Stop and target are "
+                            f"blind and this bot has no time exit, so the "
+                            f"position is unmanaged until a quote returns.",
+                            "WARNING")
+                    price = None
+                elif price is not None:
+                    self._stale_priced.discard(pos.pair)
                 if price is None:
                     continue
 
@@ -1273,6 +1334,14 @@ class RubberbandEngine:
                 self.candles[pair] = candles
                 # Update latest price
                 self.prices[pair] = candles[-1][4]  # close of last candle
+                # Stamp it. self.prices had ONE writer and no invalidation
+                # anywhere, and the scan universe is a rolling top-15 that
+                # is reassigned wholesale -- so a pair that drops out keeps
+                # its last price forever. check_exit then compares against a
+                # dead number that looks exactly like a live quote, which is
+                # worse than no quote at all: a missing price is visible,
+                # a frozen one silently mis-fires stops.
+                self.price_ts[pair] = time.time()
 
             ind = self.compute_indicators(pair, candles)
             if ind is None:

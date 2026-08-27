@@ -690,16 +690,43 @@ class TradeLog:
     def total_pnl(self) -> float:
         return sum(t["pnl"] for t in self.trades)
 
+    # A P/L smaller than this is floating-point noise, not an outcome.
+    #
+    # Measured 2026-08-27: all four stored turtlesue trades are forced
+    # closes (exit_reason "stale_reservation") booked at the entry price,
+    # and their P/L values are 1.78e-14, 0.0, -7.36e-12 and 0.0. The old
+    # test `t["pnl"] > 0` counted the 1.78e-14 as a WIN, so the bot
+    # published win_rate 25.0 -- and the fleet aggregate, which
+    # reconstructs wins as round(rate/100 * n), credited it one win in the
+    # headline figure. One fabricated win out of a fleet numerator of 28.
+    #
+    # A forced close at entry is a placeholder, not a break-even result.
+    _PNL_EPSILON = 1e-9
+
     @property
-    def win_rate(self) -> float:
-        if not self.trades:
-            return 0.0
-        wins = sum(1 for t in self.trades if t["pnl"] > 0)
-        return wins / len(self.trades) * 100
+    def win_rate(self):
+        """Win rate over DECIDED trades, or None when nothing decided.
+
+        Returns None -- not 0.0 -- for an empty or all-flat book. Zero is a
+        measurement ("we traded and never won"); this is the absence of
+        one, and the two must not look identical to a consumer.
+        """
+        decided = [t for t in self.trades
+                   if abs(t["pnl"]) > self._PNL_EPSILON]
+        if not decided:
+            return None
+        wins = sum(1 for t in decided if t["pnl"] > self._PNL_EPSILON)
+        return wins / len(decided) * 100
+
+    @property
+    def decided_trades(self) -> int:
+        """Trades that actually resolved -- the real win-rate denominator."""
+        return sum(1 for t in self.trades
+                   if abs(t["pnl"]) > self._PNL_EPSILON)
 
     @property
     def avg_win(self) -> float:
-        wins = [t["pnl"] for t in self.trades if t["pnl"] > 0]
+        wins = [t["pnl"] for t in self.trades if t["pnl"] > self._PNL_EPSILON]
         return sum(wins) / len(wins) if wins else 0.0
 
     @property
@@ -1828,7 +1855,12 @@ class TurtleEngine:
             "trades": self.trade_log.trades[-50:],
             "trade_stats": {
                 "total": len(self.trade_log.trades),
-                "win_rate": round(self.trade_log.win_rate, 1),
+                # None stays None -- round(None) raises, and a 0.0
+                # here would republish the fabricated rate.
+                "win_rate": (round(self.trade_log.win_rate, 1)
+                             if self.trade_log.win_rate is not None
+                             else None),
+                "decided": self.trade_log.decided_trades,
                 "profit_factor": round(self.trade_log.profit_factor, 2),
                 "expectancy_r": round(self.trade_log.expectancy_r, 2),
                 "avg_win": round(self.trade_log.avg_win, 2),
@@ -2205,8 +2237,13 @@ class Display:
         pf = tl.profit_factor
         exp = tl.expectancy_r
 
+        # win_rate is None when nothing has DECIDED. Formatted separately
+        # because an f-string conversion on None raises TypeError, and a
+        # ternary inline in an implicitly-concatenated f-string swallows
+        # the following fragments.
+        _wr_s = ("%6.1f%%" % tl.win_rate) if tl.win_rate is not None else "    --"
         print(f"  {'Trades:':<16}{BWHITE}{total:>6}{RESET}"
-              f"    {'Win Rate:':<12}{BWHITE}{tl.win_rate:>6.1f}%{RESET}"
+              f"    {'Win Rate:':<12}{BWHITE}{_wr_s}{RESET}"
               f"    {'Profit Factor:':<16}{BWHITE}{pf:>6.2f}{RESET}")
         print(f"  {'Wins:':<16}{GREEN}{wins:>6}{RESET}"
               f"    {'Avg Win:':<12}{GREEN}${tl.avg_win:>8.2f}{RESET}"
@@ -2542,7 +2579,10 @@ def main():
               f"{'%s$%+.2f%s' % (GREEN if pnl >= 0 else RED, pnl, RESET)}")
         print(f"  {'Total Trades:':<20}{len(tl.trades)}")
         if tl.trades:
-            print(f"  {'Win Rate:':<20}{tl.win_rate:.1f}%")
+            print("  %-20s%s" % (
+                'Win Rate:',
+                ("%.1f%%" % tl.win_rate) if tl.win_rate is not None
+                else "-- (no decided trades)"))
             print(f"  {'Profit Factor:':<20}{tl.profit_factor:.2f}")
             print(f"  {'Expectancy (R):':<20}{tl.expectancy_r:+.2f}")
             print(f"  {'Avg Win:':<20}{GREEN}${tl.avg_win:+.2f}{RESET}")

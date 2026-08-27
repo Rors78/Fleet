@@ -1599,9 +1599,57 @@ class GridzillaEngine:
                     pair, self.config["ohlc_interval"], self.config["ohlc_count"]
                 )
                 if not candles or len(candles) < 50:
+                    # NO PRICE. Every price-based check below is blind here,
+                    # but the drawdown kill is NOT price-based: it compares
+                    # grid["max_drawdown"], a stored value, against a
+                    # fraction of the allocation. It needs no quote at all.
+                    #
+                    # This `continue` used to skip the whole iteration, which
+                    # put check_fills, check_range_break AND check_drawdown_kill
+                    # out of reach together. The first two genuinely need a
+                    # price; the third does not, and it is the circuit breaker
+                    # (kill at 5% of allocation).
+                    #
+                    # This is not a rare path. Measured 2026-08-27 in
+                    # gridzilla_v2.log: 347 "Kraken request failed" and 1273
+                    # "Kraken public error" (including EGeneral:Too many
+                    # requests). Rate-limiting hits every pair at once, and it
+                    # does so hardest during the volatility where a drawdown
+                    # kill matters most. Gridzilla has no time exit to fall
+                    # back on, so a blind grid had no bound of any kind.
+                    #
+                    # Same shape as Confluence's unreachable time exit
+                    # (2026-08-26). Losing the quote must not also lose the
+                    # protections that never needed one.
+                    if pair in self.executor.active_grids:
+                        try:
+                            _alloc = (portfolio_balance
+                                      * self.config["max_per_pair_pct"])
+                            if self.executor.check_drawdown_kill(pair, _alloc):
+                                self.executor.remove_grid(pair)
+                                logging.warning(
+                                    "Grid %s hit the drawdown kill while its "
+                                    "price was unavailable - torn down blind",
+                                    pair)
+                        except Exception:
+                            logging.warning(
+                                "Blind drawdown check failed for %s", pair,
+                                exc_info=True)
+                        # Say so once per pair per outage. Silence here is
+                        # how a blind grid reads as a healthy one.
+                        if not hasattr(self, "_blind_pairs"):
+                            self._blind_pairs = set()
+                        if pair not in self._blind_pairs:
+                            self._blind_pairs.add(pair)
+                            logging.warning(
+                                "No price for HELD grid %s - fills and range "
+                                "break are blind until a quote returns", pair)
                     continue
 
                 current_price = float(candles[-1][4])
+                # Quote is back - let the next outage warn afresh.
+                if getattr(self, "_blind_pairs", None):
+                    self._blind_pairs.discard(pair)
 
                 # Check existing grid
                 if pair in self.executor.active_grids:

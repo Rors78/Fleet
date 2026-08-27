@@ -1299,10 +1299,37 @@ class ConfluenceEngine:
         self.positions.pop(pos.pair, None)
         self._log(f"CLOSE {pos.direction} {pos.pair} @ {price:.6g} {reason} "
                   f"pnl={pnl:+.2f} (gross)", "INFO")
+        # reservation_id and size_usd are NOT decoration.
+        #
+        # A close reaches the durable expectancy store by TWO routes: the
+        # portfolio release above (which forwards the reservation id) and
+        # this event. record_trade dedups on trade_id, and Command Center
+        # keys this route on `reservation_id` when present, falling back to
+        # the EVENT id when it is not. Without the field the two routes
+        # produce structurally different keys that can never collide, so
+        # dedup is defeated and the trade is stored twice.
+        #
+        # Measured 2026-08-27, live in logs/expectancy.json:
+        #     BLUR/USD  -0.2807  trade_id confluence_BLUR/USD_1787715350_4paj
+        #     BLUR/USD  -0.2800  trade_id confluence_1787851488650
+        #     ENA/USD   +0.6945  / +0.6900   (same shape)
+        # Two trades became four rows, inflating n and double-counting P/L
+        # in every statistic derived from the store. The second copy also
+        # carried size_usd 0, which corrupts the size-normalized expectancy
+        # that exists specifically because dollar means are unreliable here.
+        #
+        # This is the SECOND time this defect has been fixed. The first fix
+        # was applied in command_center.py (keying on reservation_id when
+        # the emitter supplies it) after two identical POL/USD rows were
+        # found. That fix was correct and insufficient: it cannot work for
+        # an emitter that never sends the field. Fixing the consumer while
+        # leaving the producer silent is why it came back.
         self._emit("TRADE_CLOSE", {
             "bot": BOT_ID, "pair": pos.pair, "direction": pos.direction,
             "entry": pos.entry, "exit": price, "pnl": round(pnl, 2),
             "exit_reason": reason,
+            "reservation_id": pos.reservation_id,
+            "size_usd": pos.size_usd,
         })
         self._save_state()
 

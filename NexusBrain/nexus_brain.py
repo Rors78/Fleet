@@ -263,7 +263,11 @@ class Config:
     take_profit_atr_mult: float = 3.0
     trailing_stop_atr_mult: float = 1.5
     max_hold_hours: int = 72
-    time_exit_hours: int = 48
+    # REMOVED: time_exit_hours = 48. Defined once, never read
+    # anywhere in this file, while max_hold_hours = 72 is the
+    # value check_exits actually uses. A dead setting that reads
+    # as live policy is worse than no setting: anyone tuning the
+    # hold time would have edited it and seen nothing change.
 
     # Slippage (execution realism — kept). Fees removed fleet-wide
     # 2026-07-30: this is a signal product; subscribers pay their own
@@ -2510,7 +2514,39 @@ def cmd_run_sim(args, cfg: Config):
             try:
                 pd = fetch_pair_data(pair, cfg)
                 if not pd or not pd.candles:
+                    # NO PRICE. check_exits below is skipped entirely here,
+                    # which takes the stop, the take-profit, the trailing
+                    # stop AND the max_hold_hours time exit with it. The
+                    # time exit needs no quote to DECIDE -- only to price
+                    # the close -- so a held position can sail past its
+                    # 72h limit with nothing noticing.
+                    #
+                    # Same shape as Confluence's BLUR/USD (2026-08-27): held
+                    # 37.8h against a 36h limit while its pair lost coverage,
+                    # and when a quote finally arrived it closed instantly at
+                    # STOP -- it had been through its stop the whole time.
+                    #
+                    # Not force-closed: closing needs a price, and inventing
+                    # one books a fictional P/L (see the Arbitrageur fix,
+                    # where a fabricated entry price booked real losses as
+                    # $0.00). Absence stays absence. The position is FLAGGED,
+                    # once per pair per outage.
+                    if pair in trader.positions:
+                        _p = trader.positions[pair]
+                        _held_h = (time.time() - _p.entry_time) / 3600.0
+                        if not hasattr(trader, "_blind_pairs"):
+                            trader._blind_pairs = set()
+                        if pair not in trader._blind_pairs:
+                            trader._blind_pairs.add(pair)
+                            logger.warning(
+                                "No price for HELD %s (%.1fh, limit %sh) - "
+                                "stop, take-profit, trailing and time exit "
+                                "are ALL blind until a quote returns",
+                                pair, _held_h, cfg.max_hold_hours)
                     continue
+                # Quote is back - let the next outage warn afresh.
+                if getattr(trader, "_blind_pairs", None):
+                    trader._blind_pairs.discard(pair)
 
                 # Check exits for existing positions
                 if pair in trader.positions:

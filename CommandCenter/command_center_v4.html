@@ -1971,6 +1971,34 @@ var _orbOrigNextSib=$orbitalWrap?$orbitalWrap.nextElementSibling:null;
 var _orbHiddenSiblings=[];
 /* Move #fsHud to body permanently — it's only visible in fullscreen */
 (function(){var h=document.getElementById("fsHud");if(h&&h.parentElement!==document.body)document.body.appendChild(h);})();
+/* --- Cursor hiding in the cosmos view ---
+
+   In fullscreen the display is a window onto space, and a mouse arrow
+   parked in the middle of it is the one object on screen that is not
+   part of the scene. It hides after a short idle and comes straight
+   back on any movement, so it stays out of the way without becoming
+   unusable — hiding it the instant fullscreen opens would strand
+   anyone who still needs to reach the exit control.
+
+   Scoped to the fullscreen wrap only: the dashboard's own panels are
+   full of clickable rows and must never lose their pointer. The timer
+   is cleared on exit so it cannot fire against a torn-down view. */
+var _orbCursorTimer=null;
+var _ORB_CURSOR_IDLE_MS=2200;
+function _orbCursorShow(){
+  if(!_orbIsFS||!$orbitalWrap) return;
+  $orbitalWrap.style.cursor='';
+  if(_orbCursorTimer) clearTimeout(_orbCursorTimer);
+  _orbCursorTimer=setTimeout(function(){
+    /* Re-check: the view may have been exited during the wait. */
+    if(_orbIsFS&&$orbitalWrap) $orbitalWrap.style.cursor='none';
+  },_ORB_CURSOR_IDLE_MS);
+}
+function _orbCursorStop(){
+  if(_orbCursorTimer){clearTimeout(_orbCursorTimer);_orbCursorTimer=null;}
+  if($orbitalWrap) $orbitalWrap.style.cursor='';
+}
+
 function _orbToggleFS(){
   if(!$orbitalWrap) return;
   _orbIsFS=!_orbIsFS;
@@ -1986,6 +2014,15 @@ function _orbToggleFS(){
     document.body.appendChild($orbitalWrap);
     /* 2. Brute-force inline styles on wrap */
     $orbitalWrap.style.cssText='position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;margin:0;padding:0;background:#07070c;';
+    /* Arm the idle-hide. Listener is added once and left in place — it
+       no-ops when not fullscreen, which is cheaper and less error-prone
+       than add/remove pairs that can leak on an unexpected exit path. */
+    if(!$orbitalWrap._cursorBound){
+      $orbitalWrap._cursorBound=true;
+      $orbitalWrap.addEventListener('mousemove',_orbCursorShow);
+      $orbitalWrap.addEventListener('mousedown',_orbCursorShow);
+    }
+    _orbCursorShow();
     /* 3. Force canvas to fill wrap */
     if(cvs) cvs.style.cssText='width:100%;height:100%;display:block;position:absolute;top:0;left:0;';
     /* 4. Hide EVERY sibling in body except orbital wrap, HUD, and non-visual tags */
@@ -4179,13 +4216,19 @@ function _orbRender(timestamp){
   else{
     if(!window._deepField) window._deepField=DeepField.load();
     /* maxVisibleR: the furthest world-space radius the camera can EVER
-       reveal at the zoom floor — half the smaller screen dimension,
-       divided by _ORB_ZOOM_MIN. Passed so fitToFleet() can cap outerR to
-       what's actually reachable instead of over-allocating the annulus
-       into permanently-offscreen territory (see the comment on
-       fitToFleet in solar_system.js for the measured 40%-wasted bug this
-       fixed). */
-    var _dfMaxVisibleR=(Math.min(W,H)/2)/_ORB_ZOOM_MIN;
+       reveal at the zoom floor. This used to be half the SMALLER screen
+       dimension over _ORB_ZOOM_MIN, which is the radius of the largest
+       circle that fits INSIDE the viewport — correct only on a square
+       display. Every real display here is wide (measured 2000x1125), so
+       the annulus was capped at 1480 world units while the frame corners
+       sit at 3019: a 2.04x shortfall that made the deep field
+       structurally incapable of reaching 61% of the visible frame. That
+       is the "unused open space" — not missing content, missing radius.
+       The correct bound is the half-DIAGONAL (corner distance), which is
+       the furthest point of the viewport rectangle from its center.
+       fitToFleet still applies its own 0.94 margin so the very edge
+       isn't a hard cutoff. */
+    var _dfMaxVisibleR=Math.sqrt(W*W+H*H)/2/_ORB_ZOOM_MIN;
     window._deepField.fitToFleet(_orbNodes,_dfMaxVisibleR);
     /* zoomBoost (target 3b): 1 at zoom>=1, ramping to 2.6 at the true zoom
        floor. DeepField objects live in world-space under the same camera
@@ -4605,6 +4648,22 @@ function _orbRender(timestamp){
        explains as the zoom level (2026-07-30 label pass). */
     ctx.fillStyle="rgba(201,162,39,0.5)";ctx.font='10px "IBM Plex Mono",monospace';
     ctx.textAlign="left";ctx.fillText("ZOOM "+Math.round(_orbZoom*100)+"%",12,H-12);
+  }
+  /* Deep-field epoch. The field evolves through long eras that bias cloud
+     density, colour saturation and visitor traffic all at once; without a
+     name for the current one, a viewer sees the sky change and has no way
+     to tell whether that is the display working or the display glitching.
+
+     Read from the live instance, never recomputed here — duplicating the
+     epoch walk in the dashboard would let the label and the render drift
+     apart, which is the "two layers agree because one copies the other"
+     failure in reverse. Absent state renders NOTHING rather than a
+     placeholder: this is scenery, and an invented label would be the one
+     dishonest pixel on the panel. */
+  var _ep=window._deepField&&window._deepField.epoch_current;
+  if(_ep&&_ep.name){
+    ctx.fillStyle="rgba(201,162,39,0.34)";ctx.font='10px "IBM Plex Mono",monospace';
+    ctx.textAlign="left";ctx.fillText("FIELD "+String(_ep.name).toUpperCase(),12,H-26);
   }
   /* Minimap when zoomed past 1.5x */
   if(_orbZoom>1.5){

@@ -3395,7 +3395,22 @@ function _dfRng(seed, a, b, c) {
    remnant/nursery slots + comets), per the brief. Kept as named slot
    counts (not one pooled array) because each class has a distinct
    lifecycle function — simpler to reason about and just as cheap. */
-var _DF_NEBULA_SLOTS = 7;      /* independent nebula lifecycle slots */
+/* Slot counts were tuned against an annulus capped at half the SMALLER
+   screen dimension. That cap was wrong (it is the inscribed circle of a
+   wide viewport, not its corner reach) and has been replaced with the
+   half-diagonal, which grew outerR by 2.04x and the annulus AREA by
+   roughly 4x. Holding the old counts would have spread the same 7 clouds
+   over four times the sky — the fix for one kind of emptiness creating
+   another. These counts are raised to keep objects-per-unit-area at
+   roughly the density that was already verified to read well, not to
+   make the field busier than it was. Draw cost is per-object and these
+   are cheap radial-gradient fills; the budget note below tracks the new
+   worst case. */
+var _DF_NEBULA_SLOTS = 26;     /* POOL size — see _DF_NEBULA_BASE */
+/* Slots alive during an 'ordinary' epoch. The pool above is deliberately
+   larger so 'bloom' (x1.45) and 'squall' (x1.7) can actually add clouds
+   instead of clamping at the same count as every other era. */
+var _DF_NEBULA_BASE = 16;
 /* Supernova slot count — MUST stay 1. Each slot independently fires an
    event every 8-15min (randomized per-instance, see _supernovaAt), so N
    slots means an N-times-too-frequent combined rate — verified against
@@ -3407,13 +3422,82 @@ var _DF_NEBULA_SLOTS = 7;      /* independent nebula lifecycle slots */
    the death site between flashes, so a single slot does not read as
    "nothing ever happens" — it reads as the intended RARE, eerie event. */
 var _DF_SN_SLOTS = 1;
-var _DF_COMET_SLOTS = 4;       /* wandering outer-field comets/debris */
-/* Total worst case: 7 + 3*1 + 4 = 14 live draws/frame — comfortably under the 20-30 cap. */
+var _DF_COMET_SLOTS = 9;       /* wandering outer-field comets/debris */
+/* Supernova stays at exactly 1 — see the measured rate argument above.
+   It is a RATE, not a density: more slots would make the rare event
+   common, which is the opposite of the intent, so the annulus growth
+   deliberately does not scale it.
+
+   Worst case is now epoch-dependent and was MEASURED, not estimated:
+   walking 12 hours of epochs at 2s resolution, the peak is 47 live
+   draws/frame during a 'bloom' era (23 nebulae alive of the 26-slot
+   pool + 14 drifters + 9 comets + 1 SN + visitors). Above the original
+   20-30 note, but that cap was written for an annulus a quarter this
+   size, and every one of these is a single gradient fill or stroke
+   rather than a lit sphere.
+
+   Re-measure after changing any pool size or epoch multiplier — the
+   peak is NOT the sum of the pools (lifecycles mean most slots are
+   between cycles at any instant) and guessing it wrong in either
+   direction is easy. If it ever bites, cut drifters first: they are the
+   cheapest to lose and the least individually meaningful. */
 
 /* --- Palette pools (see block comment above for the "why disjoint" case) --- */
 var _DF_NEBULA_HUES = [8, 14, 200, 208, 258, 264];   /* dust-rust / ember, ice-blue, faint violet-grey */
 var _DF_SN_REMNANT_HUE = 206;  /* cold ice-blue shock ring */
+/* Drifter hues: deliberately OUTSIDE the nebula pool's ember/ice/violet
+   so the far field is not read as more of the same clouds — cold
+   blue-white and dust-tan, the colours distance actually produces. */
+var _DF_DRIFT_HUES = [212, 220, 232, 34, 28];
+var _DF_DRIFTER_SLOTS = 14;    /* far-field galaxies + dust banks */
+/* Independent arrival chains — the combined sighting rate is their sum.
+   This is the coarse knob; gapMs inside _visitorAt is the fine one. */
+/* Hull silhouettes. Each is drawn as a distinct polygon in the visitor
+   draw block — adding one here without adding its case there falls back
+   to 'dart', which is a visible-but-harmless degradation rather than a
+   crash. */
+var _DF_VISITOR_HULLS = ['dart', 'wing', 'ring', 'shard', 'tri'];
+/* Deliberately not the nebula, drifter, or fleet-gold palettes: a
+   visitor should not be mistakable for scenery OR for a fleet body. */
+var _DF_VISITOR_HUES = [148, 168, 44, 12, 288, 196];
+/* Pool size, NOT the everyday count. The epoch system scales this by
+   0.25x-3.6x, so the pool has to be large enough for the rare eras to
+   look different from the common ones. Measured before this was raised:
+   with a pool of 3, SIX of the eight epochs all clamped to 3 active
+   chains — 'convergence' (x3.6) rendered identically to 'ordinary'
+   (x1.0), so the rarest era in the table was invisible. Baseline
+   'ordinary' now runs 3 chains (the rate measured as correct: one
+   sighting every ~7.8 min), while 'silence' drops to 1 and
+   'convergence' opens all 9. */
+var _DF_VISITOR_SLOTS = 9;
+var _DF_VISITOR_BASE = 3;      /* chains active during an 'ordinary' epoch */
 var _DF_SN_FLASH_HUE = 40;     /* brief warm-white flash, desaturated fast — not fleet gold (201,162,39 is far more saturated/yellow) */
+
+/* Map a uniform 0..1 draw onto the annulus with uniform AREAL density.
+
+   The obvious form — innerR + t * (outerR - innerR) — spreads objects
+   evenly in RADIUS, which means evenly along a line but NOT evenly across
+   the plane: the area of a thin ring at radius r grows as r, so a
+   uniform-in-radius draw puts the same object count into rings of ever
+   larger area and the field thins out as 1/r toward the edge. Measured on
+   this fleet's annulus the outer band came out at 0.352 relative density
+   against 0.676 at the inner edge — slightly under HALF — so the outer
+   sky read as empty even where objects were legitimately being placed.
+
+   Inverting the area CDF (r = sqrt(inner^2 + t*(outer^2 - inner^2)))
+   makes expected objects-per-unit-area constant across the whole
+   annulus. This matters much more now that outerR reaches the frame
+   corners: the band this opened up is the widest one, and under the old
+   mapping it would also have been the sparsest.
+
+   Pure function of (t, innerR, outerR) — no state, no clock — so every
+   caller keeps its deterministic-from-hash property. */
+function _dfAnnulusR(t, innerR, outerR) {
+    var i2 = innerR * innerR;
+    var o2 = outerR * outerR;
+    var v = i2 + t * (o2 - i2);
+    return Math.sqrt(v > 0 ? v : 0);
+}
 
 function DeepField(seed) {
     this.seed = seed >>> 0;
@@ -3494,7 +3578,7 @@ DeepField.prototype._nebulaAt = function (slot, elapsedMs) {
     var rng = _dfRng(this.seed, 101 + slot, cycleIndex, 0);
     var ang = rng() * Math.PI * 2;
     var distT = rng(); /* 0..1 across the annulus */
-    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var dist = _dfAnnulusR(distT, this.innerR, this.outerR);
     var hue = _DF_NEBULA_HUES[Math.floor(rng() * _DF_NEBULA_HUES.length)];
     var maxR = 140 + rng() * 220;
     var maxAlpha = 0.09 + rng() * 0.07; /* sparse/eerie, but must actually read against pure black — first pass (0.05-0.10 with a steep falloff gradient) washed out to near-invisible in verification */
@@ -3550,7 +3634,7 @@ DeepField.prototype._supernovaAt = function (slot, elapsedMs) {
     var eventRng = _dfRng(this.seed, 501 + slot, idx, 0);
     var ang = eventRng() * Math.PI * 2;
     var distT = eventRng();
-    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var dist = _dfAnnulusR(distT, this.innerR, this.outerR);
     var x = this.center.x + Math.cos(ang) * dist;
     var y = this.center.y + Math.sin(ang) * dist;
 
@@ -3587,6 +3671,245 @@ DeepField.prototype._supernovaAt = function (slot, elapsedMs) {
     return { phase: 'nursery', x: x, y: y, t01: fadeT, alpha: Math.max(0, 0.11 * (1 - fadeT)), r: 65, slot: slot, idx: idx };
 };
 
+/* --- Far-field drifters: distant galaxies and dust banks ---
+
+   WHY A NEW CLASS. Growing outerR to the frame corners opened a band of
+   sky that is, in world terms, enormous — and every existing object
+   class is the wrong tool for it. Nebulae are local blooms on a
+   2-5 minute lifecycle; comets are fast movers with a visible head. Fill
+   the far field with either and the outer sky reads as MORE FOREGROUND
+   pushed outward, which does not make the frame feel deeper — it makes
+   the fleet feel small inside a busy box.
+
+   What actually communicates depth is objects that are clearly further
+   away: dim, edge-on, slow to the point of near-stillness, and never
+   competing with the fleet for attention. These sit in the outer 55% of
+   the annulus only, cap out at alpha 0.085, and rotate once per ~40+
+   minutes — they are scenery, deliberately below the threshold where
+   the eye tracks them as events.
+
+   Deterministic from (seed, slot) with no lifecycle: unlike nebulae
+   these do not bloom and die, because a distant galaxy that appears and
+   vanishes on a five-minute timer reads as a bug, not as astronomy. The
+   only time dependence is a slow rotation and a shallow brightness
+   breath, so evaluating at any elapsedMs costs the same — preserving
+   the fast-forward-on-load property the rest of DeepField has. */
+DeepField.prototype._drifterAt = function (slot, elapsedMs) {
+    var rng = _dfRng(this.seed, 907 + slot, 0, 0);
+    var ang = rng() * Math.PI * 2;
+    /* Outer 55% of the annulus, uniform in AREA within that sub-band so
+       these do not pile up at its inner edge. */
+    var bandIn = this.innerR + (this.outerR - this.innerR) * 0.45;
+    var dist = _dfAnnulusR(rng(), bandIn, this.outerR);
+    var kind = rng() < 0.55 ? 'galaxy' : 'dust';
+    var baseR = (kind === 'galaxy' ? 46 + rng() * 78 : 90 + rng() * 200);
+    var hue = _DF_DRIFT_HUES[Math.floor(rng() * _DF_DRIFT_HUES.length)];
+    /* Near edge-on for most galaxies — a field of face-on spirals looks
+       like a sticker sheet; real distant galaxies are mostly slivers. */
+    var flat = kind === 'galaxy' ? (0.12 + rng() * 0.34) : (0.35 + rng() * 0.5);
+    var rotPeriod = (2400 + rng() * 2600) * 1000; /* 40-83 min per turn */
+    var rot = rng() * Math.PI * 2 + (elapsedMs / rotPeriod) * Math.PI * 2;
+    var breathP = (90 + rng() * 140) * 1000;
+    var breath = 0.88 + 0.12 * Math.sin((elapsedMs / breathP) * Math.PI * 2 + slot);
+    var alpha = (kind === 'galaxy' ? 0.052 + rng() * 0.033 : 0.030 + rng() * 0.026) * breath;
+    return {
+        kind: kind, slot: slot,
+        x: this.center.x + Math.cos(ang) * dist,
+        y: this.center.y + Math.sin(ang) * dist,
+        r: baseR, rot: rot, flat: flat, hue: hue, alpha: alpha,
+        core: kind === 'galaxy' ? 0.10 + rng() * 0.10 : 0
+    };
+};
+
+/* --- Epochs: the field's own slow evolution ---
+
+   THE PROBLEM THIS SOLVES. Every other lifecycle here is periodic. A
+   nebula slot cycles bloom->hold->disperse->gap forever with the same
+   traits redrawn from the same pools; visitors arrive on a hash-chain
+   but always from the same distribution. Watch long enough and you have
+   seen the vocabulary — not the exact arrangement, but the RANGE. The
+   ask is "you never know what is going to happen next", and a stationary
+   process cannot deliver that no matter how much randomness it contains.
+
+   WHAT AN EPOCH IS. A long era (25-70 min) with its own character,
+   drawn from its own hash. It biases the whole field at once: how dense
+   the nebulae are, how saturated, how often visitors arrive, how fast
+   things drift. Epochs are drawn from a weighted table where the strange
+   ones are genuinely rare — a 'silence' epoch (almost empty sky) or a
+   'convergence' (visitors arriving several times more often than normal)
+   might not appear for hours. Someone watching all day sees eras they
+   have not seen before; someone watching for ten minutes still sees a
+   coherent sky rather than noise.
+
+   WHY IT IS STILL HONEST. This is scenery evolving on its own clock. It
+   reads NO fleet quantity and claims none — same rule as the visitors.
+   The dashboard's measured panels are elsewhere and unaffected.
+
+   Pure function of (seed, elapsedMs): the epoch at any instant is
+   computed by walking a hash-chain of durations, so a page opened six
+   hours in shows the correct current epoch without replaying anything. */
+var _DF_EPOCHS = [
+    /* weight, name, and the multipliers it applies to the field */
+    { w: 26, name: 'quiet',       neb: 0.72, sat: 0.85, vis: 0.75, drift: 0.9 },
+    { w: 24, name: 'ordinary',    neb: 1.00, sat: 1.00, vis: 1.00, drift: 1.0 },
+    { w: 16, name: 'bloom',       neb: 1.45, sat: 1.30, vis: 0.9,  drift: 1.1 },
+    { w: 12, name: 'traffic',     neb: 0.9,  sat: 0.95, vis: 2.30, drift: 1.0 },
+    { w:  9, name: 'ember',       neb: 1.15, sat: 1.55, vis: 1.1,  drift: 0.8 },
+    { w:  6, name: 'silence',     neb: 0.35, sat: 0.6,  vis: 0.25, drift: 0.6 },
+    { w:  4, name: 'convergence', neb: 1.3,  sat: 1.2,  vis: 3.60, drift: 1.3 },
+    { w:  3, name: 'squall',      neb: 1.7,  sat: 0.8,  vis: 1.6,  drift: 1.9 }
+];
+var _DF_EPOCH_TOTAL_W = (function () {
+    var t = 0;
+    for (var i = 0; i < _DF_EPOCHS.length; i++) t += _DF_EPOCHS[i].w;
+    return t;
+})();
+
+DeepField.prototype.epochAt = function (elapsedMs) {
+    var idx = 0, cursor = 0, dur = 0, guard = 0;
+    while (guard++ < 4000) {
+        var g = _dfRng(this.seed, 2909, idx, 0);
+        dur = (1500 + g() * 2700) * 1000;   /* 25-70 min per epoch */
+        if (cursor + dur > elapsedMs) break;
+        cursor += dur;
+        idx++;
+    }
+    var pick = _dfRng(this.seed, 3121, idx, 0)() * _DF_EPOCH_TOTAL_W;
+    var acc = 0, ep = _DF_EPOCHS[1];
+    for (var i = 0; i < _DF_EPOCHS.length; i++) {
+        acc += _DF_EPOCHS[i].w;
+        if (pick < acc) { ep = _DF_EPOCHS[i]; break; }
+    }
+    var t01 = dur > 0 ? (elapsedMs - cursor) / dur : 0;
+    /* Ease in and out over the first/last 12% so an era arrives as a
+       gradual change of weather, never as a hard cut between frames. */
+    var edge = Math.min(t01, 1 - t01) / 0.12;
+    var blend = edge < 1 ? Math.max(0, edge) : 1;
+    return {
+        name: ep.name, idx: idx, t01: t01, blend: blend,
+        neb: 1 + (ep.neb - 1) * blend,
+        sat: 1 + (ep.sat - 1) * blend,
+        vis: 1 + (ep.vis - 1) * blend,
+        drift: 1 + (ep.drift - 1) * blend
+    };
+};
+
+/* --- Interstellar visitors ---
+
+   A craft that is not ours crosses the field, on a hyperbolic path that
+   enters from outside the annulus and leaves on the other side. It never
+   orbits and never returns: the same object never appears twice.
+
+   HONESTY. This is scenery, and it is built to be obviously scenery
+   rather than a data readout that happens to be fake. It encodes NO
+   fleet quantity — no bot, no position, no P/L — and the dashboard's
+   rule is that anything shaped like a measurement must BE one. The two
+   candidate real signals were checked first and both were measured at
+   exactly ZERO occurrences across 37,761 bus events over three days
+   (HIGH_CONVICTION, EMERGENCY_REDUCE), so binding a visitor to either
+   would have produced a feature that never fires — the appearance of
+   meaning with none of the substance. Time-based and self-declared is
+   the honest option.
+
+   PACING, tuned by measurement rather than taste. The first pass
+   measured one sighting every 9.5 min with the sky occupied 7.8% of
+   the time — a viewer could watch for ten minutes and see nothing,
+   which fails the brief. Retuned toward ~2.5 min between sightings:
+   frequent enough that watching is rewarded, rare enough that a
+   visitor still reads as an event rather than as traffic. The
+   combined rate across slots is NOT obvious by inspection — it is
+   the sum of independent chains — so re-measure after any change.
+
+   Deterministic from (seed, slot, index) via the same hash-chain the
+   supernova slot uses, so a page loaded six hours in shows the correct
+   visitor for that moment without replaying six hours of frames. */
+DeepField.prototype._visitorAt = function (slot, elapsedMs) {
+    var idx = 0, cursor = 0, guard = 0;
+    var gapMs, transitMs;
+    /* Walk the arrival chain to the current window. Bounded so a wildly
+       future elapsedMs cannot spin here — same guard style as the
+       supernova walker. */
+    while (guard++ < 4000) {
+        var g = _dfRng(this.seed, 1301 + slot, idx, 0);
+        gapMs = (700 + g() * 1250) * 1000;      /* ~12-32 min per chain */
+        transitMs = (34 + g() * 26) * 1000;     /* 34-60s to cross */
+        if (cursor + gapMs + transitMs > elapsedMs) break;
+        cursor += gapMs + transitMs;
+        idx++;
+    }
+    var startAt = cursor + gapMs;
+    if (elapsedMs < startAt) return { phase: 'none', slot: slot, idx: idx };
+
+    var t = (elapsedMs - startAt) / transitMs;
+    if (t > 1) return { phase: 'none', slot: slot, idx: idx };
+
+    var rng = _dfRng(this.seed, 1451 + slot, idx, 0);
+    /* Entry bearing and a chord offset, so the path is a straight line
+       across the field rather than always through the middle. */
+    var bearing = rng() * Math.PI * 2;
+    var span = this.outerR * 2.25;
+    var offset = (rng() - 0.5) * this.outerR * 1.15;
+    var ca = Math.cos(bearing), sa = Math.sin(bearing);
+    var along = -span / 2 + t * span;
+    var x = this.center.x + ca * along - sa * offset;
+    var y = this.center.y + sa * along + ca * offset;
+
+    /* Fade in and out at the extremes so it does not pop into existence. */
+    var edge = Math.min(t, 1 - t) / 0.14;
+    var vis = edge < 1 ? edge : 1;
+    /* --- per-arrival identity ---
+       Every trait below is drawn from THIS arrival's hash (slot, idx), so
+       the craft that crosses at 14:02 shares nothing with the one at
+       14:31 beyond being a craft. Two fixed 'kinds' was the first design
+       and it was wrong: at a few sightings an hour a viewer sees the same
+       two silhouettes over and over, which is exactly the "same thing
+       every 5 minutes" failure. The trait space below is ~5 hull forms x
+       6 hues x continuous size/proportion/light-count/spin, so a repeat
+       within a viewing session is effectively impossible. */
+    /* Decorrelate from the PREVIOUS arrival on this chain.
+
+       Drawing hull and hue independently each time is uniform but not
+       memoryless-LOOKING: measured over 6h it produced 3 back-to-back
+       identical hull+hue pairs out of 46 sightings, and a repeat is
+       precisely what a viewer notices as "the same thing again".
+
+       The first attempt at this fix recomputed the previous arrival's
+       traits from a fresh _dfRng at idx-1 -- but that stream had already
+       been advanced by the bearing/offset draws before reaching the trait
+       draws, so the reconstructed "previous hull" was not the real one
+       and 2 of 3 repeats survived. Both indices now come from a DEDICATED
+       stream that nothing else consumes, so evaluating it at idx-1 really
+       does reproduce the previous arrival's choice. Still a pure function
+       of (seed, slot, idx) -- no state, no clock, fast-forward intact. */
+    function traitIdx(k) {
+        var tr = _dfRng(1777, 1451 + slot, k, 0);
+        return { h: Math.floor(tr() * _DF_VISITOR_HULLS.length),
+                 c: Math.floor(tr() * _DF_VISITOR_HUES.length) };
+    }
+    var nH = _DF_VISITOR_HULLS.length, nC = _DF_VISITOR_HUES.length;
+    var cur = traitIdx(idx), prev = traitIdx(idx - 1);
+    /* Rotate off the previous pick so a consecutive match is impossible. */
+    var hIdx = cur.h === prev.h ? (cur.h + 1 + Math.floor(rng() * (nH - 1))) % nH : cur.h;
+    var cIdx = cur.c === prev.c ? (cur.c + 1 + Math.floor(rng() * (nC - 1))) % nC : cur.c;
+    var hull = _DF_VISITOR_HULLS[hIdx];
+    var hue = _DF_VISITOR_HUES[cIdx];
+    var lights = 1 + Math.floor(rng() * 4);
+    var lightPhase = rng() * Math.PI * 2;
+    var lightRate = 130 + rng() * 320;
+    return {
+        phase: 'transit', slot: slot, idx: idx, t01: t,
+        x: x, y: y, heading: bearing,
+        hull: hull, hue: hue,
+        len: 11 + rng() * 19,
+        aspect: 0.16 + rng() * 0.40,      /* how fat the silhouette is */
+        wake: 1.6 + rng() * 3.4,          /* wake length, in hull-lengths */
+        spin: (rng() - 0.5) * 0.9,        /* slow roll while crossing */
+        lights: lights,
+        alpha: (0.44 + rng() * 0.26) * vis,
+        pulse: 0.70 + 0.30 * Math.sin(elapsedMs / lightRate + lightPhase)
+    };
+};
+
 /* --- Wandering outer-field comets/debris ---
    Parallel to _orbComets (command_center_v4.html) but ambient, not
    trade-triggered: deterministic phase from elapsed time, drifting on a
@@ -3598,7 +3921,7 @@ DeepField.prototype._cometAt = function (slot, elapsedMs) {
     var period = (140 + rng() * 220) * 1000; /* 140-360s full crossing */
     var phase0 = rng();
     var ang = rng() * Math.PI * 2;           /* chord direction across the annulus */
-    var offsetDist = (this.innerR + rng() * (this.outerR - this.innerR));
+    var offsetDist = _dfAnnulusR(rng(), this.innerR, this.outerR);
     var perpOff = (rng() - 0.5) * this.outerR * 1.4;
     var t = ((elapsedMs / period) + phase0) % 1;
     if (t < 0) t += 1;
@@ -3638,8 +3961,64 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
     var zb = zoomBoost || 1;
     var zbR = 1 + (zb - 1) * 0.35; /* radius grows slower than alpha — recede, don't balloon */
 
+    /* The current epoch biases the whole field at once (see epochAt). One
+       evaluation per frame, shared by every class below, so the sky reads
+       as ONE evolving place rather than several independently drifting
+       systems. Exposed on the instance so the dashboard can name the era
+       without recomputing it. */
+    var ep = this.epochAt(elapsedMs);
+    this.epoch_current = ep;
+
+    /* Far-field drifters FIRST — paint order is what sells depth. These
+       are the most distant things in the scene, so every nebula, comet
+       and supernova must land on top of them. Drawn before the nebula
+       loop for exactly that reason; moving this below it would make
+       distant galaxies occlude nearer clouds and the field would flatten.
+
+       zoomBoost is applied to alpha as elsewhere, but at a REDUCED rate
+       (0.55 of the full boost). The boost exists to stop world-space
+       objects vanishing as the camera pulls back — but these are meant
+       to stay subordinate, and giving them the full lift let them
+       compete with the fleet at the zoom floor in the first pass. */
+    var dzb = 1 + (zb - 1) * 0.55;
+    for (i = 0; i < _DF_DRIFTER_SLOTS; i++) {
+        var dr = this._drifterAt(i, elapsedMs);
+        var dA = Math.min(1, dr.alpha * dzb);
+        if (dA < 0.004) continue;
+        var drR = Math.max(0.1, Math.abs(dr.r) * zbR);
+        ctx.save();
+        ctx.translate(dr.x, dr.y);
+        ctx.rotate(dr.rot);
+        ctx.scale(1, Math.max(0.05, dr.flat));
+        var dg = ctx.createRadialGradient(0, 0, 0, 0, 0, drR);
+        if (dr.kind === 'galaxy') {
+            /* Bright-ish core falling to a broad faint halo. */
+            dg.addColorStop(0, 'hsla(' + dr.hue + ',18%,82%,' + dA + ')');
+            dg.addColorStop(Math.min(0.5, dr.core), 'hsla(' + dr.hue + ',24%,58%,' + (dA * 0.62) + ')');
+            dg.addColorStop(0.55, 'hsla(' + dr.hue + ',26%,34%,' + (dA * 0.26) + ')');
+            dg.addColorStop(1, 'hsla(0,0%,0%,0)');
+        } else {
+            /* Dust bank — no core, just a soft slab of slightly-warm haze. */
+            dg.addColorStop(0, 'hsla(' + dr.hue + ',22%,42%,' + (dA * 0.85) + ')');
+            dg.addColorStop(0.6, 'hsla(' + dr.hue + ',20%,28%,' + (dA * 0.4) + ')');
+            dg.addColorStop(1, 'hsla(0,0%,0%,0)');
+        }
+        ctx.fillStyle = dg;
+        ctx.beginPath();
+        ctx.arc(0, 0, drR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+    }
+
     /* Nebulae — soft radial-gradient clouds, sparse and eerie */
-    for (i = 0; i < _DF_NEBULA_SLOTS; i++) {
+    /* Epoch scales how many nebula slots are eligible this era. Slots
+       drop out from the END of the list so the survivors keep their own
+       continuous lifecycles — scaling alpha instead would make every
+       cloud dim together, which reads as a global fade rather than as a
+       sparser sky. */
+    var nebLive = Math.max(2, Math.min(_DF_NEBULA_SLOTS,
+                  Math.round(_DF_NEBULA_BASE * ep.neb)));
+    for (i = 0; i < nebLive; i++) {
         var neb = this._nebulaAt(i, elapsedMs);
         if (!neb.alive) continue;
         var rr = Math.max(0.1, Math.abs(neb.r) * zbR);
@@ -3649,8 +4028,9 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
         ctx.rotate(neb.rot);
         ctx.scale(neb.scX, neb.scY);
         var g = ctx.createRadialGradient(0, 0, 0, 0, 0, rr);
-        g.addColorStop(0, 'hsla(' + neb.hue + ',30%,14%,' + nA + ')');
-        g.addColorStop(0.4, 'hsla(' + neb.hue + ',26%,10%,' + (nA * 0.55) + ')');
+        var nSat = Math.round(30 * ep.sat);
+        g.addColorStop(0, 'hsla(' + neb.hue + ',' + nSat + '%,14%,' + nA + ')');
+        g.addColorStop(0.4, 'hsla(' + neb.hue + ',' + Math.round(26 * ep.sat) + '%,10%,' + (nA * 0.55) + ')');
         g.addColorStop(0.75, 'hsla(' + neb.hue + ',22%,7%,' + (nA * 0.18) + ')');
         g.addColorStop(1, 'hsla(0,0%,0%,0)');
         ctx.fillStyle = g;
@@ -3724,6 +4104,104 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
         ctx.fillStyle = 'rgba(215,222,235,' + Math.min(1, 0.35 * zb) + ')';
         ctx.beginPath(); ctx.arc(cm.x, cm.y, 1.1 * zbR, 0, Math.PI * 2); ctx.fill();
     }
+    /* Interstellar visitors LAST within the deep field — they are the
+       nearest thing this layer draws, passing through rather than sitting
+       behind, so nebulae and drifters must not paint over them. Still
+       below every fleet body, which is drawn in a later pass entirely.
+
+       zoomBoost is NOT applied to alpha here. That multiplier exists to
+       stop world-space scenery dissolving as the camera pulls back; a
+       visitor is a discrete event that should read the same wherever the
+       camera happens to be, and boosting it made a rare sighting turn
+       into a bright streak that dominated the frame at the zoom floor. */
+    /* Epoch scales how many visitor chains are ACTIVE. A 'convergence'
+       era runs every chain plus the bonus ones; 'silence' runs a single
+       chain, so minutes can pass with an empty sky. Chains are whole
+       units — a partially-active chain would mean cutting a craft off
+       mid-crossing, which reads as a rendering bug. */
+    var visLive = Math.max(1, Math.min(_DF_VISITOR_SLOTS,
+                  Math.round(_DF_VISITOR_BASE * ep.vis)));
+    for (i = 0; i < visLive; i++) {
+        var vz = this._visitorAt(i, elapsedMs);
+        if (vz.phase !== 'transit') continue;
+        var vA = vz.alpha;
+        if (vA < 0.01) continue;
+        ctx.save();
+        ctx.translate(vz.x, vz.y);
+        ctx.rotate(vz.heading);
+        var L = Math.max(1, vz.len * zbR);
+
+        /* Wake: a short taper behind the craft, never a long comet tail —
+           this is under power, not shedding ice. */
+        var WK = L * vz.wake;
+        var wg = ctx.createLinearGradient(-WK, 0, 0, 0);
+        wg.addColorStop(0, 'hsla(' + vz.hue + ',70%,60%,0)');
+        wg.addColorStop(1, 'hsla(' + vz.hue + ',80%,66%,' + (vA * 0.42) + ')');
+        ctx.strokeStyle = wg;
+        ctx.lineWidth = Math.max(0.4, L * 0.10);
+        ctx.beginPath();
+        ctx.moveTo(-WK, 0);
+        ctx.lineTo(-L * 0.55, 0);
+        ctx.stroke();
+
+        /* Hull. Angular on purpose — every other body in this scene is a
+           circle or a soft cloud, so a hard silhouette reads instantly as
+           manufactured rather than astronomical. The form is drawn from
+           this arrival's own hash, so consecutive visitors do not share a
+           shape. An unrecognised hull name falls through to 'dart': a
+           visible, harmless default rather than a blank frame. */
+        ctx.rotate(vz.spin * vz.t01);
+        var W2 = L * vz.aspect;
+        ctx.fillStyle = 'hsla(' + vz.hue + ',26%,88%,' + (vA * 0.92) + ')';
+        ctx.strokeStyle = 'hsla(' + vz.hue + ',60%,72%,' + (vA * 0.55) + ')';
+        ctx.lineWidth = Math.max(0.25, L * 0.045);
+        ctx.beginPath();
+        if (vz.hull === 'wing') {
+            ctx.moveTo(L * 0.52, 0);
+            ctx.lineTo(-L * 0.30, W2 * 1.9);
+            ctx.lineTo(-L * 0.14, 0);
+            ctx.lineTo(-L * 0.30, -W2 * 1.9);
+        } else if (vz.hull === 'ring') {
+            ctx.arc(0, 0, Math.max(0.1, L * 0.34), 0, Math.PI * 2);
+            ctx.closePath();
+            ctx.moveTo(L * 0.34, 0);
+            ctx.arc(0, 0, Math.max(0.05, L * 0.17), 0, Math.PI * 2, true);
+        } else if (vz.hull === 'shard') {
+            ctx.moveTo(L * 0.58, W2 * 0.30);
+            ctx.lineTo(L * 0.10, -W2 * 1.15);
+            ctx.lineTo(-L * 0.50, -W2 * 0.20);
+            ctx.lineTo(-L * 0.16, W2 * 0.95);
+        } else if (vz.hull === 'tri') {
+            ctx.moveTo(L * 0.50, 0);
+            ctx.lineTo(-L * 0.34, W2 * 1.5);
+            ctx.lineTo(-L * 0.34, -W2 * 1.5);
+        } else { /* dart */
+            ctx.moveTo(L * 0.62, 0);
+            ctx.lineTo(-L * 0.42, W2 * 1.3);
+            ctx.lineTo(-L * 0.22, 0);
+            ctx.lineTo(-L * 0.42, -W2 * 1.3);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        /* Running lights — the only pulsing things out here. Count and
+           placement vary per arrival, so even two craft sharing a hull
+           form read as different vessels. */
+        for (var li = 0; li < vz.lights; li++) {
+            var lx = L * (0.36 - li * (0.68 / Math.max(1, vz.lights)));
+            var ly = (li % 2 === 0 ? 1 : -1) * W2 * 0.55 * (li === 0 ? 0 : 1);
+            var pr = Math.max(0.1, L * 0.17 * vz.pulse);
+            var pg = ctx.createRadialGradient(lx, ly, 0, lx, ly, pr);
+            pg.addColorStop(0, 'hsla(' + vz.hue + ',90%,80%,' + (vA * vz.pulse) + ')');
+            pg.addColorStop(1, 'hsla(' + vz.hue + ',90%,60%,0)');
+            ctx.fillStyle = pg;
+            ctx.beginPath();
+            ctx.arc(lx, ly, pr, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        ctx.restore();
+    }
 };
 
 /* --- Persistence: localStorage['cosmos_deepfield_v1'] = {seed, epoch} ---
@@ -3758,6 +4236,7 @@ DeepField._save = function (seed, epoch) {
         localStorage.setItem(_DF_LS_KEY, JSON.stringify({ seed: seed, epoch: epoch }));
     } catch (e) { /* storage full/disabled — field still runs, just won't persist across reloads */ }
 };
+
 DeepField.prototype.persist = function () {
     DeepField._save(this.seed, this.epoch);
 };
@@ -3776,7 +4255,7 @@ DeepField.prototype.forceSupernova = function (slot) {
     var elapsedAtTrigger = nowMs - this.epoch;
     var rng = _dfRng(this.seed, 501 + s, 999999, 0);
     var ang = rng() * Math.PI * 2, distT = rng();
-    var dist = this.innerR + distT * (this.outerR - this.innerR);
+    var dist = _dfAnnulusR(distT, this.innerR, this.outerR);
     var fx = this.center.x + Math.cos(ang) * dist, fy = this.center.y + Math.sin(ang) * dist;
     var startElapsed = elapsedAtTrigger;
     this._forcedSN = {

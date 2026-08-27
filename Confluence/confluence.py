@@ -51,6 +51,14 @@ try:
 except Exception:
     EventPublisher = None
 
+# Last-resort quote source for HELD positions only (see _price_for). Oracle is
+# the primary and only signal source; this exists purely so a position cannot
+# become permanently unmanageable when Oracle stops covering its pair.
+try:
+    from kraken_ohlc import fetch_ohlc as _fetch_ohlc
+except Exception:
+    _fetch_ohlc = None
+
 try:
     from bus_listener import BusListener
 except Exception:
@@ -1120,7 +1128,70 @@ class ConfluenceEngine:
                 entry = sig.get("entry")
                 if entry is not None:
                     return entry
-        return None
+
+        # ── Oracle has no quote for this pair ──
+        #
+        # Only reached for a pair we are ALREADY HOLDING (manage_positions is
+        # the only caller). Entry decisions never land here, so this cannot
+        # widen the universe the bot trades -- it only restores the ability to
+        # EXIT something already open.
+        #
+        # Why it is needed. Measured 2026-08-27: BLUR/USD was opened while
+        # Oracle covered it, then dropped out of Oracle's ~10-row signal set.
+        # With Oracle as the sole quote source, stop, target AND time exits
+        # were all permanently blind -- the position could only ever be
+        # flagged, never closed, for as long as Oracle stayed silent. The
+        # 36h ATTENTION warning fired correctly at age 36.007h, but a warning
+        # is a mitigation, not a cure.
+        #
+        # kraken_ohlc is the canonical fetcher (Command Center proxy first,
+        # Kraken public OHLC second) and returns [] rather than raising, so a
+        # venue outage degrades to exactly the previous behaviour: no price,
+        # position flagged as unmanaged. Absence still reads as absence.
+        if _fetch_ohlc is None:
+            return None
+        try:
+            candles = _fetch_ohlc(pair, interval=5, limit=2)
+        except Exception as e:
+            self._log(f"Fallback quote for {pair} failed: {e!r}", "WARNING")
+            return None
+        if not candles:
+            return None
+        # [ts, open, high, low, close, volume, count] -- close of the last bar.
+        try:
+            close = float(candles[-1][4])
+            bar_ts = float(candles[-1][0])
+        except (IndexError, TypeError, ValueError):
+            return None
+        if close <= 0:
+            return None
+        # Refuse a stale bar. A 5-minute candle older than 30 minutes means the
+        # feed is lagging, and exiting on a stale price books a P/L that never
+        # existed. Better to stay flagged-and-open than to close on fiction.
+        age_min = (_now() - bar_ts) / 60.0
+        if age_min > 30:
+            if not getattr(self, "_stale_quote_warned", None):
+                self._stale_quote_warned = set()
+            if pair not in self._stale_quote_warned:
+                self._stale_quote_warned.add(pair)
+                self._log(f"Fallback quote for {pair} is {age_min:.0f} min old "
+                          f"-- refusing to exit on a stale bar", "WARNING")
+            return None
+        if getattr(self, "_stale_quote_warned", None):
+            self._stale_quote_warned.discard(pair)
+        if not getattr(self, "_fallback_quote_pairs", None):
+            self._fallback_quote_pairs = set()
+        if pair not in self._fallback_quote_pairs:
+            self._fallback_quote_pairs.add(pair)
+            self._log(f"Using fallback quote for held {pair} "
+                      f"(Oracle no longer covers it): {close:.6g}", "WARNING")
+            self._emit("ATTENTION", {
+                "bot": BOT_ID, "pair": pair,
+                "reason": "held_pair_dropped_by_oracle",
+                "fallback_price": close,
+                "suggested_action": "check_oracle_coverage",
+            })
+        return close
 
     def manage_positions(self, intel):
         for pair, pos in list(self.positions.items()):

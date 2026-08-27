@@ -98,6 +98,11 @@ TESTS = [
     # consumer with no synthetic-probe filter.
     "test_win_rate_denominator.py",
     "test_expectancy_probes.py",
+    # 2026-08-27: BLUR/USD proved a held position can outlive Oracle's
+    # coverage of its pair, leaving stop, target and time exits all blind
+    # at once. The fallback quote that fixes it must stay held-positions
+    # only -- on the entry path it would silently widen the traded universe.
+    "test_confluence_fallback_quote.py",
 ]
 
 # Dashboard-side guards. These were written alongside the Python tests but
@@ -118,6 +123,7 @@ JS_TESTS = [
     "expectancy_panel.js",
     "dash_no_fake_balance.js",
     "cosmos_lighting.js",
+    "deepfield_coverage.js",
 ]
 
 

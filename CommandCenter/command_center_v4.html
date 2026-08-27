@@ -6157,8 +6157,8 @@ var VOICE_CONFIG={
   confluence: {f:65.4, t:"sine",     desc:"Low tactical hum. Steady recon tone."},
   phitex:     {f:110,  t:"sine",     desc:"Pulsar drone through bandpass. Ticks on phase flip."},
   aegis:      {f:73.4, t:"sine",     desc:"Shield drone with close harmonic beat."},
-  nexus:      {f:440,  t:"sine",     desc:"Council bell. High crystalline major third. Quiet deliberation."},
-  sentinel:   {f:880,  t:"sine",     desc:"High ice whistle. Sweeps on forecast update."},
+  nexus:      {f:110,  t:"sine",     desc:"Council bell, dropped two octaves. Low resonant third. Quiet deliberation."},
+  sentinel:   {f:196,  t:"sine",     desc:"Ice tone, dropped two octaves. Slow sweep on forecast update."},
   gridzilla:  {f:220,  t:"sine",     desc:"Grid hum with fifth harmonic. Matrix resonance."},
   turtlesue:  {f:36.7, t:"sine",     desc:"Deep shell vibration. Sub-bass pulse."},
   trinity:    {f:165,  t:"sine",     desc:"Scanner tone. Steady mid-frequency watch."},
@@ -14570,23 +14570,32 @@ var _sound=window._sound={
   _bedGain:null,_bedActiveKey:null,_bedActiveEl:null,
 
   /* Frequency bands for per-bot bandpass filters */
+  /* Register drop (Jeremy, 2026-08-27, pass 2: "the sounds are still to
+     high" — a pitch complaint, not timbre). Old table topped out at
+     2500Hz (phitex) with six bots living at hi>=800Hz; DeepBlue's own
+     whale-song reference lives 10-40Hz. Every bot's lo/hi here roughly
+     halved-to-thirded, keeping the SAME relative spread/ratio between
+     bots (so per-bot identity survives) but sliding the whole table's
+     centre of mass down an octave-plus. Top of the table is now 900Hz
+     (was 2500) and only two bots (phitex, chronos) still poke above
+     500Hz at all -- everyone else lives sub-450Hz. Pan spread unchanged. */
   _botBands:{
-    confluence:   {lo:300,hi:900,pan:0.0},
-    nexusbrain:   {lo:80,hi:250,pan:-0.3},
-    gridzilla:    {lo:200,hi:600,pan:0.4},
-    turtlesue:    {lo:500,hi:1500,pan:-0.5},
-    rubberband:   {lo:150,hi:400,pan:0.6},
-    arbitrageur:  {lo:400,hi:1200,pan:-0.2},
-    hivemind:     {lo:60,hi:180,pan:0.2},
-    oracle:       {lo:700,hi:2000,pan:-0.7},
-    deepblue:     {lo:30,hi:100,pan:0.5},
-    sentinel:     {lo:250,hi:800,pan:-0.4},
-    trinity:      {lo:600,hi:1800,pan:0.1},
-    phitex:       {lo:900,hi:2500,pan:-0.1},
-    aegis:        {lo:40,hi:120,pan:0.3},
-    nexus:        {lo:120,hi:350,pan:-0.6},
-    chronos:      {lo:800,hi:2200,pan:0.7},
-    contrarian:   {lo:350,hi:1000,pan:-0.3},
+    confluence:   {lo:150,hi:420,pan:0.0},
+    nexusbrain:   {lo:45,hi:140,pan:-0.3},
+    gridzilla:    {lo:100,hi:300,pan:0.4},
+    turtlesue:    {lo:220,hi:650,pan:-0.5},
+    rubberband:   {lo:75,hi:200,pan:0.6},
+    arbitrageur:  {lo:180,hi:520,pan:-0.2},
+    hivemind:     {lo:35,hi:100,pan:0.2},
+    oracle:       {lo:280,hi:750,pan:-0.7},
+    deepblue:     {lo:22,hi:65,pan:0.5},
+    sentinel:     {lo:120,hi:350,pan:-0.4},
+    trinity:      {lo:260,hi:700,pan:0.1},
+    phitex:       {lo:340,hi:900,pan:-0.1},
+    aegis:        {lo:28,hi:75,pan:0.3},
+    nexus:        {lo:60,hi:170,pan:-0.6},
+    chronos:      {lo:300,hi:800,pan:0.7},
+    contrarian:   {lo:160,hi:440,pan:-0.3},
   },
 
   init:function(){
@@ -14777,7 +14786,11 @@ var _sound=window._sound={
       {ratio:1.498, vol:0.55,lfoPeriod:67}, /* soft fifth-ish partial, not quite consonant -> ambiguous tonality */
       {ratio:0.5,   vol:0.7, lfoPeriod:41}  /* sub-octave */
     ];
-    var root=42; /* deep sub foundation, well under any _botBands lo */
+    var root=42; /* deep sub foundation. Note (2026-08-27 register-drop pass):
+       deepblue (lo:22) and aegis (lo:28) now sit BELOW this root after the
+       _botBands drop -- intentional, they're the whale-song/shield-drone
+       floor of the whole mix; this foundation is the shared harmonic bed
+       everything else rides on top of, not a hard floor. */
     this._deepFoundationNodes=[];
     for(var i=0;i<partials.length;i++){
       (function(p){
@@ -15141,7 +15154,11 @@ var _sound=window._sound={
   },
 
   _signalFire:function(){
-    this._noiseSwell(0.9,0.10,700,2100,Math.random()*0.6-0.3,this.events);
+    /* Register drop 2026-08-27: was 700-2100Hz, the brightest one-shot in
+       the mix and one of the most frequent (every SIGNAL/HIGH_CONVICTION
+       event). 260-900 keeps a quick "flicker" character without adding
+       to the high-end wash across a long listening session. */
+    this._noiseSwell(0.9,0.10,260,900,Math.random()*0.6-0.3,this.events);
   },
 
   _fleetAlert:function(){
@@ -15483,9 +15500,12 @@ var _sound=window._sound={
     /* Hover — a very faint breath, not a UI tick. Two close sines beating
        softly through a lowpass, slow attack, so it reads as a distant
        presence stirring rather than a click. Colored by the bot's own band. */
-    var band=this._botBands[botId]||{lo:800,hi:2000,pan:0};
+    var band=this._botBands[botId]||{lo:250,hi:700,pan:0};
     var c=this.ctx,now=c.currentTime;
-    var f=Math.max(500,band.hi*0.7);
+    /* Floor dropped 500->180 (2026-08-27 register pass): _botBands itself
+       was halved-to-thirded, so the old 500Hz floor would have flattened
+       almost every bot's hover to the same pitch and undone the drop. */
+    var f=Math.max(180,band.hi*0.7);
     var o1=c.createOscillator();o1.type="sine";o1.frequency.value=f;
     var o2=c.createOscillator();o2.type="sine";o2.frequency.value=f*1.01;
     var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=f*2.5;
@@ -15603,7 +15623,7 @@ var _sound=window._sound={
       var buf=c.createBuffer(1,len,c.sampleRate);
       var dd=buf.getChannelData(0);for(var i=0;i<len;i++) dd[i]=(Math.random()*2-1)*(1-i/len);
       var s=c.createBufferSource();s.buffer=buf;
-      var bp=c.createBiquadFilter();bp.type="bandpass";bp.frequency.value=baseFreq*2.2;bp.Q.value=3;
+      var bp=c.createBiquadFilter();bp.type="bandpass";bp.frequency.value=baseFreq*1.5;bp.Q.value=3;
       var g=c.createGain();g.gain.value=0.06*intensity;
       s.connect(bp);bp.connect(g);g.connect(dest);
       return {s:s,g:g};
@@ -15611,8 +15631,12 @@ var _sound=window._sound={
     clickSrc.s.start(clickAt);
 
     /* Formant voice offsets — 2nd/3rd "formants" sit at classic vowel-ish
-       ratios above the fundamental so the stack reads as vocal, not chordal. */
-    var formantRatios=[1.0,2.1,3.4];
+       ratios above the fundamental so the stack reads as vocal, not chordal.
+       Trimmed from [1.0,2.1,3.4] (2026-08-27 register-drop pass): with the
+       already-lowered _botBands table this kept the top partial too close
+       to "chirpy" once glide shape multiplied over 1.0. 1.0/1.7/2.4 keeps
+       the same vocal-formant relationship at a lower ceiling. */
+    var formantRatios=[1.0,1.7,2.4];
     var voiceGains=[];
     for(var v=0;v<voices;v++){(function(vi){
       var ratio=formantRatios[vi]||(2+vi);

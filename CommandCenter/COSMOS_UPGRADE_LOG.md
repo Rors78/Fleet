@@ -373,3 +373,62 @@ screen this session — the numbers above are real-execution-verified
 (actual file loaded and run, not reimplemented, throwing on any invalid
 radius) but not visually confirmed. Needs a human/live-browser look before
 the 50" display is trusted on this.
+
+---
+
+## 2026-08-27 — audio register drop (pass 2: "the sounds are still to high")
+
+Jeremy's exact words after pass 1 (robotic-timbre fix, commit `09c43c6`):
+"the sounds are still to high." A register/pitch complaint, not timbre —
+pass 1 fixed waveform (sawtooth->sine/triangle, dry oscillators routed
+through the verb chain) but never measured or moved the actual Hz values.
+DeepBlue is the fleet's whale-intelligence bot and the operator's explicit
+reference point ("more like deepblue... eiri and natural"); real blue/fin
+whale calls sit 10-40Hz, so that's the register the whole mix should lean
+toward.
+
+**Measured first** (`command_center_v4.html`), full inventory before any
+edit:
+
+| Source | Before (Hz) | After (Hz) |
+|---|---|---|
+| `_botBands` (16 bots, ~14582) | 30-2500 (8 of 16 bots had hi>=800) | 22-900 (only phitex/chronos poke above 500) |
+| `VOICE_CONFIG` fundamentals (~6154) | 36.7-880 (nexus 440 "bell", sentinel 880 "whistle" were outliers) | 36.7-261.6 after dropping the two outliers 2 octaves each (nexus 440->110, sentinel 880->196) |
+| Deep foundation drone root (~14789) | 42 (untouched, already correct) | 42 (unchanged) |
+| `_armadaSyllable` formant ratios (~15624) | `[1.0, 2.1, 3.4]` x baseFreq — baseFreq itself derived from `_botBands`, so phitex/chronos/oracle peaked ~4.4-5kHz, CONTINUOUSLY (xenolanguage speaks non-stop) | `[1.0, 1.7, 2.4]` x the now-lower baseFreq — peaks now land roughly an octave-plus lower |
+| `_armadaSyllable` click transient bandpass (~15615) | `baseFreq*2.2` | `baseFreq*1.5` |
+| `_signalFire` one-shot (~15152, fires on every SIGNAL/HIGH_CONVICTION event — frequent) | noise sweep 700-2100 | 260-900 |
+| `playHover` (~15490) | `max(500, band.hi*0.7)` — the 500 floor would have flattened almost every bot to the same pitch once `_botBands` dropped | `max(180, band.hi*0.7)` |
+
+**Why `_botBands` was the highest-leverage fix**: it's read by `_tradeEntry`,
+`_tradeWin`, `_tradeLoss`, `_botDown`, `_botUp`, `playHover`, and
+`_armadaSyllable`'s `baseFreq` — one register table drives nearly every
+live event sound in the mix, so halving-to-thirding it there moved the
+whole soundscape at once rather than chasing each call site.
+
+**Per-bot identity preserved**: every `_botBands` entry kept the SAME
+relative lo/hi ratio and the SAME pan position, just shifted down — so
+bots that were distinguishable by pitch/pan before are still
+distinguishable after, just in a lower register. No two bots were made to
+collide by this pass.
+
+**Laptop-speaker trap**: did not touch the deep foundation drone's
+existing 3-partial stack (root 42Hz, +1.498x "fifth-ish" partial ~63Hz,
++0.5x sub-octave ~21Hz — already structured for definition-on-small-
+speakers before this pass) or the `_metallic` stinger's `freq*2` bandpass
+carrier (used by `_tradeWin`/`_botUp`/whale-hit — this IS the octave-up
+harmonic-for-definition mechanism, and it now rides on top of a lower
+base so its *relative* lift is more audible, not less). Nothing in this
+pass pushed the mix purely into sub-bass without a companion partial.
+
+**Brace balance**: 3430/3430 before and after (diff 0 both times) —
+confirmed by full-file `{`/`}` count, not just the edited region.
+
+**Suite**: 99/99 passed (`python -X utf8 run_all.py`), 0 failed, 0
+inherited failures this run — clean baseline, nothing to disclaim.
+
+**Not verified by ear** (standing limitation, same as every prior round):
+Chrome automation on this machine gets `ERR_CONNECTION_REFUSED` on
+localhost; `curl` confirms the server and file serve cleanly. The table
+above is the honest substitute — Hz numbers an operator can judge by eye,
+not a claim about how it sounds. Needs Jeremy's ears as final judge.

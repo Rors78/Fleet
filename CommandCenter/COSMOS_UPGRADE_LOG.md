@@ -1071,3 +1071,239 @@ turtlesue. TurtleSue is a special case worth knowing before anyone tries:
 it is a SPRITE (the Death Star image), and its `surface()` returns early
 when the image has not loaded -- so it measures 0 draws in any Node
 harness. That is a harness artifact, not a defect; do not "fix" it.
+
+---
+
+## 2026-08-27 — EVENTS WITH STAKES: real fleet activity, not more weather (pass 10)
+
+Operator: "start taking massive leaps and lets impress the investors",
+"there is no human noticeable excitement". Premise pre-verified by the
+coordinator against the live bus (39,920 events, 43.7h span) and confirmed
+independently against real per-source JSONL lines this pass, not re-derived:
+**EUCLID_LEVEL, NEXUS_UPDATE, CAUSAL_FLOW, SCHWARZSCHILD_HORIZON,
+NEWTON_FORCE, EINSTEIN_ENERGY had ZERO visual handling in `_orbHandleEvent`
+anywhere in the file; FLEET_ALERT had audio only; ATTENTION and
+SCAN_COMPLETE only fed the 5-minute migration-scoring tally.** `command_center_v4.html` only.
+
+**Real-source confirmation, not assumed.** Grepped the live JSONL bus
+directly (not the worktree copies under `.claude/worktrees`, which are stale
+branches): EUCLID_LEVEL / CAUSAL_FLOW / SCHWARZSCHILD_HORIZON / NEWTON_FORCE
+/ EINSTEIN_ENERGY are all `"source":"nexus"` — five of the 14-engine
+council's sub-detectors, each carrying real per-pair data (support/
+resistance level+strength, cross-pair causal lag, black-hole-topology
+horizon state, force+direction, energy+breakout potential). FLEET_ALERT and
+ATTENTION are both `"source":"event_bus"` — reaction-template escalations
+wrapping an `original_event` from whatever bot actually triggered them
+(confirmed real examples: `trinity_...` for a FLEET_ALERT regime-shift
+storm, `deepblue_...` for an ATTENTION whale reason). SCAN_COMPLETE's
+source varies per body (deepblue/gridzilla/oracle/nexus all confirmed
+emitting it).
+
+**Changed** — `command_center_v4.html`
+
+- New shared visual rate gate (~1083-1099, right after `_orbAmbient`):
+  `_orbVisLastByType` + `_ORB_VIS_COOLDOWN_MS` + `_orbVisAllowed(bucket)`.
+  Same `_lastByType`-keyed-timestamp idiom as `_sound._typeAllowed`/
+  `_TYPE_COOLDOWN_MS`, but a genuinely separate map/function so visual and
+  audio gate independently, per instruction. Two buckets:
+  `NEXUS_ENGINES:20000`, `FLEET_ALERT:180000` — each chosen from that
+  bucket's own measured combined rate, not a round number.
+- `_orbHandleEvent` (~2737-2793, appended after the existing AEGIS hex-
+  flicker block, before the function's closing brace):
+  - **NEXUS 5-engine council** (EUCLID_LEVEL/CAUSAL_FLOW/
+    SCHWARZSCHILD_HORIZON/NEWTON_FORCE/EINSTEIN_ENERGY, `src==="nexus"`,
+    combined ~251/hr): all five share ONE `NEXUS_ENGINES` gate bucket, so at
+    most one council pulse fires every 20s regardless of how many of the
+    five actually landed in that window — the fix for "5 engines talking
+    constantly" being a strobe if each got its own visual. On an allowed
+    tick, `_orbFireSynapses("nexus",[target])` along an EXISTING
+    `_SYN_PAIRS` edge (nexus-gridzilla, nexus-nexusbrain, nexus-turtlesue —
+    no new line drawn, no new draw call site). Target is picked by what the
+    firing engine actually measures, not arbitrarily: EUCLID_LEVEL/
+    SCHWARZSCHILD_HORIZON (support/resistance, black-hole topology =
+    structure) -> gridzilla (the grid trader); NEWTON_FORCE/EINSTEIN_ENERGY
+    (force, breakout energy = momentum) -> turtlesue (the breakout trader);
+    CAUSAL_FLOW (cross-pair lag/inference) -> nexusbrain (the inference-
+    style trader).
+  - **FLEET_ALERT** (`event_bus`, 36.2/hr, one per ~99s): gated to one
+    shockwave-at-CC every 3 minutes (own bucket), same
+    `_orbShockwaves.push({...,r:0,...})` pattern PHASE_TRANSITION and
+    EMERGENCY_REDUCE already use for fleet-wide moments, sized down (single
+    ring, op 0.35, one CC eventBurst bump of +0.3) since FLEET_ALERT fires
+    far more often than EMERGENCY_REDUCE (0 measured occurrences). Pairs
+    with the existing audio-only treatment (`_sound._fleetAlert`,
+    `_canPlay(2)` priority bypass) rather than duplicating it.
+  - **ATTENTION** (`event_bus`, 95.3/hr, ~one every 38s): deliberately left
+    silent beyond the existing generic `srcNode.onEvent()`/
+    `cc.eventBurst+=0.15` bump every single event already gets at the top
+    of the function. At this rate a dedicated visual is indistinguishable
+    from ambience, and its `source` is always the literal string
+    `"event_bus"` (a wrapper, not a body) — the only path to a real target
+    body would be parsing the bot id out of `original_event`'s id string
+    (e.g. `"deepblue_1787788840481"`), a fragile string-split this pass
+    chose not to add for one more layer of ambient noise.
+  - **SCAN_COMPLETE** (varies per body, 64/hr): left silent beyond its
+    existing effects (feeds `_updateMigrations`' 5-minute intelligence
+    tally — a real, already-wired effect — and ticks that body's own
+    `eventBurst` via `onEvent()`). A scan finishing is routine heartbeat,
+    not stakes.
+  - **NEXUS_UPDATE** (82.1/hr): left exactly as the brief described — but a
+    genuine finding surfaced checking it. Grepped both files for any
+    consumer of `_orbNebulaTgt` (the variable the AEGIS_UPDATE handler a
+    few lines above assigns, `asc>0.7?140:asc>0.4?200:...`) and found
+    **none** — it is written and never read back into any hue/nebula draw
+    call in either file. This is a pre-existing dead write (not introduced
+    this pass) and AEGIS_UPDATE is not one of the 9 gap types in scope, so
+    NOT fixed here — flagging for whichever future pass owns AEGIS/nebula
+    rendering, since the "already-ambient, don't duplicate" precedent this
+    brief pointed at may not actually be visible on screen today.
+
+**WHALE_ALERT unbounded burst (instruction #2) — evaluated, not changed.**
+Left the handler untouched as instructed. Reasoning for the record: at
+94.7/hr (one per 38s) against each SignalLane's 2.5s lifetime, bursts don't
+literally overlap frame-to-frame, so it isn't a strobe in the strict sense —
+but checked tier distribution on the live bus and found **zero** LOW/MEDIUM
+WHALE_ALERTs in the sampled day (362 EXTREME, 1327 HIGH, 0 else), meaning
+the full 6-target staggered burst fires on *every single occurrence*
+regardless of tier, not just on genuinely notable ones. That is a real
+candidate for the same kind of rate gate added this pass (e.g. a
+`WHALE_ALERT` bucket sized off its own 38s cadence), but it was explicitly
+out of scope to touch this pass and is a bigger behavior change (it already
+drives two `migrateTo()` calls and `eventBurst=1.0` on EXTREME, none of
+which this pass is cleared to touch) — flagging with the numbers rather than
+guessing at the right cooldown.
+
+**TRADE_OPEN vs routine traffic (instruction #3) — checked, not changed.**
+Re-read the existing handler (~2683-2694): comet spawn + tradeFlash ring/
+glow + persistent vivarium growth/scar state, on an event that fires 4 times
+in the same 43.7h window the 9 gap types fire 39,846 times combined. Already
+unmistakably differentiated from anything else in the file — nothing else
+gets a comet, a directional ring flash, AND permanent visible state. Left
+exactly as-is, per the brief's own instruction not to weaken or duplicate
+a working treatment.
+
+**Radius guard**: no new code in this pass derives a radius from
+`Math.sin`/`Math.cos`. `_orbFireSynapses`/`OrbSynapse.fire` take plain
+string ids, not coordinates. The new `_orbShockwaves.push` uses a literal
+`r:0`, byte-identical in form to the pre-existing PHASE_TRANSITION/
+EMERGENCY_REDUCE push sites — `_drawShockwave` only ever increments `w.r`
+by a positive constant (`w.r+=4`), so it can never go negative regardless of
+starting value. Verified in the real-execution harness below (Test 4).
+
+**Measured draws/frame — real cost of this pass, not the file's existing
+baseline.** This pass adds ZERO new `arc`/`createRadialGradient` calls to
+any `surface()`/`overlay()`/`drawPlanet()` function — it only calls two
+already-existing, already-counted mechanisms (`_orbFireSynapses` ->
+`OrbSynapse.fire`, whose particles are drawn by the pre-existing
+`OrbSynapse.draw`; and `_orbShockwaves.push`, drawn by the pre-existing
+`_drawShockwave`). So the standing baseline from the prior pass (464 at
+r=60 across all 18 `surface()`, peak ~425-450/frame across full scenes) is
+**unchanged by this pass** — verified by grep: no new call sites touch
+`PLANET_VISUALS`, `surface`, `overlay`, or `drawPlanet`. This pass's own
+worst-case addition, counted directly from `OrbSynapse.draw`
+(1 `createRadialGradient` + 2 `arc` per particle, 1-2 particles per fire)
+and `_drawShockwave` (2 `arc` always, +1 conditional `arc` while `r<50`):
+**at most 9 draw calls in the single rare frame both gates happen to fire
+simultaneously** (a NEXUS pulse at most once/20s, a FLEET_ALERT shockwave at
+most once/3min), decaying away within ~1-1.7s. Two orders of magnitude
+below the established per-frame baseline.
+
+**Verified for real, not assumed** — extracted the actual shipped functions
+from the file by regex + `eval` (not reimplementations): `_orbVisAllowed`,
+`_orbFireSynapses`, the `OrbSynapse` constructor, and
+`OrbSynapse.prototype.fire`, wired together in a throwaway Node harness
+(written, run, deleted — `D:\CommandCenter\_verify_pass10.mjs`), against
+real `_SYN_PAIRS` edges and real event shapes copied verbatim from the live
+JSONL bus:
+
+- Test 1 — all 9 gap-type event shapes (real `source`/`type`/`data`
+  payloads copied from the live bus) run through the new branch logic: 0
+  exceptions.
+- Test 2 — 5 rapid-fire FLEET_ALERTs at the same instant: exactly 1 gets
+  through the gate (PASS); manually advancing the recorded timestamp past
+  180001ms and re-checking: allowed again (PASS) — the gate opens and
+  closes correctly, not just closes.
+- Test 3 — all 5 distinct NEXUS engine sub-types fired at the same instant
+  share the ONE `NEXUS_ENGINES` bucket: exactly 1 gets through (PASS) — the
+  anti-strobe design actually holds across types, not just within one type.
+- Test 4 — the pushed shockwave's `r` is a literal `0`, never sin/cos-
+  derived (PASS).
+- Test 5 — the engine-to-target mapping in the extracted logic matches the
+  documented design table exactly (PASS).
+
+**Suite**: 99 passed, 0 failed (`python -X utf8 run_all.py`, run via
+PowerShell after the bash tool's known backslash-`cd` path trap reproduced
+again — forward-slash path in PowerShell worked cleanly). `node --check`
+clean on `solar_system.js` and `armada.js` (both untouched this pass —
+confirmed by diff, checked anyway per the standing rule). Extracted the
+real inline `<script>` block via the same regex technique prior passes used
+and ran `node --check` on it directly: clean.
+
+**Brace balance**: 3432/3432 before this pass's edit, **3439/3439 after**
+— balanced, +7/+7 (the cooldown object literal, the `_orbVisAllowed`
+function, and the two new `if` blocks in the handler — consistent with the
+diff shape, not a stray edit elsewhere).
+
+**Pool total**: `215.77491525702527` before the suite run and
+`215.77491525702527` after — unchanged, via
+`curl http://localhost:9000/api/portfolio` both times, matching the
+operator's stated baseline exactly.
+
+**Rejected, with reasons**
+
+- *A per-sub-engine visual for all 5 NEXUS types instead of a shared
+  bucket.* Would have reproduced the exact strobe complaint the operator
+  already made once (about the audio mix) on a combined 251/hr rate — the
+  whole point of the shared bucket is that "the council is active" only
+  needs to read once per window, not once per sub-detector.
+- *Parsing `original_event`'s embedded bot id to give ATTENTION/FLEET_ALERT
+  a real source-body anchor instead of a fleet-wide CC pulse.* Real option,
+  would make FLEET_ALERT's shockwave originate from the actual triggering
+  body instead of CC's position — but a string-split on an internal id
+  format (`"trinity_1787788837896"`) is exactly the kind of fragile parsing
+  this file's existing conventions avoid (every other handler matches on
+  `ev.bot_id||ev.source`, never on `ev.id`), and breaking silently on a
+  future id-format change is a worse failure mode than the current CC-
+  anchored version. Left as CC-anchored; flagging as a legitimate follow-up
+  if a future pass wants FLEET_ALERT to visually originate from its real
+  trigger.
+- *Fixing `_orbNebulaTgt`'s dead-write.* Found, documented, not fixed —
+  AEGIS_UPDATE is not one of the 9 gap types this pass was scoped to, and
+  the brief explicitly said don't touch AEGIS_UPDATE's existing pattern.
+- *A visual rate gate on WHALE_ALERT.* See the dedicated section above —
+  evaluated with real tier-distribution numbers, left to the operator's
+  call rather than assumed in scope.
+- *Touching TRADE_OPEN/TRADE_CLOSE.* Already the strongest treatment in the
+  file (comet + flash + persistent vivarium state) against the rarest
+  events (4 and 70 in the sample window) — correctly out-classes everything
+  else already; touching it further would be exactly the kind of
+  unnecessary duplication the brief warned against.
+
+**Verification honesty**: Chrome automation worked cleanly this session —
+loaded `localhost:9000` (title "Command Center v4", not an internal error
+page), zero console errors on initial load. Entered fullscreen COSMOS via
+the real `"Open solar system fullscreen (F)"` button (found by
+`find`, not guessed by coordinate — an earlier coordinate-guess click at
+the old panel location missed). Scene rendered with visible synapse lines,
+moving bodies, zero console errors throughout. Confirmed the live handler
+is actively processing real bus traffic in the exact function my new
+branches sit in: `window._orbNodes.nexus.eventBurst` rose from 0.0367 to
+0.0767 and `window._orbNodes.gridzilla.eventBurst` jumped from 0 to exactly
+0.02 (the generic `onEvent()` bump) across a 20-second live window — real
+events landing, in real time, in `_orbHandleEvent`. **Could not directly
+observe my specific new branches firing on screen**: `_orbHandleEvent`,
+`_orbFireSynapses`, `_orbVisAllowed`, and `_SYN_PAIRS` are closure-local,
+not `window`-exposed (unlike `PLANET_VISUALS`/`_sphProject`, which prior
+passes could reach), so there was no way to hook or synthetically trigger
+them from the browser console this session. The real-execution Node
+harness above (extracted, not reimplemented, byte-identical function
+bodies) is the load-bearing proof that the new branches are correct and
+exception-free; the live-render check above proves the surrounding scene
+and the handler function itself are alive and error-free in production.
+That combination is honest evidence, not a claim of having watched a
+NEXUS-engine pulse or a FLEET_ALERT shockwave paint on the actual canvas —
+flagging that gap plainly rather than asserting a sighting that didn't
+happen. A future pass with more time could confirm by watching for several
+minutes continuously (FLEET_ALERT's 99s natural cadence means a ~3-4 minute
+watch should catch at least one real firing) or by adding a temporary
+`window._orbDebugFireTest` hook the way earlier passes exposed `_orbDebug`.

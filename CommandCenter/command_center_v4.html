@@ -1080,6 +1080,24 @@ var _orbSignalLanes=[];
 var _orbShockwaves=[];
 var _orbRecentEvents=[];
 var _orbAmbient=[];
+/* --- Visual rate gate (pass 10, EVENTS WITH STAKES) — same _lastByType-keyed
+   idiom as _sound._typeAllowed/_TYPE_COOLDOWN_MS, but a SEPARATE map so
+   visual and audio gate independently, as instructed. Cooldowns chosen from
+   each type's own measured bus rate (2026-08-26/27 sample, 43.7h window) so
+   the gated pulse reads as occasional, not constant. */
+var _orbVisLastByType={};
+var _ORB_VIS_COOLDOWN_MS={
+  NEXUS_ENGINES:20000,   /* EUCLID_LEVEL+CAUSAL_FLOW+SCHWARZSCHILD_HORIZON+NEWTON_FORCE+EINSTEIN_ENERGY combined ~251/hr from nexus alone — shared bucket, one pulse per gate window regardless of which sub-engine fired */
+  FLEET_ALERT:180000     /* 36.2/hr measured (one per ~99s) — 3min gate keeps the rare-escalation shockwave meaningful instead of routine */
+};
+function _orbVisAllowed(bucket){
+  var cd=_ORB_VIS_COOLDOWN_MS[bucket];
+  if(!cd) return true;
+  var now=Date.now(),last=_orbVisLastByType[bucket]||0;
+  if(now-last<cd) return false;
+  _orbVisLastByType[bucket]=now;
+  return true;
+}
 var _deepFieldLastSave=0; /* throttle localStorage writes for DeepField persistence — see L0b in _orbRender */
 var _orbInitialized=false;
 var _orbLastFrame=0;
@@ -2714,6 +2732,62 @@ function _orbHandleEvent(ev){
     var an=_orbNodes.aegis;
     if(an){ an._hexFlicker=1.0; an.eventBurst=Math.min(1.0,(an.eventBurst||0)+0.5); }
   }
+  /* NEXUS 14-engine council — 5 sub-detectors (EUCLID_LEVEL, CAUSAL_FLOW,
+     SCHWARZSCHILD_HORIZON, NEWTON_FORCE, EINSTEIN_ENERGY), all source=nexus,
+     combined ~251/hr measured on the live bus. Firing a pulse per-type would
+     be exactly the strobe the operator complained about, so all five share
+     ONE rate-gated bucket ("NEXUS_ENGINES", 20s) — at most one council pulse
+     every 20s regardless of how many of the five actually fired in that
+     window. Target picked by what the engine is actually measuring, along
+     EXISTING _SYN_PAIRS edges (nexus-gridzilla, nexus-nexusbrain,
+     nexus-turtlesue — no new line drawn): EUCLID_LEVEL/SCHWARZSCHILD_HORIZON
+     are support/resistance & black-hole-topology structure -> gridzilla (grid
+     trader, lives on structure); NEWTON_FORCE/EINSTEIN_ENERGY are momentum/
+     breakout energy -> turtlesue (breakout trader); CAUSAL_FLOW is cross-pair
+     lag/inference -> nexusbrain (the inference-style trader). */
+  if(/^(EUCLID_LEVEL|CAUSAL_FLOW|SCHWARZSCHILD_HORIZON|NEWTON_FORCE|EINSTEIN_ENERGY)$/.test(type)&&src==="nexus"){
+    if(_orbVisAllowed("NEXUS_ENGINES")){
+      var _neTgt=/^(EUCLID_LEVEL|SCHWARZSCHILD_HORIZON)$/.test(type)?"gridzilla":
+                 /^(NEWTON_FORCE|EINSTEIN_ENERGY)$/.test(type)?"turtlesue":"nexusbrain";
+      _orbFireSynapses("nexus",[_neTgt]);
+    }
+  }
+  /* FLEET_ALERT — event_bus reaction-template escalation (regime-shift storms
+     etc, see _sound._fleetAlert for the matching audio treatment). 36.2/hr
+     measured (one per ~99s); audio already exists (priority-2 _canPlay
+     bypass) but there was zero visual before this pass. Gated to 3min (own
+     bucket) so it reads as "the fleet just escalated something" rather than
+     routine — same shockwave-at-CC pattern EMERGENCY_REDUCE already uses for
+     fleet-wide moments, just smaller (single ring, not every node bursting)
+     since FLEET_ALERT is far more frequent than EMERGENCY_REDUCE (0
+     occurrences measured). */
+  if(/FLEET_ALERT/.test(type)&&_orbVisAllowed("FLEET_ALERT")){
+    var _faCx=_orbLW/2,_faCy=_orbLH/2;
+    _orbShockwaves.push({x:_faCx,y:_faCy,r:0,op:0.35,color:"#f87171",rgb:"248,113,113"});
+    if(_orbNodes.cc) _orbNodes.cc.eventBurst=Math.min(1,(_orbNodes.cc.eventBurst||0)+0.3);
+  }
+  /* ATTENTION (event_bus, 95.3/hr, ~one every 38s) — deliberately left
+     silent beyond the existing generic srcNode.onEvent()/cc.eventBurst bump
+     every event already gets (top of this function). At this rate a
+     dedicated visual is indistinguishable from ambience, and ATTENTION's
+     own source is always "event_bus" (a reaction-template wrapper, not a
+     body) with no consistent single target body to anchor a pulse to
+     without parsing original_event's embedded bot id — a string-parse this
+     pass chose not to add for one more layer of ambient noise. */
+  /* SCAN_COMPLETE (varies per body — deepblue/gridzilla/oracle/nexus, 64/hr)
+     — already feeds _updateMigrations' 5-minute intelligence tally (real
+     effect: it biases which star a body migrates toward) and every firing
+     already ticks that body's own eventBurst via onEvent(). A scan
+     finishing is routine bot heartbeat, not stakes — no discrete visual
+     added; the existing tiny per-body pulse is the right-sized signal. */
+  /* NEXUS_UPDATE (82.1/hr) — per the brief, already wired to _orbNebulaTgt
+     as the continuous/ambient pattern; NOT duplicated here. Note for the
+     log: grepped both files for a consumer of _orbNebulaTgt and found none
+     — it is assigned at the AEGIS_UPDATE handler above (asc>0.7?140:...)
+     but nothing reads it back into a hue/nebula draw call. This is a
+     pre-existing dead write, not something this pass introduced, and
+     AEGIS_UPDATE is not one of the 9 gap types in scope — flagged in the
+     log, not fixed here. */
 }
 
 /* --- Migration engine — runs each render frame to check for intelligence-based migrations --- */

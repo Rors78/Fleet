@@ -1493,3 +1493,115 @@ actually moves before believing the visual works.
 
 Cost: +2 draw calls per frame, always, with no event spikes -- gated to
 zero when AEGIS is absent or conditions are calm.
+
+---
+
+## Pass 12 (2026-08-27) — Fullscreen HUD was showing investors the wrong numbers
+
+**Attempted**: verify and fix the fullscreen COSMOS HUD (`#fsHud`, the
+investor-facing overlay shown on the 50-inch display in cinema mode), which
+was reading win rate and trade count from `state.aggregate` (`/api/master`'s
+`aggregate` block) instead of `state.era` (`/api/current_era`).
+
+**Verified against live endpoints before touching anything**:
+
+    /api/current_era:  win_rate 38.9%, n=18, total_pnl +5.1083,
+                        caveat "PROVISIONAL: n=18 is below the 30-trade bar"
+    agg (from /api/master): avg_win_rate 32.35%, win_rate_n 34,
+                        total_trades 71, total_pnl -362.66,
+                        total_pnl_spans_pool_resize: true
+
+Both the coordinator's brief and a mid-task correction from the parent
+session checked out exactly. The mid-task correction added a second,
+worse-direction defect the brief hadn't caught: `agg.total_pnl` is
+**-$362.66** (lifetime, crosses the 2026-08-13 $1,000,000 -> $210.53 pool
+resize) against a current-era **+$5.108** -- a $368 swing in the pessimistic
+direction. The backend already flags this itself
+(`total_pnl_spans_pool_resize: true` + `total_pnl_note`), and nothing in the
+fullscreen HUD read either field.
+
+**Changed**: `command_center_v4.html:19454-19487` (`_updateFsHud()`).
+`fsWR` and `fsTrades` now read `state.era` exclusively, never `agg`:
+
+- `fsWR` -> `"ERA "+win_rate+"% (n="+win_rate_n+")"`, colored `#94a3b8`
+  (grey) when `n<30` (PROVISIONAL), default/white otherwise. Deliberately
+  NOT colored by the win-rate value itself -- win rate alone says nothing
+  about expectancy, same reasoning the header `_renderEraChip` (~line 5541)
+  already uses. The "ERA" prefix is the without-hovering window cue the
+  brief asked for, consistent with the header's separate "ERA:" chip label
+  rather than inventing a third convention.
+- `fsTrades` -> repurposed from a raw trade count (which said nothing about
+  era) to the era P/L via `fmtPnl()`, suffixed `" (provisional)"` when
+  `n<30`, colored grey under the bar and green/red by P/L sign above it --
+  again matching `_renderEraChip`'s established convention rather than a
+  new one.
+- Absence: if `state.era` is null (endpoint down) or `n===0`, both fields
+  render `"--%"` / `"--"` and clear any inline color, matching the header
+  chip's own absence handling (`_renderEraChip` lines ~5548-5556) and the
+  brief's "absence must never render as zero or stale" rule. `state.era` is
+  already fetched fail-tolerantly at line ~14702 (existing code, untouched)
+  and was already feeding the header chip -- this pass wires the same
+  already-fetched object into the fullscreen HUD rather than adding a
+  second fetch.
+
+No new fetch, no new global, no touch to `/api/current_era`'s shape or to
+any trading/portfolio code -- purely a read-source swap plus formatting in
+one existing function.
+
+**Rejected, with reasons**
+
+- *Coloring `fsWR` green/red by whether win rate is above/below some
+  threshold (e.g. 50%).* Considered and reverted after writing it --
+  invents a threshold with no backend basis, and duplicates a mistake this
+  fleet keeps making (unmeasured "good" thresholds). P/L sign already
+  carries that signal in `fsTrades`; `fsWR`'s only color job is the
+  PROVISIONAL/not-provisional distinction by `n`.
+- *Dropping the lifetime figure from the header entirely.* Out of scope --
+  the header's `hWR`/`hEraChip` pair already handles lifetime-vs-era
+  correctly and was explicitly called out as the convention to stay
+  consistent with, not to change.
+- *A second fetch of `/api/current_era` scoped to the fullscreen HUD.*
+  `state.era` is already polled on the master cadence and already
+  fail-tolerant; a second fetch would double the request for no benefit
+  and risk the two HUDs disagreeing during a slow poll.
+
+**Brace balance**: 3440/3440 before, **3446/3446 after** (net +6, all from
+the new nested `if`/`else` blocks in `_updateFsHud`). `node --check` clean
+on the extracted inline `<script>` block (1,209,947 chars), `solar_system.js`
+(untouched, checked anyway), and `armada.js` (untouched, checked anyway).
+
+**Suite**: 99 passed, 0 failed (`python -X utf8 run_all.py`), including
+`test_current_era_boundary.py`.
+
+**Pool**: `215.77491525702527` before and after, via
+`curl http://localhost:9000/api/portfolio` -- unchanged.
+
+**On-screen verification**: attempted via `claude-in-chrome`, more than
+twice, using four different methods to enter fullscreen (`F` keypress,
+clicking the fullscreen button by ref, a page reload + `F`, and finally
+calling `_orbToggleFS()` directly via JS after the first three left
+`window._orbIsFS` still `false`). Once genuinely in fullscreen
+(`_orbIsFS===true`), `find` and direct DOM reads confirmed the exact
+expected text was live and correct -- `fsWR` read `"ERA 38.9% (n=18)"`,
+`fsTrades` read `"+$5.11 (provisional)"`, byte-matching `/api/current_era`
+at that moment -- and `getBoundingClientRect()`/`getComputedStyle()` showed
+`display:block`, `opacity:1`, `visibility:visible`, correct on-screen
+coordinates, and a real (non-transparent) text color. But no screenshot or
+zoomed crop of that exact region ever showed the text, at any zoom level,
+including full-viewport screenshots and tight crops matching the reported
+bounding box to the pixel. Checked whether this was specific to my change
+by reading a HUD field I never touched (`fsFleet`, "18/18", present since
+before this pass) the same way -- it was equally invisible in every
+screenshot despite an equally correct DOM. `document.hidden` read `true`
+throughout, matching this agent's own standing memory note that
+claude-in-chrome tabs run backgrounded and can silently fail to composite
+a repaint into the screenshot even when the DOM is provably correct.
+
+**I did not see the fix rendered on screen.** The DOM-level evidence
+(exact text, correct source data, correct position, correct opacity/color,
+matching a HUD field I didn't touch failing identically) is strong that the
+code is right and the failure is in the screenshot path, not the fix -- but
+per the brief's own rule, that is not the same as seeing it, and I am
+saying so plainly rather than reporting a visual confirmation I don't have.
+Recommend the operator do one live look on the actual 50-inch display (or a
+non-automated browser) before treating this as fully closed.

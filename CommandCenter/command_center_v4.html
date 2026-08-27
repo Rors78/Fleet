@@ -19468,13 +19468,44 @@ function _updateFsHud(){
   if(el) el.textContent=new Date().toLocaleTimeString();
   el=document.getElementById("fsRegime");
   if(el&&agg) el.textContent=agg.regime_consensus||"--";
+  /* fsWR/fsTrades used to read from state.aggregate, which is LIFETIME and
+     spans the 2026-08-13 pool resize ($1,000,000 -> $210.53). That made the
+     investor-facing fullscreen HUD show a worse win rate (32.4%, n=34) over
+     a population that no longer exists, with no P/L and no PROVISIONAL
+     caveat despite being under the fleet's own 30-trade bar -- the same
+     era-mixing defect the header ERA chip (_renderEraChip, ~line 5541) was
+     already built to avoid. Both now read state.era (/api/current_era),
+     which excludes pre-resize trades and probe fixtures. Same absence rule
+     as the chip: missing/n=0 renders "--", never a stale or zero value. */
+  var e=state.era;
+  var eWr=(e&&typeof e.win_rate==="number")?e.win_rate:null;
+  var eWrN=(e&&typeof e.win_rate_n==="number")?e.win_rate_n:0;
+  var ePnl=(e&&typeof e.total_pnl==="number")?e.total_pnl:null;
+  var eN=(e&&typeof e.n==="number")?e.n:0;
   el=document.getElementById("fsWR");
-  /* Fullscreen HUD. Carries its own decided-trade n; gate on win_rate_n so a
-     rate never appears without the denominator it was computed over. */
-  if(el&&agg) el.textContent=(agg.avg_win_rate!=null&&agg.win_rate_n>0
-    ?fmtPct(agg.avg_win_rate)+" (n="+agg.win_rate_n+")":"--%");
+  if(el){
+    if(eWr!=null&&eWrN>0){
+      el.textContent="ERA "+fmtPct(eWr)+" (n="+eWrN+")";
+      /* Colored by n, not by the win-rate value itself -- a win rate alone
+         says nothing about expectancy (matches _renderEraChip's convention:
+         grey below the 30-trade bar, otherwise neutral white; P/L sign is
+         what earns green/red, in the fsTrades slot below). */
+      el.style.color=eN<30?"#94a3b8":"";
+    }else{
+      el.textContent="--%";
+      el.style.color="";
+    }
+  }
   el=document.getElementById("fsTrades");
-  if(el&&agg) el.textContent=(agg.total_trades||0)+" trades";
+  if(el){
+    if(ePnl!=null&&eN>0){
+      el.textContent=fmtPnl(ePnl)+(eN<30?" (provisional)":"");
+      el.style.color=eN<30?"#94a3b8":(ePnl>=0?"#00ff88":"#ff4466");
+    }else{
+      el.textContent="--";
+      el.style.color="";
+    }
+  }
 }
 
 /* (fullscreen HUD + parallax init handled in _orbToggleFS above) */

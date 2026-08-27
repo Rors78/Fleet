@@ -1860,9 +1860,41 @@ function _orbScaleOrbits(){
        upscaled bodies room; at the old spacing 30px planets overlapped their
        own star's moons. */
     var planetScale=starScale*0.42;
-    var planetRatios={confluence:1.10,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.30,rubberband:1.1,arbitrageur:0.90};
+    /* SCALE DRAMA pass (2026-08-27): old band was 0.85-1.30 (1.53x spread) —
+       measured, all six planets sat in one narrow ring and the system read
+       as a flat row of interchangeable dots. Real solar systems vary by
+       tens of x in orbital radius; widened to a real inner/outer structure
+       (0.55-2.70, 4.91x spread) instead of a tweak. Verified against
+       _ORB_ZOOM_MIN=0.38: worst case (furthest star + turtlesue's 2.70)
+       reaches ~1803 world units at a measured 1920x1080 layout, vs a
+       maxVisibleR of ~2899 at the zoom floor — 1096 units of margin, so
+       every body stays on screen even fully zoomed out. See
+       COSMOS_UPGRADE_LOG.md for the full measurement. */
+    var planetRatios={confluence:1.55,nexusbrain:0.80,gridzilla:0.55,turtlesue:2.70,rubberband:2.05,arbitrageur:1.05};
+    /* Kepler's third law, applied to the ACTUAL rendered radius instead of
+       CELESTIAL_HIERARCHY's now-stale orbitRadius field. Previously
+       hier.orbitSpeed was hand-tuned so T=k*r^1.5 held against the
+       hierarchy's OWN orbitRadius (130,117,111...) — a number that was
+       never what actually rendered on screen (planetScale*ratio, several
+       hundred px). The Kepler relationship was therefore coincidental
+       against an unused radius, not the real one. With orbit radii now
+       spanning 4.91x instead of 1.53x this would have been visible the
+       moment someone watched two planets orbit at the same angular rate —
+       so speed is now derived from the true on-screen radius at the same
+       point orbitRadius is assigned. k=0.831483 matches the existing
+       hierarchy's tuned constant (confirmed via
+       hier.orbitSpeed*orbitRadius^1.5 ~= 1.2027 for every planet, k=1/that)
+       so absolute pacing is unchanged for a body that stays near ratio 1.0;
+       only the relative spread across the widened band is new. */
     for(var pid in planetRatios){
-      if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
+      if(_orbNodes[pid]){
+        var _pRadius=planetScale*planetRatios[pid];
+        _orbNodes[pid].orbitRadius=_pRadius;
+        /* All six planets orbit prograde (no negative hier.orbitSpeed exists
+           in CELESTIAL_HIERARCHY today — verified), so no sign guard needed. */
+        _orbNodes[pid].orbitSpeed=0.831483/Math.pow(_pRadius,1.5);
+        _orbNodes[pid]._speedVaried=true; /* computed directly from the real radius here; skip the generic +-8% jitter pass below, which reads the now-stale hier.orbitSpeed */
+      }
     }
     /* CC-orbiting moons — layered rings between sun and stars. Inner ring
        pushed out from 0.38 to 0.46 so HiveMind clears the upscaled 95px sun
@@ -1892,9 +1924,18 @@ function _orbScaleOrbits(){
       if(_orbNodes[sid]) _orbNodes[sid].orbitRadius=Math.min(starScale*starRatios[sid],maxOrbit);
     }
     var planetScale=starScale*0.28;
-    var planetRatios={confluence:1.1,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.35,rubberband:1.2,arbitrageur:1.05};
+    /* SCALE DRAMA pass (2026-08-27): same widened band as the fullscreen
+       branch above, for consistency between the in-page preview and the
+       50" fullscreen view — this branch's smaller planetScale (0.28 vs
+       0.42) already keeps the resulting radii well inside maxOrbit. */
+    var planetRatios={confluence:1.55,nexusbrain:0.80,gridzilla:0.55,turtlesue:2.70,rubberband:2.05,arbitrageur:1.05};
     for(var pid in planetRatios){
-      if(_orbNodes[pid]) _orbNodes[pid].orbitRadius=planetScale*planetRatios[pid];
+      if(_orbNodes[pid]){
+        var _pRadius2=planetScale*planetRatios[pid];
+        _orbNodes[pid].orbitRadius=_pRadius2;
+        _orbNodes[pid].orbitSpeed=0.831483/Math.pow(_pRadius2,1.5);
+        _orbNodes[pid]._speedVaried=true;
+      }
     }
     var ccMoonScale=starScale*0.45;
     var ccMoonRatios={aegis:0.55,sentinel:0.7,chronos:0.85,hivemind:0.42};

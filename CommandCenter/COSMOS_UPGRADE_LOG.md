@@ -249,3 +249,127 @@ agents this pass and untouched here.
   proves the new code paths execute correctly under real inputs; it does
   NOT confirm the visual result reads as intended on screen -- that still
   needs a human/live-browser look before this ships to the 50" display.
+
+---
+
+## 2026-08-27 — SCALE DRAMA: orbital radius + body size spread, live Kepler speed
+
+Operator directive: "start taking massive leaps", "there is no human
+noticeable excitement". Scope: orbit-radius spread, body-size spread, and
+orbital period, in `command_center_v4.html`/`solar_system.js` only —
+nothing else touched.
+
+**Measured before**
+
+`planetRatios` (command_center_v4.html:1863, fullscreen branch) was
+`{confluence:1.10,nexusbrain:1.0,gridzilla:0.85,turtlesue:1.30,rubberband:1.1,
+arbitrageur:0.90}` — 1.53x spread. Planet `sz` in `CELESTIAL_HIERARCHY`
+(solar_system.js:376-381) was 24-27 — 1.125x spread. All six planets sat in
+one narrow ring at nearly the same apparent size.
+
+Also found, not previously logged: `hier.orbitSpeed` was hand-tuned so
+`speed*orbitRadius^1.5 = const` against `CELESTIAL_HIERARCHY`'s OWN
+`orbitRadius` field (130, 117, 111...) — but the number that actually
+renders on screen is `planetScale*planetRatios[pid]` (302-461 at a measured
+1920x1080), a completely different value never fed back into the speed
+calc. Checked with a real-execution probe: `speed*renderedRadius^1.5`
+varied 5.0-7.3 across the six planets pre-fix (should be one constant if
+truly Kepler-consistent) — the "Kepler's third law" claim in the existing
+comment was never true against what actually renders. This would have
+become visibly wrong (same angular rate at very different radii) the
+moment the orbit spread widened, so it had to be fixed as part of this
+pass, not left for later.
+
+**Changed**
+
+- `command_center_v4.html:1862-1889` (fullscreen branch) and `:1926-1937`
+  (in-page-widget branch): `planetRatios` widened to
+  `{gridzilla:0.55,nexusbrain:0.80,arbitrageur:1.05,confluence:1.55,
+  rubberband:2.05,turtlesue:2.70}` — 4.91x spread, real inner-cluster/
+  outer-world structure instead of a tweak. Both branches now also compute
+  `orbitSpeed=0.831483/Math.pow(orbitRadius,1.5)` at the same point
+  `orbitRadius` is assigned, deriving period from the REAL rendered radius
+  for the first time. `k=0.831483` reproduces the hierarchy's original
+  tuned pacing at ratio≈1.0 so absolute speed is unchanged there; only the
+  relative spread across the wider band is new. `_speedVaried=true` is set
+  on each planet node here so the generic ±8% anti-reclump jitter pass
+  later in the same function (which reads the now-superseded
+  `hier.orbitSpeed`) skips planets instead of double-applying against a
+  stale base.
+- `solar_system.js:376-381` `CELESTIAL_HIERARCHY` planet `sz`: widened
+  24-27 -> 16-33 (2.06x spread). turtlesue (already the outermost orbit,
+  2.70x ratio) is now also the dominant "gas giant"; gridzilla/arbitrageur
+  (innermost orbits) are the smallest worlds. Stays under the smallest
+  star's `sz` (34) at every measured viewport, preserving the
+  sun>star>planet>moon hierarchy. `orbitRadius`/`orbitSpeed` fields on
+  these six entries left untouched (legacy first-paint-only values now,
+  documented in a new comment — moons/stars still read them directly, out
+  of scope to touch).
+
+**Rejected, with reasons**
+
+- *Touching moon or star ratios/sizes.* Directive and measurement were
+  specifically about the flat planet ring; moons/stars were not part of
+  the measured 1.53x complaint and their composition (star triangle,
+  moon-tier compression) was independently tuned across multiple prior
+  rounds. Left alone.
+- *Rewriting `hier.orbitRadius`/`orbitSpeed` in CELESTIAL_HIERARCHY to match
+  the new live values.* Those fields are now first-paint-seed-only for
+  planets (overwritten every `_orbScaleOrbits()` call) but moons and stars
+  still consume them directly via the same hierarchy object — rewriting
+  would have needed auditing every non-planet consumer for no behavior
+  change. Documented instead of changed.
+- *A sign-guard on the new orbitSpeed formula for possible retrograde
+  planets.* Checked: all six planets have positive `hier.orbitSpeed` today,
+  verified by grep. `Math.pow(radius,1.5)` is always positive regardless,
+  so the guard would have been dead code; left out for simplicity.
+
+**Measured after (real-execution, not estimated)**
+
+Loaded the actual `solar_system.js` in Node via a throwing fake canvas
+context (arc/ellipse/createRadialGradient reject non-finite or negative
+radii) — not a reimplementation, the real file, `eval`'d — plus the exact
+`_orbScaleOrbits` fullscreen-branch formulas copied verbatim from the
+just-edited HTML lines, at a real 1920x1080 layout:
+
+- Planet orbit radius (from parent star): gridzilla 195 - turtlesue 958,
+  4.91x spread (was 302-461, 1.53x).
+- Planet rendered size: gridzilla 22.9px - turtlesue 47.1px, 2.06x spread
+  (was ~24-27px, 1.09x as actually rendered).
+- Orbital speed is now strictly monotonic with radius across all six
+  planets (verified computationally) — turtlesue's period is 10.88x
+  gridzilla's, matching the 4.91x radius spread via Kepler's r^1.5. Before
+  the fix, `speed*radius^1.5` varied 5.0-7.3x instead of holding constant.
+- Worst-case planet distance from CC (turtlesue, real `DeepField.
+  fitToFleet` bounding-box reach): **1850 world units**, against a measured
+  `maxVisibleR` (frame half-diagonal / `_ORB_ZOOM_MIN` 0.38) of **2899** —
+  1048 units of margin (64% occupancy at the true zoom floor). Every body
+  stays on screen fully zoomed out.
+- `DeepField.fitToFleet` (real function, real call) against the new
+  synthetic fleet bbox: `innerR=1790, outerR=2725`, correctly self-clamped
+  to `maxVisibleR*0.94=2725` — the annulus auto-adjusted to the wider
+  orbits with no separate DeepField edit needed, as expected from its
+  existing bbox-driven design.
+- `armada.js`: confirmed (again) zero references to `orbitRadius` or
+  `planetRatio` — grep returned nothing; it only reads `_orbNodes[id].x/.y`,
+  so ship placement follows the new radii automatically with no armada
+  edit required.
+
+**Suite**: 87/87, including `tests/deepfield_coverage.js`, run after the
+edit. Brace balance on `command_center_v4.html`: 3430/3430 (was 3428/3428;
++2/+2 from wrapping the planet loop bodies in an `if(){...}` block in both
+branches — matched, not a leak). `node --check` clean on both
+`solar_system.js` and `armada.js`.
+
+**Verification honesty**: Chrome automation was tried first (per
+instruction) — `localhost:9000` and `127.0.0.1:9000` both loaded a tab
+titled correctly but the frame itself was Chrome's internal error page on
+every attempt (2 fresh tabs, a 2s wait + reload in between), reproducing
+the exact recurring failure logged in agent memory
+(`project_armada_selective_bloom_2026_08_18`) and in the prior COSMOS pass
+above this one. `curl localhost:9000/` returned a clean 200/1.21MB
+throughout, confirming the server side is fine. Did NOT see this render on
+screen this session — the numbers above are real-execution-verified
+(actual file loaded and run, not reimplemented, throwing on any invalid
+radius) but not visually confirmed. Needs a human/live-browser look before
+the 50" display is trusted on this.

@@ -362,7 +362,16 @@ var CELESTIAL_HIERARCHY={
   oracle:    {type:"star",  parent:"cc",      orbitRadius:585, orbitSpeed:0.000085,mass:40,  sz:36, gravitationalRadius:180, grp:"intel",  pt:"gas_giant",  pers:"deliberate"},
   deepblue:  {type:"star",  parent:"cc",      orbitRadius:520, orbitSpeed:0.000115,mass:35,  sz:34, gravitationalRadius:160, grp:"intel",  pt:"ocean",      pers:"predatory"},
   nexus:     {type:"star",  parent:"cc",      orbitRadius:468, orbitSpeed:0.00007, mass:38,  sz:35, gravitationalRadius:170, grp:"novel",  pt:"binary",     pers:"omniscient"},
-  /* PLANETS — Trading bots. orbitSpeed = Kepler(orbitRadius).
+  /* PLANETS — Trading bots. orbitRadius/orbitSpeed below are the ORIGINAL
+     seed values, used only for the very first frame before _orbScaleOrbits()
+     runs (command_center_v4.html OrbNode constructor + _orbScaleOrbits).
+     SCALE DRAMA pass (2026-08-27): _orbScaleOrbits now recomputes BOTH the
+     real on-screen orbitRadius (planetScale*planetRatios[pid], a 4.91x
+     spread vs these seed values' narrow ratio) and a live Kepler-consistent
+     orbitSpeed from that real radius every time it runs — these two fields
+     are therefore legacy/first-paint-only for planets, not the live source
+     of truth. Left as-is rather than rewritten to avoid disturbing the
+     moon/star code paths that still read them directly.
      tilt: per-body inclination MULTIPLIER on top of the existing global
      _orbEllipseTiltY() aspect-fit compression (COSMOS pass #2, 2026-08-27).
      Deliberately narrow band (0.70-1.30) around 1.0 so no orbit exceeds the
@@ -372,13 +381,20 @@ var CELESTIAL_HIERARCHY={
      ecliptic disc, it does not re-open the aspect-fit/occupancy math. Stars
      and the sun are intentionally left untilted (no `tilt` key => 1.0):
      the star triangle's exact 120°-apart composition was independently
-     tuned across multiple rounds and is out of scope here. */
-  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.0008114,mass:15, sz:27, grp:"trader", pt:"terrestrial", pers:"aggressive", tilt:1.22},
-  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"analytical", tilt:0.78},
-  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.0010284,mass:10, sz:25, grp:"trader", pt:"crystal",     pers:"steady",     tilt:1.12},
-  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.0006173,mass:12, sz:26, grp:"trader", pt:"terrestrial", pers:"patient",    tilt:0.85},
-  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:10, sz:24, grp:"trader", pt:"elastic",     pers:"bouncy",     tilt:1.28},
-  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.0008710,mass:10, sz:24, grp:"trader", pt:"binary_pair", pers:"paired",     tilt:0.72},
+     tuned across multiple rounds and is out of scope here.
+     sz: SCALE DRAMA pass (2026-08-27) — was a 24-27 band (1.125x spread,
+     measured), read as six near-identical dots. Widened to a genuine
+     dominant-giant/small-world spread (16-33, 2.06x) so turtlesue reads as
+     this system's gas giant (paired with its outermost 2.70x orbit ratio
+     above) and gridzilla/arbitrageur read as small worlds (paired with
+     their innermost ratios). Stays under the smallest star's sz (34) at
+     every measured viewport so sun>star>planet>moon hierarchy holds. */
+  confluence:{type:"planet",defaultParent:"oracle",   orbitRadius:130,orbitSpeed:0.0008114,mass:15, sz:22, grp:"trader", pt:"terrestrial", pers:"aggressive", tilt:1.22},
+  nexusbrain:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:12, sz:19, grp:"trader", pt:"terrestrial", pers:"analytical", tilt:0.78},
+  gridzilla: {type:"planet",defaultParent:"oracle",   orbitRadius:111,orbitSpeed:0.0010284,mass:10, sz:16, grp:"trader", pt:"crystal",     pers:"steady",     tilt:1.12},
+  turtlesue: {type:"planet",defaultParent:"oracle",   orbitRadius:156,orbitSpeed:0.0006173,mass:12, sz:33, grp:"trader", pt:"terrestrial", pers:"patient",    tilt:0.85},
+  rubberband:{type:"planet",defaultParent:"nexus",    orbitRadius:117,orbitSpeed:0.0009503,mass:10, sz:20, grp:"trader", pt:"elastic",     pers:"bouncy",     tilt:1.28},
+  arbitrageur:{type:"planet",defaultParent:"deepblue",orbitRadius:124,orbitSpeed:0.0008710,mass:10, sz:17, grp:"trader", pt:"binary_pair", pers:"paired",     tilt:0.72},
   /* MOONS — Small support bots. Compressed further Round 2: 18-22 -> 20-26
      band so AEGIS (still largest moon by design, hex shield untouched per
      directive) is only 1.3x the smallest moon, not 2x. tilt: same

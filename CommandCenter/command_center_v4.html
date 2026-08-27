@@ -226,6 +226,25 @@
   height: 14px;
   flex-shrink: 0;
 }
+
+/* ── 5. Idle cursor hide (cinema mode) ──
+   ROOT CAUSE this rule exists to defeat: the orbital canvas hover handler
+   re-stamps $orbitalCanvas.style.cursor = "pointer"/"grab" on EVERY
+   mousemove, and the #fsHud overlay carries its own pointer. An inline
+   `cursor` on a child always beats an inherited `cursor:none` on the
+   parent wrap, so hiding the wrap alone hid nothing that was actually
+   under the pointer. Only `!important` outranks an inline declaration.
+
+   Applied to the element AND all descendants, and to #fsHud, which lives
+   on <body> (not inside the wrap) so it is not covered by a descendant
+   selector rooted at the wrap. Class-toggled rather than inline so the
+   per-frame inline writes cannot clobber it. */
+body.orb-cursor-hidden #orbitalWrap,
+body.orb-cursor-hidden #orbitalWrap *,
+body.orb-cursor-hidden #fsHud,
+body.orb-cursor-hidden #fsHud * {
+  cursor: none !important;
+}
 </style>
 </head>
 <body>
@@ -1994,19 +2013,35 @@ var _orbHiddenSiblings=[];
    is cleared on exit so it cannot fire against a torn-down view. */
 var _orbCursorTimer=null;
 var _ORB_CURSOR_IDLE_MS=2200;
+var _ORB_CURSOR_CLASS='orb-cursor-hidden';
+/* Bound on `document`, not on the wrap. Real mouse movement lands on the
+   orbital canvas or on #fsHud (a <body> child, outside the wrap entirely),
+   so a wrap-scoped listener misses whole regions of the cinema view.
+   document-level capture sees every one of them.
+
+   The hide itself is a class on <body>, not an inline style: the canvas
+   hover handler writes $orbitalCanvas.style.cursor on every mousemove and
+   would overwrite any inline value we set. See the .orb-cursor-hidden rule
+   in the <style> block for why it needs !important. */
 function _orbCursorShow(){
-  if(!_orbIsFS||!$orbitalWrap) return;
-  $orbitalWrap.style.cursor='';
-  if(_orbCursorTimer) clearTimeout(_orbCursorTimer);
+  if(document.body.classList.contains(_ORB_CURSOR_CLASS)) document.body.classList.remove(_ORB_CURSOR_CLASS);
+  if(_orbCursorTimer){clearTimeout(_orbCursorTimer);_orbCursorTimer=null;}
+  if(!_orbIsFS) return;
   _orbCursorTimer=setTimeout(function(){
     /* Re-check: the view may have been exited during the wait. */
-    if(_orbIsFS&&$orbitalWrap) $orbitalWrap.style.cursor='none';
+    if(_orbIsFS) document.body.classList.add(_ORB_CURSOR_CLASS);
   },_ORB_CURSOR_IDLE_MS);
 }
 function _orbCursorStop(){
   if(_orbCursorTimer){clearTimeout(_orbCursorTimer);_orbCursorTimer=null;}
-  if($orbitalWrap) $orbitalWrap.style.cursor='';
+  document.body.classList.remove(_ORB_CURSOR_CLASS);
 }
+/* Bound once at parse time, unconditionally. _orbCursorShow no-ops out of
+   fullscreen, which is cheaper and safer than add/remove pairs that leak
+   on an unexpected exit path. */
+document.addEventListener('mousemove',_orbCursorShow,true);
+document.addEventListener('mousedown',_orbCursorShow,true);
+document.addEventListener('wheel',_orbCursorShow,{capture:true,passive:true});
 
 function _orbToggleFS(){
   if(!$orbitalWrap) return;
@@ -2023,14 +2058,8 @@ function _orbToggleFS(){
     document.body.appendChild($orbitalWrap);
     /* 2. Brute-force inline styles on wrap */
     $orbitalWrap.style.cssText='position:fixed;top:0;left:0;width:100vw;height:100vh;z-index:99999;margin:0;padding:0;background:#07070c;';
-    /* Arm the idle-hide. Listener is added once and left in place — it
-       no-ops when not fullscreen, which is cheaper and less error-prone
-       than add/remove pairs that can leak on an unexpected exit path. */
-    if(!$orbitalWrap._cursorBound){
-      $orbitalWrap._cursorBound=true;
-      $orbitalWrap.addEventListener('mousemove',_orbCursorShow);
-      $orbitalWrap.addEventListener('mousedown',_orbCursorShow);
-    }
+    /* Arm the idle-hide. Listeners live on `document` and are bound once at
+       parse time (see _orbCursorShow); this just starts the countdown. */
     _orbCursorShow();
     /* 3. Force canvas to fill wrap */
     if(cvs) cvs.style.cssText='width:100%;height:100%;display:block;position:absolute;top:0;left:0;';
@@ -2078,6 +2107,11 @@ function _orbToggleFS(){
     document.documentElement.style.overflow='';
     /* 5. Hide HUD */
     if(hud) hud.style.display='none';
+    /* 6. Disarm the idle-hide and force the pointer back. Without this an
+       exit taken while the cursor was hidden leaves <body> carrying
+       .orb-cursor-hidden and the pointer invisible over the whole
+       dashboard — its panels are full of clickable rows. */
+    _orbCursorStop();
   }
   $orbitalWrap.classList.toggle("fullscreen",_orbIsFS);
   if(btn) btn.innerHTML=_orbIsFS?"\u2716":"\u26F6";
@@ -2120,17 +2154,150 @@ window._orbToggleFS=_orbToggleFS;
    Storage key: cosmos_vivarium_v1 in localStorage. Schema is intentionally
    flat/small (one record per bot id) so a corrupt/missing key just resets
    to "day one" rather than breaking the page — never throws. ═══════════ */
+/* ═══════════════════════════════════════════════════════════════════════
+   ORBITAL PHASE PERSISTENCE — cosmos_orbit_v1  (2026-08-27)
+
+   Operator: "the stuff that developes dont carry over when restarted."
+   Every body's orbitAngle integrates forward all session (OrbNode.update,
+   ~L1433) but was re-seeded from the hardcoded _fixedAngles table on every
+   load, so the whole system teleported back to its day-one composition on
+   each F5. This persists the phase so the sky is where you left it.
+
+   Stored: {v, epoch, a:{id:angleRadians}}. Angles are wrapped into [0,2pi)
+   and rounded to 4dp (~0.006 deg) — 19 bodies lands under 400 bytes.
+
+   NOT PERSISTED, deliberately: anything that is a MEASUREMENT of fleet
+   state. posCount/whaleCount/energy/direction/statusLabel, _orbEventRate,
+   the constellation label, and armada ship state are all re-derived live
+   from the API every poll. A cached measurement rendered as current is the
+   worst failure this dashboard has; orbital phase is pure geometry with no
+   API equivalent, which is what makes it safe to restore.
+
+   ABSENT vs UNREADABLE: a missing key is a legitimate first run and
+   silently keeps the day-one angles. A key that is present but corrupt is
+   NOT first-run — it is logged loudly and the day-one angles are kept as a
+   visible fallback. The two must never collapse into the same silent path;
+   that failure class has bitten this project before. ═══════════════════ */
+var ORBIT_KEY="cosmos_orbit_v1";
+var _orbPhaseLastSave=0;
+var _ORB_PHASE_SAVE_MS=20000; /* match the DeepField write cadence */
+
+/* Returns true only if real angles were applied to _orbNodes. */
+function _orbPhaseLoad(){
+  var raw;
+  try{
+    raw=localStorage.getItem(ORBIT_KEY);
+  }catch(e){
+    /* localStorage itself threw (private mode, blocked storage, quota).
+       This is UNREADABLE, not first-run — say so. */
+    console.warn("[COSMOS] orbital phase unreadable (storage threw):",e&&e.message,"— keeping day-one angles");
+    return false;
+  }
+  if(raw==null) return false; /* ABSENT — genuine first run, stay quiet. */
+  var parsed;
+  try{
+    parsed=JSON.parse(raw);
+  }catch(e){
+    console.warn("[COSMOS] orbital phase CORRUPT (unparseable JSON) — keeping day-one angles. Raw length:",raw.length);
+    return false;
+  }
+  if(!parsed||typeof parsed!=="object"||!parsed.a||typeof parsed.a!=="object"){
+    console.warn("[COSMOS] orbital phase CORRUPT (unexpected shape) — keeping day-one angles.");
+    return false;
+  }
+  var applied=0,rejected=0;
+  for(var id in parsed.a){
+    if(!Object.prototype.hasOwnProperty.call(parsed.a,id)) continue;
+    var nd=_orbNodes[id];
+    if(!nd||nd.fixed) continue; /* body no longer exists / is the fixed sun */
+    var ang=parsed.a[id];
+    /* Reject non-finite values rather than letting NaN poison the render
+       loop — one NaN angle propagates to x/y and blanks the body forever. */
+    if(typeof ang!=="number"||!isFinite(ang)){rejected++;continue;}
+    nd.orbitAngle=ang;applied++;
+  }
+  if(rejected>0) console.warn("[COSMOS] orbital phase: rejected "+rejected+" non-finite angle(s)");
+  if(applied===0){
+    console.warn("[COSMOS] orbital phase present but yielded 0 usable angles — keeping day-one angles.");
+    return false;
+  }
+  return true;
+}
+
+function _orbPhaseSave(){
+  if(!_orbNodes) return;
+  var a={},n=0,TAU=Math.PI*2;
+  for(var id in _orbNodes){
+    var nd=_orbNodes[id];
+    if(!nd||nd.fixed) continue;
+    var ang=nd.orbitAngle;
+    if(typeof ang!=="number"||!isFinite(ang)) continue; /* never persist NaN */
+    /* Wrap before storing: orbitAngle grows without bound all session, and
+       an unwrapped float loses precision (and bloats) over long uptimes. */
+    ang=ang%TAU; if(ang<0) ang+=TAU;
+    a[id]=Math.round(ang*10000)/10000;
+    n++;
+  }
+  if(!n) return;
+  try{
+    localStorage.setItem(ORBIT_KEY,JSON.stringify({v:1,epoch:Date.now(),a:a}));
+  }catch(e){
+    /* Quota or blocked storage. Log once per session so a silently
+       non-persisting cosmos is visible rather than mysterious. */
+    if(!_orbPhaseSaveWarned){
+      _orbPhaseSaveWarned=true;
+      console.warn("[COSMOS] orbital phase NOT saved (storage write failed):",e&&e.message);
+    }
+  }
+}
+var _orbPhaseSaveWarned=false;
+/* Flush on the way out so a reload loses at most the last frame of phase,
+   not up to a full save interval. pagehide fires on paths visibilitychange
+   misses (bfcache, tab close); both are cheap and idempotent here. */
+window.addEventListener('pagehide',function(){_orbPhaseSave();});
+document.addEventListener('visibilitychange',function(){if(document.hidden) _orbPhaseSave();});
+
 var VIVARIUM_KEY="cosmos_vivarium_v1";
 var _vivarium=null; /* {botId: {trades, wins, losses, streak, streakType, scar, lastSeenDay}} */
 
+/* ABSENT vs UNREADABLE (2026-08-27): this previously did `catch(e){_vivarium={}}`
+   plus `raw?...:{}`, which collapsed three different situations — genuine
+   first run, unparseable JSON, and localStorage throwing — into one silent
+   "day one" state. A bot with a week of accretion would come back looking
+   pristine and nobody would know anything was lost. Absent is still silent
+   (it IS first run); unreadable is now loud, and sets _vivDegraded so the
+   corrupt value is never overwritten by a save that would destroy whatever
+   might still be recoverable from it. */
+var _vivDegraded=false;
 function _vivLoad(){
+  var raw;
   try{
-    var raw=localStorage.getItem(VIVARIUM_KEY);
-    _vivarium=raw?JSON.parse(raw):{};
-    if(!_vivarium||typeof _vivarium!=="object") _vivarium={};
-  }catch(e){ _vivarium={}; }
+    raw=localStorage.getItem(VIVARIUM_KEY);
+  }catch(e){
+    _vivarium={};_vivDegraded=true;
+    console.warn("[COSMOS] vivarium unreadable (storage threw):",e&&e.message,"— running with empty history; NOT saving over it");
+    return;
+  }
+  if(raw==null){ _vivarium={}; return; } /* ABSENT — genuine first run. */
+  var parsed;
+  try{
+    parsed=JSON.parse(raw);
+  }catch(e){
+    _vivarium={};_vivDegraded=true;
+    console.warn("[COSMOS] vivarium CORRUPT (unparseable JSON) — running with empty history; NOT saving over it. Raw length:",raw.length);
+    return;
+  }
+  if(!parsed||typeof parsed!=="object"||Array.isArray(parsed)){
+    _vivarium={};_vivDegraded=true;
+    console.warn("[COSMOS] vivarium CORRUPT (unexpected shape) — running with empty history; NOT saving over it.");
+    return;
+  }
+  _vivarium=parsed;
 }
 function _vivSave(){
+  /* Refuse to write over a value we could not read. Overwriting it would
+     turn a recoverable corruption into permanent data loss. */
+  if(_vivDegraded) return;
   try{ localStorage.setItem(VIVARIUM_KEY,JSON.stringify(_vivarium)); }catch(e){ /* storage full/blocked — vivarium just won't persist this session */ }
 }
 function _vivRec(botId){
@@ -2274,6 +2441,18 @@ function _initOrbital(){
     var _initTiltY=_orbIsFS?Math.max(0.40,Math.min(1.0,(_orbLH/_orbLW)*1.04)):0.85;
     nd.x=parent.x+Math.cos(nd.orbitAngle)*r;
     nd.y=parent.y+Math.sin(nd.orbitAngle)*r*_initTiltY;
+  }
+  /* Restore orbital phase from the previous session, then re-seat positions.
+     Must run AFTER the fixed-angle seeding above so a successful restore
+     overwrites day-one angles; on ABSENT or UNREADABLE we keep them. */
+  if(_orbPhaseLoad()){
+    var _pTiltY=_orbIsFS?Math.max(0.40,Math.min(1.0,(_orbLH/_orbLW)*1.04)):0.85;
+    for(var pid in _orbNodes){
+      var pnd=_orbNodes[pid];if(pnd.fixed) continue;
+      var pp=_orbNodes[pnd.currentParent];if(!pp) pp=_orbNodes.cc;
+      pnd.x=pp.x+Math.cos(pnd.orbitAngle)*pnd.orbitRadius;
+      pnd.y=pp.y+Math.sin(pnd.orbitAngle)*pnd.orbitRadius*_pTiltY;
+    }
   }
 
   for(var j=0;j<_SYN_PAIRS.length;j++){
@@ -4266,6 +4445,14 @@ function _orbRender(timestamp){
     }
   }
 
+  /* Persist orbital phase on the same ~20s cadence. Outside the _deepField
+     block on purpose — the orbits must keep their phase even if the deep
+     field failed to initialise. */
+  if(!_orbPhaseLastSave||_drawNow-_orbPhaseLastSave>_ORB_PHASE_SAVE_MS){
+    _orbPhaseLastSave=_drawNow;
+    _orbPhaseSave();
+  }
+
   /* L0.5: TIER 1 — Parallax star field (always on) */
   if(!_parallaxInited&&typeof _initParallaxStars==="function") _initParallaxStars();
   if(_parallaxInited){
@@ -5927,7 +6114,7 @@ var VOICE_CONFIG={
   oracle:     {f:55,   t:"sine",     desc:"Jovian rumble. Whistler descends on deep scan."},
   deepblue:   {f:40,   t:"sine",     desc:"Ocean sonar pulse. Clicks on whale detection."},
   confluence: {f:65.4, t:"sine",     desc:"Low tactical hum. Steady recon tone."},
-  phitex:     {f:110,  t:"sawtooth", desc:"Pulsar buzz through bandpass. Ticks on phase flip."},
+  phitex:     {f:110,  t:"sine",     desc:"Pulsar drone through bandpass. Ticks on phase flip."},
   aegis:      {f:73.4, t:"sine",     desc:"Shield drone with close harmonic beat."},
   nexus:      {f:440,  t:"sine",     desc:"Council bell. High crystalline major third. Quiet deliberation."},
   sentinel:   {f:880,  t:"sine",     desc:"High ice whistle. Sweeps on forecast update."},
@@ -5939,7 +6126,7 @@ var VOICE_CONFIG={
   contrarian: {f:82,   t:"sine",     desc:"Cold counter-tone. Rises against the crowd."},
   arbitrageur:{f:146.8,t:"sine",     desc:"Paired frequency. Mirrors spread oscillation."},
   chronos:    {f:261.6,t:"sine",     desc:"Middle C tick. Clock pulse every 4-6 seconds."},
-  hivemind:   {f:180,  t:"sawtooth", desc:"Swarm buzz through bandpass. Hive resonance."}
+  hivemind:   {f:180,  t:"sine",     desc:"Swarm drone through bandpass. Hive resonance."}
 };
 
 var BOT_ROLES={
@@ -6008,14 +6195,26 @@ function playVoicePreview(botId){
   var ac=(_sound&&_sound.ctx)?_sound.ctx:new(window.AudioContext||window.webkitAudioContext)();
   if(ac.state==="suspended") ac.resume();
   var now=ac.currentTime;
-  var o=ac.createOscillator(); o.type=vc.t; o.frequency.value=vc.f;
+  /* Deepblue-style organic preview, not a UI beep: two detuned sines beating
+     slowly against each other, through a slow lowpass sweep and a long
+     soft-attack/release envelope. Routes through _sound's own verb send
+     when available so the preview sits in the same "vast cold place" as
+     the live soundtrack instead of sounding like a dry console blip. */
+  var o1=ac.createOscillator();o1.type="sine";o1.frequency.value=vc.f;
+  var o2=ac.createOscillator();o2.type="sine";o2.frequency.value=vc.f*1.006;
+  var lp=ac.createBiquadFilter();lp.type="lowpass";
+  lp.frequency.setValueAtTime(vc.f*4,now);
+  lp.frequency.linearRampToValueAtTime(vc.f*2.2,now+2.4);
   var g=ac.createGain();
   g.gain.setValueAtTime(0, now);
-  g.gain.linearRampToValueAtTime(0.12, now+0.1);
-  g.gain.setValueAtTime(0.12, now+1.6);
-  g.gain.exponentialRampToValueAtTime(0.001, now+2);
-  o.connect(g); g.connect(ac.destination);
-  o.start(now); o.stop(now+2.2);
+  g.gain.linearRampToValueAtTime(0.12, now+0.35);
+  g.gain.setValueAtTime(0.12, now+1.8);
+  g.gain.exponentialRampToValueAtTime(0.001, now+2.6);
+  o1.connect(lp);o2.connect(lp);lp.connect(g);
+  var out=(_sound&&_sound.initialized&&_sound.master)?_sound.master:ac.destination;
+  g.connect(out);
+  if(_sound&&_sound.initialized&&_sound._verbSend) g.connect(_sound._verbSend);
+  o1.start(now);o2.start(now);o1.stop(now+2.8);o2.stop(now+2.8);
 }
 window.playVoicePreview=playVoicePreview;
 
@@ -14585,6 +14784,11 @@ var _sound=window._sound={
        very top, not to darken the body of the sound. */
     var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=key==="jupiter"?7000:key==="saturn"?7500:6500;lp.Q.value=0.5;
     srcNode.connect(lp);lp.connect(g);g.connect(this.ambient);
+    /* Stash the live filter node so _adaptAmbient can breathe its ceiling
+       with the deep-field epoch (see epoch tie-in there) — each rotation
+       swap creates a fresh node, so this always points at the CURRENT
+       section's filter, never a stale one from a previous bed track. */
+    this._bedFilterLP=lp;
     /* The main bed was the one ambient layer NOT reaching the convolution
        reverb (chatter/solar/stingers/deep-foundation all do) — it's the
        loudest layer, so its absence from the verb send was the single
@@ -14909,15 +15113,19 @@ var _sound=window._sound={
 
   _botDown:function(data){
     var band=this._botBands[(data||{}).bot]||{lo:200,hi:600,pan:0};
-    /* Fading, detuning drone — signal draining away, deliberately unresolved */
+    /* Fading, detuning drone — signal draining away, deliberately unresolved.
+       Two sines drifting apart (o2 detunes further as it fades) reads as a
+       signal losing coherence, not a single electronic sweep-down beep. */
     var c=this.ctx,now=c.currentTime,self=this;
     var o=c.createOscillator();o.type="sine";o.frequency.setValueAtTime(band.lo,now);
     o.frequency.exponentialRampToValueAtTime(Math.max(20,band.lo*0.4),now+4.5);
+    var o2=c.createOscillator();o2.type="sine";o2.frequency.setValueAtTime(band.lo*1.01,now);
+    o2.frequency.exponentialRampToValueAtTime(Math.max(18,band.lo*0.36),now+4.5);
     var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.setValueAtTime(band.hi,now);lp.frequency.linearRampToValueAtTime(80,now+4.5);
     var g=c.createGain();g.gain.setValueAtTime(0.15,now);g.gain.exponentialRampToValueAtTime(0.001,now+4.3);
     var pn=c.createStereoPanner();pn.pan.value=band.pan;
-    o.connect(lp);lp.connect(pn);pn.connect(g);g.connect(this.events);g.connect(this._verbSend);
-    o.start(now);o.stop(now+4.5);
+    o.connect(lp);o2.connect(lp);lp.connect(pn);pn.connect(g);g.connect(this.events);g.connect(this._verbSend);
+    o.start(now);o2.start(now);o.stop(now+4.5);o2.stop(now+4.5);
   },
 
   _botUp:function(data){
@@ -14931,12 +15139,31 @@ var _sound=window._sound={
   _adaptAmbient:function(regime,aegisScore){
     if(!this.initialized) return;
     var c=this.ctx,now=c.currentTime;
+    /* Deep-field epoch tie-in: the visual field (solar_system.js _DF_EPOCHS)
+       already walks through named eras (quiet/bloom/traffic/ember/silence/
+       convergence) that bias nebula density, saturation and visitor
+       traffic. Read the SAME live instance the canvas reads — never a
+       recomputed guess — so the soundscape's mood tracks what's actually
+       on screen instead of drifting independently. Absent state (deepField
+       not loaded yet) falls back to neutral multipliers, no fabrication. */
+    var ep=(window._deepField&&window._deepField.epoch_current)||null;
+    var epNeb=ep&&ep.neb!=null?ep.neb:1.0;   /* density -> darker/brighter filter */
+    var epDrift=ep&&ep.drift!=null?ep.drift:1.0; /* motion -> subtle rate nudge */
     if(this._gains.jupiter_main){
       /* Rebased off the new 0.34 baseline (was 0.22) so regime scaling stays
          proportional to the louder recording-forward mix. */
       var jVol=regime==="VOLATILE"?0.44:regime==="CHAOTIC"?0.50:regime==="SYSTEMIC"?0.56:0.34;
       jVol*=Math.max(0.6,0.5+aegisScore*0.5);
+      /* 'silence' epoch (neb 0.35) pulls the bed down further, 'convergence'
+         (neb 1.3) lifts it slightly — a sparse sky reads as a quieter room. */
+      jVol*=Math.max(0.55,Math.min(1.15,0.7+epNeb*0.3));
       this._gains.jupiter_main.gain.linearRampToValueAtTime(jVol,now+4);
+    }
+    if(this._bedFilterLP){
+      /* Bed's top-end ceiling breathes with epoch density too — 'ember'
+         (sat 1.55) darkens slightly, 'quiet'/'bloom' stay open. */
+      var epLp=6500+Math.max(-1500,Math.min(1500,(epNeb-1)*1200));
+      this._bedFilterLP.frequency.linearRampToValueAtTime(epLp,now+6);
     }
     if(this._gains.solar_main){
       var sVol=0.05+Math.max(0,(1-aegisScore)*0.1);
@@ -14945,8 +15172,10 @@ var _sound=window._sound={
     if(this._bedActiveEl){
       /* Streamed <audio> element — set playbackRate directly (no AudioParam
          ramp available on HTMLMediaElement), small deltas so it reads as mood
-         not pitch-shift. */
+         not pitch-shift. Epoch drift adds a further +/-3% so a 'convergence'
+         era (drift 1.3) feels marginally more alive than 'silence' (0.6). */
       var rate=regime==="CHAOTIC"?0.82:regime==="VOLATILE"?0.90:regime==="TRENDING"?1.05:0.95;
+      rate*=Math.max(0.94,Math.min(1.06,0.94+epDrift*0.09));
       try{this._bedActiveEl.playbackRate=rate;}catch(e){}
     }
   },
@@ -15210,16 +15439,21 @@ var _sound=window._sound={
 
   playHover:function(botId){
     if(!this.initialized||!this.enabled) return;
-    /* Hover — a very faint high glassy tick, not a NASA-buffer whisper
-       (that depended on the dead this._buffers.earth read — same round-1
-       decode bug as the stingers). Colored by the bot's own band. */
+    /* Hover — a very faint breath, not a UI tick. Two close sines beating
+       softly through a lowpass, slow attack, so it reads as a distant
+       presence stirring rather than a click. Colored by the bot's own band. */
     var band=this._botBands[botId]||{lo:800,hi:2000,pan:0};
     var c=this.ctx,now=c.currentTime;
-    var o=c.createOscillator();o.type="sine";o.frequency.value=Math.max(1200,band.hi*1.2);
-    var g=c.createGain();g.gain.setValueAtTime(0.035,now);g.gain.exponentialRampToValueAtTime(0.0005,now+0.25);
+    var f=Math.max(500,band.hi*0.7);
+    var o1=c.createOscillator();o1.type="sine";o1.frequency.value=f;
+    var o2=c.createOscillator();o2.type="sine";o2.frequency.value=f*1.01;
+    var lp=c.createBiquadFilter();lp.type="lowpass";lp.frequency.value=f*2.5;
+    var g=c.createGain();g.gain.setValueAtTime(0,now);
+    g.gain.linearRampToValueAtTime(0.035,now+0.12);
+    g.gain.exponentialRampToValueAtTime(0.0005,now+0.55);
     var pn=c.createStereoPanner();pn.pan.value=band.pan;
-    o.connect(pn);pn.connect(g);g.connect(this.events);
-    o.start(now);o.stop(now+0.3);
+    o1.connect(lp);o2.connect(lp);lp.connect(pn);pn.connect(g);g.connect(this.events);
+    o1.start(now);o2.start(now);o1.stop(now+0.6);o2.stop(now+0.6);
   },
 
   /* ===== ARMADA XENOLANGUAGE ENGINE =====
@@ -15343,7 +15577,10 @@ var _sound=window._sound={
       var ratio=formantRatios[vi]||(2+vi);
       var f0=baseFreq*ratio*shape[0];
       var f1=baseFreq*ratio*shape[1];
-      var o=c.createOscillator();o.type=vi===0?"sawtooth":"sine";
+      /* voice 0 uses triangle (not sawtooth) as the formant carrier — still
+         harmonically rich enough for the bandpass to sculpt a vowel-like
+         shape, without the raw buzzy edge a sawtooth reads as up close. */
+      var o=c.createOscillator();o.type=vi===0?"triangle":"sine";
       o.frequency.setValueAtTime(f0,startAt);
       o.frequency.linearRampToValueAtTime(f1,startAt+durSec*0.7);
       var bp=c.createBiquadFilter();bp.type="bandpass";bp.frequency.setValueAtTime(f0,startAt);

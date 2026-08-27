@@ -117,6 +117,16 @@ let _rafId = null;
 let _station = null; // CC mothership station rig (Task 3, 2026-07-30)
 let _lastCCMeta = { health: 1, eventRate: 0, aegisScore: 0.02, pnlSign: 0 };
 let _pendingCCNode = null;
+// CC CARGO RUN (2026-08-27): which trader ship CC is currently ferrying
+// toward, real-data-derived from syncOpenPositions()'s reservation scan —
+// see the assignment site there for how botId/x/y are picked. null means
+// "no live reservation anywhere" -> CC holds its dock position at the hub.
+// Deliberately NOT set from onEvent()/TRADE_OPEN: reservations are the
+// ground truth for "capital is deployed right now" (a trade can close
+// without a TRADE_CLOSE event reaching this tab — see syncOpenPositions'
+// own cold-start-reconciliation comment above), so this reuses that exact
+// same poll rather than adding a second, possibly-disagreeing source.
+let _ccCargoTarget = null; // {botId, x, y, amount} | null
 let _disposed = true;
 let _bloom = null; // BloomPipeline instance, built lazily in init()
 
@@ -2225,18 +2235,24 @@ function buildStation(seed) {
 
   // hullLength anchors the 2D-body-size -> WebGL-scale mapping:
   // StationRig.update does `scale = (size2D * 3.3) / hullLength`, so this
-  // is a DIVISOR -- a larger value renders the station SMALLER.
+  // is a DIVISOR -- a larger value renders the station SMALLER. (Real trap,
+  // hit twice now: raising this to "look right" as a geometry dimension
+  // SHRINKS the render. Always re-measure live, never reason from the
+  // number alone.)
   //
-  // Set to 11.2, matching the Enterprise saucer it replaced (the old sphere
-  // was 10.4), NOT to the 12.4 outer-ring diameter. Feeding the ring
-  // diameter here shrank the station 9.7% against its predecessor for the
-  // same 2D allocation, because the ring's widest points are mostly empty
-  // space: what the eye reads as the body is the hub drum, and the ring
-  // reads as structure around it. Measured live at cc.size=76 -- scale went
-  // 22.39 -> 20.23 purely from the constant change, with no geometry
-  // shrinking. CC is the largest 2D body in the field (76 vs 41 for the
-  // next), and it should look it.
-  g.userData.hullLength = 11.2;
+  // RAISED 11.2 -> 14.2 (2026-08-27, operator: "the sizing of the cc is
+  // kinda rediculas. its half the size of the system"). Measured live in
+  // Chrome at the settled composition (_orbLiveView zoom=0.38, cc.size~73):
+  // the outer ring's rendered screen radius was 52.7px against the 2D
+  // sun-glow's own 27.8px radius underneath it -- a 1.9x ratio, and the
+  // ring visually overlapped/touched the two nearest stars (oracle,
+  // deepblue). 14.2 brings that to ~38.9px, a 1.5x ratio: still visibly
+  // the largest, most detailed body in the frame (vs. oracle/nexus at
+  // ~1.9-2x the 2D sun radius each), but no longer reads as swallowing
+  // half the visible cluster. Do not raise this further without
+  // re-measuring -- see the StationRig.update comment on the same line
+  // for the current numbers to reproduce.
+  g.userData.hullLength = 14.2;
   return { group: g, core, coreGlow, coreHalo, coreMat, coreGlowMat, coreHaloMat, outerEdges, innerEdges, dockingLights,
     sl: { rimMat: slRimMat, flare: slFlare, flareMat: slFlareMat, mainMat: slMainMat, glowMat: slGlowMat } };
 }
@@ -2789,6 +2805,19 @@ class StationRig {
     this.currentScale = 1;
     this.scaleTarget = 1;
     this.sceneRef = null;
+    // CC CARGO RUN (2026-08-27, operator: "the cc in the middle is allowed
+    // to move around... or transfer goods... something besides shoot out
+    // data signal lines"). CC is no longer glued to node.x/node.y — it
+    // drifts a bounded distance off its dock position toward whichever
+    // trader currently holds the fleet's largest live reservation
+    // (_ccCargoTarget, set in syncOpenPositions() from real
+    // /api/portfolio reservation amounts; null when the pool is idle).
+    // driftX/Y is the CURRENT smoothed world-space offset from dock,
+    // eased toward the target offset every frame in update() below —
+    // never snapped, so the motion reads as travel, not a teleport.
+    this.driftX = 0;
+    this.driftY = 0;
+    this.dockedBotId = null; // last-known cargo target, for the console/debug view
     // Superlaser state machine (battle-station rebuild 2026-07-30; ITEM 4b
     // round 4 2026-07-31 removed the idle auto-fire timer entirely — see
     // update()'s 'idle' branch below): idle (waits indefinitely for
@@ -2815,12 +2844,40 @@ class StationRig {
     if (!node) { this.group.visible = false; return; }
     this.group.visible = true;
 
-    const scenePos = worldToScene(node.x, node.y, view, worldW, worldH);
+    // CC CARGO RUN: dock is node.x/node.y (the fixed hub anchor the 2D
+    // system, signal lanes, and orbit math all still treat as CC's real
+    // position — untouched). driftX/Y is a WORLD-SPACE offset added on
+    // top, eased toward a target offset every frame. Capped at
+    // maxDriftWorld so CC visibly leans out toward whoever it's ferrying
+    // to without ever leaving the hub cluster or crossing into another
+    // star system's territory.
+    const maxDriftWorld = 46;
+    let targetDriftX = 0, targetDriftY = 0;
+    this.dockedBotId = _ccCargoTarget ? _ccCargoTarget.botId : null;
+    if (_ccCargoTarget) {
+      const dx = _ccCargoTarget.x - node.x, dy = _ccCargoTarget.y - node.y;
+      const dist = Math.hypot(dx, dy) || 1;
+      const lean = Math.min(1, dist / maxDriftWorld);
+      targetDriftX = (dx / dist) * maxDriftWorld * lean;
+      targetDriftY = (dy / dist) * maxDriftWorld * lean;
+    }
+    // Slow ease (dt*0.8 -> multi-second transit), deliberately much slower
+    // than the dt*4 scale ease above: a mothership relocating should read
+    // as a deliberate journey, not a snap. Also slower than any ship's own
+    // orbital motion so CC never looks like it's chasing a ship 1:1.
+    this.driftX += (targetDriftX - this.driftX) * Math.min(1, dt * 0.8);
+    this.driftY += (targetDriftY - this.driftY) * Math.min(1, dt * 0.8);
+
+    const scenePos = worldToScene(node.x + this.driftX, node.y + this.driftY, view, worldW, worldH);
     const sz = Math.max(1, node.currentSize || 104);
     // Same "hullSpan proportional to 2D body radius" contract ships use
-    // (see _tick's targetHullSpan), but stretched further (3.3x vs 2.6x)
-    // since the CC hub is explicitly exempt from the general size caps
-    // and should read as the scene's centerpiece.
+    // (see _tick's targetHullSpan). hullLength (userData, buildStation) is
+    // the divisor here -- see its own comment for the measured scale trap.
+    // 3.3x/hullLength=14.2 was measured (2026-08-27) to put the station's
+    // OUTER RING at ~1.5x the 2D sun-glow's screen radius -- clearly still
+    // the biggest, most detailed body in frame without visually swallowing
+    // the adjacent stars the way the prior 11.2 (~1.9x) did. See buildStation
+    // for the full measured before/after.
     const targetSpan = sz * 3.3;
     this.scaleTarget = targetSpan / this.group.userData.hullLength;
     this.currentScale += (this.scaleTarget - this.currentScale) * Math.min(1, dt * 4);
@@ -3543,12 +3600,31 @@ const Armada = {
     if (!Array.isArray(reservations)) return;
     const openBotIds = new Set();
     const dirByBot = {}; // botId -> true(long)/false(short), last-reservation-wins
+    // CC CARGO RUN: track the single largest live reservation by dollar
+    // amount, fleet-wide. This is real /api/portfolio data (the same
+    // reservations array command_center_v4.html already polls and passes
+    // in here every sync tick) — never invented. Ties keep whichever bot
+    // was already the target, so CC doesn't flicker between two reservations
+    // of equal size on every poll.
+    let topAmount = -1, topBotId = null;
     for (let i = 0; i < reservations.length; i++) {
       const r = reservations[i];
       if (!r || !r.bot_id) continue;
       const id = String(r.bot_id).toLowerCase();
       openBotIds.add(id);
       if (r.direction) dirByBot[id] = !/SHORT/i.test(r.direction);
+      const amt = Number(r.amount) || 0;
+      if (amt > topAmount) { topAmount = amt; topBotId = id; }
+    }
+    if (topBotId && _ships[topBotId] && _ships[topBotId]._pendingNode) {
+      const tn = _ships[topBotId]._pendingNode;
+      _ccCargoTarget = { botId: topBotId, x: tn.x, y: tn.y, amount: topAmount };
+    } else {
+      // No live reservation anywhere (pool fully idle) -> CC has nowhere
+      // real to go. Declared: this is the ONLY way _ccCargoTarget clears,
+      // so "CC is docked" always means "measured zero deployed capital",
+      // never a guess.
+      _ccCargoTarget = null;
     }
     for (const id in _ships) {
       const rig = _ships[id];

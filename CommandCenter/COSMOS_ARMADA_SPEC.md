@@ -36,4 +36,25 @@ Current renderer = CPU 2D canvas. The leap:
 - Verification bar: screenshots judged against the stranger test + "does a trade visibly become a mining run?" Watch a real TRADE_OPEN/CLOSE from the event bus drive the ship behavior before claiming done.
 
 ## Status
-- QUEUED behind: (1) fill-viewport composition agent, (2) soundtrack maestro first pass. One agent at a time on command_center_v4.html.
+- Phase 1 (ships standalone) + Phase 2 (live integration) SHIPPED 2026-07-30 (commit fb45c49).
+
+## PHASE 3 — FULL 3D MIGRATION (Jeremy, 2026-07-30 evening)
+Verdict on Phase 2: "those ships look like satellites. and the planets and everything else need it also."
+1. **Ship silhouette redesign**: at live scale (30-60px) the hulls read as satellites (tube + panels = Hubble). Ships must read as VESSELS: elongated directional hulls, prominent engine glow/trails as the dominant visual signature, motion language (banking, thruster flare). Engine light is what says "ship" at distance — lean on emissives over geometry.
+2. **Everything goes 3D**: migrate ALL celestial bodies to the three.js layer — the 10 intel/novel bodies keep their approved identities but as real 3D objects (Oracle = 3D observatory eye-station, Deep Blue = ocean world w/ sonar, Chronos = clock spire station, AEGIS = 3D hex shield array, NEXUS = geodesic megastructure w/ 14 engine lights, PHITEX = golden spiral structure, Sentinel = lighthouse station, Contrarian = retrograde two-tone body, HiveMind = queen + drone swarm, Trinity =三-body). The 2D canvas keeps: starfield background, orbit paths, labels, HUD, decorative deep-space objects. 2D body drawing retires in fullscreen once each 3D replacement is approved.
+3. Keep: vivarium data driving 3D visuals, dark-tone/xenolanguage audio hooks, stable-camera zoom semantics, migration physics as the simulation.
+- Verification bar unchanged: screenshots judged by orchestrator's eyes, stranger test, live-event proof.
+
+## FACTIONS (Jeremy 2026-07-30: "make three factions and they get 2 each")
+Faction = trading thesis. Faction P/L (sum of members, gross, from real data only) is a live scoreboard of which philosophy is winning.
+- **VEINRUNNERS** ("the vein keeps running" — momentum): TurtleSue + NexusBrain. Warm gold trim/insignia.
+- **TIDEWRIGHTS** ("everything comes back" — mean reversion): Rubberband + Gridzilla. Cyan-teal trim.
+- **THE ACCORD** ("truth lives between things" — relative value/consensus): Arbitrageur + Confluence. Silver-violet trim.
+Expression: shared hull trim + small insignia glyph per faction; xenolanguage dialects within a faction share a phonetic family (Veinrunners rising contours, Tidewrights cyclical vowel returns, Accord paired call-echo structures); optional faction totals on the CC HUD. Never fabricate faction stats — sum real member data only.
+
+**Support roles (Jeremy 2026-07-30: "make the other ten have roles within the factions")** — assigned by real data-service affinity:
+- Veinrunners: Deep Blue = Prospector (whale flow), Sentinel = Pathfinder (drift forecasts), Chronos = Timekeeper (temporal windows)
+- Tidewrights: NEXUS = Surveyor (market character/structure), PHITEX = Engineer (thermodynamic equilibrium), Contrarian = Diver (sentiment fade)
+- The Accord: Oracle = Cartographer (ranks all claims; feeds Confluence in real code), HiveMind = Quartermaster (portfolio relations), Trinity = Herald (breadth scanning)
+- AEGIS = the Warden — faction-NEUTRAL by design: it governs all factions' deployment (true to code); shield of the mothership.
+Expression: stations carry faction trim lights; color the EXISTING real data-flow link lines by source faction; station tooltips show role title. Links must reflect real wiring only — never draw a faction link that isn't a real data flow.

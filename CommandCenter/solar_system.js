@@ -911,54 +911,90 @@ var PLANET_VISUALS = {
             ctx.arc(x,y,scLen,scA-0.06,scA+0.06);ctx.closePath();ctx.fill();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
-            /* ═══ THE ALL-SEEING IRIS (Round 2 redesign, 2026-07-30) ═══
-               Oracle was a photorealistic Jupiter clone — a stock-solar-
-               system lookalike, exactly the failure mode flagged. This
-               overlay stamps a giant scanning eye across the whole disk:
-               an iris ring + pupil that dilates on a slow forecast cadence,
-               plus a rotating radial "scanning" sweep of short spokes (like
-               an iris contracting/reading) so it visibly moves within 2s.
-               Sized to occupy the full disk (iris ring at 0.86r, pupil at
-               0.30-0.42r) so it clears the 40%-footprint / alpha>=0.5 bar
-               even from across the room. */
+            /* ═══ THE WATCHING-EYE STORM (Round 3 redesign, 2026-08-27) ═══
+               Operator, verbatim on the Round 2 "all-seeing iris": "i am
+               also not liking the nexus and oricle look. they look un
+               natural" — a flat concentric bullseye (ring + radial spokes
+               + dilating pupil, all in fixed SCREEN space centered on the
+               disk) sitting on top of an otherwise NASA-grade Jupiter. It
+               never rotated with the planet, never foreshortened at the
+               limb, and ignored the light direction — every cue that says
+               "real object" on every other body here. Every other storm on
+               this sphere (the Great Red Spot above) is anchored to a
+               lat/lon and projected with _sphProject, so it turns with the
+               planet and vanishes correctly over the limb. This keeps
+               Oracle's "watching eye" identity — the giveaway that this
+               particular gas giant is the fleet's prophetic/forecast bot —
+               but rebuilds it as exactly that kind of anchored storm: a
+               polar cyclonic eye (a real, named class of Jovian weather)
+               with a dark cyclonic core and a bright surrounding eyewall,
+               foreshortened and rotated like the GRS instead of stamped
+               flat on the viewport. */
+            var eyeLat = Math.asin(0.02);
+            var eyeLon = 1.15;
+            var eyeSpin = now/26000; /* same differential-rotation clock as the bands/GRS */
+            var eyeP = _sphProject(eyeLat, eyeLon, r, eyeSpin, 0.055);
+            if (eyeP.vis <= 0) return;
+            var ex = x + eyeP.x, ey = y + eyeP.y;
+            var eAng = Math.atan2(eyeP.y, eyeP.x);
+            var fore = Math.max(0.07, eyeP.fore);
+            var eyeVis = eyeP.vis;
             var pupilPulse = 0.30 + 0.12*Math.sin(now/2600);
-            var pupilR = Math.max(0.1, r*pupilPulse);
-            /* Sclera wash — warm gold, distinguishes from a plain dark eye */
-            var scleraG = ctx.createRadialGradient(x,y,r*0.55,x,y,r*0.90);
-            scleraG.addColorStop(0,'rgba(0,0,0,0)');
-            scleraG.addColorStop(1,'rgba(235,205,130,0.16)');
-            ctx.fillStyle=scleraG;ctx.beginPath();ctx.arc(x,y,r*0.90,0,Math.PI*2);ctx.fill();
-            /* Iris ring — bold, high-alpha, radial striations like a real iris */
-            var irisR = r*0.62;
-            var spokeCount = 24;
-            var spokeSpin = now/9000;
-            for (var si=0; si<spokeCount; si++){
-                var sa = spokeSpin + (si/spokeCount)*Math.PI*2;
-                var flick = 0.55+0.30*Math.sin(now/1400+si*0.7);
-                ctx.strokeStyle = 'rgba(255,214,140,'+(0.30*flick).toFixed(3)+')';
-                ctx.lineWidth = Math.max(0.8, r*0.028);
+            var eyeR = r*0.40;
+            var pupilR = Math.max(0.1, eyeR*pupilPulse);
+
+            ctx.save();
+            ctx.globalAlpha = eyeVis;
+            ctx.translate(ex, ey);
+            ctx.rotate(eAng);
+            ctx.scale(fore, 1);
+            ctx.rotate(-eAng);
+
+            /* Eyewall — bright ring of upwelling cloud around the calm
+               core, the real visual signature of a cyclonic eye. Soft, not
+               a hard-edged decal. */
+            var wallG = ctx.createRadialGradient(0,0,pupilR*0.9,0,0,eyeR);
+            wallG.addColorStop(0,'rgba(255,225,160,0)');
+            wallG.addColorStop(0.55,'rgba(255,220,150,0.20)');
+            wallG.addColorStop(0.82,'rgba(250,205,120,0.30)');
+            wallG.addColorStop(1,'rgba(230,180,95,0)');
+            ctx.fillStyle=wallG;
+            ctx.beginPath(); ctx.arc(0,0,eyeR,0,Math.PI*2); ctx.fill();
+
+            /* Spiral banding within the eyewall — curved strokes, not
+               straight radial spokes, so it reads as swirling weather. */
+            var bandCount = 5;
+            for (var bi2=0; bi2<bandCount; bi2++){
+                var b0 = eyeSpin*2.2 + (bi2/bandCount)*Math.PI*2;
+                ctx.strokeStyle = 'rgba(255,214,140,'+(0.16+0.06*Math.sin(now/1400+bi2)).toFixed(3)+')';
+                ctx.lineWidth = Math.max(0.6, r*0.016);
                 ctx.beginPath();
-                ctx.moveTo(x+Math.cos(sa)*pupilR*1.15, y+Math.sin(sa)*pupilR*1.15);
-                ctx.lineTo(x+Math.cos(sa)*irisR, y+Math.sin(sa)*irisR);
+                for (var sstep=0; sstep<=14; sstep++){
+                    var sfrac = sstep/14;
+                    var sang = b0 + sfrac*1.9;
+                    var srad = pupilR*1.1 + sfrac*(eyeR-pupilR*1.1);
+                    var sx2 = Math.cos(sang)*srad, sy2 = Math.sin(sang)*srad;
+                    if (sstep===0) ctx.moveTo(sx2,sy2); else ctx.lineTo(sx2,sy2);
+                }
                 ctx.stroke();
             }
-            /* Iris outer ring — crisp edge, alpha 0.55+, this is the primary
-               silhouette element that must read at a glance */
-            ctx.strokeStyle = 'rgba(255,225,160,0.62)';
-            ctx.lineWidth = Math.max(1.2, r*0.045);
-            ctx.beginPath(); ctx.arc(x,y,irisR,0,Math.PI*2); ctx.stroke();
-            /* Pupil — near-black, dilates slowly (the "forecast confidence"
-               breathing), always the strongest single feature on the disk */
-            var pupG = ctx.createRadialGradient(x,y,0,x,y,pupilR);
-            pupG.addColorStop(0,'rgba(10,6,2,0.92)');
-            pupG.addColorStop(0.75,'rgba(20,12,4,0.80)');
-            pupG.addColorStop(1,'rgba(30,18,6,0)');
-            ctx.fillStyle=pupG; ctx.beginPath(); ctx.arc(x,y,pupilR,0,Math.PI*2); ctx.fill();
-            /* Single bright catch-light — sells "eye" over "target reticle" */
-            ctx.fillStyle='rgba(255,250,235,0.55)';
+
+            /* Calm core — near-black, dilates slowly (the "forecast
+               confidence" breathing), the strongest single feature. */
+            var pupG = ctx.createRadialGradient(0,0,0,0,0,pupilR);
+            pupG.addColorStop(0,'rgba(12,7,3,0.88)');
+            pupG.addColorStop(0.75,'rgba(24,14,5,0.72)');
+            pupG.addColorStop(1,'rgba(32,19,7,0)');
+            ctx.fillStyle=pupG; ctx.beginPath(); ctx.arc(0,0,pupilR,0,Math.PI*2); ctx.fill();
+            /* Catch-light, offset toward the true sun direction so it stays
+               consistent with the rest of the sphere's lighting. */
+            var localLA = Math.atan2(ly,lx) - eAng;
+            ctx.fillStyle='rgba(255,250,235,0.45)';
             ctx.beginPath();
-            ctx.arc(x-pupilR*0.32,y-pupilR*0.32,Math.max(0.1,pupilR*0.18),0,Math.PI*2);
+            ctx.arc(Math.cos(localLA)*pupilR*0.32, Math.sin(localLA)*pupilR*0.32,
+                    Math.max(0.1,pupilR*0.16), 0, Math.PI*2);
             ctx.fill();
+            ctx.restore();
         }
     },
 
@@ -1811,60 +1847,100 @@ var PLANET_VISUALS = {
     nexus: {
         /* ═══ THE COUNCIL LATTICE — 14 mathematical engines orbiting one verdict ═══
            Retired 2026-07-28: NEXUS previously rendered as a bright blue-white
-           pulsar (dense neutron-star core + twin lighthouse beams strobing at
-           a 1500ms rotation) which read as visually out-of-place — a raw star
-           dropped among NASA-textured planets and, now, a geodesic data
-           lattice at Command Center. Redesigned to sit in that same "data/
-           structure" register CC now establishes: a small teal geodesic core
-           (echoing CC's lattice language, since NEXUS is itself a council
-           that aggregates 14 engines into one verdict — the same shape of
-           job CC does for the whole fleet) surrounded by exactly 14 engine
-           motes in slow, stately orbit, each a faint point of light that
-           flares briefly when that engine fires. No beams, no strobing,
-           no white-hot core — NEXUS now reads as "a council in session",
-           not "a lighthouse". Palette pulled from NEXUS's real BOTS_DEF
-           color (#2dd4bf teal) instead of the old pulsar's unrelated blue,
-           so the rendered body finally matches the color used everywhere
-           else it appears (label, HUD chips, sound pan table). */
+           pulsar. Redesigned 2026-07-30 to a small teal geodesic core with an
+           orbiting wireframe shell + 14 motes.
+
+           REDESIGNED AGAIN 2026-08-27 — operator, verbatim: "i am also not
+           liking the nexus and oricle look. they look un natural." Their
+           screenshot showed NEXUS reading as "a faceted teal polyhedron with
+           a ring of dots" — an ICON, not an astronomical body. Root cause:
+           the actual lit sphere (`cr`) only ever covered 0.42r, so most of
+           the disk was empty halo, and the wireframe shell (drawn in
+           overlay(), unclipped, at 1.35*cr) was left as the dominant visible
+           silhouette instead of a supporting accent — exactly backwards from
+           every sibling star (Oracle/Deep Blue), where a full NASA-grade
+           lit sphere IS the body and any identity marker rides on top of it.
+
+           Fix: the sphere now fills the whole disk like its siblings, with
+           real surface character built from the SAME texture machinery
+           everyone else uses (_bakeMottleTex for cellular teal cloud-deck
+           variation, _sphBand for two soft banded zones, _ibAtmoScatter's
+           existing rim-light pass applies automatically via drawPlanet's
+           photometric finish). The geodesic shell and 14 engine motes stay
+           — they are NEXUS's real distinguishing identity, "a council of
+           14 engines" — but are now pulled in tight around the sphere
+           (1.02x-1.15x radius, not 1.35x free-floating) so they read as an
+           instrument shell ORBITING a real body, not as the body itself. */
         baseColor: [20, 130, 130],
         atmosphere: [45, 212, 191],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* Compact core — teal, steady, no strobe */
-            var cr = Math.max(0.1, r * 0.42);
-            var haloG = ctx.createRadialGradient(x, y, Math.max(0.1, cr * 0.8), x, y, r);
-            haloG.addColorStop(0,   'rgba(110,230,220,0.20)');
-            haloG.addColorStop(0.4, 'rgba(45,180,180,0.09)');
-            haloG.addColorStop(1,   'rgba(15,60,60,0)');
-            ctx.fillStyle = haloG;
+            /* Full-disk base tone, matching the undercoat convention used by
+               Oracle/Deep Blue so the limb-darkening/terminator pass below
+               (drawPlanet's shared photometric finish) has real color to
+               act on instead of transparent halo. */
+            var nxBase = ctx.createRadialGradient(x, y, 0, x, y, r);
+            nxBase.addColorStop(0,    'rgba(150,235,225,0.55)');
+            nxBase.addColorStop(0.45, 'rgba(70,190,182,0.50)');
+            nxBase.addColorStop(0.8,  'rgba(30,140,138,0.48)');
+            nxBase.addColorStop(1,    'rgba(16,90,92,0.50)');
+            ctx.fillStyle = nxBase;
             ctx.beginPath(); ctx.arc(x, y, r, 0, Math.PI * 2); ctx.fill();
+
+            /* Cellular mottling — cloud-deck variation, the same believable-
+               surface-without-literal-craters texture Phitex/Hivemind use,
+               tinted to NEXUS's real teal (#2dd4bf-derived). */
+            var nxTex = _bakeMottleTex('nexus', _texBucket(r), [45, 190, 180]);
+            _stampSurfTex(ctx, nxTex, x, y, r);
+
+            /* Two soft equatorial bands, spherically projected like every
+               other banded body — gives a genuine curvature cue distinct
+               from Oracle/Deep Blue's tighter Jovian/Neptunian sets so
+               NEXUS stays visually its own body, not a re-skin. */
+            var nTilt2 = 0.14;
+            var nxBands = [
+                { y: -0.18, h: 0.20, c: [90, 220, 205], a: 0.20 },
+                { y:  0.10, h: 0.22, c: [25, 150, 145], a: 0.24 }
+            ];
+            for (var nb = 0; nb < nxBands.length; nb++) {
+                var b2 = nxBands[nb];
+                var yT2 = Math.max(-0.999, Math.min(0.999, b2.y));
+                var yB2 = Math.max(-0.999, Math.min(0.999, b2.y + b2.h));
+                var latT2 = Math.asin(yT2), latB2 = Math.asin(yB2);
+                var latC2 = (latT2 + latB2) / 2;
+                var latH2 = Math.abs(latB2 - latT2) / 2;
+                latH2 += latH2 * 0.5 + 0.012;
+                var nSpin2 = now / 32000 + Math.sin(now / 15000 + nb) * 0.04;
+                var bG2 = ctx.createLinearGradient(x, y + Math.sin(latT2) * r, x, y + Math.sin(latB2) * r);
+                bG2.addColorStop(0,   'rgba(' + b2.c[0] + ',' + b2.c[1] + ',' + b2.c[2] + ',' + (b2.a * 0.5) + ')');
+                bG2.addColorStop(0.5, 'rgba(' + b2.c[0] + ',' + b2.c[1] + ',' + b2.c[2] + ',' + b2.a + ')');
+                bG2.addColorStop(1,   'rgba(' + b2.c[0] + ',' + b2.c[1] + ',' + b2.c[2] + ',' + (b2.a * 0.5) + ')');
+                _sphBand(ctx, x, y, r, latC2, latH2, nSpin2, nTilt2, bG2, lx, ly, true, latH2 * 0.2, nb * 2, now / 9000);
+            }
+
+            /* Core glow — a brighter inner nucleus (the "verdict" the
+               council converges on), now a lit FEATURE on a full sphere
+               rather than being the entire sphere. */
+            var cr = Math.max(0.1, r * 0.34);
             var coreG = ctx.createRadialGradient(x, y, 0, x, y, cr);
-            coreG.addColorStop(0,   'rgba(225,255,250,0.95)');
-            coreG.addColorStop(0.35,'rgba(150,235,225,0.85)');
-            coreG.addColorStop(0.7, 'rgba(45,190,180,0.55)');
-            coreG.addColorStop(1,   'rgba(20,110,110,0.30)');
+            coreG.addColorStop(0,    'rgba(225,255,250,0.55)');
+            coreG.addColorStop(0.4,  'rgba(150,235,225,0.38)');
+            coreG.addColorStop(0.75, 'rgba(45,190,180,0.20)');
+            coreG.addColorStop(1,    'rgba(20,110,110,0)');
             ctx.fillStyle = coreG;
-            ctx.beginPath(); ctx.arc(x, y, cr, 0, Math.PI * 2); ctx.fill();
-            /* Specular hotspot — soft, not blown-out white */
-            var specG = ctx.createRadialGradient(
-                x - cr * 0.22, y - cr * 0.22, 0,
-                x - cr * 0.22, y - cr * 0.22, Math.max(0.1, cr * 0.5)
-            );
-            specG.addColorStop(0,   'rgba(255,255,255,0.55)');
-            specG.addColorStop(1,   'rgba(255,255,255,0)');
-            ctx.fillStyle = specG;
             ctx.beginPath(); ctx.arc(x, y, cr, 0, Math.PI * 2); ctx.fill();
         },
         overlay: function(ctx, x, y, r, lx, ly, now) {
             ctx.save();
-            var cr = Math.max(0.1, r * 0.42);
+            var cr = Math.max(0.1, r * 0.34);
 
-            /* ── Small geodesic wire shell around the core — echoes the
-               Command Center lattice language at NEXUS's own scale, tying
-               "council that aggregates 14 engines" back to "hub that
-               aggregates 18 bots" without literally reusing CC's centerpiece. ── */
+            /* ── Geodesic wire shell — pulled in tight (1.0x-1.15x r, was
+               1.35x*cr ≈ 0.57r, i.e. floating well inside the old empty
+               halo). Now hugs the actual sphere surface, reading as an
+               instrument lattice worn BY the body rather than a free-
+               floating polyhedron icon replacing it. ── */
             if(typeof _ccLatticeVerts !== "undefined" && typeof _ccProjectVertex === "function"){
                 var latAngle = now / 40000; /* one slow revolution ≈ 40s — a peer's pace, not a strobe */
-                var latR = cr * 1.35;
+                var latR = r * 1.06;
                 var pts = new Array(_ccLatticeVerts.length);
                 for(var vi=0; vi<_ccLatticeVerts.length; vi++){
                     pts[vi] = _ccProjectVertex(_ccLatticeVerts[vi], latAngle, 0.5, latR);
@@ -1874,12 +1950,12 @@ var PLANET_VISUALS = {
                     var pa = pts[e[0]], pb = pts[e[1]];
                     var avgZ = (pa.z+pb.z)/2;
                     var depthA = 0.3 + 0.6*((avgZ+latR)/(latR*2));
-                    /* Boosted 2026-07-30 (round 2 redesign): was 0.16*depthA
-                       (~0.05-0.13) — sub-perceptual. This wireframe IS
-                       NEXUS's stated identity (14-engine council lattice),
-                       so it needs to actually read. */
-                    ctx.strokeStyle = 'rgba(110,240,230,' + (0.55*depthA).toFixed(3) + ')';
-                    ctx.lineWidth = Math.max(0.8, r*0.035);
+                    /* Softer than the Round 2 pass (0.55*depthA -> 0.34):
+                       the shell is now a supporting accent on top of a real
+                       lit sphere, not the primary silhouette carrying the
+                       body's entire identity. */
+                    ctx.strokeStyle = 'rgba(110,240,230,' + (0.34*depthA).toFixed(3) + ')';
+                    ctx.lineWidth = Math.max(0.6, r*0.022);
                     ctx.beginPath();
                     ctx.moveTo(x+pa.x, y+pa.y);
                     ctx.lineTo(x+pb.x, y+pb.y);
@@ -3463,11 +3539,22 @@ var _DF_DRIFT_HUES = [212, 220, 232, 34, 28];
 var _DF_DRIFTER_SLOTS = 14;    /* far-field galaxies + dust banks */
 /* Independent arrival chains — the combined sighting rate is their sum.
    This is the coarse knob; gapMs inside _visitorAt is the fine one. */
-/* Hull silhouettes. Each is drawn as a distinct polygon in the visitor
-   draw block — adding one here without adding its case there falls back
-   to 'dart', which is a visible-but-harmless degradation rather than a
-   crash. */
-var _DF_VISITOR_HULLS = ['dart', 'wing', 'ring', 'shard', 'tri'];
+/* Hull silhouettes. Each is drawn as a distinct polygon/ellipse-set in the
+   visitor draw block — adding one here without adding its case there falls
+   back to 'saucer', which is a visible-but-harmless degradation rather than
+   a crash.
+
+   REPLACED 2026-08-27: the original set ('dart','wing','ring','shard','tri')
+   was mostly pointed wedge/triangle silhouettes. Operator, verbatim: "the
+   alien ships that fly by are cone shaped, and not disks." At the length
+   this class actually renders (11-19 world units, i.e. SMALLER than every
+   moon's radius — see the len bump below), a wedge reads exactly as a flat
+   triangle/cone, not as a craft. All five forms below are disc/saucer
+   profiles instead — a wide flattened ellipse hull (the rim) plus a raised
+   dome offset toward the viewer, so every silhouette in the family reads as
+   "flying saucer" while still giving 5-way variety (dome size, rim
+   thickness, double-deck vs single, lens vs bell proportions). */
+var _DF_VISITOR_HULLS = ['saucer', 'bell', 'lens', 'ring', 'cap'];
 /* Deliberately not the nebula, drifter, or fleet-gold palettes: a
    visitor should not be mistakable for scenery OR for a fleet body. */
 var _DF_VISITOR_HUES = [148, 168, 44, 12, 288, 196];
@@ -3911,8 +3998,14 @@ DeepField.prototype._visitorAt = function (slot, elapsedMs) {
         phase: 'transit', slot: slot, idx: idx, t01: t,
         x: x, y: y, heading: bearing,
         hull: hull, hue: hue,
-        len: 11 + rng() * 19,
-        aspect: 0.16 + rng() * 0.40,      /* how fat the silhouette is */
+        /* Bumped 2026-08-27: old range (11-19) was smaller than every
+           moon's radius (20-26) and read as a speck, not a sighting.
+           Measured against CELESTIAL_HIERARCHY: moons sz 20-26, planets
+           24-27, stars 34-36. 22-42 puts a visitor solidly in "moon to
+           small-star" screen footprint — big enough to register from
+           across the room without ever matching/exceeding a star. */
+        len: 22 + rng() * 20,
+        aspect: 0.34 + rng() * 0.30,      /* rim flatness: how wide the disc reads */
         wake: 1.6 + rng() * 3.4,          /* wake length, in hull-lengths */
         spin: (rng() - 0.5) * 0.9,        /* slow roll while crossing */
         lights: lights,
@@ -4168,54 +4261,85 @@ DeepField.prototype.draw = function (ctx, now, zoomBoost) {
         ctx.lineTo(-L * 0.55, 0);
         ctx.stroke();
 
-        /* Hull. Angular on purpose — every other body in this scene is a
-           circle or a soft cloud, so a hard silhouette reads instantly as
-           manufactured rather than astronomical. The form is drawn from
-           this arrival's own hash, so consecutive visitors do not share a
-           shape. An unrecognised hull name falls through to 'dart': a
-           visible, harmless default rather than a blank frame. */
-        ctx.rotate(vz.spin * vz.t01);
-        var W2 = L * vz.aspect;
-        ctx.fillStyle = 'hsla(' + vz.hue + ',26%,88%,' + (vA * 0.92) + ')';
+        /* Hull. REPLACED 2026-08-27 — operator, verbatim: "the alien ships
+           that fly by are cone shaped, and not disks." The previous set was
+           hard-edged wedge polygons (dart/wing/shard/tri), which at this
+           object's small screen footprint reads exactly as a flat triangle
+           or cone rather than as a craft. Every form below is instead a
+           classic saucer profile: a wide flattened RIM ellipse (the disc)
+           plus a smaller DOME ellipse raised toward the viewer, so the
+           silhouette family reads unmistakably as "flying saucer" the way
+           every other body in this scene reads as sphere or cloud. The 5
+           hull names still vary proportions/deck-count so consecutive
+           sightings look different, same guarantee as before. A slow bank
+           (subtle y-scale wobble tied to vz.spin/t01) sells "craft in
+           flight" rather than a static cutout. An unrecognised hull name
+           falls through to 'saucer': visible, harmless default. */
+        var bank = 1 - 0.22 * Math.sin(vz.spin * 6 + vz.t01 * Math.PI * 2);
+        ctx.scale(1, Math.max(0.35, bank));
+        var RIM = L * 0.62;                 /* rim semi-major axis (along heading) */
+        var RIMH = Math.max(0.6, RIM * vz.aspect * 0.42); /* rim semi-minor (flatness) */
+        var domeScale, domeYoff, deck2;
+        if (vz.hull === 'bell') { domeScale = 0.60; domeYoff = -RIMH * 0.92; deck2 = false; }
+        else if (vz.hull === 'lens') { domeScale = 0.30; domeYoff = -RIMH * 0.55; deck2 = false; }
+        else if (vz.hull === 'ring') { domeScale = 0.42; domeYoff = -RIMH * 0.70; deck2 = true; }
+        else if (vz.hull === 'cap') { domeScale = 0.50; domeYoff = -RIMH * 1.05; deck2 = false; }
+        else { domeScale = 0.46; domeYoff = -RIMH * 0.80; deck2 = false; } /* saucer */
+
+        /* Underside glow — a shallow soft wash beneath the rim, the classic
+           "lit from within" UFO cue. Drawn first so the hull sits on top. */
+        var ugR = Math.max(0.1, RIM * 1.05);
+        var ug = ctx.createRadialGradient(0, RIMH * 0.5, 0, 0, RIMH * 0.5, ugR);
+        ug.addColorStop(0, 'hsla(' + vz.hue + ',85%,68%,' + (vA * 0.30) + ')');
+        ug.addColorStop(0.6, 'hsla(' + vz.hue + ',85%,60%,' + (vA * 0.10) + ')');
+        ug.addColorStop(1, 'hsla(' + vz.hue + ',85%,60%,0)');
+        ctx.fillStyle = ug;
+        ctx.beginPath(); ctx.ellipse(0, RIMH * 0.5, ugR, Math.max(0.1, RIMH * 1.4), 0, 0, Math.PI * 2); ctx.fill();
+
+        /* Rim — the disc silhouette, the primary shape a viewer reads. */
+        ctx.fillStyle = 'hsla(' + vz.hue + ',20%,86%,' + (vA * 0.92) + ')';
         ctx.strokeStyle = 'hsla(' + vz.hue + ',60%,72%,' + (vA * 0.55) + ')';
-        ctx.lineWidth = Math.max(0.25, L * 0.045);
+        ctx.lineWidth = Math.max(0.25, L * 0.035);
         ctx.beginPath();
-        if (vz.hull === 'wing') {
-            ctx.moveTo(L * 0.52, 0);
-            ctx.lineTo(-L * 0.30, W2 * 1.9);
-            ctx.lineTo(-L * 0.14, 0);
-            ctx.lineTo(-L * 0.30, -W2 * 1.9);
-        } else if (vz.hull === 'ring') {
-            ctx.arc(0, 0, Math.max(0.1, L * 0.34), 0, Math.PI * 2);
-            ctx.closePath();
-            ctx.moveTo(L * 0.34, 0);
-            ctx.arc(0, 0, Math.max(0.05, L * 0.17), 0, Math.PI * 2, true);
-        } else if (vz.hull === 'shard') {
-            ctx.moveTo(L * 0.58, W2 * 0.30);
-            ctx.lineTo(L * 0.10, -W2 * 1.15);
-            ctx.lineTo(-L * 0.50, -W2 * 0.20);
-            ctx.lineTo(-L * 0.16, W2 * 0.95);
-        } else if (vz.hull === 'tri') {
-            ctx.moveTo(L * 0.50, 0);
-            ctx.lineTo(-L * 0.34, W2 * 1.5);
-            ctx.lineTo(-L * 0.34, -W2 * 1.5);
-        } else { /* dart */
-            ctx.moveTo(L * 0.62, 0);
-            ctx.lineTo(-L * 0.42, W2 * 1.3);
-            ctx.lineTo(-L * 0.22, 0);
-            ctx.lineTo(-L * 0.42, -W2 * 1.3);
-        }
-        ctx.closePath();
+        ctx.ellipse(0, 0, Math.max(0.1, RIM), Math.max(0.1, RIMH), 0, 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
 
-        /* Running lights — the only pulsing things out here. Count and
-           placement vary per arrival, so even two craft sharing a hull
-           form read as different vessels. */
+        /* Optional lower deck (ring/cap forms) — a slimmer second disc
+           just under the rim, the "double hull" saucer variant. */
+        if (deck2) {
+            ctx.fillStyle = 'hsla(' + vz.hue + ',18%,70%,' + (vA * 0.6) + ')';
+            ctx.beginPath();
+            ctx.ellipse(0, RIMH * 0.55, Math.max(0.1, RIM * 0.62), Math.max(0.1, RIMH * 0.55), 0, 0, Math.PI * 2);
+            ctx.fill();
+        }
+
+        /* Dome — raised cockpit/greenhouse, offset toward the viewer (-y in
+           this local frame) so it reads as sitting ABOVE the disc, not
+           painted on it. */
+        var domeR = Math.max(0.1, RIM * domeScale);
+        var domeRH = Math.max(0.1, domeR * 0.62);
+        var domeG = ctx.createRadialGradient(-domeR * 0.18, domeYoff - domeRH * 0.22, 0, 0, domeYoff, domeR);
+        domeG.addColorStop(0, 'hsla(' + vz.hue + ',40%,96%,' + (vA * 0.95) + ')');
+        domeG.addColorStop(0.55, 'hsla(' + vz.hue + ',55%,80%,' + (vA * 0.75) + ')');
+        domeG.addColorStop(1, 'hsla(' + vz.hue + ',65%,60%,' + (vA * 0.35) + ')');
+        ctx.fillStyle = domeG;
+        ctx.beginPath();
+        ctx.ellipse(0, domeYoff, domeR, domeRH, 0, Math.PI, Math.PI * 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.strokeStyle = 'hsla(' + vz.hue + ',60%,75%,' + (vA * 0.45) + ')';
+        ctx.lineWidth = Math.max(0.2, L * 0.025);
+        ctx.stroke();
+
+        /* Running lights around the rim — the only pulsing things out
+           here. Count and placement vary per arrival, so even two craft
+           sharing a hull form read as different vessels. */
         for (var li = 0; li < vz.lights; li++) {
-            var lx = L * (0.36 - li * (0.68 / Math.max(1, vz.lights)));
-            var ly = (li % 2 === 0 ? 1 : -1) * W2 * 0.55 * (li === 0 ? 0 : 1);
-            var pr = Math.max(0.1, L * 0.17 * vz.pulse);
+            var lang = (li / Math.max(1, vz.lights)) * Math.PI * 2 + vz.t01 * 0.6;
+            var lx = Math.cos(lang) * RIM * 0.86;
+            var ly = Math.sin(lang) * RIMH * 0.86;
+            var pr = Math.max(0.1, L * 0.15 * vz.pulse);
             var pg = ctx.createRadialGradient(lx, ly, 0, lx, ly, pr);
             pg.addColorStop(0, 'hsla(' + vz.hue + ',90%,80%,' + (vA * vz.pulse) + ')');
             pg.addColorStop(1, 'hsla(' + vz.hue + ',90%,60%,0)');

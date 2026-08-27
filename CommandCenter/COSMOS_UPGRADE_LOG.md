@@ -157,3 +157,95 @@ groups (0.72-0.90 and 1.10-1.28) with an empty band between 0.90 and 1.10.
 Nothing sits near the old global value, which is arguably the point -- but
 a body at ~1.0 would give the eye a reference plane to read the others
 against. Taste, not a bug; decide deliberately rather than drifting into it.
+
+---
+
+## 2026-08-27 — alien visitor saucers + NEXUS/Oracle body redesign
+
+Investor demo prep. Operator: "small increments are not working and there
+is no human noticeable excitement" -- scope was deliberately narrowed to
+`solar_system.js` alien visitors and the NEXUS/Oracle body look; armada.js,
+audio, and planet surfaces (other than nexus/oracle) were owned by parallel
+agents this pass and untouched here.
+
+**Changed**
+
+- `_DF_VISITOR_HULLS` (~3470): replaced
+  `['dart','wing','ring','shard','tri']` with
+  `['saucer','bell','lens','ring','cap']`. Operator, verbatim: "the alien
+  ships that fly by are cone shaped, and not disks." The old set was
+  hard-edged wedge/triangle polygons -- at the size this class actually
+  renders, a wedge reads as a flat cone. The new set is drawn (draw block
+  ~4188-4270) as a rim ellipse + raised dome ellipse + underside glow, the
+  classic saucer profile, with 5-way variety in dome size/offset and an
+  optional lower deck (ring/cap) rather than 5-way variety in *pointiness*.
+- `_visitorAt` `len` (~3925): `11 + rng()*19` (11-19 world units) ->
+  `22 + rng()*20` (22-42). Measured against `CELESTIAL_HIERARCHY`: the old
+  range was SMALLER than every moon's radius (20-26), so a sighting read as
+  a speck, not an event. New range sits from moon-sized to small-star-sized
+  without ever exceeding the smallest star (34).
+- `PLANET_VISUALS.oracle.overlay` (~913-999, "the all-seeing iris" from the
+  2026-07-30 redesign): replaced. Operator, verbatim: "i am also not liking
+  the nexus and oricle look. they look un natural" -- their screenshot
+  showed Oracle carrying a flat concentric bullseye (iris ring + 24 radial
+  spokes + dilating pupil, all in fixed SCREEN space centered on the disk,
+  ignoring the sphere's own rotation/lighting). Rebuilt as a polar cyclonic
+  eye storm anchored to a lat/lon via `_sphProject` -- same technique as the
+  existing Great Red Spot a few hundred lines above it -- so it now rotates
+  with the planet, foreshortens correctly at the limb, and lights
+  consistently with the rest of the sphere. Keeps Oracle's "watching eye"
+  identity (a named class of real Jovian weather) as a genuine surface
+  feature instead of a decal.
+- `PLANET_VISUALS.nexus` (~1847-2015): rebuilt. Same operator complaint --
+  their screenshot showed "a faceted teal polyhedron with a ring of dots".
+  Root cause: the lit sphere (`cr`) only ever covered 0.42r, leaving most of
+  the disk as transparent halo, while the wireframe geodesic shell (drawn
+  unclipped in `overlay()` at 1.35x that already-small core) was left as the
+  dominant visible silhouette -- exactly backwards from every sibling star.
+  `surface()` now paints a full-disk base tone + `_bakeMottleTex` cellular
+  texture + two `_sphBand` zones (same machinery Phitex/Oracle/Deep Blue
+  use) so NEXUS is a real lit sphere with its own teal character. The
+  geodesic shell and 14 engine motes stay -- that IS NEXUS's real identity,
+  a council of 14 engines -- but the shell is pulled in from 1.35x a 0.42r
+  core (~0.57r, floating in the old empty halo) to 1.06x the FULL radius
+  (hugging the real sphere) and softened (0.55*depthA -> 0.34*depthA) so it
+  reads as an instrument shell worn by a body, not as the body itself.
+
+**Rejected, with reasons**
+
+- *Removing the geodesic shell/engine motes entirely.* They are NEXUS's
+  stated identity (14-engine council) and the operator's complaint was
+  "looks unnatural", not "remove the identity marker" -- the fix is making
+  the sphere underneath real, not deleting the one thing that makes this
+  body legible as NEXUS specifically.
+- *Giving NEXUS the exact Oracle/Deep Blue band table.* Two bands instead
+  of Jupiter's 17 or Neptune's 14, deliberately, so NEXUS keeps reading as
+  its own smaller/calmer body rather than a re-skinned gas giant.
+
+**Verification**
+
+- `node --check solar_system.js`: pass. Brace balance: 480/480 (unchanged
+  shape, matched open/close).
+- Suite: 87/87, including `tests/deepfield_coverage.js` (visitor pacing,
+  per-arrival uniqueness, no-consecutive-repeat, and the "_visitorAt reads
+  no fleet state" assertion -- all still pass unmodified; only hull
+  geometry and `len` changed, not arrival timing or the trait-selection
+  logic those assertions cover).
+- Chrome verification **blocked this session** by the recurring
+  localhost-unreachable issue (see `project_armada_selective_bloom_2026_08_18`
+  in agent memory) -- confirmed Chrome's own networking works (example.com
+  loaded fine) and confirmed the CC server itself is reachable and correct
+  (`curl localhost:9000` and `curl 127.0.0.1:9000` both 200, port
+  `0.0.0.0:9000` LISTENING per `netstat`), but localhost/127.0.0.1/[::1] all
+  render Chrome's internal error page across 6+ navigation attempts and a
+  fresh tab. Substituted a real-execution dry run instead of a screenshot:
+  built a fake canvas 2D context (not a mock of the result, an actual
+  `arc`/`ellipse`/`createRadialGradient` implementation that throws on any
+  negative radius or non-finite argument) and ran `PLANET_VISUALS.oracle`/
+  `.nexus` surface+overlay across a dense sweep of `now`/light-angle/radius,
+  plus `DeepField.prototype.draw` (visitors included) across 3 hours of
+  elapsed time at multiple zoomBoost values. Zero exceptions, zero
+  non-finite values, zero negative radii, across ~3.17M draw calls. This
+  proves the new code paths execute correctly under real inputs; it does
+  NOT confirm the visual result reads as intended on screen -- that still
+  needs a human/live-browser look before this ships to the 50" display.

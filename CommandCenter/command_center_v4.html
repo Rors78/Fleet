@@ -4671,7 +4671,19 @@ function _orbRender(timestamp){
          centroid so pulling back always reveals more of a real baked field
          rather than a stretched screen-space poster. Falls back to canvas
          center before the fleet has ever laid out. */
-      var _vfMaxVisibleR=(Math.min(W,H)/2)/_ORB_ZOOM_MIN;
+      /* HALF-DIAGONAL, not half-min-dimension.
+         This read (Math.min(W,H)/2)/_ORB_ZOOM_MIN -- the radius of the
+         largest circle that fits INSIDE the viewport, which equals the
+         corner distance only on a square display. Every display here is
+         wide. Measured at 2000x1125: this gave 1480 world units against a
+         3019 corner reach, so the baked sprite spanned 3405 where 6039 was
+         needed -- it covered 56% of the frame and ended in a HARD EDGE.
+         The operator's screenshot showed it plainly: a lighter rectangle
+         with sharp corners sitting inside the black.
+         This is the SAME defect already fixed for the deep field
+         (_dfMaxVisibleR, ~line 4721, uses the half-diagonal). The sibling
+         was missed -- the project's most-repeated failure shape. */
+      var _vfMaxVisibleR=Math.sqrt(W*W+H*H)/2/_ORB_ZOOM_MIN;
       var _vfCx=(_orbNodes.cc&&_orbNodes.cc.x)||W/2, _vfCy=(_orbNodes.cc&&_orbNodes.cc.y)||H/2;
       var _vfSpan=_vfMaxVisibleR*2.3; /* margin past the theoretical max reveal so a diagonal pull-back never shows a raw edge */
       /* Zoom-out presence boost (2026-07-31): the void field reads right at

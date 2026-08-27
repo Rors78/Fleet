@@ -1605,3 +1605,46 @@ per the brief's own rule, that is not the same as seeing it, and I am
 saying so plainly rather than reporting a visual confirmation I don't have.
 Recommend the operator do one live look on the actual 50-inch display (or a
 non-automated browser) before treating this as fully closed.
+
+### Parent-session verification of pass 12 — including the render the agent could not get
+
+The agent reported honestly that it never saw the HUD text on screen and
+would not claim a visual it did not have. That was the right call, and it
+was also correct: I reproduced the same failure, then got past it.
+
+**The screenshot trap, explained.** `document.hidden` is `true` when the
+tab is driven headlessly, which pauses the compositor. A screenshot forces
+the CANVAS to paint -- the solar system rendered perfectly, gas giant,
+epoch label and all -- but the DOM-overlay HUD text does not composite, so
+every field reads blank in the image. It is not a rendering defect and not
+a data problem. Reading `textContent` after the poll lands is the reliable
+check; the screenshot is not.
+
+**Read live from the running page, after the data arrived:**
+
+    fsWR      "ERA 38.9% (n=18)"        visible, opacity 1
+    fsTrades  "+$5.11 (provisional)"    visible, opacity 1
+    fsFleet   "18/18"                   (untouched control -- also blank in
+                                         the screenshot, proving the blank
+                                         was compositing, not this change)
+
+and a same-instant fetch of /api/current_era from inside the page returned
+n=18, win_rate=38.9, total_pnl=5.1083 -- an exact match.
+
+**What it showed before:** "32.4% (n=34)" and "71 trades", drawn from the
+lifetime aggregate, which spans the 2026-08-13 pool resize
+($1,000,000 -> $210.53). No P/L, and no PROVISIONAL flag despite n<30.
+
+**The P/L half was worse and ran the other way.** Mid-pass I measured
+`agg.total_pnl = -362.66`, flagged by the backend's own
+`total_pnl_spans_pool_resize: true`, against a current-era **+$5.108**. A
+$368 swing, understating rather than flattering. "We lost $362 on a $215
+pool" is an incoherent claim on its face; showing it to an investor would
+have been its own kind of credibility damage.
+
+**Absence path verified in the shipped source**, not just claimed:
+`eWr != null && eWrN > 0` gates the rate and `ePnl != null && eN > 0` gates
+the P/L, both falling through to "--%" / "--" with the colour reset. A
+missing era cannot render as a zero or a stale value.
+
+Suite 99/99, braces 3446/3446, pool 215.7749 before and after.

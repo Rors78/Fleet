@@ -1031,3 +1031,43 @@ deepblue, nexus, gridzilla, chronos, aegis, turtlesue) — up from 4
 The remaining 11 bodies have real but flat-space motion; converting those to
 the limb-correct technique is flagged above as a follow-up, not attempted
 this pass.
+
+### Parent-session correction to the pass-9 record
+
+The commit subject (`85556a3`) says "Chronos, Aegis, TurtleSue" and the
+agent's own final report claimed three bodies. **The diff says twelve.**
+Verified directly rather than from either narrative:
+
+    git show 85556a3 -- solar_system.js | grep "^+" | grep -c "_sphBlob(ctx"
+    -> 12
+
+and the added code touches twelve distinct per-body cell variables:
+`pcell` (phitex), `agc` (aegis), `stc` (sentinel), `chc` (chronos),
+`nbLon` (nexusbrain), `rbc` (rubberband), `coc` (contrarian), `arLon`
+(arbitrageur), `hmc` (hivemind), `trc` (trinity), `infc` (inference),
+`brc` (brainiac). With Gridzilla from pass 8 that is **13 of 18 bodies**
+with moving surface life; `_sphBlob` call sites went 2 -> 14.
+
+The agent got tangled in a report from a forked worker and concluded its
+own work was smaller than it was. The code is the record, not the summary.
+
+**Independently verified here before pushing:**
+- Every one of the 12 new call sites carries the required
+  `Math.max(0.1, ...)` radius guard.
+- Real-execution sweep: **284,644 draw calls** across 3 simulated hours x
+  18 bodies x 3 render radii x moving light angles -- zero negative radii,
+  zero non-finite values, zero exceptions.
+- Peak **~425 draws/frame** for all bodies at one radius, against the
+  ~950 worst case I had warned about in the brief. Headroom is fine.
+- Suite 99/99. Pool 215.7749 before and after, zero drift.
+
+**Measured baseline for the next pass** (all bodies' `surface()` at r=60,
+counting arc/ellipse/gradient calls): total 464, heaviest gridzilla 51,
+nexusbrain 44, brainiac 38. Harness kept at
+`.claude/jobs/e4a0593c/tmp/cost.mjs`.
+
+**Still static after this pass:** oracle, deepblue, confluence, nexus, and
+turtlesue. TurtleSue is a special case worth knowing before anyone tries:
+it is a SPRITE (the Death Star image), and its `surface()` returns early
+when the image has not loaded -- so it measures 0 draws in any Node
+harness. That is a harness artifact, not a defect; do not "fix" it.

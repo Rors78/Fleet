@@ -58,6 +58,14 @@ regardless.
 
 ## Working Rules (fleet-wide)
 
+- **An unmeasured signal defaults to looking healthy.** Empty list -> "no
+  divergence". Null -> "no error". Absent -> "clean". Zero -> "no problem".
+  Every one of those is silence rendered as health. Before trusting any green,
+  ask what it would look like if the thing were never measured -- if that is
+  indistinguishable from what you see, it is not evidence. Prove a check can go
+  red before believing it is green, and audit comfortable results HARDEST: the
+  worst incidents here (HiveMind's synthetic Sharpe, denial_cost's permanent
+  zero, a 16/16 green suite over a dead adapter) all read as good news.
 - NEVER overwrite working code based on assumptions; ALWAYS read existing code first
 - No fake stats — ever
 - A module is "done" only when it's imported by the running bot, its endpoint

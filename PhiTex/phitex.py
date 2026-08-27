@@ -479,6 +479,12 @@ class PhiTexScanner:
 
         self.status = "scanning"
         alerts = []
+        # Pairs whose phi_tex was actually RECOMPUTED this scan. self.pairs is
+        # a persistent accumulator: a pair whose OHLC fetch fails hits the
+        # `continue` below and keeps its LAST score, so publishing straight
+        # from self.pairs kept broadcasting a stale reading as CRITICAL --
+        # and phitex_critical() in the consuming bots gates on exactly that.
+        _fresh = set()
 
         for pair in universe:
             candles = self._fetch_ohlc(pair)
@@ -495,6 +501,7 @@ class PhiTexScanner:
             if pair not in self.pairs:
                 self.pairs[pair] = PairPhiTex(pair)
             pp = self.pairs[pair]
+            _fresh.add(pair)
 
             prev_score = self._prev_scores.get(pair, 0.0)
             score = pp.compute(closes, highs, lows, volumes)
@@ -548,8 +555,12 @@ class PhiTexScanner:
         self.status = "running"
 
         # Publish fleet update
-        critical = [p for p, pp in self.pairs.items() if pp.phi_tex >= CRITICAL]
-        pre_crit = [p for p, pp in self.pairs.items() if PRE_CRITICAL <= pp.phi_tex < CRITICAL]
+        # Only pairs measured THIS scan. A pair that could not be refreshed
+        # is omitted rather than republished at its last known score.
+        critical = [p for p, pp in self.pairs.items()
+                    if p in _fresh and pp.phi_tex >= CRITICAL]
+        pre_crit = [p for p, pp in self.pairs.items()
+                    if p in _fresh and PRE_CRITICAL <= pp.phi_tex < CRITICAL]
 
         if self._event_pub:
             try:

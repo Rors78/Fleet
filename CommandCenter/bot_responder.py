@@ -168,8 +168,13 @@ def run(token: str):
                 chat = msg.get("chat", {})
                 chat_type = chat.get("type", "")
 
-                # Only reply to private (DM) messages
+                # Only reply to private (DM) messages — but LOG group ids
+                # first: a chat id silently discarded here cost us Jeremy's
+                # briefing destination on 2026-07-30 (group messages were
+                # consumed and lost with no trace).
                 if chat_type != "private":
+                    log.info("Non-private message ignored: type=%s chat_id=%s title=%r",
+                             chat_type, chat.get("id"), chat.get("title", ""))
                     continue
 
                 chat_id = chat["id"]

@@ -26,6 +26,11 @@ class PortfolioClient:
         self.bot_id = bot_id
         self.max_retries = max_retries
         self.timeout = timeout
+        # Amount the pool actually GRANTED on the most recent reserve() --
+        # not necessarily what was asked for, since the fleet-intel gate can
+        # scale a reservation down. See reserve() for the full note. None
+        # when nothing has been reserved yet, or the last attempt failed.
+        self.last_granted_amount = None
 
     def _post(self, path, data):
         url = f"{self.base_url}{path}"
@@ -82,9 +87,39 @@ class PortfolioClient:
             data["is_reentry"] = True
         result = self._post("/api/portfolio/reserve", data)
         if result is None:
+            self.last_granted_amount = None
             return False, "Command Center unreachable"
         if result.get("ok"):
+            # THE GRANTED AMOUNT IS NOT ALWAYS THE REQUESTED AMOUNT.
+            #
+            # PortfolioManager.reserve applies a fleet-intel risk multiplier
+            # and can scale the reservation DOWN before granting it
+            # (command_center.py:739-745, "Intel scaled ..."). It returns the
+            # final figure in the response, but this method used to discard
+            # it and hand back only (ok, rid) -- so no bot could learn it had
+            # been scaled. Each kept its pre-scale size, traded at that size,
+            # and computed P/L from it.
+            #
+            # Measured live 2026-08-27: confluence held ENA/USD at
+            # size_usd $6.1816 against a pool reservation of $1.59 -- 3.89x.
+            # A closed LINK/USD booked +$1.0569 of P/L against $1.77 of
+            # actually-reserved capital, publishing a +59.7% return on
+            # capital. 50 "Intel scaled" events across four bots, worst
+            # ratio 4.8x.
+            #
+            # The gate is defeated in BOTH directions by this: it intends to
+            # cut exposure, but the bot trades at full size anyway, so the
+            # de-risking is cosmetic while the accounting inflates.
+            #
+            # Exposed as an attribute rather than a third return value so
+            # every existing `ok, rid = reserve(...)` call site keeps
+            # working. Callers that size or book P/L SHOULD read this and
+            # use it as their position size. Cleared on every call so a
+            # stale value from a previous reservation can never be read as
+            # this one's.
+            self.last_granted_amount = result.get("amount")
             return True, result["reservation_id"]
+        self.last_granted_amount = None
         return False, result.get("reason", "Unknown rejection")
 
     def release(self, reservation_id, pnl=0.0, entry_price=0.0, exit_price=0.0):

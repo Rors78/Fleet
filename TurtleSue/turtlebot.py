@@ -1443,6 +1443,28 @@ class TurtleEngine:
             unit_coins = (_basis * 0.25) / price
             if unit_coins <= 0:
                 return
+            # RECOMPUTE cost. This clamp updated unit_coins and left `cost`
+            # holding the pre-clamp figure, which is the value actually
+            # passed to reserve() below -- so the clamp reduced the coin
+            # count while the capital request stayed oversized, and the
+            # clamp did nothing at all.
+            #
+            # Measured live 2026-08-27 from the durable bus: requests of
+            # $600.00 against a $215.77 pool, 120 over three days, every
+            # one denied by the fleet deployment cap. Intended clamped size
+            # was $5.39 (10% pool share * 0.25), so the request was 111x
+            # the intent and 2.8x the entire fund.
+            #
+            # SCOPE, stated honestly: every one of those denials was for a
+            # ZZPROBE/NF test fixture, not a real pair -- zero real-pair
+            # denials in the same window. So this never blocked a live
+            # trade, and the deployment cap held throughout. What the
+            # probes did was expose the defect: on a genuinely oversized
+            # real trade the clamp would have been equally inert, and the
+            # only thing standing between it and a 2.8x-pool reservation
+            # would have been the fleet cap -- a backstop, not the control
+            # that was supposed to handle it.
+            cost = unit_coins * price
 
         # Central portfolio: reserve capital before opening
         reservation_id = None
@@ -1529,6 +1551,12 @@ class TurtleEngine:
             unit_coins = (_basis * 0.10) / price
             if unit_coins <= 0:
                 return
+            # RECOMPUTE cost -- identical defect to the entry clamp above.
+            # This one updated unit_coins and reserved the PRE-clamp cost a
+            # few lines below, so the pyramid clamp was equally inert. Both
+            # sites are fixed together deliberately: fixing one and leaving
+            # its sibling is this project's most-repeated failure shape.
+            cost = unit_coins * price
 
         # Central portfolio: reserve capital for pyramid unit
         pyramid_rid = None

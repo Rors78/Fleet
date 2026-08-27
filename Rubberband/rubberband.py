@@ -1076,10 +1076,36 @@ class RubberbandEngine:
                     reservation_id = rid
                     self._log(f"Portfolio reserved ${size_usd:.2f} for {pair} ({rid})")
                 else:
-                    self._log(f"Portfolio reservation denied for {pair}: {rid}", "WARNING")
-                    # Fall back to local balance (continue without reservation)
+                    # REFUSE. This branch used to log and fall through, and
+                    # the comment said "fall back to local balance" -- but
+                    # that local balance was deleted in the one-pool
+                    # cutover, so the fallback fell back to nothing.
+                    #
+                    # Every fleet exposure gate (deployment cap, per-bot,
+                    # per-pair, directional, solvency, per-trade,
+                    # concentration) is enforced at RESERVATION time. A
+                    # position opened without a reservation is therefore
+                    # subject to no limit whatsoever, and is invisible to
+                    # both orphan sweeps because it was never in the book.
+                    #
+                    # portfolio_client.reserve() returns (False, "Command
+                    # Center unreachable") after its retries -- it does NOT
+                    # raise -- so a plain CC outage took this path. CC's
+                    # cold start was measured at 703s on 2026-08-26: a
+                    # ~12-minute window of unbacked position opening.
+                    #
+                    # The live-execution failure 16 lines below already
+                    # releases and returns False. This now matches it.
+                    self._log(f"Portfolio reservation denied for {pair}: "
+                              f"{rid} -- NOT opening. This bot holds no "
+                              f"capital of its own; an unreserved position "
+                              f"bypasses every fleet exposure limit.",
+                              "WARNING")
+                    return False
             except Exception as e:
-                self._log(f"Portfolio reserve error: {e}", "WARNING")
+                self._log(f"Portfolio reserve error for {pair}: {e} -- NOT "
+                          f"opening (see the denial branch above)", "WARNING")
+                return False
 
         # Live execution: buy on Kraken spot (LONG only — no spot short execution
         # exists; SHORT positions stay paper even in live mode, close path mirrors this)

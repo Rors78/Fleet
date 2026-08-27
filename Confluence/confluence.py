@@ -1088,6 +1088,29 @@ class ConfluenceEngine:
                                         "detail": f"reservation denied: {res}"})
                 return False
             rid = res
+            # TRADE THE SIZE THAT WAS GRANTED, NOT THE SIZE REQUESTED.
+            #
+            # The pool's fleet-intel gate can scale a reservation DOWN before
+            # granting it. This bot used to keep its pre-scale `size`, open at
+            # that size, and compute P/L from it -- so the position was larger
+            # than the capital backing it, and every derived return was
+            # inflated against the capital actually held.
+            #
+            # Measured live 2026-08-27: ENA/USD open at size_usd $6.1816
+            # against a $1.59 reservation (3.89x). A closed LINK/USD booked
+            # +$1.0569 against $1.77 reserved -- a published +59.7% return on
+            # capital that was never really deployed.
+            #
+            # A granted amount that is absent (older Command Center, or a
+            # response without the field) leaves `size` alone rather than
+            # substituting a guess -- absence is not a scale-down.
+            _granted = getattr(self._portfolio, "last_granted_amount", None)
+            if isinstance(_granted, (int, float)) and 0 < _granted < size:
+                self._log(f"Pool granted ${_granted:.2f} of ${size:.2f} "
+                          f"requested for {pair} -- trading the granted size "
+                          f"so P/L is measured against capital actually held",
+                          "WARNING")
+                size = _granted
 
         if self.is_live():
             # Live execution intentionally not implemented — this bot has never

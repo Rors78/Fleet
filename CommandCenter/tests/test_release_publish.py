@@ -66,20 +66,58 @@ try:
 except Exception as e:
     print(f"  SKIP  Command Center unreachable ({str(e)[:60]})")
     raise SystemExit(0)
+# Probe size, derived from the LIVE pool rather than hardcoded.
+#
+# This was a flat $600.00 -- written when the pool was $1,000,000. After the
+# 2026-08-13 resize to ~$215 every probe was refused by the fleet deployment
+# cap, the test skipped, and (until this pass) reported PASS having asserted
+# nothing. It also generated 120 PORTFOLIO_DENIAL events over three days that
+# looked, in the durable record, exactly like a bot trying to over-trade.
+#
+# 2% of the live pool is comfortably inside every gate while still being a
+# real reservation. Falls back to a small fixed sum only if the pool cannot
+# be read -- and the assertions below will then fail loudly rather than skip.
+def _probe_amount():
+    try:
+        import urllib.request as _u
+        _p = json.loads(_u.urlopen(CC + "/api/portfolio", timeout=5).read())
+        _t = _p.get("available") or _p.get("total")
+        if isinstance(_t, (int, float)) and _t > 0:
+            return round(max(1.0, _t * 0.02), 2)
+    except Exception:
+        pass
+    return 2.0
+
+
+PROBE_AMOUNT = _probe_amount()
+
 
 print(f"=== CASE 1: a release realizing NOTHING publishes no trade ===")
 t0 = time.time()
 try:
     r = post("/api/portfolio/reserve",
              {"bot_id": "turtlesue", "pair": f"{PROBE}{_RUN}A/USD",
-              "direction": "LONG", "amount": 600.0})
+              "direction": "LONG", "amount": PROBE_AMOUNT})
 except Exception as _e:
     # The pool legitimately refuses reservations during a restart or when a
     # policy gate is active. That is not this test's subject — skip rather
     # than report a failure the code did not cause.
-    print(f"  SKIP  pool refused the probe ({str(_e)[:60]}) — cannot exercise "
-          f"the publish path right now")
-    raise SystemExit(0)
+    # EXIT 1, NOT 0.
+    #
+    # This used to `raise SystemExit(0)`, so the runner printed PASS for a
+    # run in which ZERO assertions executed. Verified 2026-08-27: the pool
+    # returned HTTP 403 to the probe, this branch fired, and the suite
+    # counted it toward its passing total. The one test that exercises the
+    # REAL live publish path was measuring nothing while reporting success
+    # -- the exact failure class this suite exists to catch.
+    #
+    # "Could not measure" is not "measured and found nothing". A probe the
+    # pool refuses is a genuine blocker to verification and must be visible,
+    # not absorbed. If the refusal is expected (a policy gate, a restart in
+    # progress), fix the probe or the gate -- do not make the failure quiet.
+    print(f"  FAIL  pool refused the probe ({str(_e)[:60]}) — the live "
+          f"publish path was NOT exercised. This is unmeasured, not clean.")
+    raise SystemExit(1)
 check("probe reservation accepted", r.get("ok"), json.dumps(r)[:80])
 if r.get("ok"):
     post("/api/portfolio/release",
@@ -95,7 +133,7 @@ t1 = time.time()
 try:
     r2 = post("/api/portfolio/reserve",
               {"bot_id": "turtlesue", "pair": f"{PROBE}{_RUN}B/USD",
-               "direction": "LONG", "amount": 600.0})
+               "direction": "LONG", "amount": PROBE_AMOUNT})
 except Exception as _e:
     print(f"  SKIP  pool refused the second probe ({str(_e)[:50]})")
     r2 = {}

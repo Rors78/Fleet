@@ -111,6 +111,23 @@ TESTS = [
     # not be skipped by the guard that exists for price-based exits.
     # Confluence and Gridzilla both had this; four more traders still do.
     "test_price_free_exits_reachable.py",
+    # A clamp that recomputes one quantity and reserves another is inert.
+    # Turtlesue requested $600 against a $215 pool, 84 denials in 24h.
+    "test_sizing_clamp_binds.py",
+    # 2026-08-27 audit: ten test files existed on disk that this runner
+    # never listed -- including test_gridzilla_records_losses.py, the guard
+    # for the "a bot cannot record a loss" scar. A test that is not in this
+    # list is not a check, however good it is.
+    "test_granted_size_is_traded.py",
+    "test_gridzilla_records_losses.py",
+    "test_probe_predicate_single.py",
+    "test_expectancy_store_absent_vs_unreadable.py",
+    "test_ohlc_single_fetcher.py",
+    "test_current_era_boundary.py",
+    "test_min_trade_floor.py",
+    "test_aggregate_traders_only.py",
+    "test_confluence_exit_and_emit.py",
+    "test_rubberband_timeframe_coherence.py",
     # The same close reached the store by two routes under different
     # trade_ids, so dedup could never fire. Fixed once on the consumer side
     # and it came back -- a consumer fix cannot help an emitter that never
@@ -142,6 +159,22 @@ JS_TESTS = [
 
 def main() -> int:
     results = []
+    # DRIFT GUARD. On 2026-08-27 an audit found TEN test_*.py files on disk
+    # that this list did not name -- among them
+    # test_gridzilla_records_losses.py, the guard for the "a bot cannot
+    # record a loss" scar. Each was a real, passing check that CI had never
+    # once executed. A test that is not in the list is not a check, no
+    # matter how well written, and nothing announced the gap.
+    _on_disk = {f for f in os.listdir(HERE)
+                if f.startswith("test_") and f.endswith(".py")}
+    _unlisted = sorted(_on_disk - set(TESTS))
+    if _unlisted:
+        print("FAIL  %d test file(s) exist but are not in TESTS -- they have "
+              "never run: %s" % (len(_unlisted), ", ".join(_unlisted)))
+        print("      Add them to TESTS, or delete them. An unrun test is a "
+              "false sense of coverage.")
+        return 1
+
     for name in TESTS:
         path = os.path.join(HERE, name)
         if not os.path.exists(path):
@@ -155,7 +188,15 @@ def main() -> int:
     for name in JS_TESTS:
         path = os.path.join(HERE, name)
         if not os.path.exists(path):
-            continue          # optional
+            # A MISSING JS test used to `continue` -- never appended to
+            # results, so it vanished from the denominator with no MISS, no
+            # SKIP, and no trace. Deleting a JS test made the suite GREENER,
+            # which is the purest form of false green available: the count
+            # goes up in confidence and down in coverage at the same time.
+            # The Python loop above already records missing files as
+            # failures; this now matches it.
+            results.append((name, None, "missing"))
+            continue
         if not node:
             print(f"SKIP  {name} (node not on PATH)")
             continue

@@ -2252,3 +2252,56 @@ cost model (see `QUALITY.high.bloom` comment, ~L79-88) is unchanged.
   harness above is the load-bearing proof for those five; the live capture
   is corroborating, not the sole evidence. No bot or fleet restart was
   performed at any point.
+
+## 2026-08-27 — inner-ring respacing + SSE poll backoff (parent session, 81287da)
+
+Not an agent pass. Operator screenshot showed several bodies knotted around
+CC, unreadable as separate objects. Logged here because the next pass needs
+to know it is done.
+
+**Measured live from the running page**, not from source: six CC-orbiting
+bodies at r=88/130/187/244/297/350, sizes only 14-20px, so neighbours were
+42-57 units apart while outer bodies spread across 774-1206. Six of
+eighteen bodies in the innermost quarter of the used space.
+
+**Now** 120/210/300/368/436/505 — gaps 90/90/68/68/69, minimum 68 against a
+20px largest body. Order preserved deliberately (reordering would be a
+gratuitous change riding on a spacing fix). Outermost at 505, clear of the
+814 star ring.
+
+**Two siblings, one pass.** hivemind/aegis/sentinel/chronos come from
+`ccMoonScale*ccMoonRatios` (command_center_v4.html ~2001); brainiac and
+inference are hardcoded in `CELESTIAL_HIERARCHY` (solar_system.js:409,418)
+and are NOT in that table. Fixing only the table would have left two of the
+four crowded bots exactly where they were.
+
+**Kepler.** `hier.orbitSpeed` for these was hand-tuned against the OLD
+narrow radii. Widening without touching speed left brainiac sweeping
+**3.43x** faster than its new orbit implies (0.0014560 vs an ideal
+0.0004250). All six now derive speed from radius using the same constant
+the six planets use. Verified live: speeds strictly decrease with radius.
+
+**Caught before shipping:** my first attempt put inference at 284 against
+hivemind's computed 300 — a 16-unit gap that would have collided. Visible
+only by reading the live values back, not from the source. Worth repeating
+as method: after any layout change, read the LIVE radii, do not trust the
+arithmetic you just wrote.
+
+**Also in 81287da — SSE poll backoff.** `sseConnected` was a DEAD FLAG: set
+in `onopen`, cleared in `onerror`, read NOWHERE (3 occurrences in
+executable code, all writes). Same shape as the `_orbNebulaTgt` defect pass
+11 removed. Meanwhile `/api/events/stream` pushes events instantly —
+verified live, the chain is SSE -> handleSSEEvent -> _orbHandleEvent ->
+sound, synapses, signal lanes, migrations — while the timers refetched the
+same state every 30s regardless. Polling now backs off to 120s while the
+stream is proven live, returns to 30s the moment it is not, checked at FIRE
+time so a mid-session drop recovers on the next tick. **Backoff, not
+disable:** SSE carries only EVENTS, so a bot that silently stops emitting
+is caught only by a full refetch.
+
+**Also confirmed while here:** the VoidField hard-edge box (871902f) is
+genuinely fixed and serving; a screenshot showing it predated the fix. And
+`orbitalCanvas` reading 300x150 in a headless tab is the untouched HTML
+default before first paint, NOT a defect — it sizes correctly once painting.
+
+Suite 99/99. Pool 215.6325 unchanged.

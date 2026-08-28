@@ -2500,3 +2500,134 @@ rad/frame.
 
 Suite 99/99. Pool 215.6325 before and after. node --check clean on all
 three files. Braces 3456/3456.
+
+---
+
+## Pass 17 (2026-08-27) — Nobody can tell what they are looking at
+
+**Premise verified before touching anything.** Extracted `_orbRender`
+(4433-5321, 49,221 chars — the brief's own re-check found it slightly
+larger than the 48,757 quoted, consistent with drift since the brief was
+written, not a wrong premise) and counted `fillText` calls inside its
+exact function body: **exactly 3** (constellation label L5037, "ZOOM
+NN%" L5264, "FIELD X" L5280). Confirmed: not one body is ever named on
+canvas. The only existing identity surface was the hover-only `#orbTip`
+HTML tooltip, useless on a 50" display nobody mouses over.
+
+**What was already there, reused rather than rebuilt.** A full
+collision-free label pipeline already existed
+(`_orbLabelQueue`/`_queueLabel`/`_labelBoxSize`/
+`_drawLabelsWithCollisionAvoidance`, ~2986-3170), built 2026-07-28/29 and
+then deliberately restricted to hover-only on 2026-07-29 ("18 permanent
+labels turned the starfield into a text wall... the whole point of the
+cosmos view is the cosmos"). That restriction is respected here, not
+reopened: the DEFAULT state is still zero labels. The only change is
+`_updateLabelReveals` (~3028-3037 before, now ~3028-3060 after the
+comment expansion) gaining two more conditions that can push a body's
+`_labelReveal[id]` target to 1, on top of the existing hover condition:
+
+    else if(nd.eventBurst>0.3) target=1;
+    else if(nd.celestialType==="moon"){ if(_orbZoom>=_LABEL_ZOOM_MOON) target=1; }
+    else if(_orbZoom>=_LABEL_ZOOM_PLANET) target=1; /* stars + planets */
+
+with `_LABEL_ZOOM_PLANET=1.6`, `_LABEL_ZOOM_MOON=2.2` (moons get a
+tighter threshold — 8 of them, smaller, more collision pressure, so they
+only surface once there's real screen space). `eventBurst>0.3` reuses the
+SAME field and SAME threshold an existing ring-pulse visual already gates
+on (`_drawNode` ~L2986) — no new decay mechanism, no new "is this real"
+question, no new state.
+
+Because every downstream consumer (fade easing, collision-avoidance
+placement, backing-plate/glow rendering, the `_sysLabels` SIGNAL/FLOW/MATH
+system tags which already read the star's own `_labelReveal`) was
+untouched, this is the smallest change that closes the gap: one function,
+9 changed/added lines of logic plus comments.
+
+**Font/size — unchanged, reused deliberately.** Names render at
+`bold 13px` (stars) / `bold 12px` (planets/moons) IBM Plex Mono with a
+color-matched shadow glow, a translucent backing plate, and a 10px status
+line underneath — sizes the 2026-07-28/29 passes already tuned for THIS
+same 50" hover case. Reusing the exact rendering path means the
+legibility question was already answered by prior look-edit-look passes;
+extending *when* it fires carries zero new legibility risk. Did not
+touch `_labelBoxSize`, `_drawLabelsWithCollisionAvoidance`, or the font
+declarations.
+
+**Rejected**
+
+- *Always-on permanent labels for stars/trading planets.* This is
+  literally the state the 2026-07-29 pass measured as a text wall and
+  reverted. Zoom-gating instead means labels only appear once the viewer
+  has already chosen to look closer — can't turn the idle wide view back
+  into a spreadsheet.
+- *A new numeric readout next to each body (e.g. P/L, win rate).* The
+  brief is explicit that anything shown as a number must be measured and
+  honestly-absent when unknown. `statusLabel` already satisfies this per
+  body (built from live `raw`/`norm` fields with honest fallbacks —
+  "scanning", "waiting", "F&G ?", never a fabricated 0) and is already
+  wired into the same label queue (`status:nd.statusLabel`). Surfacing it
+  more often via the reveal gate gets the "which one and what's it doing"
+  payoff for free, with zero new data-honesty surface to audit.
+- *A third label-drawing convention (e.g. a persistent corner legend).*
+  The header ERA chip and fsWR/fsTrades HUD block already establish how
+  this dashboard names a window/denominator; a corner legend would be a
+  fourth idiom competing with the in-scene label system, the hover tip,
+  AND the two existing HUD conventions. Not built.
+
+**Draws/frame.** Idle/default state (zoom=1, nothing hovered, no recent
+event) — the common case — adds ZERO draw calls; `_labelReveal` stays at
+0 for every body exactly as before this pass. Only while a trigger is
+active does drawing happen, and that drawing is the pre-existing
+per-label cost (backing plate fill + stroke + name fillText w/ shadow +
+optional status fillText + optional leader-line stroke, ~3-6 draws),
+unchanged from what the hover path already paid for one body at a time.
+Worst case — deliberate max zoom-in revealing all 18 bodies at once — is
+~90 transient draws/frame, not the idle baseline the 425+47 figure
+describes.
+
+**Verified live (Chrome, localhost:9000, fullscreen COSMOS).**
+`document.hidden===true` confirmed (backgrounded automation tab, expected
+per prior sessions); screenshots force a paint as documented and DID show
+live, current state — `window._orbLiveView.zoom` read back 1, then 2.488,
+then 1.0 across three separate forced-paint checks, matching what was
+visually on screen each time.
+
+  - Default zoom (1.0), nothing hovered: zero labels, clean scene —
+    confirms the idle view is untouched.
+  - Hover on Deep Blue: "Deep Blue" + "patrolling" label appeared via the
+    canvas pipeline (plus the pre-existing separate `#orbTip` HTML
+    tooltip, unrelated, both correctly firing together) AND "FLOW SYSTEM"
+    appeared above the star — confirms `_sysLabels` correctly inherited
+    the extended reveal with no changes needed there.
+  - Zoomed to ~225% (via repeated `+`, confirmed at `_orbZoom=2.48832`
+    read from `_orbLiveView`, past both the 1.6 and 2.2 thresholds), no
+    hover: "Chronos" + "Asia" rendered ambiently, unprompted — the exact
+    gap this pass targeted, someone across a room can now read a name off
+    a body they never touched.
+  - Zoomed to ~195%: four simultaneous ambient labels visible at once
+    (Chronos/Asia, Rubberband/ranging, Contrarian/[obscured by an
+    unrelated panel], Confluence/3 LONG) — collision-avoidance correctly
+    spaced all four apart with no overlap, proving the reused pipeline
+    handles N-simultaneous, not just the 1-2 it was written for.
+  - Zoom eased back toward 1.0 (via repeated `-`): labels caught
+    mid-fade, dimmer than full reveal — confirms the transition is a
+    fade, not a pop, exactly like the hover case.
+
+An unrelated System Manifest HUD panel opened during key-testing (a
+pre-existing "0"-key / sun-click binding, not touched by this pass) and
+its own close control wasn't located mid-session; it does not affect the
+COSMOS canvas or this pass's labels and was left as encountered rather
+than debugged, since manifest-panel behavior is out of scope here (see
+pass 15's note that a manifest z-index bug already exists and was
+flagged, not fixed).
+
+**Verification**
+
+- Brace balance: 3456/3456 before this pass, 3457/3457 after (+1/+1,
+  matches the single added block).
+- `node --check` clean on the extracted inline `<script>` block,
+  `solar_system.js`, and `armada.js`.
+- Suite: **99 passed, 0 failed** (`python -X utf8 run_all.py`).
+- Pool: `215.63250381295563` before and after
+  (`curl http://localhost:9000/api/portfolio`) — unchanged; this pass
+  touched only canvas label-reveal logic, no trading/portfolio code path.

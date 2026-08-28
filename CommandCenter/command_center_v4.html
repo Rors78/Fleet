@@ -1997,10 +1997,54 @@ function _orbScaleOrbits(){
     /* CC-orbiting moons — layered rings between sun and stars. Inner ring
        pushed out from 0.38 to 0.46 so HiveMind clears the upscaled 95px sun
        instead of orbiting inside its corona. */
-    var ccMoonScale=starScale*0.50;
-    var ccMoonRatios={hivemind:0.46,aegis:0.60,sentinel:0.73,chronos:0.86};
+    /* WIDENED 2026-08-27. Measured live from the running page: the six
+       CC-orbiting bodies sat at r=88/130/187/244/297/350 with sizes of
+       only 14-20px, so neighbours were 42-57 units apart -- barely two
+       body-diameters -- while the outer bodies spread across 774-1206.
+       Six of eighteen bodies were crammed into the innermost quarter of
+       the used space and read as an unresolvable knot around CC.
+       The operator's screenshot showed exactly that.
+
+       Scale raised 0.50 -> 0.80 and the ratios respread to give uniform
+       readable gaps (min 68 units, ~3.5x the largest body's diameter)
+       while keeping
+       the existing ORDER unchanged -- reordering them would be a
+       gratuitous change on top of a spacing fix. The outermost lands at
+       ~620, still well inside the 774 star ring, so nothing collides
+       outward. brainiac and inference are NOT in this table; they are
+       hardcoded in CELESTIAL_HIERARCHY (solar_system.js) and were moved
+       there in the same pass (to 120 and 210, slotting BELOW hivemind's
+       computed 300) -- fixing one and leaving its siblings is this
+       project's most-repeated failure. The first attempt put inference at
+       284 against hivemind's 300, a 16-unit gap that would have collided;
+       measured live and corrected before shipping. */
+    var ccMoonScale=starScale*0.80;
+    var ccMoonRatios={hivemind:0.46,aegis:0.565,sentinel:0.67,chronos:0.775};
     for(var cmid in ccMoonRatios){
-      if(_orbNodes[cmid]) _orbNodes[cmid].orbitRadius=ccMoonScale*ccMoonRatios[cmid];
+      if(_orbNodes[cmid]){
+        var _cmR=ccMoonScale*ccMoonRatios[cmid];
+        _orbNodes[cmid].orbitRadius=_cmR;
+        /* Derive the period from the radius, same Kepler constant the six
+           planets use above. hier.orbitSpeed was hand-tuned against the OLD
+           narrow radii; widening the band without this leaves the inner
+           moons sweeping ~3.4x faster than their new orbits imply (measured
+           for brainiac: 0.0014560 against an ideal 0.0004250), which reads
+           as a spinning gauge rather than a solar system. One law across
+           every orbiting body. */
+        _orbNodes[cmid].orbitSpeed=0.831483/Math.pow(Math.max(1,_cmR),1.5);
+        _orbNodes[cmid]._speedVaried=true;
+      }
+    }
+    /* brainiac and inference orbit CC too but are hardcoded in
+       CELESTIAL_HIERARCHY rather than listed above. Same treatment, or they
+       keep speeds tuned for radii they no longer have. */
+    var _ccExtra=["brainiac","inference"];
+    for(var _xi=0;_xi<_ccExtra.length;_xi++){
+      var _xn=_orbNodes[_ccExtra[_xi]];
+      if(_xn&&_xn.orbitRadius>0){
+        _xn.orbitSpeed=0.831483/Math.pow(Math.max(1,_xn.orbitRadius),1.5);
+        _xn._speedVaried=true;
+      }
     }
     /* Star-orbiting moons — 28% of star orbit distance (inside planet orbits).
        Widened with the upscale so a 16px moon clears its 56px parent star. */
@@ -22136,8 +22180,46 @@ connectSSE();
    so it polls in the background too. 15s: the fastest collector cadence is
    60s, so this samples well inside it without hammering the endpoint. */
 fetchBrainiacHealth();
-setInterval(fetchData,POLL_MS);
-setInterval(fetchPhitex,POLL_MS);
+
+/* SSE-AWARE POLL BACKOFF.
+ *
+ * `sseConnected` was a DEAD FLAG: set true in _sse.onopen and false in
+ * onerror, and READ NOWHERE (verified -- 3 occurrences in executable code,
+ * all assignments, zero reads). The same defect shape pass 11 removed from
+ * _orbNebulaTgt. It was written to answer exactly this question and then
+ * never asked.
+ *
+ * The consequence: /api/events/stream pushes real events the instant they
+ * happen -- verified live, the chain is SSE -> handleSSEEvent ->
+ * _orbHandleEvent -> sound, synapses, signal lanes, migrations -- while
+ * these timers ALSO refetched the same state every 30s regardless. Wasted
+ * round-trips on a box already running 18 bots, and a fleet snapshot that
+ * could sit up to 30s stale beside visuals that had already reacted.
+ *
+ * Backoff, NOT disable. Polling stays as the reconciliation path, because
+ * SSE only carries EVENTS: a bot that silently stops emitting, or a state
+ * change that never produced an event, is only ever caught by a full
+ * refetch. Dropping it would be trading a stale panel for a permanently
+ * wrong one -- the "unmeasured reads as healthy" failure this project
+ * keeps having. So the poll slows while the stream is proven live and
+ * returns to full rate the moment it is not.
+ *
+ * The flag is checked at FIRE time, not at setInterval time, so a stream
+ * that drops mid-session restores fast polling on the very next tick
+ * without needing to rebuild any timer. */
+var POLL_MS_SSE = POLL_MS * 4;   /* 30s -> 120s while the stream is live */
+function _pollGate(fn, baseMs){
+  var last = 0;
+  return function(){
+    var now = Date.now();
+    var wanted = sseConnected ? POLL_MS_SSE : baseMs;
+    if(now - last < wanted - 500) return;   /* 500ms tolerance for timer jitter */
+    last = now;
+    fn();
+  };
+}
+setInterval(_pollGate(fetchData, POLL_MS), POLL_MS);
+setInterval(_pollGate(fetchPhitex, POLL_MS), POLL_MS);
 setInterval(fetchOverviewData, 10000);
 setInterval(fetchTradeHistory, 60000);
 setInterval(fetchBrainiacHealth, 15000);

@@ -406,7 +406,7 @@ var CELESTIAL_HIERARCHY={
   chronos:   {type:"moon",  parent:"cc",              orbitRadius:182,orbitSpeed:0.0004898, mass:10, sz:22, grp:"intel",    pt:"pulsar",     pers:"rhythmic",   tilt:1.20},
   hivemind:  {type:"moon",  parent:"cc",              orbitRadius:98, orbitSpeed:0.0012397, mass:8,  sz:21, grp:"optimizer",pt:"cluster",    pers:"swarm",      tilt:0.82},
   trinity:   {type:"moon",  parent:"oracle",          orbitRadius:104,orbitSpeed:0.0011340, mass:8,  sz:21, grp:"intel",    pt:"trinary",    pers:"scattered",  tilt:1.10},
-  inference: {type:"moon",  parent:"cc",              orbitRadius:130,orbitSpeed:0.0008114, mass:6,  sz:20, grp:"support",  pt:"nebula",     pers:"processing", tilt:0.90},
+  inference: {type:"moon",  parent:"cc",              orbitRadius:210,orbitSpeed:0.0008114, mass:6,  sz:20, grp:"support",  pt:"nebula",     pers:"processing", tilt:0.90},
   /* BRAINIAC — Command Center's own sensory apparatus, not a fleet bot: it
      is five collector threads running INSIDE cc, so it orbits cc closely
      and fast. orbitRadius 88 is the tightest orbit in the scene and its
@@ -415,7 +415,7 @@ var CELESTIAL_HIERARCHY={
      the rest of the bodies obey. sz 20 sits on the existing smallest-body
      floor — it is a sensor, not a planet, and the size-ratio cap in the
      comments above must keep holding. */
-  brainiac:  {type:"moon",  parent:"cc",              orbitRadius:88, orbitSpeed:0.0014560, mass:6,  sz:20, grp:"support",  pt:"sensor",     pers:"scanning"}
+  brainiac:  {type:"moon",  parent:"cc",              orbitRadius:120, orbitSpeed:0.0014560, mass:6,  sz:20, grp:"support",  pt:"sensor",     pers:"scanning"}
 };
 
 /* --- Synapse definitions (event bus connections) --- */

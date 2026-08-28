@@ -2631,3 +2631,42 @@ flagged, not fixed).
 - Pool: `215.63250381295563` before and after
   (`curl http://localhost:9000/api/portfolio`) — unchanged; this pass
   touched only canvas label-reveal logic, no trading/portfolio code path.
+
+### Parent-session verification of pass 17 — read on screen, and a false alarm ruled out
+
+Verified in the live page by dispatching REAL wheel events rather than
+poking internals, so this exercised the actual user path.
+
+**Labels read clearly.** At ~250% zoom: "**Chronos**" with "**Asia**"
+beneath it, on a bordered backing plate, appearing with no hover at all.
+Zoomed into the Deep Blue region: "**Deep Blue / patrolling**" plus the
+"**FLOW SYSTEM**" constellation label. This is the first time any body in
+this view has been identifiable without mousing over it — the gap that
+sixteen prior passes left open while making the scene more beautiful.
+
+**The art is not buried.** Zooming back out to the 0.38 floor cleared every
+label. The 2026-07-29 "not a text wall" decision survives.
+
+**False alarm I chased and ruled out.** At the zoom floor I thought the
+hard-edged box was back and nearly reopened it. It is not. I scanned the
+live canvas pixel data:
+
+    horizontal scan, mid-frame : smooth gradient, no step
+    vertical scans at 0.28W and 0.62W : only 20px spikes that return
+                                        immediately -- orbit rings crossing
+    horizontal scan at 0.18H : 8 jumps, ALL 4px wide and returning -- stars
+
+Not one sustained step anywhere. The VoidField hard edge fixed in 871902f
+is genuinely gone; what remains is the field's soft gradient falloff, which
+is a taste question and not the defect. Recorded so the next pass does not
+re-chase it: **a screenshot impression is not an edge — scan for a
+SUSTAINED step before believing one.**
+
+**Design worth keeping:** labels are OFF by default and reveal on hover, on
+zoom past 1.6x (stars/planets) or 2.2x (moons), or on `eventBurst > 0.3`
+after something real happens to a body. Zero added draws in the idle state.
+It reuses the existing collision-avoidance and fade machinery rather than
+inventing a second labelling system, and it shows the already-honest
+`statusLabel` rather than adding a new number to audit.
+
+Suite 99/99. Pool 215.6325 before and after. Braces 3457/3457.

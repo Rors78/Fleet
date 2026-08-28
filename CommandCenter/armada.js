@@ -733,11 +733,14 @@ function buildTurtleSue(seed) {
     dishGroup.add(rib);
   }
   // rotating collar ring — sits between gearbox and drill bit, the
-  // "moving part" cue
+  // "moving part" cue. PASS 15: actually spun in _tick now (see
+  // "drill collar spin" below) — was built with this comment describing
+  // motion that never happened.
   const collarRing = new THREE.Mesh(new THREE.TorusGeometry(0.68, 0.09, 6, 20), accent);
   collarRing.rotation.x = Math.PI / 2;
   collarRing.position.y = 1.05;
   dishGroup.add(collarRing);
+  g.userData.drillCollar = collarRing;
   // fluted drill bit — cone with longitudinal groove ribs (small boxes
   // radiating around the cone), the working tip a "dish" never sold
   const drillBit = new THREE.Mesh(new THREE.ConeGeometry(0.5, 1.15, 8), trim);
@@ -923,7 +926,11 @@ function buildGridzilla(seed) {
   const rand = mulberry32(seed);
   const trim = darkTrimMaterial();
   const hullMat = greebledHullMaterial(col, seed, 2);
-  const accentDot = accentMaterial(col, 1.1);
+  // PASS 15: traveling energy-along-the-truss pulse. Each joint sphere below
+  // gets its OWN material instance (see the trussNodes.push comment further
+  // down for why) and is collected here in build order (z0 descending from
+  // bow to stern per ring) so _tick can light them in sequence.
+  const trussNodes = [];
 
   // central spine — the primary load-bearing chord, visibly thicker than
   // any bracing member so the truss reads as hierarchical structure
@@ -998,9 +1005,17 @@ function buildGridzilla(seed) {
     // points only" emissive rule
     if (i % 2 === 0) {
       for (const a of chordAngles) {
-        const joint = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 6), accentDot);
+        // PASS 15: was one shared `accentDot` material instance across every
+        // joint sphere in the truss — mutating one joint's emissiveIntensity
+        // would have silently repainted ALL of them (the exact "shared
+        // material" trap addCargoBayGlow's own comment already warns about
+        // for this file). Each joint now gets its own accentMaterial()
+        // instance so a traveling pulse can light one node at a time.
+        const jointMat = accentMaterial(col, 1.1);
+        const joint = new THREE.Mesh(new THREE.SphereGeometry(0.09, 6, 6), jointMat);
         joint.position.set(Math.cos(a) * r0, Math.sin(a) * r0, z0);
         struts.add(joint);
+        trussNodes.push({ mesh: joint, mat: jointMat, z: z0 });
       }
     }
   }
@@ -1124,6 +1139,10 @@ function buildGridzilla(seed) {
   g.userData.cargoMesh = cargoBay;
   g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 8;
+  // PASS 15: scoopGlow (bow rim ring) and trussNodes (per-joint accent
+  // spheres, own material each) for _tick's traveling energy pulse.
+  g.userData.scoopGlow = scoopGlow;
+  g.userData.trussNodes = trussNodes;
   return { group: g, engines, lights };
 }
 
@@ -1219,12 +1238,19 @@ function buildRubberband(seed) {
     g.add(fairing);
   }
 
-  // Wingtip running-light strakes
-  const wingAccentL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 1.4), accent);
+  // Wingtip running-light strakes. PASS 15: R used to be a raw .clone() of
+  // L, which in three.js shares the SAME Material instance (clone() does
+  // not deep-copy materials) — so this pair could never strobe out of
+  // phase, only in lockstep. Real nav-light convention (red left / green
+  // right, alternating strobe, not synchronized) needs two independent
+  // materials; give each its own accentMaterial() instance.
+  const wingAccentMatL = accentMaterial(col, 1.2);
+  const wingAccentL = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 1.4), wingAccentMatL);
   wingAccentL.position.set(2.6, 0.02, -0.4);
   wingAccentL.rotation.y = 0.5;
-  const wingAccentR = wingAccentL.clone();
-  wingAccentR.position.x = -2.6;
+  const wingAccentMatR = accentMaterial(col, 1.2);
+  const wingAccentR = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.08, 1.4), wingAccentMatR);
+  wingAccentR.position.set(-2.6, 0.02, -0.4);
   wingAccentR.rotation.y = -0.5;
   g.add(wingAccentL, wingAccentR);
 
@@ -1323,6 +1349,11 @@ function buildRubberband(seed) {
   g.userData.wingL = wingL;
   g.userData.wingR = wingR;
   g.userData.hullLength = 9.5;
+  // PASS 15: wingtip strobe pair (now independent materials, see above)
+  // and the sensor lens for a speed-linked pulse.
+  g.userData.wingtipMatL = wingAccentMatL;
+  g.userData.wingtipMatR = wingAccentMatR;
+  g.userData.sensorLens = sensorLens;
   return { group: g, engines, lights };
 }
 
@@ -1392,6 +1423,13 @@ function buildArbitrageur(seed) {
   // each hull's bow, now with a visible mounting flange (was the drill
   // meeting the capsule with zero transition) plus a small hydraulic strut
   // pair per drill — the "mounted assembly" cue applied consistently.
+  // PASS 15: the two drillRings (one per hull) used to share the SAME
+  // module-level `accent` material instance with each other AND with the
+  // connector spar below — three unrelated meshes silently tied to one
+  // emissive value, unable to differ. Each hull's ring now gets its own
+  // instance so left/right can pulse out of phase — the "twin hulls working
+  // the spread against each other" identity Arbitrageur is named for.
+  const drillRingMats = [];
   for (const half of [left, right]) {
     const drillFlange = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.5, 0.18, 10), hullMat);
     drillFlange.rotation.x = Math.PI / 2;
@@ -1401,10 +1439,12 @@ function buildArbitrageur(seed) {
     drillHead.rotation.x = -Math.PI / 2;
     drillHead.position.set(0, 0, 2.65);
     half.half.add(drillHead);
-    const drillRing = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.045, 5, 12), accent);
+    const drillRingMat = accentMaterial(col, 0.9);
+    const drillRing = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.045, 5, 12), drillRingMat);
     drillRing.rotation.x = Math.PI / 2;
     drillRing.position.set(0, 0, 2.3);
     half.half.add(drillRing);
+    drillRingMats.push(drillRingMat);
     // small flute ribs on the drill cone — repeated-detail scale contrast.
     // Added to half.half (each hull's own local group) so they inherit that
     // hull's fore/aft stagger offset instead of landing at world-origin.
@@ -1422,7 +1462,11 @@ function buildArbitrageur(seed) {
   // both capsules with no joint read).
   const spanX = 3.0, spanZ = 2.2;
   const sparLen = Math.hypot(spanX, spanZ);
-  const spar = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.18, 0.42), accent);
+  // PASS 15: own material instance (was the shared `accent` const, see the
+  // drillRingMats comment above for why that was a bug waiting to bite the
+  // moment anything tried to animate the spar independent of the rings).
+  const sparMat = accentMaterial(col, 0.9);
+  const spar = new THREE.Mesh(new THREE.BoxGeometry(sparLen, 0.18, 0.42), sparMat);
   spar.rotation.y = Math.atan2(spanX, spanZ);
   spar.position.set(0, 0, 0.15);
   g.add(spar);
@@ -1483,6 +1527,10 @@ function buildArbitrageur(seed) {
   g.userData.cargoMesh = cargoBay;
   g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 8.0;
+  // PASS 15: twin drill rings (left/right, now independent materials) and
+  // the connector spar for the "hulls trading against each other" pulse.
+  g.userData.drillRingMats = drillRingMats;
+  g.userData.sparMat = sparMat;
   return { group: g, engines, lights };
 }
 
@@ -1563,6 +1611,9 @@ function buildNexusBrain(seed) {
   // shared position rather than glued externally) so it stops reading as
   // a separate floating white ball.
   const booms = [];
+  const boomDishes = []; // PASS 15: dish meshes only, own material each
+                          // already (see loop below) — used for a staggered
+                          // "sensor sweep" pulse across the three booms.
   const boomAngles = [0, (Math.PI * 2) / 3, (Math.PI * 4) / 3];
   for (const a of boomAngles) {
     const boomGroup = new THREE.Group();
@@ -1583,9 +1634,11 @@ function buildNexusBrain(seed) {
     boomGroup.rotation.z = a;
     boomGroup.position.z = -0.3;
     booms.push(boomGroup);
+    boomDishes.push(dish);
     g.add(boomGroup);
   }
   g.userData.booms = booms;
+  g.userData.boomDishes = boomDishes;
 
   // rear service module — now with a collar fairing at the core junction
   // and visible conduit runs (three curved-look pipe segments) linking it
@@ -1776,6 +1829,11 @@ function buildConfluence(seed) {
   const podMat = darkTrimMaterial();
   const podRows = [-1.05, 1.05];
   const podZs = [-1.7, -0.55, 0.6, 1.75];
+  // PASS 15: strap bands collected (each already its own accentMaterial()
+  // instance from the loop, not shared) for a sequential "loading" pulse
+  // running fore-to-aft along the drum — a refinery hauler's flank should
+  // read as actively racking cargo, not a static cargo silhouette.
+  const podStraps = [];
   for (const py of podRows) {
     for (let pi = 0; pi < podZs.length; pi++) {
       const pod = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.5, 0.95), podMat);
@@ -1784,6 +1842,7 @@ function buildConfluence(seed) {
       const strap = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.06, 1.0), accentMaterial(col, 0.6));
       strap.position.copy(pod.position);
       g.add(strap);
+      podStraps.push({ mesh: strap, z: podZs[pi] });
     }
   }
 
@@ -1836,6 +1895,8 @@ function buildConfluence(seed) {
   g.userData.cargoMesh = cargoBay;
   g.userData.cargoBaseColor = cargoBay.material.color.clone();
   g.userData.hullLength = 7.5;
+  // PASS 15: sequential loading pulse along the ore pod straps.
+  g.userData.podStraps = podStraps;
   return { group: g, engines, lights };
 }
 
@@ -3966,6 +4027,129 @@ const Armada = {
         if (dishG.children[2] && dishG.children[2].material) {
           dishG.children[2].material.emissiveIntensity =
             (rig.state === 'mining' ? 1.6 : 0.6 + 0.35 * Math.sin(t * 1.6));
+        }
+      }
+
+      // ================================================================
+      // PASS 15 — "the six ships people look at most, barely animated."
+      // Everything below is per-hull identity motion on top of the shared
+      // engine/plume/cargo/beam system above. Each block is commented with
+      // whether it is SCENERY (a pure function of t/idlePhase, no fleet
+      // read, declared so per the brief's "must BE what it looks like"
+      // rule) or REAL (keyed to rig.state/rig.speedSmoothed/alive, which
+      // _tick already derives from the live OrbNode/event-bus data above).
+      // Periods are deliberately mismatched across all six ships (3.1s to
+      // 9s) so they never pulse in lockstep — a uniform period across six
+      // adjacent ships reads as a screensaver, not six independent machines.
+      // ================================================================
+
+      // TurtleSue (dreadnought) — drill collar ring: SCENERY spin (a
+      // "moving part" was promised by the original build comment on this
+      // mesh but never animated — see buildTurtleSue). Spins continuously
+      // (mechanism always turning) and brightens under load, same
+      // mining-state language as every other identity light in this file.
+      if (rig.group.userData.drillCollar) {
+        const dc = rig.group.userData.drillCollar;
+        dc.rotation.z = t * 1.3; // continuous mechanical spin, own axis
+        if (dc.material) {
+          dc.material.emissiveIntensity = rig.state === 'mining' ? 1.7 : 0.5 + 0.3 * Math.sin(t * 1.1);
+        }
+      }
+
+      // Gridzilla (lattice) — energy running along the truss chords:
+      // SCENERY. Lights exactly one joint node at a time in sequence
+      // (build order runs bow->stern per ring), the classic "current
+      // running down a girder" read a static truss cage can't sell on its
+      // own. 3.4s to complete one full pass down all nodes.
+      if (rig.group.userData.trussNodes && rig.group.userData.trussNodes.length) {
+        const nodes = rig.group.userData.trussNodes;
+        const cycle = 3.4;
+        const pos = ((t % cycle) / cycle) * nodes.length;
+        for (let ni = 0; ni < nodes.length; ni++) {
+          const dist = Math.min(Math.abs(pos - ni), nodes.length - Math.abs(pos - ni));
+          const glow = Math.max(0, 1 - dist * 0.9);
+          nodes[ni].mat.emissiveIntensity = 0.25 + glow * (rig.state === 'mining' ? 2.2 : 1.3);
+        }
+      }
+      // Gridzilla scoop rim — SCENERY slow breathe, distinct period from
+      // the truss pulse above so the two don't read as one synced system.
+      if (rig.group.userData.scoopGlow && rig.group.userData.scoopGlow.material) {
+        rig.group.userData.scoopGlow.material.emissiveIntensity =
+          (rig.state === 'mining' ? 1.8 : 0.7 + 0.35 * Math.sin(t * 0.83));
+      }
+
+      // Rubberband (skiff) — wingtip nav strobe: SCENERY, real aircraft
+      // anti-collision convention (alternating, not synchronized flash,
+      // left/right never lit together). 1.8s full cycle, short duty flash
+      // rather than a smooth sine so it reads as a strobe, not a pulse.
+      if (rig.group.userData.wingtipMatL && rig.group.userData.wingtipMatR) {
+        const strobePhase = (t % 1.8) / 1.8;
+        const flashL = strobePhase < 0.08 ? 2.2 : 0.35;
+        const flashR = (strobePhase > 0.5 && strobePhase < 0.58) ? 2.2 : 0.35;
+        rig.group.userData.wingtipMatL.emissiveIntensity = flashL;
+        rig.group.userData.wingtipMatR.emissiveIntensity = flashR;
+      }
+      // Rubberband sensor lens — REAL: brightens with the ship's own
+      // orbital speed (rig.speedSmoothed, the same real screen-px/frame
+      // quantity the exhaust plume above already keys off), so a skiff
+      // actually accelerating through a turn reads as "sensors working
+      // harder", not a fixed decoration.
+      if (rig.group.userData.sensorLens && rig.group.userData.sensorLens.material) {
+        const speedNorm = Math.min(1, (rig.speedSmoothed || 0) / 3.5);
+        rig.group.userData.sensorLens.material.emissiveIntensity = 0.5 + speedNorm * 1.4;
+      }
+
+      // Arbitrageur (catamaran) — twin drill rings alternate: SCENERY.
+      // The two hulls' rings pulse OUT OF PHASE (one crests as the other
+      // troughs) — a visual echo of "two independent rigs working against
+      // each other", which is Arbitrageur's actual identity (an arbitrage
+      // bot trades the spread BETWEEN two things). 4.6s period.
+      if (rig.group.userData.drillRingMats && rig.group.userData.drillRingMats.length === 2) {
+        const [ringL, ringR] = rig.group.userData.drillRingMats;
+        const base = rig.state === 'mining' ? 1.5 : 0.9;
+        ringL.emissiveIntensity = base + 0.5 * Math.sin(t * (Math.PI * 2 / 4.6));
+        ringR.emissiveIntensity = base + 0.5 * Math.sin(t * (Math.PI * 2 / 4.6) + Math.PI);
+      }
+      // Arbitrageur connector spar — SCENERY slow breathe (the link
+      // between the two hulls staying "live"), own distinct period.
+      if (rig.group.userData.sparMat) {
+        rig.group.userData.sparMat.emissiveIntensity = 0.6 + 0.3 * Math.sin(t * 0.7);
+      }
+
+      // NexusBrain (science) — sensor boom sweep: SCENERY. Sweeps a
+      // brightness peak across the three dishes in sequence (120 degrees
+      // apart on the hull, matching boomAngles in buildNexusBrain), reading
+      // as an active radar/sensor sweep rather than three static antennae.
+      // 2.7s per full sweep — distinct from the booms' own 0.4-period sway
+      // set above (SOTA build), which is deliberately left untouched.
+      if (rig.group.userData.boomDishes && rig.group.userData.boomDishes.length) {
+        const dishes = rig.group.userData.boomDishes;
+        const sweepPos = ((t % 2.7) / 2.7) * dishes.length;
+        for (let di = 0; di < dishes.length; di++) {
+          const dist = Math.min(Math.abs(sweepPos - di), dishes.length - Math.abs(sweepPos - di));
+          const glow = Math.max(0, 1 - dist * 1.4);
+          if (dishes[di].material) {
+            dishes[di].material.emissiveIntensity = 0.45 + glow * (rig.state === 'mining' ? 2.0 : 1.1);
+          }
+        }
+      }
+
+      // Confluence (refinery) — ore-pod strap loading pulse: SCENERY.
+      // Runs fore-to-aft along the drum's pod rack (sorted by z below),
+      // the "actively racking cargo" read a refinery hauler's flank should
+      // have. 5.2s per pass — slowest of the six, matching the dreadnought/
+      // refinery's "heavy, deliberate machinery" character rather than the
+      // skiff's snappy strobe.
+      if (rig.group.userData.podStraps && rig.group.userData.podStraps.length) {
+        const straps = rig.group.userData.podStraps;
+        const cycle = 5.2;
+        const pos = ((t % cycle) / cycle) * straps.length;
+        for (let si = 0; si < straps.length; si++) {
+          const dist = Math.min(Math.abs(pos - si), straps.length - Math.abs(pos - si));
+          const glow = Math.max(0, 1 - dist * 0.7);
+          if (straps[si].mesh.material) {
+            straps[si].mesh.material.emissiveIntensity = 0.3 + glow * (rig.state === 'mining' ? 1.9 : 1.1);
+          }
         }
       }
 

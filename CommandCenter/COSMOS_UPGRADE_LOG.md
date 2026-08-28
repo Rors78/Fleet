@@ -2026,3 +2026,229 @@ landed mid-suite; clean on re-run). Station harness 23/23. node --check
 clean on both JS files. Pool moved 215.7749 -> 215.6325, which is NOT
 drift — it is that real PEPE close at -0.1424, and the durable store took
 exactly one row from its two bus events with zero probe leakage.
+
+---
+
+## 2026-08-27 — pass 15: the six ships people look at most, barely animated
+
+**Mandate**: pass 14 proved ~26% of the six trader hulls' 2D `surface()`
+weather is dead code under `_armadaOwnsTraders` — the WebGL hulls in
+`armada.js` are the entire visible identity for TurtleSue, NexusBrain,
+Gridzilla, Rubberband, Arbitrageur, Confluence. This pass's mandate: those
+six hulls are detailed but barely animated beyond the shared engine-glow/
+exhaust-plume/cargo-bay system every ship already gets from `addEngineNozzle`/
+`addCargoBayGlow`. Give each hull identity-specific motion. Scope: `armada.js`
+only.
+
+**Measured before touching anything** (verified the brief's premise rather
+than trusting it, per this project's standing rule):
+
+    builder            meshes (static count)  accentMaterial() calls
+    buildTurtleSue        27                      2
+    buildGridzilla        23                      3
+    buildRubberband       21                      1
+    buildArbitrageur      15                      1
+    buildNexusBrain       14                      2
+    buildConfluence       15                      2
+    TOTAL                115                     11
+
+Grep-confirmed close to the brief's own numbers (the brief's "0 emissive
+materials" for Arbitrageur/NexusBrain undercounted by one each — both had
+exactly one `accentMaterial()` call each, not zero — a small, immaterial
+correction, noted rather than silently accepted). Also found, before writing
+any animation code, that the existing hull-specific hooks in `_tick()`
+(~line 3994, "hull-specific idle flourishes") only cover THREE of six ships
+(`dish`->TurtleSue, `booms`->NexusBrain sway-only no glow, `umbilicals`->
+Confluence) — Gridzilla and Arbitrageur had zero identity-specific animated
+hooks of any kind, confirming the mandate's core claim directly against the
+call graph, not just a materials count.
+
+**A real, load-bearing bug found while wiring this up, not invented**:
+several of the meshes this pass wanted to animate independently were built
+sharing ONE material instance across multiple meshes — the exact "shared
+material" trap this file's own `addCargoBayGlow` comment already documents
+and warns about elsewhere (previously bit `cargoMesh`/`hullMat` on several
+hulls, fixed in the adult-grade rebuild). Newly found here:
+- Gridzilla's truss joint spheres (`accentDot`, ~10-20 sphere meshes) all
+  shared one material — animating "energy running along the truss" would
+  have lit every joint identically, not traveled.
+- Rubberband's `wingAccentR` was a raw `.clone()` of `wingAccentL`, which in
+  three.js clones geometry but NOT material — the pair could never strobe
+  out of phase, only in lockstep.
+- Arbitrageur's two `drillRing` meshes (one per hull) AND the connector
+  `spar` all shared the same module-level `accent` const — three physically
+  separate parts tied to one emissive value.
+Each was given its own `accentMaterial()` instance before any animation
+logic was written, with an inline comment naming the trap. NexusBrain's
+three boom dishes and Confluence's ore-pod straps were already independent
+per-instance materials (built inside their respective loops) — no fix
+needed there, confirmed by reading before assuming.
+
+**Changed** — `D:\CommandCenter\armada.js`:
+
+- `buildTurtleSue` (~L737-743, drill collarRing): exposed as
+  `g.userData.drillCollar`. `_tick()` now spins it continuously on its own
+  axis (the mesh's original build comment called it "the moving part cue"
+  but nothing ever moved it) and brightens under `rig.state==='mining'`.
+- `buildGridzilla` (~L925-1022, truss joints + ~L1030 scoopGlow, ~L1144):
+  each joint sphere now gets its own `accentMaterial()`, collected in
+  `trussNodes` (mesh+mat+z) in build order. `_tick()` runs a traveling
+  brightness pulse down the chain, one node lit at a time, 3.4s per pass
+  — "current running down a girder." `scoopGlow` (bow rim ring, already
+  independent) gets a separate 0.83s-period breathe so the two don't read
+  as one synced system.
+- `buildRubberband` (~L1223-1233, wingtip strakes; ~L1295 sensorLens;
+  ~L1354): `wingAccentR` rebuilt with its own material instead of a
+  `.clone()` of L's. `_tick()` drives a real aircraft nav-light pattern —
+  alternating strobe, L and R never both bright at once, 1.8s cycle.
+  `sensorLens` brightness is REAL data: keyed to `rig.speedSmoothed` (the
+  same live orbital-speed quantity the exhaust plume already consumes),
+  not a fixed decoration.
+- `buildArbitrageur` (~L1426-1448 drill rings, ~L1456 spar, ~L1532):
+  each hull's `drillRing` and the connector `spar` given independent
+  materials. `_tick()` pulses the two rings OUT OF PHASE (4.6s period,
+  180 degrees apart) — "two hulls working the spread against each other,"
+  Arbitrageur's actual identity. Spar breathes on its own 0.7-period.
+- `buildNexusBrain` (~L1613-1641, boom dishes): collected the three
+  (already-independent) dish materials into `boomDishes`. `_tick()` sweeps
+  a brightness peak across them in sequence, 2.7s per full sweep — reads
+  as an active sensor sweep instead of three static antenna caps.
+- `buildConfluence` (~L1832-1841 pod straps, ~L1899): collected the
+  (already-independent) strap materials in build order. `_tick()` runs a
+  slow (5.2s, deliberately the slowest of the six — heavy refinery
+  character, not a skiff's snap) sequential "loading" pulse fore-to-aft
+  along the drum.
+- `_tick()` (~L4033 onward, new block ~150 lines): all six blocks inserted
+  after the existing `dish` flourish and before the mining state machine.
+  Every block is commented SCENERY or REAL per the brief's rule. Periods
+  used: 1.3 (rad/s spin), 1.8, 2.7, 3.4, 4.6, 5.2, 0.7, 0.83 seconds —
+  none share a common small-integer ratio with another, so the six ships
+  do not pulse in visible lockstep.
+
+**What's real vs scenery, explicitly**:
+- REAL: Rubberband's sensor lens (keyed to `rig.speedSmoothed`, live
+  orbital speed). Every other new motion, plus the mining-state brightness
+  bumps reused from the existing pattern (`rig.state==='mining'`, itself
+  real — set by live `TRADE_OPEN`/`TRADE_CLOSE` events in `onEvent()`), are
+  declared scenery: pure functions of `t` (elapsed time) with no other
+  fleet-state read. Checked the same way pass 11's visitor audit did —
+  grepped each new block for anything reading `_orbNodes`, portfolio state,
+  or event data beyond `rig.state`/`rig.speedSmoothed`, both of which are
+  already-real quantities other code in this file was already trusting
+  before this pass touched anything.
+
+**Rejected, with reasons**:
+- *Porting this into the 2D `PLANET_VISUALS` surface functions instead.*
+  Pass 14 already established those are dead code under
+  `_armadaOwnsTraders` whenever Armada is live — exactly the fallacy this
+  pass exists to correct. Animation belongs on the mesh that actually
+  renders.
+- *A shared/generic "pulse effect" helper applied uniformly to all six.*
+  Read each builder first, per the brief's own instruction. A generic pass
+  would have produced six identical-feeling ships; the six treatments here
+  differ in mechanism (spin vs. traveling pulse vs. strobe vs. phase-offset
+  vs. sweep vs. sequential) specifically because a dreadnought's drill,
+  a lattice truss, a skiff's nav lights, a catamaran's twin rigs, a science
+  vessel's sensor array, and a refinery's cargo rack are different
+  machines and should read as different machines.
+- *Binding more of the new motion to real fleet data "to be safe."* Checked
+  what `ShipRig`/`_tick` actually has available before deciding: `rig.state`
+  (real, mining/idle/retracting/dormant) and `rig.speedSmoothed` (real,
+  live orbital speed) are the only two per-frame quantities in scope that
+  mean anything at ship-animation timescale — `rig.state` was already
+  reused (matches the existing dish/umbilical pattern), and
+  `speedSmoothed` was given exactly one binding (Rubberband's sensor) where
+  it made sense. Inventing a third data-driven hook to hit some quota would
+  have meant fabricating a signal, which the brief explicitly prohibits.
+- *Wiring a real per-bot quantity into every single new motion.* Considered
+  and rejected — most of the ~150 lines added are legitimately scenery
+  (SOTA passes on this file's own visitor/deep-field systems already
+  established that not everything needs to be data, only that whatever
+  claims to be data must actually be data). Declared honestly instead of
+  forced into a real binding it doesn't have.
+
+**Mesh/material counts, before -> after** (real-execution vm-sandbox
+harness — actual `armada.js` source loaded and run via `node:vm`, real
+three.js r178, `ShipRig` constructed per trader id, `.traverse()` over the
+real built `Object3D` graph, not a static grep):
+
+    ship          meshes  emissive materials (traverse-counted)
+    turtlesue        93        8
+    nexusbrain        40       15
+    gridzilla        100       23
+    rubberband        40        9
+    arbitrageur        49        8
+    confluence         67       27
+    TOTAL             389       90
+
+No new mesh geometry was added — every number above is the SAME as before
+this pass (confirmed: the diff adds zero `new THREE.Mesh`/`new
+THREE.Group` calls; it only adds `accentMaterial()` calls that replace a
+previously-shared material reference with an independent one for meshes
+that already existed, plus the new `_tick()` per-frame logic and userData
+plumbing). New material INSTANCES: +8 (gridzilla's per-joint accentMaterial
+swap from one shared instance to N independent ones is the only place mesh
+count and material-instance count diverge — same meshes, more materials).
+Static per-builder `accentMaterial()` call count: 11 -> 19.
+
+**Bloom budget**: not touched. Every new animated material re-uses meshes
+that either already had `BLOOM_LAYER` enabled (engine glow/plume/running
+lights, untouched) or were never bloom-tagged accent trim (drill rings,
+truss nodes, wingtips, boom dishes, pod straps) — none of those were
+bloom-layer meshes before this pass and none were switched to bloom-layer
+by it. This pass raises emissiveIntensity on existing non-bloom materials,
+which is a per-material color change with zero effect on
+`camera.layers.set(BLOOM_LAYER)`'s bright-pass mesh count or the
+quarter-resolution blur cost — the bloom pipeline's O(screen resolution)
+cost model (see `QUALITY.high.bloom` comment, ~L79-88) is unchanged.
+
+**Verification**:
+- `node --check armada.js`, `node --check solar_system.js`: both clean.
+- `node .verify_station_harness.mjs`: 23/23, unchanged (armada.js's CC
+  station code path untouched by this pass).
+- Ad hoc harness (`.verify_pass15_ships.mjs`, written, run, then deleted
+  per the standing convention for this kind of check): vm-sandboxed the
+  real `armada.js`, constructed a real `ShipRig` per trader id, confirmed
+  all 9 new userData hooks exist with independent material instances where
+  claimed, then drove the exact `_tick()` flourish expressions (copied
+  verbatim) across a 4800-step / 20-minutes-simulated sweep, alternating
+  `rig.state` between idle/mining and varying `rig.speedSmoothed` —
+  **zero exceptions, zero NaN/undefined in any tracked emissiveIntensity**.
+  Confirmed the traveling/alternating/out-of-phase claims numerically, not
+  just by inspection: Gridzilla's brightest truss node index changes
+  across sampled t (0, then 4, then back to 0 — a real traveling pulse,
+  not a static glow); Rubberband's L/R wingtip strobe never had both sides
+  above the flash threshold in the same frame across 200 sampled steps
+  (real alternation); Arbitrageur's two drill rings accumulated >10 total
+  absolute divergence across 200 steps (measurably out of phase, not
+  identical).
+- Suite: 99 passed, 0 failed (`python -X utf8 run_all.py`), unchanged from
+  the pre-pass baseline — this pass never touched `command_center_v4.html`
+  or any Python file. Confirmed via `git status`: only `armada.js` shows
+  as modified.
+- Brace balance on `command_center_v4.html`: 3446/3446 before and after
+  (file untouched this pass, checked anyway per the standing rule).
+- Pool: `215.63250381295563` before and after
+  (`curl http://localhost:9000/api/portfolio`), unchanged — no trades
+  landed during this pass's verification window.
+- **Saw it render**: yes, via claude-in-chrome. Loaded `localhost:9000`,
+  called `window._orbToggleFS()` directly (the reliable method documented
+  by pass 12's parent-session verification — UI click coordinates on this
+  page have moved since some earlier passes' notes), confirmed
+  `window._orbIsFS===true` and `window.Armada._initialized===true`,
+  screenshotted. Zero console errors/warnings the entire session (checked
+  with an unfiltered `onlyErrors` pattern both before and after entering
+  fullscreen). Identified NexusBrain's hull directly in-frame (icosahedral
+  core, cone nose, three sensor booms with dish tips) and captured the
+  same ~140x110px screen region twice, 3+ seconds apart: the boom dish
+  brightness pattern visibly changed between the two captures (a different
+  dish reads brightest in the second capture than the first) — direct
+  photographic evidence of the sensor-sweep motion running live on the
+  actual production canvas, not just in the offline harness. TurtleSue,
+  Gridzilla, and the other four ships were confirmed rendering with intact
+  hull geometry and beam/engine effects but orbit fast enough at zoom=1
+  that a single screenshot pair could not isolate their specific new
+  motion the way NexusBrain's near-stationary framing allowed — the
+  harness above is the load-bearing proof for those five; the live capture
+  is corroborating, not the sole evidence. No bot or fleet restart was
+  performed at any point.

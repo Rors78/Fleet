@@ -3015,20 +3015,44 @@ function _posRings(ctx,nd,x,y,sz){
    and upper-left (Gridzilla/NEXUS) collision clusters, plus NexusBrain/
    Rubberband, all reported as unreadable on the 50" display 2026-07-28. */
 var _orbLabelQueue=[];
-/* ═══ HOVER-ONLY LABELS (2026-07-29) ═══
+/* ═══ HOVER + ZOOM + EVENT LABELS (2026-07-29, extended pass 17) ═══
    18 permanent labels turned the starfield into a text wall — the whole point
    of the cosmos view is the cosmos, and the names were competing with it.
-   Labels are now revealed on hover only: _labelReveal[id] is a 0→1 eased
-   amount driven per-frame by which body the mouse is over, so a name fades
-   in/out rather than popping. A body is queued only while its reveal is
-   non-zero, which means the common case (nothing hovered) queues nothing and
-   the collision pass costs nothing. */
-var _labelReveal={};      /* id → current 0..1 reveal amount */
+   Labels stay OFF by default; _labelReveal[id] is a 0→1 eased amount driven
+   per-frame, so a name fades in/out rather than popping. A body is queued
+   only while its reveal is non-zero, which means the common case (nothing
+   hovered/zoomed/eventful) queues nothing and the collision pass costs
+   nothing.
+
+   Pass 17 adds two more reveal triggers on top of hover, because the
+   measured gap was that NOT ONE body is ever named on screen (_orbRender
+   had exactly 3 fillText calls total, none of them a bot name) — hover is
+   useless on a 50" display nobody is mousing over:
+     - ZOOM: once the viewer has deliberately zoomed in (_orbZoom>=1.6),
+       stars+planets reveal; moons need a tighter zoom (>=2.2, they're
+       smaller/more numerous — 8 of them — so only show once there's
+       screen space to hold them without collision-avoidance shoving
+       everything around). This only fires on a choice the viewer already
+       made to look closer, so it can't turn the idle wide view into a
+       text wall.
+     - EVENT: nd.eventBurst>0.3 reuses the SAME threshold and SAME field
+       the ring-pulse visual at _drawNode(~line 2986) already gates on —
+       no new decay mechanism, no new "is this real" question. A body's
+       name surfaces for the few seconds it's actually doing something
+       (whale alert source, migration trigger, phase transition), which
+       is exactly when a viewer would ask "wait, which one was that". */
+var _labelReveal={};      /* id → current 0..1 eased reveal amount */
 var _labelRevealSpeed=9;  /* per second — ~110ms to full fade */
+var _LABEL_ZOOM_PLANET=1.6, _LABEL_ZOOM_MOON=2.2;
 function _updateLabelReveals(dt){
   var d=Math.min(1,dt*_labelRevealSpeed);
   for(var id in _orbNodes){
-    var target=(_orbHover===id)?1:0;
+    var nd=_orbNodes[id];
+    var target=0;
+    if(_orbHover===id) target=1;
+    else if(nd.eventBurst>0.3) target=1;
+    else if(nd.celestialType==="moon"){ if(_orbZoom>=_LABEL_ZOOM_MOON) target=1; }
+    else if(_orbZoom>=_LABEL_ZOOM_PLANET) target=1; /* stars + planets */
     var cur=_labelReveal[id]||0;
     cur+=(target-cur)*d;
     if(cur<0.004) cur=0;

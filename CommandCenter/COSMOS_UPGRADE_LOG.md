@@ -1970,3 +1970,59 @@ changed, no gate touched - comments only.
   stale/pre-background, not useful for a live A/B - the call-graph trace
   above is what actually settled the question. No restart of any bot or
   the fleet was performed.
+
+### Parent-session verification of pass 14 — the mechanism corrects TWO earlier assumptions
+
+The agent found the real cause and it is neither what I briefed nor what
+pass 13 concluded. Both of us assumed COMPOSITING: that the WebGL canvas
+stacks over the 2D one and paints on top. I even sent the agent the
+`alpha:true` / DOM-order mechanics to reason with. That was the wrong
+model.
+
+**It is a call-graph gate, not a paint-order problem.** Verified here:
+
+    command_center_v4.html:4959
+      var _armadaOwnsTraders = _orbIsFS && window.Armada && window.Armada._initialized;
+    command_center_v4.html:4972
+      var _fsDrawn = _armadaOwnsTraders ? false : _drawFullscreenEntity(...)
+
+`_drawNode` is the only caller of `PLANET_VISUALS[id].surface()`, so for
+those six bodies the surface function **never executes at all** in
+fullscreen. Nothing is drawn and then covered; nothing is drawn.
+
+**The dates make it worse, and I verified them:**
+
+    fb45c49  2026-07-30  the gate ships
+    ca34f1d  2026-08-27  pass 8  — Gridzilla weather
+    85556a3  2026-08-27  pass 9  — twelve more bodies
+    f5fe6f0  2026-08-27  pass 13 — Confluence crust
+
+The gate predates every weather pass by **28 days**. Passes 8, 9 and 13
+wrote surface code into functions that were already unreachable, and each
+"verified" it with a harness that calls `surface()` standalone — where the
+gate does not exist. The harness measured real pixels on a code path the
+live page never runs.
+
+**Independently counted the invisible fraction:** I get 98 of 463 draw
+calls (21%); the agent reported 127 of 491 (26%). The gap is timestamp
+sensitivity — weather cells are time-driven, so a different sample instant
+hits a different phase. Either way roughly a quarter of the surface work
+is unreachable in fullscreen, and the 464/491 baseline quoted across
+passes 8-13 was never the live page's real count.
+
+**Fix chosen, and I agree with it:** comment-only. Verified the diff has
+zero executable changes. The gate's own comment documents the 2D path as
+the deliberate fallback if armada.js fails to load, so the code is a real
+safety net at zero runtime cost. Each of the six surfaces now names the
+gate, the WebGL builder that owns the visible identity, and the corrected
+mechanism, so no future pass repeats this.
+
+**Method note worth keeping:** a harness that calls a draw function
+directly proves the function works. It cannot prove the function RUNS.
+Three passes verified the first and assumed the second.
+
+Suite 99/99 (one transient failure on the first run: a real PEPE/USD close
+landed mid-suite; clean on re-run). Station harness 23/23. node --check
+clean on both JS files. Pool moved 215.7749 -> 215.6325, which is NOT
+drift — it is that real PEPE close at -0.1424, and the durable store took
+exactly one row from its two bus events with zero probe leakage.

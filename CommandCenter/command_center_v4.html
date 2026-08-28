@@ -1318,6 +1318,44 @@ function OrbNode(id,cfg,def,angle,cw,ch){
 OrbNode.prototype.getX=function(){return this.x;};
 OrbNode.prototype.getY=function(){return this.y;};
 
+/* --- Re-clump fix (2026-08-27, pass 16): find the widest open slot in the
+   sky around a star, in ABSOLUTE angle (orbitAngle is used as an absolute
+   world angle everywhere it's read — OrbNode.update ~L1553-1554 — never
+   added to the parent's own angle, so the gap must be measured in the same
+   absolute space or a "clear" slot here could still land on top of a
+   sibling on screen).
+   Scoped to PLANETS ONLY sharing the target star, matching the log's own
+   measured finding (2026-08-27 clump-fix entry): same-star sibling PLANETS
+   sit hundreds of world units apart radially (planetRatios spread), so
+   overlap is an angular problem between planets, not a radial one, and not
+   one moons/CC need protecting against here. Also counts any OTHER planet
+   already mid-migration TOWARD the same star (using ITS pending orbitAngle,
+   which is exactly the slot it is already flying to) so two simultaneous
+   migrations to the same star don't independently pick the same "empty"
+   gap and collide anyway. */
+function _orbGapAngle(targetStarId,excludeId){
+  var TAU=Math.PI*2,angles=[];
+  for(var id in _orbNodes){
+    if(id===excludeId) continue;
+    var nd=_orbNodes[id];
+    if(!nd||nd.celestialType!=="planet") continue;
+    var landingParent=nd.migrating?nd.migrationTarget:nd.currentParent;
+    if(landingParent!==targetStarId) continue;
+    var a=nd.orbitAngle%TAU; if(a<0) a+=TAU;
+    angles.push(a);
+  }
+  if(!angles.length) return Math.random()*TAU; /* first arrival — no gap to respect */
+  angles.sort(function(x,y){return x-y;});
+  var bestGap=-1,bestMid=0;
+  for(var i=0;i<angles.length;i++){
+    var lo=angles[i],hi=(i+1<angles.length)?angles[i+1]:angles[0]+TAU;
+    var gap=hi-lo;
+    if(gap>bestGap){bestGap=gap;bestMid=lo+gap/2;}
+  }
+  bestMid%=TAU; if(bestMid<0) bestMid+=TAU;
+  return bestMid;
+}
+
 /* --- Planet migration — move to a new star system --- */
 OrbNode.prototype.migrateTo=function(targetStarId,reason){
   if(this.celestialType!=="planet") return;
@@ -1331,6 +1369,17 @@ OrbNode.prototype.migrateTo=function(targetStarId,reason){
   this.migrationTarget=targetStarId;
   this.migrationProgress=0;
   this.migrationReason=reason||"";
+  /* RE-CLUMP FIX (pass 16): claim the widest open angular gap among the
+     target star's current/incoming planets BEFORE departure. Setting
+     orbitAngle here (not at arrival) means the existing smoothstep
+     transition in OrbNode.prototype.update (targetX/Y eased via
+     migrationProgress) carries the body to the gap as visible travel, not
+     a teleport — the arrival-time atan2 recompute (~L1565) then just
+     recovers this same angle from the now-arrived position, so it doesn't
+     fight this. Absence-safe: if _orbNodes isn't ready for some reason
+     _orbGapAngle degrades to a random angle, never a fixed/confident
+     default that could re-create the clump it's meant to fix. */
+  if(typeof _orbNodes!=="undefined") this.orbitAngle=_orbGapAngle(targetStarId,this.id);
   /* Sound: sweeping tone from old star to new star */
   if(typeof _sndMigration==="function") _sndMigration(this.id,fromStar,targetStarId);
 };

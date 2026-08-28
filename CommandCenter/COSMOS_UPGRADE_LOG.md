@@ -2305,3 +2305,156 @@ genuinely fixed and serving; a screenshot showing it predated the fix. And
 default before first paint, NOT a defect — it sizes correctly once painting.
 
 Suite 99/99. Pool 215.6325 unchanged.
+
+---
+
+## 2026-08-27 — migration re-clump fix (pass 16)
+
+**Reported defect** (operator's own complaint recurring, flagged unfixed
+in the 2026-08-27 "planet clump fix" entry above): migration is
+data-driven, so any combination of planets can land on any star at any
+time, and a static `_fixedAngles` table cannot anticipate it. A live
+sample showed 3 planets sharing Nexus and 3 sharing Oracle.
+
+**Root cause, confirmed by reading, not assumed from the brief.**
+`OrbNode.prototype.migrateTo` (command_center_v4.html:1322, before this
+pass) never touched `orbitAngle` at all — the brief's premise. But
+`OrbNode.prototype.update`'s migration-arrival block (~L1565, pre-existing)
+DOES set `this.orbitAngle=Math.atan2(this.y-newP.y,this.x-newP.x)` on
+arrival — so the angle isn't frozen from construction as literally stated,
+it's overwritten to whatever the body's incidental in-transit position
+happened to be relative to the new parent. That's not gap-aware placement,
+it's an accident of where the smoothstep transition left it — arriving
+planets never look at siblings already at the destination star. Net effect
+matches the reported symptom either way.
+
+**Changed** — `command_center_v4.html:1321-1385` (new `_orbGapAngle` helper
+just above `OrbNode.prototype.migrateTo`, plus one new line inside
+`migrateTo` itself)
+
+- New function `_orbGapAngle(targetStarId, excludeId)`: scans `_orbNodes`
+  for all bodies with `celestialType==="planet"` whose LANDING star is
+  `targetStarId` — either `currentParent` (settled) or `migrationTarget`
+  (already mid-migration toward it, so two simultaneous migrations to the
+  same star don't independently pick the same "empty" slot and collide
+  anyway), reads each one's current `orbitAngle` (wrapped to [0,2pi)),
+  sorts them, finds the single largest gap, and returns its midpoint. Zero
+  existing occupants -> random angle (declared, not a confident default —
+  see persistence note below).
+- Scoped to PLANETS ONLY, matching the prior pass's own measured finding
+  in this log (same-star sibling planets sit hundreds of world units apart
+  RADIALLY because of the `planetRatios` spread, so overlap is an angular
+  problem between planets specifically, not something moons/CC need
+  protection from here).
+- Angle is ABSOLUTE, matching how `orbitAngle` is read everywhere else
+  (`Math.cos(this.orbitAngle)` added directly to `parentX`, never to the
+  parent's own angle — confirmed at OrbNode.update ~L1553-1554). A gap
+  measured in parent-relative space would not guarantee a clear slot in
+  the space the render loop actually uses.
+- `migrateTo` (L1322) now sets `this.orbitAngle=_orbGapAngle(targetStarId,
+  this.id)` at DEPARTURE, right after the existing migration-state setup,
+  guarded by `typeof _orbNodes!=="undefined"`. Setting it at departure
+  (not arrival) means the pre-existing smoothstep transition in
+  `OrbNode.prototype.update` (`migrationProgress` 0->1, `ease=t*t*(3-2*t)`,
+  already computing `newTargetX/Y` from `this.orbitAngle`) automatically
+  carries the body to the gap as visible eased travel — no new easing code
+  needed, reused the existing mechanism verbatim. The pre-existing
+  arrival-time atan2 recompute (~L1565) was left untouched: by the time
+  migration completes, `this.x/y` have already eased to the gap position,
+  so atan2 just recovers approximately the same angle back out — verified
+  live, not just reasoned (see measurement below), it does not fight the
+  new placement.
+
+**Why not the continuous-nudge alternative.** Read the log first, as
+instructed. A same-day-in-substance nudge was tried and rejected earlier
+in this same log at every strength from 0.0004 to 0.1 rad/frame (control-
+loop instability, oscillating 0.1-28.7 degrees at every strength). Re-angling
+only at the discrete moment of a real migration event sidesteps that
+entirely — it never runs a continuous corrective force against a periodic
+Kepler disturbance, so there's nothing for it to fight. This IS materially
+different from the rejected attempt, which nudged every frame regardless
+of whether a migration was happening.
+
+**Persistence.** `_orbPhaseSave`/`_orbPhaseLoad` (~L2380-2430) read/write
+`orbitAngle` per body through `localStorage['cosmos_orbit_v1']` and were
+NOT modified — they already round-trip whatever `orbitAngle` holds at
+save/load time, gap-derived or not, with existing absence/corruption
+handling (`hasOwnProperty` check, non-finite rejected, 0 applied ->
+returns false and keeps day-one angles) untouched. A reload therefore
+resumes from the last-saved gap-aware angle rather than reverting to
+`_fixedAngles`, and a corrupt/absent read degrades exactly as it did
+before this pass — never a confident default.
+
+**Measured live** (Chrome, `localhost:9000`, real fullscreen COSMOS,
+`window._orbNodes` introspection — not estimated)
+
+*Before* (existing live state, day-one `_fixedAngles` composition, no
+forced migration yet): Oracle had 3 planets (turtlesue 54.3 deg, confluence
+164.2 deg, gridzilla 169.0 deg) — min gap **4.8 degrees** between confluence/
+gridzilla, max gap 245.3 degrees. This is exactly the reported clump shape,
+reproduced without any test scaffolding.
+
+*Forced migration test*: cleared the 60s cooldown and called
+`migrateTo("oracle", ...)` directly on 6 planets (some already-migrating
+toward other stars from the live event loop, which kept firing
+concurrently during the test — a harder condition than an isolated test).
+Final state, all landing on Oracle: arbitrageur 11.7 deg, turtlesue 68.1 deg,
+confluence 126.5 deg, gridzilla 202.5 deg, nexusbrain 258.9 deg, rubberband
+315.3 deg — gaps **56.4, 58.4, 76.0, 56.4, 56.4, 56.4 degrees, min gap
+56.4 degrees** (ideal even split of 6 bodies over 360 degrees is 60 degrees
+each). Re-measured 4s later after forcing paint (headless tabs pause the
+render loop — `document.hidden===true` confirmed, screenshots force one
+frame each): the 3 still-in-flight bodies held their assigned slots
+(56.2-56.5 degrees apart) while two others that the LIVE event loop
+independently migrated to `nexus` mid-test landed at 168.3/348.0 degrees —
+gap **179.7/180.3 degrees, a clean antipodal split** for 2 bodies sharing a
+star, computed by the same function under real concurrent production
+conditions, not a controlled single-threaded test.
+
+**Motion, not teleport — measured, not assumed.** Sampled
+`arbitrageur.x/y` and `migrationProgress` across three forced-paint
+screenshots: progress ticked 0.045 -> 0.085 -> 0.130 (the pre-existing
+`+=0.005` per update, unmodified), position moved incrementally each
+step (x: 546.63 -> 585.85, a partial step toward the destination, not a
+jump to it) — the armada ship sprite for the same bot was visibly at a
+different screen position across the same screenshots. Confirms the new
+departure-time angle rides the existing eased transition rather than
+bypassing it.
+
+**Rejected, with reasons**
+
+- *Continuous per-frame angular nudge.* See above — already measured
+  unstable at every strength tried in the prior pass. Not retried; the
+  discrete re-angle-on-migration approach doesn't share the mechanism that
+  caused the instability (no continuous force fighting orbital motion).
+- *Re-angling on arrival instead of departure.* Considered, rejected:
+  gap-finding needs to see the target star's OTHER occupants before this
+  body joins them, and departure is when the target is first known. Also,
+  setting the angle at departure lets the existing smoothstep motion do
+  the "travel to the gap" work for free; doing it at arrival would require
+  a second, separate easing pass bolted onto a transition that just
+  finished.
+- *Scoping the gap search to moons/CC as well as planets.* Not measured to
+  be part of the reported symptom (moons/CC don't migrate at all — only
+  `celestialType==="planet"` ever calls `migrateTo`, confirmed by the
+  early-return guard at L1323) and would have coupled unrelated body
+  classes for no benefit.
+
+**Verification**
+
+- Brace balance: 3451/3451 before, 3456/3456 after (+5/+5, matches the
+  inserted block, no leak).
+- `node --check` on the extracted inline `<script>` block, `solar_system.js`,
+  and `armada.js`: all clean.
+- Suite: **99 passed, 0 failed** (`python -X utf8 run_all.py`), including
+  `cosmos_lighting.js` and `deepfield_coverage.js`, run after the edit.
+- Pool: `215.63250381295563` before and after (`curl
+  http://localhost:9000/api/portfolio`) — unchanged; the live test only
+  mutated in-page `_orbNodes` JS state via forced `migrateTo()` calls, no
+  backend/reservation activity.
+- Chrome: navigated to `localhost:9000`, entered fullscreen COSMOS,
+  confirmed rendering and continued orbital motion across multiple
+  screenshots (armada ships and planets at different positions each time).
+  Zero console errors (checked with an unfiltered error pattern). Reloaded
+  the page afterward to clear the test's forced-migration state before
+  finishing.

@@ -2458,3 +2458,45 @@ bypassing it.
   Zero console errors (checked with an unfiltered error pattern). Reloaded
   the page afterward to clear the test's forced-migration state before
   finishing.
+
+### Parent-session verification of pass 16 — and a measurement error of mine worth recording
+
+Verified independently in the live page, forcing ALL SIX planets onto
+oracle at once (the worst case) while the real event loop kept firing its
+own migrations.
+
+**Baseline before, day-one angles:**
+
+    oracle   4 children  gaps 19.6 / 80.6 / 29.4 / 230.3   min 19.6 deg
+    nexus    3 children  gaps 28.9 / 115.3 / 215.7         min 28.9 deg
+
+**After forced migrations, grouped by LANDING parent:**
+
+    oracle   3 planets   gaps 89.9 / 89.8 / 180.3          min 89.8 deg
+    nexus    2 planets   gaps 76.6 / 283.4                 min 76.6 deg
+
+Migration reads as travel, not a teleport: bodies visibly moved between
+consecutive forced paints, and `migrationProgress` sat at 0.13 mid-flight.
+
+**MY ERROR, recorded because it would mislead the next reader.** My first
+measurement reported gridzilla and turtlesue only **7.9 deg apart** and I
+nearly filed it as a defect. It was not. I grouped bodies by
+`parentId` — where they are NOW — while `_orbGapAngle` correctly reasons
+about `migrationTarget` — where they are GOING. Both bodies were already
+in flight to different stars (gridzilla to nexus, turtlesue to deepblue),
+so they were never going to share a parent at all. Checking the node
+fields directly is what settled it.
+
+The lesson generalises: when verifying a fix, measure the quantity THE FIX
+REASONS ABOUT, not a nearby one that looks equivalent. A body's current
+parent and its landing parent are different questions during a migration,
+and the whole feature exists to handle exactly that window.
+
+**Also worth keeping:** the fix places the angle at DEPARTURE, so the
+existing smoothstep transition carries the body there — no new easing code,
+and nothing to destabilise. That sidesteps the continuous angular nudge a
+prior pass measured as unstable at every strength from 0.0004 to 0.1
+rad/frame.
+
+Suite 99/99. Pool 215.6325 before and after. node --check clean on all
+three files. Braces 3456/3456.

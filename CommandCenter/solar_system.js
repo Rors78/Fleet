@@ -1225,10 +1225,34 @@ var PLANET_VISUALS = {
         baseColor: [255, 109, 0],
         atmosphere: [255, 160, 80],
         surface: function(ctx, x, y, r, lx, ly, now) {
-            /* COSMOS pass 13 (2026-08-27): this body's disk was previously
-               empty — the 4-beam convergence identity lives entirely in
-               overlay() (see the disk-clip note preserved below) and
-               nothing was ever drawn on the sphere itself. Confluence is
+            /* PASS 14 CORRECTION (2026-08-27): this function is DEAD CODE
+               on the live dashboard right now, and has been since armada.js
+               shipped (commit fb45c49, 2026-07-30) — a full month before
+               this surface() was even written. Confluence is one of the
+               six bots armada.js gives a WebGL hull (FLEET.confluence,
+               'refinery'); whenever Armada is initialized in fullscreen,
+               command_center_v4.html's _armadaOwnsTraders gate (~line
+               4959) sends this body through _drawNode's early-return
+               branch and never calls PLANET_VISUALS.confluence.surface()
+               at all -- not "covered by the WebGL hull", literally never
+               invoked. Pass 13 found the covering symptom (screenshotted a
+               monkey-patched sphere and saw the WebGL ship on top) but
+               attributed it to compositing/z-order; the real mechanism is
+               one call-site level up. Kept anyway, deliberately: this is
+               the file's own documented fallback path if armada.js ever
+               fails to load (see _armadaOwnsTraders' comment and the CC
+               station's identical pattern ~line 4795) -- a real safety net,
+               not wasted effort, just never the thing a viewer sees today.
+               Before adding MORE visual work to any of the six armada
+               bots' PLANET_VISUALS entries, grep _armadaOwnsTraders in
+               command_center_v4.html first and confirm on the live page
+               (window.Armada._initialized) whether it will ever paint.
+
+               Original pass-13 note, still accurate for the fallback path:
+               this body's disk was previously empty — the 4-beam convergence
+               identity lives entirely in overlay() (see the disk-clip note
+               preserved below) and nothing was ever drawn on the sphere
+               itself. Confluence is
                the only bot in the fleet actually trading right now, so of
                every body in the system this one most needed to look alive
                up close, not just from its beams. This is scenery, not a
@@ -1421,6 +1445,19 @@ var PLANET_VISUALS = {
         baseColor: [50, 170, 70],
         atmosphere: [90, 210, 110],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* PASS 14 (2026-08-27): DEAD CODE on the live dashboard whenever
+               Armada is initialized in fullscreen — command_center_v4.html's
+               _armadaOwnsTraders gate (~line 4959) routes this body through
+               _drawFullscreenEntity, which for gridzilla dispatches to the
+               bespoke _drawStation cinema renderer via _botTypeMap, and
+               _drawNode (the only caller of this surface()) never runs.
+               See the full writeup on PLANET_VISUALS.confluence.surface()
+               above for the mechanism and why it's kept anyway (fallback
+               if armada.js fails to load). This was pass 8's flagship
+               "first live use of _sphBlob/_sphLambert" body (2026-08-27,
+               same day) — verified against the 2D canvas at the time, which
+               was the wrong layer to check; the WebGL lattice truss ship
+               (armada.js buildGridzilla) is what a viewer actually sees. */
             /* Grid overlay */
             ctx.strokeStyle = 'rgba(120, 255, 140, 0.15)';
             ctx.lineWidth = 0.6;
@@ -1817,7 +1854,24 @@ var PLANET_VISUALS = {
     },
 
     turtlesue: {
-        /* THE DEATH STAR — a battle station, not a world. It is a sprite
+        /* PASS 14 (2026-08-27): DEAD CODE on the live dashboard whenever
+           Armada is initialized in fullscreen — command_center_v4.html's
+           _armadaOwnsTraders gate (~line 4959) sends this body through
+           _drawNode's early-return branch (turtlesue has no _botTypeMap
+           entry, so it fell to _drawNode's PLANET_VISUALS fallback before
+           Armada existed, and to nothing at all now). See the full writeup
+           on PLANET_VISUALS.confluence.surface() above for the mechanism
+           and why it's kept anyway (fallback if armada.js fails to load).
+           What a viewer actually sees is armada.js's WebGL "dreadnought"
+           hull (buildTurtleSue), not the Death Star sprite below — this
+           sprite work (2026-08-18) predates armada.js (2026-07-30) having
+           been the LIVE identity, but has been superseded on-screen since.
+           The draw-call harness (cost.mjs) reports 0 for this body not
+           because it's empty but because it's drawImage()-based — the
+           harness only counts arc/gradient calls, another blind spot worth
+           knowing about before trusting that harness's totals uncritically.
+
+           THE DEATH STAR — a battle station, not a world. It is a sprite
            rather than a procedural surface, which had three consequences
            worth fixing (2026-08-18):
 
@@ -2264,6 +2318,17 @@ var PLANET_VISUALS = {
         baseColor: [55, 35, 140],
         atmosphere: [130, 80, 230],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* PASS 14 (2026-08-27): DEAD CODE on the live dashboard whenever
+               Armada is initialized in fullscreen — command_center_v4.html's
+               _armadaOwnsTraders gate (~line 4959) routes this body through
+               _drawFullscreenEntity's _botTypeMap dispatch (nexusbrain ->
+               "civ_planet" -> _drawCivPlanet, a completely separate cinema
+               renderer in command_center_v4.html), and _drawNode (the only
+               caller of this surface()) never runs. See the full writeup on
+               PLANET_VISUALS.confluence.surface() above for the mechanism
+               and why it's kept anyway (fallback if armada.js fails to
+               load). What a viewer actually sees is armada.js's WebGL
+               "science" hull (buildNexusBrain), not this. */
             /* Purple/violet neural planet with deep-space violet base */
             var cRot=now/100000;
             ctx.save();ctx.translate(x,y);ctx.rotate(cRot);
@@ -2384,6 +2449,17 @@ var PLANET_VISUALS = {
         baseColor: [0, 175, 215],
         atmosphere: [55, 215, 250],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* PASS 14 (2026-08-27): DEAD CODE on the live dashboard whenever
+               Armada is initialized in fullscreen — command_center_v4.html's
+               _armadaOwnsTraders gate (~line 4959) routes this body through
+               _drawFullscreenEntity's _botTypeMap dispatch (rubberband ->
+               "comet" -> _drawComet, a completely separate cinema renderer
+               in command_center_v4.html), and _drawNode (the only caller of
+               this surface()) never runs. See the full writeup on
+               PLANET_VISUALS.confluence.surface() above for the mechanism
+               and why it's kept anyway (fallback if armada.js fails to
+               load). What a viewer actually sees is armada.js's WebGL
+               "skiff" hull (buildRubberband), not this. */
             /* Elastic bands — horizontal lines that oscillate */
             ctx.strokeStyle = 'rgba(55, 215, 250, 0.15)';
             ctx.lineWidth = 0.8;
@@ -2521,6 +2597,17 @@ var PLANET_VISUALS = {
         baseColor: [120, 80, 200],
         atmosphere: [160, 120, 240],
         surface: function(ctx, x, y, r, lx, ly, now) {
+            /* PASS 14 (2026-08-27): DEAD CODE on the live dashboard whenever
+               Armada is initialized in fullscreen — command_center_v4.html's
+               _armadaOwnsTraders gate (~line 4959) routes this body through
+               _drawFullscreenEntity's _botTypeMap dispatch (arbitrageur ->
+               "wormhole_gate" -> _drawWormholeGate, a completely separate
+               cinema renderer in command_center_v4.html), and _drawNode
+               (the only caller of this surface()) never runs. See the full
+               writeup on PLANET_VISUALS.confluence.surface() above for the
+               mechanism and why it's kept anyway (fallback if armada.js
+               fails to load). What a viewer actually sees is armada.js's
+               WebGL "catamaran" hull (buildArbitrageur), not this. */
             /* Wormhole rings — two concentric ellipses with energy flow */
             var rot = now / 12000;
             ctx.save(); ctx.translate(x, y); ctx.rotate(rot);

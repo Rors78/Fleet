@@ -1817,3 +1817,156 @@ one, and the pass was better for the agent checking rather than complying.
 
 Draw calls 464 -> 491 (+27, confluence only). Suite 99/99. Pool 215.7749
 before and after. node --check clean on both JS files.
+
+## Pass 14 (2026-08-27) — Is the surface weather actually visible, or is five passes hidden under WebGL?
+
+**Attempted**: pass 13 found that Confluence's on-screen body is its WebGL
+`refinery` hull, not `PLANET_VISUALS.confluence.surface()` — and this pass
+was charged with checking whether that finding generalizes to all six
+armada bots (turtlesue, nexusbrain, gridzilla, rubberband, arbitrageur,
+confluence), including Gridzilla, pass 8's flagship first live use of
+`_sphBlob`/`_sphLambert`. Mandate: measure occlusion per body with
+evidence, report honestly how much prior work is invisible, then fix it.
+
+**Per-body occlusion verdict**, established two ways — real forced-paint
+screenshots via claude-in-chrome (dreadnought/refinery/skiff hulls
+confirmed solid, zero disk color visible at any edge) and then, more
+decisively, by tracing the actual call graph in `command_center_v4.html`:
+
+    turtlesue    FULLY OCCLUDED - confirmed on screen (massive solid hull)
+    confluence   FULLY OCCLUDED - confirmed on screen (pass 13 also found this)
+    rubberband   FULLY OCCLUDED - confirmed on screen (solid delta hull)
+    gridzilla    FULLY OCCLUDED - confirmed on screen; a monkey-patched
+                 2x-radius solid magenta disk behind the truss produced
+                 ZERO visible magenta through the beam gaps
+    nexusbrain   OCCLUDED - an apparent "pink sliver" turned out to be a
+                 pre-existing UI dot unrelated to the body, still present
+                 with surface() fully restored (false positive, corrected)
+    arbitrageur  not caught in an isolated screenshot (orbit kept moving
+                 it out of frame between calls) - inferred occluded from
+                 the mechanism below, not directly screenshotted
+
+**The mechanism is not what pass 13 or this pass's own brief assumed.**
+Both described this as a compositing/z-order problem - the WebGL canvas
+sitting on top and covering the 2D sphere. That is true as far as it goes,
+but it is not the reason the paint is invisible. `command_center_v4.html`
+already has an explicit, well-commented gate for exactly this, written
+before pass 8 or pass 13 ever touched these bodies:
+
+    var _armadaOwnsTraders=_orbIsFS&&window.Armada&&window.Armada._initialized;
+    ...
+    var _fsDrawn=_armadaOwnsTraders?false:_drawFullscreenEntity(ctx,planet,_drawNow);
+    if(_armadaOwnsTraders){
+      /* Sphere skipped -- Armada's ship mesh renders this body. */
+    }
+
+(~line 4959-4973). When Armada is live in fullscreen, `_drawNode` - the
+only caller of `PLANET_VISUALS[id].surface()` - is never invoked at all
+for these six bodies. Four of them (nexusbrain, gridzilla, rubberband,
+arbitrageur) additionally have a completely separate bespoke 2D cinema
+renderer via `_botTypeMap`/`_drawFullscreenEntity` (`_drawCivPlanet`,
+`_drawStation`, `_drawComet`, `_drawWormholeGate`) that is also skipped
+by the same gate. This is not a compositing accident, and it is not new -
+`git log -S _armadaOwnsTraders` traces it to commit fb45c49 (2026-07-30,
+"COSMOS armada: WebGL mining ships"), which predates Gridzilla's
+`_sphBlob` weather (ca34f1d, pass 8) and Confluence's crust (f5fe6f0, pass
+13, both 2026-08-27) by nearly a month. The information needed to avoid
+writing invisible code was sitting in the file, commented, the whole
+time - every pass since armada.js shipped could have grepped
+`_armadaOwnsTraders` before adding surface weather to any of these six
+bodies and didn't, including this pass's own brief, which repeated the
+compositing theory as fact without reading the call graph first.
+
+Live-verified this gate is actually armed right now:
+`window.Armada._initialized === true`, `window._orbIsFS === true` on the
+running page - not a theoretical dead path, the one in effect today.
+
+**How much prior work is invisible**: ran the draw-call harness
+(cost.mjs) per body and split by armada-bot membership:
+
+    TOTAL across all 18 bodies' surface():            491
+    ARMADA-BOT TOTAL (dead when Armada is live):       127  (26%)
+      confluence 27, gridzilla 51, nexusbrain 44,
+      rubberband 1, arbitrageur 4, turtlesue 0*
+    LIVE-REACHABLE TOTAL when Armada is up:            364
+
+  *turtlesue reports 0 because its surface() is a drawImage() sprite (the
+  Death Star art), which the harness's arc/gradient-only counter doesn't
+  count - genuinely dead too, just invisible to that specific measurement
+  as well. Worth remembering: this project's own 464/491 draw-call
+  "baseline," quoted across passes 8 through 13, was never the live
+  page's actual draw count - the harness calls surface() standalone, with
+  no concept of `_armadaOwnsTraders`, so it has been measuring
+  reachable-on-screen and dead-behind-a-gate code as one undifferentiated
+  number for a month.
+
+**Fix chosen, and why**: none of the three options as originally framed
+(shrink the hull, move weather into WebGL, or delete the 2D work) fit
+once the real mechanism was clear. This is not a bug needing a design
+choice - `_armadaOwnsTraders` is a deliberate, correct, already-shipped
+piece of architecture that prevents exactly the double-paint this pass
+was convened to find. Its own comment (and the identical pattern for CC's
+station, ~line 4795) states plainly that the 2D path stays as the
+fallback if armada.js ever fails to load - real safety net, not an
+oversight. Deleting the prior-pass work in PLANET_VISUALS for these six
+bodies would trade that safety net for a draw-count saving that is
+already zero at runtime (the calls aren't executing, so there is nothing
+to shave off the frame budget by removing them).
+
+**What changed**: `solar_system.js`, one comment block added at the top
+of each of the six bodies' surface() (confluence, gridzilla, turtlesue,
+nexusbrain, rubberband, arbitrageur), stating plainly that the function
+is dead code on the live dashboard whenever Armada is initialized, naming
+the exact gate and line, naming which `_botTypeMap`/WebGL builder
+actually owns the visible identity instead, and pointing at this pass's
+writeup for the mechanism. Corrected pass 13's own confluence comment,
+which attributed invisibility to compositing - left the original text
+intact underneath (still accurate for the fallback path) with the
+corrected mechanism prepended. No code logic changed, no render path
+changed, no gate touched - comments only.
+
+**Rejected**:
+- Shrinking the WebGL hulls to let the 2D disk show through - a prior
+  pass (2026-07-30, SOTA finding 6) deliberately enlarged them to sz*3.6
+  for legibility from across the room; reversing that for these six would
+  refight a settled, dated decision for a cosmetic sliver of visible disk.
+- Porting `_sphBlob` weather into the WebGL materials - real option, but
+  a six-hull shader/material rewrite is a much larger, riskier scope than
+  this pass's mandate (establish truth and choose a fix, not open a new
+  multi-session WebGL initiative), and the fallback argument above means
+  there is no urgency once the actual (zero) runtime cost is known.
+- Deleting the six PLANET_VISUALS surface() bodies outright - no runtime
+  benefit (dead code costs nothing when unreachable) and it would remove
+  the documented armada-failure fallback. Left in place.
+- Fixing the draw-call harness to gate on `_armadaOwnsTraders` - real
+  improvement, but it requires simulating window.Armada._initialized and
+  _orbIsFS state inside a Node stub that has neither concept today;
+  flagged here for a future pass rather than rushed into this one.
+
+**Verification**:
+- node --check solar_system.js and node --check armada.js (untouched):
+  both clean.
+- Suite: 99 passed, 0 failed (python -X utf8 run_all.py).
+- Station harness: 23/23 passed (.verify_station_harness.mjs).
+- Pool: 215.77491525702527 before and after
+  (curl http://localhost:9000/api/portfolio), unchanged.
+- Draw calls: 491 total, unchanged (comment-only edit; the 127 dead calls
+  among them were already dead before this pass and remain so - this
+  pass did not change what paints, only what the code says about what
+  paints).
+- Saw it render: yes, via claude-in-chrome, fullscreen cinema mode -
+  screenshotted turtlesue's dreadnought, confluence's refinery,
+  rubberband's skiff and gridzilla's lattice truss directly, all fully
+  solid on screen with no 2D disk color at any edge. The monkey-patch
+  technique (draw an unmistakable oversized marker in surface(),
+  screenshot, restore) did NOT reproduce cleanly in this session - a
+  spoofed document.hidden does not override Chrome's real backgrounded-
+  tab rAF throttle for an automation tab, so the patched function's
+  marker never actually painted to compare against; this was diagnosed
+  and is recorded so a future session doesn't lose time on the same dead
+  end. The DOM-level check (temporarily setting
+  armadaCanvas.style.display='none', a pure CSS change with no rAF
+  dependency) worked as a technique but the frame it revealed was
+  stale/pre-background, not useful for a live A/B - the call-graph trace
+  above is what actually settled the question. No restart of any bot or
+  the fleet was performed.

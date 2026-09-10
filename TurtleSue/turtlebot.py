@@ -1725,6 +1725,21 @@ class TurtleEngine:
                     "r": _r,
                     "duration_s": int(time.time()) - pos.opened_at,
                     "system": pos.system, "units": pos.num_units,
+                    # reservation_id: the ONLY key both recording routes share.
+                    # A close reaches the durable expectancy store twice -- via the
+                    # portfolio release (which forwards the rid) and via this event.
+                    # record_trade dedups on trade_id; without the rid this route
+                    # falls back to a content-derived key that cannot collide with
+                    # the release path, so the trade is stored TWICE.
+                    # Measured 2026-09-10: arbitrageur BTC/USD stored as -0.0260
+                    # (size 4.53, real prices) and -0.0300 (size 0, no prices).
+                    # Fixed for confluence on 2026-08-27; the sibling emitters were
+                    # missed, and started producing bad rows as soon as they traded.
+                    # TurtleSue pyramids, so it holds a LIST of rids. The FIRST is
+                    # the original entry and is the stable identity of the position;
+                    # the release path forwards that same id.
+                    "reservation_id": ((pos.reservation_ids or [None])[0]
+                                       if getattr(pos, "reservation_ids", None) else None),
                 })
             except Exception as e:
                 logging.warning(f"[turtlesue] event publisher emit failed: {e}")

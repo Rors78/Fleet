@@ -929,6 +929,18 @@ class ArbitrageurEngine:
                 "pair": pos.pair, "direction": "LONG", "pnl": round(pnl, 2),
                 "exit_reason": reason, "duration_s": round(pos.age_hours() * 3600, 0),
                 "leader": pos.leader_pair, "gap_pct": round(pos.gap_pct, 4),
+                # reservation_id: the ONLY key both recording routes share.
+                # A close reaches the durable expectancy store twice -- via the
+                # portfolio release (which forwards the rid) and via this event.
+                # record_trade dedups on trade_id; without the rid this route
+                # falls back to a content-derived key that cannot collide with
+                # the release path, so the trade is stored TWICE.
+                # Measured 2026-09-10: arbitrageur BTC/USD stored as -0.0260
+                # (size 4.53, real prices) and -0.0300 (size 0, no prices).
+                # Fixed for confluence on 2026-08-27; the sibling emitters were
+                # missed, and started producing bad rows as soon as they traded.
+                "reservation_id": getattr(pos, "reservation_id", None),
+                "size_usd": getattr(pos, "size_usd", None),
             })
 
     # -----------------------------------------------------------------------

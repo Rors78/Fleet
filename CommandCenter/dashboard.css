@@ -820,16 +820,24 @@ body {
 }
 .orbital-wrap.fullscreen ~ #fsHud,
 .orbital-wrap.fullscreen #fsHud { display: block; }
+/* Legibility at distance (50" display, viewed across a room): the canvas
+   body-label convention (pass 17) pairs a dark translucent plate with
+   near-full-alpha text — bare low-alpha text on a starfield disappears.
+   Each corner gets its own plate (via box-shadow spread, so the four
+   spans of a row share one pill instead of one per span) and text moves
+   from 0.5/0.2 alpha to 0.88/0.4, matching canvas label alpha (0.62-1.0). */
 .fs-hud-tl, .fs-hud-tr, .fs-hud-bl, .fs-hud-br {
   position: absolute; display: flex; gap: 16px;
-  padding: 16px 24px; font-size: 0.82rem;
-  color: rgba(255,255,255,0.5); letter-spacing: 0.5px;
+  padding: 8px 14px; margin: 12px; font-size: 0.82rem;
+  color: rgba(255,255,255,0.88); letter-spacing: 0.5px;
+  background: rgba(4,6,14,0.72); border: 1px solid rgba(255,255,255,0.08);
+  border-radius: 6px; text-shadow: 0 0 6px rgba(0,0,0,0.9);
 }
 .fs-hud-tl { top: 0; left: 0; }
 .fs-hud-tr { top: 0; right: 0; }
 .fs-hud-bl { bottom: 0; left: 0; }
-.fs-hud-br { bottom: 0; right: 0; font-size: 0.7rem; color: rgba(255,255,255,0.2); }
-.fs-hud-tl b, .fs-hud-tr b, .fs-hud-bl b { color: rgba(255,255,255,0.8); }
+.fs-hud-br { bottom: 0; right: 0; font-size: 0.7rem; color: rgba(255,255,255,0.4); background: rgba(4,6,14,0.55); }
+.fs-hud-tl b, .fs-hud-tr b, .fs-hud-bl b { color: #fff; }
 
 /* ═══════════════════════════════════════
    OVERVIEW REDESIGN — Single-Viewport Grid v3

@@ -71,7 +71,8 @@ class KrakenSpotClient:
 
     def place_order(self, pair: str, side: str, volume: float,
                     ordertype: str = "limit", price: float = None,
-                    post_only: bool = False, leverage=None) -> tuple:
+                    post_only: bool = False, leverage=None,
+                    userref=None) -> tuple:
         """Place a spot order. side='buy' or 'sell'. Returns (ok, txid_or_error).
 
         LIMIT ORDERS ONLY — fleet policy, no exceptions. `ordertype` defaults to
@@ -107,6 +108,12 @@ class KrakenSpotClient:
             # correct behaviour; the caller leaves the level unfilled and
             # retries on the next price check.
             payload["oflags"] = "post"
+        if userref is not None:
+            # The caller's own tag, echoed back on every execution for
+            # this order. It is how a bot proves a fill is its own on a
+            # SHARED account after a restart has lost the in-memory
+            # txid set.
+            payload["userref"] = str(int(userref))
         if leverage and float(leverage) > 1:
             # SCARS, all earned on this account:
             #  - the pair must name the MARGIN book (ALTNAME:BTNL). Sending
@@ -127,7 +134,7 @@ class KrakenSpotClient:
 
     def buy(self, pair: str, volume: float, price: float = None,
             ordertype: str = "limit", post_only: bool = False,
-            leverage=None) -> tuple:
+            leverage=None, userref=None) -> tuple:
         """Buy crypto (spot) as a LIMIT order. `price` is required.
 
         Note the signature: price is the third positional arg. Callers that
@@ -135,14 +142,16 @@ class KrakenSpotClient:
         silently placing a market order.
         """
         return self.place_order(pair, "buy", volume, ordertype, price,
-                                post_only=post_only, leverage=leverage)
+                                post_only=post_only, leverage=leverage,
+                                userref=userref)
 
     def sell(self, pair: str, volume: float, price: float = None,
              ordertype: str = "limit", post_only: bool = False,
-             leverage=None) -> tuple:
+             leverage=None, userref=None) -> tuple:
         """Sell crypto (spot) as a LIMIT order. `price` is required."""
         return self.place_order(pair, "sell", volume, ordertype, price,
-                                post_only=post_only, leverage=leverage)
+                                post_only=post_only, leverage=leverage,
+                                userref=userref)
 
     def get_fill_price(self, txid: str, fallback: float) -> float:
         """Query order to get actual fill price. Returns fallback on failure."""

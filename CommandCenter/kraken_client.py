@@ -70,7 +70,8 @@ class KrakenSpotClient:
             return {"error": [str(e)]}
 
     def place_order(self, pair: str, side: str, volume: float,
-                    ordertype: str = "limit", price: float = None) -> tuple:
+                    ordertype: str = "limit", price: float = None,
+                    post_only: bool = False, leverage=None) -> tuple:
         """Place a spot order. side='buy' or 'sell'. Returns (ok, txid_or_error).
 
         LIMIT ORDERS ONLY — fleet policy, no exceptions. `ordertype` defaults to
@@ -90,13 +91,31 @@ class KrakenSpotClient:
             return False, ("LIMIT_ONLY: a limit order requires an explicit "
                            "positive price")
 
-        result = self._private("AddOrder", {
+        payload = {
             "pair": pair,
             "type": side,
             "ordertype": "limit",
             "price": f"{float(price):.8f}",
             "volume": f"{volume:.8f}",
-        })
+        }
+        if post_only:
+            # oflags=post makes Kraken REJECT the order rather than let it
+            # cross the spread. For a grid that is the point: a rung is a
+            # resting bid/ask, and one that would take liquidity is not the
+            # trade the strategy designed -- it is a worse price AND the
+            # taker fee (0.60 vs 0.30 on this account). A rejection here is
+            # correct behaviour; the caller leaves the level unfilled and
+            # retries on the next price check.
+            payload["oflags"] = "post"
+        if leverage and float(leverage) > 1:
+            # SCARS, all earned on this account:
+            #  - the pair must name the MARGIN book (ALTNAME:BTNL). Sending
+            #    leverage against the spot name is refused as "Non-ECP",
+            #    which reads like an account problem and is not.
+            #  - leverage must also be on the CLOSING order, or the position
+            #    stays open after what looks like a successful close.
+            payload["leverage"] = str(int(float(leverage)))
+        result = self._private("AddOrder", payload)
         if result.get("error"):
             errs = result["error"]
             # Filter out non-errors (Kraken returns warnings in error array)
@@ -107,19 +126,23 @@ class KrakenSpotClient:
         return True, txids[0] if txids else "unknown"
 
     def buy(self, pair: str, volume: float, price: float = None,
-            ordertype: str = "limit") -> tuple:
+            ordertype: str = "limit", post_only: bool = False,
+            leverage=None) -> tuple:
         """Buy crypto (spot) as a LIMIT order. `price` is required.
 
         Note the signature: price is the third positional arg. Callers that
         pass only (pair, volume) now get a clear LIMIT_ONLY refusal instead of
         silently placing a market order.
         """
-        return self.place_order(pair, "buy", volume, ordertype, price)
+        return self.place_order(pair, "buy", volume, ordertype, price,
+                                post_only=post_only, leverage=leverage)
 
     def sell(self, pair: str, volume: float, price: float = None,
-             ordertype: str = "limit") -> tuple:
+             ordertype: str = "limit", post_only: bool = False,
+             leverage=None) -> tuple:
         """Sell crypto (spot) as a LIMIT order. `price` is required."""
-        return self.place_order(pair, "sell", volume, ordertype, price)
+        return self.place_order(pair, "sell", volume, ordertype, price,
+                                post_only=post_only, leverage=leverage)
 
     def get_fill_price(self, txid: str, fallback: float) -> float:
         """Query order to get actual fill price. Returns fallback on failure."""

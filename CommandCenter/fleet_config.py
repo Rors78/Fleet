@@ -89,6 +89,13 @@ BOTS = {
     "nexusbrain":  {"port": 8074, "dir": os.path.join(DATA_DRIVE, "NexusBrain"),                             "role": "trader",  "display": "NexusBrain", "color": "#d500f9", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "nexus_brain.py", "run-sim", "--auto"],       "phase": 1, "slow": False},
     "oracle":      {"port": 8075, "dir": os.path.join(DATA_DRIVE, "Oracle"),                                 "role": "intel",   "display": "Oracle",     "color": "#76ff03", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "server.py"],                                 "phase": 1, "slow": True},
     "deepblue":    {"port": 8076, "dir": os.path.join(DATA_DRIVE, "Whale Watcher", "apex_whale_finder.dir"), "role": "intel",   "display": "Deep Blue",  "color": "#18ffff", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "main.py", "--headless"],                       "phase": 1, "slow": False},
+    # GridPick executor -- cloned from Gridzilla 2026-09-19 with its own port,
+    # state file and bot id. Registered here because LIVE_CAPABLE_BOTS entries
+    # must be real fleet members: an armable bot the fleet cannot launch or
+    # monitor is exactly the gap this registration closes.
+    # phase 9 = NOT auto-launched; run by hand while the scanner-to-executor
+    # wiring is still being built.
+    "gridpick":    {"port": 8089, "dir": os.path.join(DATA_DRIVE, "GridPick", "executor"), "role": "trader", "display": "GridPick", "color": "#00e5ff", "endpoints": ["/api/snapshot"], "cmd": ["python", "gridpick_executor.py", "--auto"], "phase": 9, "slow": False},
     "gridzilla":   {"port": 8077, "dir": os.path.join(DATA_DRIVE, "Gridzilla"),                              "role": "trader",  "display": "Gridzilla",  "color": "#ffd600", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "gridzilla.py", "--auto"],                    "phase": 1, "slow": False},
     "phitex":      {"port": 8078, "dir": os.path.join(DATA_DRIVE, "PhiTex"),                                 "role": "support", "display": "PHITEX",     "color": "#e040fb", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "phitex.py"],                                 "phase": 2, "slow": True},
     "aegis":       {"port": 8079, "dir": os.path.join(DATA_DRIVE, "Aegis"),                                  "role": "support", "display": "AEGIS",      "color": "#e0e0e0", "endpoints": ["/api/snapshot"],                        "cmd": ["python", "aegis.py"],                                  "phase": 2, "slow": False},
@@ -328,7 +335,12 @@ def limit_price(reference_price: float, direction: str,
 FLEET_ENGAGE_STATE = "paper"
 
 # Bots that can execute real Kraken orders
-LIVE_CAPABLE_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "rubberband", "arbitrageur", "confluence"}
+# "gridpick" is the GridPick executor (D:/GridPick/executor), cloned from
+# Gridzilla 2026-09-19. It is listed here so it CAN be armed individually;
+# listing is not arming -- LIVE_ARMED_BOTS is still empty and each bot also
+# needs <BOT>_LIVE_ARM=1 on its own launcher.
+LIVE_CAPABLE_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "rubberband",
+                     "arbitrageur", "confluence", "gridpick"}
 
 
 # ── PER-BOT LIVE ARMING ──────────────────────────────────────────────────────

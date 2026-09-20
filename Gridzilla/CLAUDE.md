@@ -1,4 +1,37 @@
-# Gridzilla v11.0 -- Volatility Grid Engine
+# Gridzilla -- Adaptive Grid Engine
+
+> **Doc drift:** the sections below describe a "v11.0" Bollinger/5-level
+> design. The code on disk is **v2 adaptive** (`GridArchitect` detects range
+> from S/R with a Bollinger fallback, ATR-floored width; 5-25 lines). Trust
+> the code, not this heading, until someone reconciles them.
+
+## Live arming (read this before anything touching orders)
+
+Gridzilla CAN place real Kraken spot orders. `GridExecutor.check_fills()`
+calls `KrakenSpotClient.buy()/.sell()` (marketable limits, never market) via
+`D:\CommandCenter\kraken_client.py`.
+
+**Three predicates must ALL be true for a real order** (`fleet_config.is_bot_live`):
+
+1. `FLEET_MODE == "live"`   -- shared fleet switch, POST /api/fleet/mode
+2. `FLEET_ENGAGE_STATE == "live_engaged"`  -- second stage of the same API
+3. `"gridzilla" in LIVE_ARMED_BOTS`  -- set `GRIDZILLA_LIVE_ARM=1` in this
+   bot's own launcher environment
+
+Any one false = simulated fill. As of 2026-09-19 all three are false.
+
+Predicate 3 exists because 1 and 2 are FLEET-WIDE: seven bots read the same
+switch, so flipping it used to arm every credentialed bot at once. Arming is
+deliberately an env var on the launcher, not an API call -- no single HTTP
+request can take money live.
+
+The gate is checked at startup AND at both trade sites, because the executor
+binds its Kraken client once at construction and a mode change under a running
+process must not arm it. Run `python test_arming.py` after touching any of it.
+
+A rejected live order is NOT booked as a fill (fixed 2026-09-19). It used to
+log "using paper fill" and mark the level filled, which would report realised
+P/L on trades the exchange refused.
 
 ## What This Is
 Grid trading bot with volatility-scaled position sizing, multi-timeframe Bollinger Band entries,

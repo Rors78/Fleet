@@ -224,69 +224,7 @@ def is_live() -> bool:
     return FLEET_MODE == "live"
 
 
-# ── PER-BOT LIVE ARMING ──────────────────────────────────────────────────────
-# FLEET_MODE is ONE switch read by seven bots (Arbitrageur, Confluence,
-# Gridzilla, NexusBrain, Rubberband, TurtleSue, and this file). Flipping it to
-# "live" arms every one of them that holds credentials, at the same instant.
-# There was no way to take a single bot live.
-#
-# LIVE_ARMED_BOTS is the missing dimension: a bot must ALSO name itself here
-# before it may place a real order. Empty by default, and deliberately not
-# settable from the fleet-mode API -- arming is an out-of-band act (an env var
-# on that bot's own launcher), so that no single HTTP call can take money live.
-#
-# This does NOT change is_live(). Bots that have not opted in behave exactly as
-# before; is_bot_live() is a STRICTER check a bot opts into.
-LIVE_ARMED_BOTS: set = set()
 
-
-def _load_armed_bots() -> set:
-    """Read per-bot arming from the environment at import.
-
-    `<BOT>_LIVE_ARM=1` arms that bot, e.g. GRIDZILLA_LIVE_ARM=1. The variable
-    lives on the bot's own launcher, so arming is visible in the thing the
-    operator starts rather than buried in shared state.
-    """
-    armed = set()
-    for bot in ("gridzilla", "turtlesue", "viper", "trinity", "hivemind",
-                "nexusbrain", "oracle", "confluence", "arbitrageur",
-                "rubberband"):
-        if os.environ.get(f"{bot.upper()}_LIVE_ARM", "").strip() in ("1", "true", "yes", "on"):
-            armed.add(bot)
-    return armed
-
-
-LIVE_ARMED_BOTS |= _load_armed_bots()
-
-
-def is_bot_live(bot: str) -> bool:
-    """True only when ALL THREE hold: the fleet is live, it is engaged, and
-    THIS bot is individually armed.
-
-    Any one of them false means simulate. A bot calls this instead of
-    is_live() before placing a real exchange order.
-    """
-    return is_live() and is_engaged() and bot.lower() in LIVE_ARMED_BOTS
-
-
-def why_not_live(bot: str) -> str:
-    """Human-readable reason a bot is not trading live, for the startup log.
-
-    A bot that silently stays paper when the operator believes it is live --
-    or silently goes live -- is the failure this whole gate exists to prevent.
-    Whichever branch is taken, the log must say which and why.
-    """
-    if is_bot_live(bot):
-        return (f"LIVE: fleet_mode={FLEET_MODE}, engage={FLEET_ENGAGE_STATE}, "
-                f"{bot} armed")
-    reasons = []
-    if not is_live():
-        reasons.append(f"fleet_mode={FLEET_MODE!r} (need 'live')")
-    if not is_engaged():
-        reasons.append(f"engage={FLEET_ENGAGE_STATE!r} (need 'live_engaged')")
-    if bot.lower() not in LIVE_ARMED_BOTS:
-        reasons.append(f"{bot} not armed (set {bot.upper()}_LIVE_ARM=1)")
-    return "PAPER: " + "; ".join(reasons)
 
 
 # Live mode: LONG positions only. Shorts allowed in paper only.
@@ -391,6 +329,75 @@ FLEET_ENGAGE_STATE = "paper"
 
 # Bots that can execute real Kraken orders
 LIVE_CAPABLE_BOTS = {"turtlesue", "nexusbrain", "gridzilla", "rubberband", "arbitrageur", "confluence"}
+
+
+# ── PER-BOT LIVE ARMING ──────────────────────────────────────────────────────
+# FLEET_MODE is ONE switch read by seven bots (Arbitrageur, Confluence,
+# Gridzilla, NexusBrain, Rubberband, TurtleSue, and this file). Flipping it to
+# "live" arms every one of them that holds credentials, at the same instant.
+# There was no way to take a single bot live.
+#
+# LIVE_ARMED_BOTS is the missing dimension: a bot must ALSO name itself here
+# before it may place a real order. Empty by default, and deliberately not
+# settable from the fleet-mode API -- arming is an out-of-band act (an env var
+# on that bot's own launcher), so that no single HTTP call can take money live.
+#
+# This does NOT change is_live(). Bots that have not opted in behave exactly as
+# before; is_bot_live() is a STRICTER check a bot opts into.
+LIVE_ARMED_BOTS: set = set()
+
+
+def _load_armed_bots() -> set:
+    """Read per-bot arming from the environment at import.
+
+    `<BOT>_LIVE_ARM=1` arms that bot, e.g. GRIDZILLA_LIVE_ARM=1. The variable
+    lives on the bot's own launcher, so arming is visible in the thing the
+    operator starts rather than buried in shared state.
+    """
+    # Derived from LIVE_CAPABLE_BOTS, never hand-listed. The first version of
+    # this function carried a typed-out list that invented four bot names
+    # (viper, trinity, hivemind, oracle) which are not live-capable, in a
+    # fleet of 19 registered bots where the authoritative set was defined
+    # lower in this same file. A roster that can drift from the roster is a
+    # second source of truth, and this one governs real orders.
+    armed = set()
+    for bot in LIVE_CAPABLE_BOTS:
+        if os.environ.get(f"{bot.upper()}_LIVE_ARM", "").strip() in ("1", "true", "yes", "on"):
+            armed.add(bot)
+    return armed
+
+
+LIVE_ARMED_BOTS |= _load_armed_bots()
+
+
+def is_bot_live(bot: str) -> bool:
+    """True only when ALL THREE hold: the fleet is live, it is engaged, and
+    THIS bot is individually armed.
+
+    Any one of them false means simulate. A bot calls this instead of
+    is_live() before placing a real exchange order.
+    """
+    return is_live() and is_engaged() and bot.lower() in LIVE_ARMED_BOTS
+
+
+def why_not_live(bot: str) -> str:
+    """Human-readable reason a bot is not trading live, for the startup log.
+
+    A bot that silently stays paper when the operator believes it is live --
+    or silently goes live -- is the failure this whole gate exists to prevent.
+    Whichever branch is taken, the log must say which and why.
+    """
+    if is_bot_live(bot):
+        return (f"LIVE: fleet_mode={FLEET_MODE}, engage={FLEET_ENGAGE_STATE}, "
+                f"{bot} armed")
+    reasons = []
+    if not is_live():
+        reasons.append(f"fleet_mode={FLEET_MODE!r} (need 'live')")
+    if not is_engaged():
+        reasons.append(f"engage={FLEET_ENGAGE_STATE!r} (need 'live_engaged')")
+    if bot.lower() not in LIVE_ARMED_BOTS:
+        reasons.append(f"{bot} not armed (set {bot.upper()}_LIVE_ARM=1)")
+    return "PAPER: " + "; ".join(reasons)
 
 
 def set_fleet_mode(mode: str) -> str:

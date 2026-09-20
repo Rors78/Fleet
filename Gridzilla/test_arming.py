@@ -98,6 +98,37 @@ check("gate consulted at startup AND both trade sites",
 check("NEGATIVE CONTROL: a rejected order is never booked as a fill",
       "using paper fill" not in _src and _src.count("REJECTED") >= 2)
 
+print("\nthe armable roster is DERIVED, not hand-listed")
+# The first version of _load_armed_bots typed out ten bot names and invented
+# four that are not live-capable, in a 19-bot fleet whose authoritative set
+# lives in the same file. A second roster that can drift from the roster is
+# exactly how a bot that should never trade ends up armed.
+check("arming roster == LIVE_CAPABLE_BOTS",
+      set(fc.LIVE_CAPABLE_BOTS) == {"turtlesue", "nexusbrain", "gridzilla",
+                                    "rubberband", "arbitrageur", "confluence"},
+      f"{sorted(fc.LIVE_CAPABLE_BOTS)}")
+check("every armable bot is a registered fleet bot",
+      set(fc.LIVE_CAPABLE_BOTS) <= set(fc.BOTS),
+      f"{sorted(set(fc.LIVE_CAPABLE_BOTS) - set(fc.BOTS))} unregistered")
+
+_prev2 = {k: os.environ.get(k) for k in ("VIPER_LIVE_ARM", "AEGIS_LIVE_ARM",
+                                         "GRIDZILLA_LIVE_ARM")}
+try:
+    os.environ["VIPER_LIVE_ARM"] = "1"
+    os.environ["AEGIS_LIVE_ARM"] = "1"
+    _armed = fc._load_armed_bots()
+    check("NEGATIVE CONTROL: a non-live-capable bot CANNOT be armed",
+          "viper" not in _armed and "aegis" not in _armed,
+          "VIPER_LIVE_ARM=1 and AEGIS_LIVE_ARM=1 both set, both ignored")
+    os.environ["GRIDZILLA_LIVE_ARM"] = "1"
+    check("...while a live-capable bot still can", "gridzilla" in fc._load_armed_bots())
+finally:
+    for k, v in _prev2.items():
+        if v is None:
+            os.environ.pop(k, None)
+        else:
+            os.environ[k] = v
+
 reset("paper", "paper")
 print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

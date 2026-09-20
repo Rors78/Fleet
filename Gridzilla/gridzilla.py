@@ -1905,6 +1905,15 @@ class GridzillaEngine:
             "name": self.config["name"],
             "version": self.config["version"],
             "status": "running" if self.running else "stopped",
+            # A dashboard that reads "running" while the bot is paper-locked,
+            # or while it has refused to deploy because the pool is
+            # unreadable, is telling the viewer the opposite of the truth.
+            # Both facts ship in the snapshot so no consumer has to guess.
+            "execution_mode": ("live" if (_fc and _fc.is_bot_live("gridzilla"))
+                               else "paper"),
+            "execution_reason": (_fc.why_not_live("gridzilla") if _fc
+                                 else "fleet_config unavailable"),
+            "deploying": not getattr(self, "_pool_unreadable_warned", False),
             "uptime_hours": round((time.time() - self.start_time) / 3600, 2),
             "scan_count": self.scan_count,
             "regime": self.intel.aegis_regime,

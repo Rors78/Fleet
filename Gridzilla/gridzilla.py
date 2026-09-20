@@ -835,7 +835,11 @@ class GridExecutor:
                     # Buy level hit — fill it
                     fill_price = current_price
                     _kp = pair.replace("/", "")
-                    if self._kraken_spot:
+                    # Re-checked at TRADE time, not only at startup: fleet
+                    # mode can change under a long-running process, and an
+                    # executor built in paper must not become live because
+                    # someone POSTed a mode change.
+                    if self._kraken_spot and _fc and _fc.is_bot_live("gridzilla"):
                         qty = level["size_usd"] / current_price
                         # LIMIT ONLY (fleet policy) — marketable limit, never market.
                         ok, txid = self._kraken_spot.buy(
@@ -845,7 +849,17 @@ class GridExecutor:
                             fill_price = self._kraken_spot.get_fill_price(txid, current_price)
                             logging.info(f"LIVE GRID BUY {pair} qty={qty:.6f} @ {fill_price:.4f} txid={txid}")
                         else:
-                            logging.warning(f"LIVE GRID BUY FAILED {pair}: {txid} — using paper fill")
+                            # A REJECTED ORDER IS NOT A FILL. This used to
+                            # log a warning and then book the level as
+                            # filled anyway, so a live run could report
+                            # realised P/L on trades the exchange refused
+                            # -- inflating results by exactly the orders
+                            # that did not happen. The level stays open and
+                            # will be retried on the next price check.
+                            logging.error(
+                                "LIVE GRID BUY REJECTED %s: %s — level left "
+                                "UNFILLED (not booked)", pair, txid)
+                            continue
 
                     level["filled"] = True
                     level["fill_price"] = fill_price
@@ -874,7 +888,11 @@ class GridExecutor:
                     # Sell level hit — check if this closes a buy
                     fill_price_sell = current_price
                     _kp = pair.replace("/", "")
-                    if self._kraken_spot:
+                    # Re-checked at TRADE time, not only at startup: fleet
+                    # mode can change under a long-running process, and an
+                    # executor built in paper must not become live because
+                    # someone POSTed a mode change.
+                    if self._kraken_spot and _fc and _fc.is_bot_live("gridzilla"):
                         qty = level["size_usd"] / current_price
                         # LIMIT ONLY (fleet policy) — marketable limit, never market.
                         ok, txid = self._kraken_spot.sell(
@@ -884,7 +902,17 @@ class GridExecutor:
                             fill_price_sell = self._kraken_spot.get_fill_price(txid, current_price)
                             logging.info(f"LIVE GRID SELL {pair} qty={qty:.6f} @ {fill_price_sell:.4f} txid={txid}")
                         else:
-                            logging.warning(f"LIVE GRID SELL FAILED {pair}: {txid} — using paper fill")
+                            # A REJECTED ORDER IS NOT A FILL. This used to
+                            # log a warning and then book the level as
+                            # filled anyway, so a live run could report
+                            # realised P/L on trades the exchange refused
+                            # -- inflating results by exactly the orders
+                            # that did not happen. The level stays open and
+                            # will be retried on the next price check.
+                            logging.error(
+                                "LIVE GRID SELL REJECTED %s: %s — level left "
+                                "UNFILLED (not booked)", pair, txid)
+                            continue
 
                     level["filled"] = True
                     level["fill_price"] = fill_price_sell
@@ -1460,15 +1488,28 @@ class GridzillaEngine:
         except Exception as e:
             logging.warning(f"ExpectancyTracker init failed: {e}")
 
-        # Live Kraken spot execution
+        # Live Kraken spot execution.
+        #
+        # PER-BOT ARMING. FLEET_MODE is one switch read by seven bots; flipping
+        # it to "live" used to arm every one of them holding credentials at the
+        # same instant, and this bot had no say. is_bot_live() requires THREE
+        # things: fleet live, fleet engaged, AND gridzilla individually armed
+        # via GRIDZILLA_LIVE_ARM=1 on its own launcher. Any one false = paper.
+        #
+        # The branch taken is logged either way, with the reason. A bot that
+        # silently stays paper while the operator believes it is live -- or
+        # silently goes live -- is the failure this gate exists to prevent.
         self._kraken_spot = None
-        if _KrakenSpotClient and _fc and _fc.is_live():
+        _gate = _fc.why_not_live("gridzilla") if _fc else "PAPER: fleet_config unavailable"
+        if _KrakenSpotClient and _fc and _fc.is_bot_live("gridzilla"):
             self._kraken_spot = _KrakenSpotClient()
             if self._kraken_spot.has_credentials:
-                logging.info("LIVE MODE: Kraken spot client initialized for Gridzilla")
+                logging.warning("*** GRIDZILLA LIVE — REAL ORDERS *** %s", _gate)
             else:
                 logging.warning("LIVE MODE: No Kraken API credentials — paper fallback")
                 self._kraken_spot = None
+        else:
+            logging.info("Gridzilla execution mode — %s", _gate)
 
         self.regime_detector = RegimeDetector(config)
         self.grid_architect = GridArchitect(config)
